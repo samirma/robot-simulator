@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "robot_console"
+version = "0.1.0"
+description = "Keyboard teleoperation with a live camera feed for a myAGV over rosbridge."
+readme = "README.md"
+requires-python = ">=3.9"
+
+# Deliberately three dependencies and no more. The console has to install on a
+# laptop that has never seen MuJoCo, MolmoSpaces, or the simulator checkout --
+# it speaks rosbridge JSON over a websocket and nothing else.
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "roslibpy",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    # Only the fake rosbridge in tests/ needs a server implementation. It is a
+    # test double, not a dependency of the console.
+    "websockets",
+]
+
+[project.scripts]
+robot-console-teleop = "robot_console.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robot_console"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not live' -q"
+markers = [
+    "live: needs a real rosbridge server (opt in with -m live)",
+]

@@ -1,0 +1,50 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# Per-machine agent state. .claude/settings.json, if added, IS shared.
+.claude/settings.local.json
+
+# --- Simulator: everything here is produced by ./run.sh, never authored ---
+#
+# The upstream clone, fetched by `run.sh setup`. It carries its own .git, so
+# committing it would embed a second repository rather than its contents.
+simulator/molmospaces/
+
+# MLSPACES_CACHE_DIR: downloaded versioned assets, ~14 GB.
+# Restored with `./run.sh assets ithor`.
+simulator/data/
+
+# MLSPACES_ASSETS_DIR: the symlink tree MolmoSpaces generates and force-refreshes
+# (MLSPACES_FORCE_INSTALL=True), ~1.6 GB, plus datagen episode output. Curated robot
+# files live in robots/<name>/ precisely so they are not in here -- see
+# simulator/robots/URDF.md.
+simulator/assets/
+
+# Scratch run output (keep the committed evidence videos, drop scratch runs).
+simulator/outputs/
+simulator/runs/
+
+# Profiling output from the upstream test suites.
+simulator/mlspaces_tests/**/profiling_results.txt
+
+*.log
+
+# MuJoCo drops this wherever it is run from, including the repo root.
+MUJOCO_LOG.TXT
+
+# The plan and the target spec are working documents regenerated per run;
+# specs.json describes the delivered state and IS tracked.
+implementation_plan.json
+target_specs.json

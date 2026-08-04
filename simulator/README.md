@@ -1,0 +1,169 @@
+# MolmoSpaces simulator
+
+A MuJoCo-based simulation of fully-furnished, interactable houses, installed from
+[allenai/molmospaces](https://github.com/allenai/molmospaces), plus a launcher and
+an external control bridge.
+
+## Quick start
+
+```bash
+./run.sh view                      # open a house in the viewer, no robot
+./run.sh sim --robot droid         # house + Franka + scripted pick task
+./run.sh help                      # all commands and forwarded flags
+```
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `run.sh` | launcher; all commands go through it |
+| `env.sh` | environment variables, sourced by `run.sh` |
+| `molmospaces/` | upstream clone (git-pullable) |
+| `.venv/` | Python 3.11 virtualenv, managed by `uv` |
+| `data/mujoco/` | `MLSPACES_CACHE_DIR` — versioned downloaded assets |
+| `assets/` | `MLSPACES_ASSETS_DIR` — unversioned symlink tree that MuJoCo loads from |
+| `bridge/` | external control server + the policy that talks to it |
+| `tools/resolve_scene.py` | scene reference → loadable MJCF path |
+| `robots/` | out-of-tree robot definitions (so101, myagv, lekiwi, rebot_b601) |
+| `tools/render_robots.py` | render every loadable robot; doubles as a load test |
+
+## Commands
+
+```
+./run.sh setup                     venv + install + default assets (idempotent)
+./run.sh assets [ithor|list|<src>] bulk pre-fetch for offline use
+./run.sh view [--scene ithor:1]    a house in the MuJoCo viewer, no robot
+./run.sh sim [flags]               house + robot + scripted task
+./run.sh bridge [flags]            same, but an external process drives the robot
+./run.sh serve [--controller ...]  the control server that `bridge` connects to
+./run.sh shell                     interactive shell in the venv
+```
+
+`sim` and `bridge` forward flags to `scripts/datagen/run_pipeline.py`:
+
+```
+--robot          franka | droid | rum | rby1 | yam | bimanual_yam
+--task_type      pick | open | close | pick_and_place | packing | nav_to_obj
+--scene_dataset  ithor | procthor-10k | procthor-objaverse | holodeck-objaverse
+--house_inds N   --seed N   --samples_per_house N
+--randomize_scene True       --no-viewer
+```
+
+Episodes (HDF5 trajectories + per-camera MP4s) are written under
+`assets/datagen/<task>/<run>/`.
+
+## External control
+
+The simulator connects **out** to a control server over a websocket and applies
+whatever actions it gets back — so your controller is an ordinary process that
+can live anywhere, in any language that can speak websockets + msgpack.
+
+```bash
+./run.sh serve --controller wave --verbose   # terminal 1: start the server first
+./run.sh bridge --robot droid                # terminal 2
+```
+
+Protocol (msgpack-numpy over binary websocket frames):
+
+```
+server -> sim    metadata dict, once, on connect
+sim -> server    observation  {"qpos", "qvel", "robot_base_pose", <cameras>, "task"}
+server -> sim    action       {"arm": ndarray, "gripper": ndarray}
+```
+
+Action semantics follow the robot's `command_mode`
+(`molmospaces/molmo_spaces/configs/robot_configs.py`). For the Franka configs
+both are `joint_position`: absolute joint targets.
+
+Write your own controller as any `obs -> action` callable and point at it:
+
+```bash
+./run.sh serve --controller mypkg.mymodule:my_controller
+```
+
+Built-ins: `hold` (stay put, the default) and `wave` (sweep the last arm joint,
+useful to confirm the loop end to end).
+
+### ROS
+
+Mobile robots can instead be presented on the topics
+[`elephantrobotics/myagv_ros`](https://github.com/elephantrobotics/myagv_ros) defines, so
+the same client drives the simulated and the real myAGV:
+
+```bash
+./run.sh view --robot myagv --ros-port 9090
+```
+
+Subscribes `cmd_vel` (`geometry_msgs/Twist`), publishes `odom` (`nav_msgs/Odometry`) and
+`/camera/image_raw/compressed` (`sensor_msgs/CompressedImage`).
+
+`bridge/rosbridge_server.py` serves the rosbridge protocol in-process. ROS has no
+official macOS build, and MuJoCo needs the Homebrew framework Python while ROS on macOS
+comes from conda — so serving the protocol costs far less than migrating the stack, and
+any rosbridge client works against it unchanged. Drive it from
+[../robot_console](../robot_console).
+
+The base integrates the commanded velocity itself (that is what `cmd_vel` means) and
+stops if no command arrives for 0.5 s. The websocket bridge above stays for the arm
+robots, which have no ROS contract.
+
+## Platform notes (macOS)
+
+- **The venv must be built on a framework Python**, not uv's standalone CPython.
+  `mjpython` (which the viewer requires, because the MuJoCo passive viewer must
+  own the main thread) needs a shared `libpython3.11.dylib` that the standalone
+  build does not ship. `run.sh setup` looks for Homebrew's `python@3.11`.
+- **`mjpython -m mujoco.viewer` does not work** — it re-executes the module and
+  drops the handle mjpython stamps onto `mujoco.viewer` at startup, failing with
+  `RuntimeError: Caught an unknown exception!`. The viewer must be launched from
+  a *script*, which is what `tools/view_scene.py` is for.
+- `MUJOCO_GL=glfw` drives both the viewer and offscreen rendering. There is no
+  EGL/OSMesa on macOS; use `MUJOCO_GL=cgl` for pure headless rendering.
+- The `mujoco-filament` extra is a Linux-x86_64-only wheel and cannot be used here.
+- `curobo` (GPU planning, used by some RB-Y1 tasks) is CUDA-only and not installed.
+- `mujoco-warp` installs but runs on CPU.
+
+`env.sh` and `run.sh` deliberately avoid `$(cd ... && pwd)`: an interactive shell
+with a `chpwd`/`precmd` hook that writes a terminal-title escape will otherwise
+have that escape captured into the path.
+
+## Assets
+
+Objects and scenes stream on demand by default. `./run.sh assets ithor`
+pre-fetches the hand-crafted iTHOR houses (48 in the `train` split), the ~2k THOR
+objects and the DROID grasp set for offline use — currently ~13 GB. It deliberately
+skips Objaverse (~129k objects) and the ProcTHOR/Holodeck scene sets (~110k houses
+each), which remain on-demand.
+
+Note that a bulk archive fetch alone is *not* enough to use a house offline:
+scenes are installed per-file, so `tools/prefetch_scenes.py` walks every house and
+pulls its meshes and grasps. `./run.sh assets ithor` does this for you.
+
+Asset installs take an exclusive lock, so a `view`/`sim` launched while a prefetch
+is running will block until it finishes rather than fail.
+
+`./run.sh assets list` shows every available source;
+`./run.sh assets mujoco/objects/objaverse/<version>` fetches one explicitly.
+
+## Robots
+
+**Built into MolmoSpaces**, usable with `run.sh sim` and the full scripted-task and
+datagen pipeline: `franka` / `droid` (Franka FR3), `rby1` (Rainbow RB-Y1),
+`yam` / `bimanual_yam` (I2RT YAM), `rum` (floating gripper).
+
+**Out-of-tree**, in `robots/`: `so101`, `myagv`, `lekiwi`, `rebot_b601`.
+
+```bash
+./run.sh view --robot so101                      # spawn it in a house, interactive
+./run.sh view --robot myagv                      # ...or any other out-of-tree robot
+python tools/render_robots.py --outdir /tmp/robots     # render them all
+./run.sh serve --controller wave                 # terminal 1
+./run.sh view --robot so101 --control 127.0.0.1:8000   # terminal 2: external control
+python robots/so101/test_attach.py               # self-test in an empty world
+```
+
+See [robots/README.md](robots/README.md) for how each was added and what its
+limitations are — every one of them has at least one.
+
+Drive the mobile robots by keyboard with a live camera feed from
+[../robot_console](../robot_console).

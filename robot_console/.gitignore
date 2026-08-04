@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Teleop recordings (--record writes here by convention)
+runs/
+
+# macOS
+.DS_Store
