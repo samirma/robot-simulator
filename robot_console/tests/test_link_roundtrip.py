@@ -17,7 +17,7 @@ import pytest
 from robot_console.bridge import RobotLink
 from robot_console.camera import LatestFrame, decode_compressed_image
 from robot_console.teleop import Command
-from robot_console.topics import TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM
+from robot_console.topics import TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_SCAN
 
 from fake_bridge import FakeBridge
 
@@ -43,12 +43,15 @@ def link(server):
 @pytest.fixture(scope="module")
 def subscriptions(server, link):
     frames = LatestFrame()
+    scans = LatestFrame()
     odoms = []
     link.subscribe_odom(odoms.append)
     link.subscribe_camera(frames.offer)
+    link.subscribe_scan(scans.offer)
     assert server.wait_for_subscription(TOPIC_ODOM)
     assert server.wait_for_subscription(TOPIC_CAMERA)
-    return frames, odoms
+    assert server.wait_for_subscription(TOPIC_SCAN)
+    return frames, odoms, scans
 
 
 def test_connects(link):
@@ -56,7 +59,7 @@ def test_connects(link):
 
 
 def test_subscribes_to_the_contract_topics(server, subscriptions):
-    assert {TOPIC_ODOM, TOPIC_CAMERA} <= server.subscriptions
+    assert {TOPIC_ODOM, TOPIC_CAMERA, TOPIC_SCAN} <= server.subscriptions
 
 
 def test_publishes_a_well_formed_twist(server, link):
@@ -95,7 +98,7 @@ def test_sustains_the_watchdog_rate(server, link):
 
 
 def test_receives_and_parses_odom(server, subscriptions):
-    _, odoms = subscriptions
+    _, odoms, _ = subscriptions
     before = len(odoms)
     server.publish(
         TOPIC_ODOM,
@@ -122,7 +125,7 @@ def test_receives_and_parses_odom(server, subscriptions):
 
 
 def test_receives_and_decodes_a_camera_frame(server, subscriptions):
-    frames, _ = subscriptions
+    frames, _, _ = subscriptions
     rng = np.random.default_rng(3)
     image = rng.integers(0, 255, (48, 64, 3), dtype=np.uint8)
     ok, buffer = cv2.imencode(".jpg", image)
@@ -145,3 +148,29 @@ def test_receives_and_decodes_a_camera_frame(server, subscriptions):
     decoded = decode_compressed_image(taken[0])
     assert decoded is not None
     assert decoded.shape == image.shape
+
+
+def test_receives_and_parses_a_laser_scan(server, subscriptions):
+    """A scan over the wire is a plain JSON float array -- rosbridge base64-encodes
+    uint8[] only, so unlike CompressedImage this must not be decoded."""
+    from synthetic import scan_message
+
+    from robot_console.slam.scan import parse_scan, scan_points
+
+    _, _, scans = subscriptions
+    message = scan_message(1.5, 2.0, 0.3)
+    server.publish(TOPIC_SCAN, message)
+
+    deadline = time.monotonic() + 5.0
+    taken = None
+    while taken is None and time.monotonic() < deadline:
+        taken = scans.take()
+        time.sleep(0.02)
+    assert taken is not None
+
+    scan = parse_scan(taken[0])
+    assert scan.count == len(message["ranges"])
+    assert scan.frame_id == "laser_frame", "the YDLidar X2's own frame"
+    assert scan.range_max == pytest.approx(12.0)
+    assert scan.valid.sum() > 300
+    assert scan_points(scan).shape[1] == 2

@@ -10,10 +10,14 @@ from __future__ import annotations
 TOPIC_CMD_VEL = "/cmd_vel"
 TOPIC_ODOM = "/odom"
 TOPIC_CAMERA = "/camera/image_raw/compressed"
+# The YDLidar X2's topic, published by ydlidar_ros_driver on the real robot and by the
+# simulator's ray-cast stand-in. This is what the SLAM tools map from.
+TOPIC_SCAN = "/scan"
 
 TYPE_TWIST = "geometry_msgs/Twist"
 TYPE_ODOM = "nav_msgs/Odometry"
 TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
+TYPE_LASER_SCAN = "sensor_msgs/LaserScan"
 
 # The simulator's bridge normalises names itself, but stock rosbridge_suite does not:
 # a relative `cmd_vel` there resolves against the node namespace and silently misses.

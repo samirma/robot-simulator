@@ -9,7 +9,7 @@ Two **independent** projects that talk over network protocols, never Python impo
 | Project | Responsibility |
 |---|---|
 | `simulator/` | Simulate robots in furnished houses with MuJoCo and MolmoSpaces. |
-| `robot_console/` | Drive a compatible simulated *or physical* robot over ROS/rosbridge. |
+| `robot_console/` | Drive, map and navigate a compatible simulated *or physical* robot over ROS/rosbridge. |
 
 `goal.md` is the specification for both and is the authority on intended behaviour.
 
@@ -75,6 +75,16 @@ spawns wrong: `HOLONOMIC_BASE_ROBOTS`, `TABLETOP_ROBOTS`, `ARM_REACH`.
 files belong in `robots/<name>/`, never there. See `robots/README.md` and
 `robots/URDF.md`.
 
+**Pass scenes by their `assets/` path, not their realpath.** Scene MJCFs reference meshes
+relatively (`../../objects/thor/...`), which resolves through the symlink tree; handing
+MuJoCo the resolved `data/mujoco/scenes/...` path makes those lookups land in a directory
+that has no `objects/` and the compile dies on a missing `.obj`. `run.sh view --scene`
+goes through `tools/resolve_scene.py`, which gets this right — the trap is only there when
+calling `tools/spawn_robot.py` directly.
+
+Multi-room houses live in `assets/scenes/procthor-10k-*`; `assets/scenes/ithor` holds
+single rooms (FloorPlan1-30 kitchens, 201+ living rooms, 301+ bedrooms, 401+ bathrooms).
+
 Out-of-tree robots load with `view` only; `sim`/`bridge` support the built-in robots
 (`franka`, `droid`, `rum`, `rby1`, `yam`, `bimanual_yam`) because the scripted planners
 need grasp libraries these lack.
@@ -102,6 +112,10 @@ need grasp libraries these lack.
 ./bin/teleop.sh --no-preflight          # skip the reachability check
 ./bin/teleop.sh --reinstall
 
+./bin/slam.sh explore  --out runs/house # autonomous frontier exploration
+./bin/slam.sh map      --out runs/house # teleop with the map building live
+./bin/slam.sh navigate --map runs/house # click a point, drive there
+
 uv pip install -e '.[dev]'
 .venv/bin/python -m pytest                       # offline; no robot, no display
 .venv/bin/python -m pytest tests/test_teleop.py::test_motion_expires_when_the_key_stops_repeating
@@ -121,6 +135,37 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `camera.py` — CompressedImage decode + `LatestFrame`, the thread hand-off
 - `bridge.py` — `RobotLink` (roslibpy) and pure `parse_odom`
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
+- `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
+  uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
+  (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan
+  matching, keyframed), `planner.py` (inflate + A*), `frontier.py`, `controller.py`
+  (path → holonomic `Command`), `mapview.py`, `app.py`, `cli.py`. Everything but the two
+  `app.py`/`mapview.py` files is pure and tested offline.
+- `explore.py`, `mapping.py`, `navigate.py` — thin entry points over `slam/cli.py`
+
+### SLAM invariants
+
+- **Scan matching is keyframed, not per-scan.** It runs after 0.15 m or 10° of motion,
+  capped by `--slam-hz`, because it shares the thread with the 20 Hz `/cmd_vel` stream.
+  `slam/app.py::_Budget` measures tick time against the publish period and warns on
+  overrun — a robot that drives fine and maps badly leaves no other trace.
+- The map is **grown, never shifted**: `OccupancyGrid.grow_to_include` only pads outward
+  and moves `origin` to match, so a pose already computed against the map stays valid.
+- Maps are saved in `map_server` format because that is what `navigation_active.launch`
+  loads. The `.npz` sidecar is what makes a reloaded map *continuable*; the yaml is the
+  authority on geometry, and a sidecar that disagrees is discarded.
+- `navigate` plans with unknown space **blocked**; `explore` plans with it **free**. The
+  same costmap for both would either forbid exploring or route a navigation run through
+  a region no sensor has seen.
+- Invalid laser returns arrive as `0.0` (real driver), `inf` (stock driver) or
+  `range_max + 1` (simulator). Always test `range_min <= r <= range_max`.
+- **The obstacle brake looks along the direction of travel, not straight ahead.** The
+  base is Mecanum; checking `+x` while strafing brakes for things it is moving away from
+  and wedges the robot anywhere something happens to sit in front of it. `nearest_obstacle`
+  takes a `bearing` for this reason.
+- A `blocked` result reroutes; only `is_stuck` blacklists the goal. Blacklisting on a
+  local obstruction burns through every frontier in the house in seconds while the robot
+  stands still.
 
 ### Invariants worth knowing before editing
 
@@ -148,9 +193,18 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 | console → robot | `/cmd_vel` | `geometry_msgs/Twist` | `linear.x`, `linear.y`, `angular.z` |
 | robot → console | `/odom` | `nav_msgs/Odometry` | pose, twist; `odom` → `base_footprint` |
 | robot → console | `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | base64 JPEG |
+| robot → console | `/scan` | `sensor_msgs/LaserScan` | `ranges`, angles, range limits |
 
 ROS1 single-slash type strings. Body frame: `+x` forward, `+y` left, `+z` CCW. The base
 is holonomic (the myAGV is Mecanum), so `linear.y` is a real strafe.
+
+`/scan` follows the **YDLidar X2** — `ydlidar_ros_driver/launch/X2.launch`: frame
+`laser_frame`, 0.1–12.0 m, 10 Hz, CCW from `-pi`, mounted at
+`base_footprint + (0.065, 0, 0.08)` per `myagv_active.launch`'s static transform. Both
+sides encode that mount offset; 65 mm is more than a map cell at 5 cm, and dropping it
+smears every wall by a cell. The driver's `inverted: true` and the transform's roll of
+π cancel, so no sign flip is needed anywhere — changing one without the other is the
+easy mistake. `ranges` is a plain JSON float array; only `uint8[]` is base64.
 
 Bridge quirks that clients must not rely on: no status handshake on connect, `id` fields
 ignored and never echoed, no loopback of published topics, `advertise`/`unadvertise` are

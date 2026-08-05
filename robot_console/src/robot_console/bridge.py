@@ -20,7 +20,9 @@ from robot_console.topics import (
     TOPIC_CAMERA,
     TOPIC_CMD_VEL,
     TOPIC_ODOM,
+    TOPIC_SCAN,
     TYPE_COMPRESSED_IMAGE,
+    TYPE_LASER_SCAN,
     TYPE_ODOM,
     TYPE_TWIST,
     normalise,
@@ -108,16 +110,19 @@ class RobotLink:
         cmd_topic: str = TOPIC_CMD_VEL,
         odom_topic: str = TOPIC_ODOM,
         camera_topic: str = TOPIC_CAMERA,
+        scan_topic: str = TOPIC_SCAN,
     ) -> None:
         self.host = host
         self.port = int(port)
         self._cmd_name = normalise(cmd_topic)
         self._odom_name = normalise(odom_topic)
         self._camera_name = normalise(camera_topic)
+        self._scan_name = normalise(scan_topic)
         self._ros: Optional[roslibpy.Ros] = None
         self._cmd: Optional[roslibpy.Topic] = None
         self._odom: Optional[roslibpy.Topic] = None
         self._camera: Optional[roslibpy.Topic] = None
+        self._scan: Optional[roslibpy.Topic] = None
         self._closed = False
 
     # ---------------------------------------------------------------- lifecycle
@@ -158,6 +163,18 @@ class RobotLink:
         self._camera = roslibpy.Topic(self._ros, self._camera_name, TYPE_COMPRESSED_IMAGE)
         self._camera.subscribe(callback)
 
+    def subscribe_scan(self, callback: Callable[[dict], None]) -> None:
+        """Hand raw `sensor_msgs/LaserScan` dicts straight to `callback`.
+
+        Raw, like the camera and unlike odom: a 360-beam scan at 10 Hz is real work to
+        turn into points, and this runs on roslibpy's reactor thread, which also carries
+        `/odom` and `/cmd_vel`. Park the dict and parse it in the main loop.
+        """
+        if self._ros is None:
+            raise RuntimeError("not connected")
+        self._scan = roslibpy.Topic(self._ros, self._scan_name, TYPE_LASER_SCAN)
+        self._scan.subscribe(callback)
+
     def publish_cmd_vel(self, command: Command) -> None:
         if self._cmd is None or not self.is_connected:
             return
@@ -180,7 +197,7 @@ class RobotLink:
             self.stop()
         except Exception:
             pass
-        for topic in (self._odom, self._camera):
+        for topic in (self._odom, self._camera, self._scan):
             try:
                 if topic is not None:
                     topic.unsubscribe()
