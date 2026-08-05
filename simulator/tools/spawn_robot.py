@@ -455,13 +455,22 @@ def laser_scan_ranges(
 ) -> np.ndarray:
     """A 2D laser scan by ray casting, counter-clockwise from `angle_min`.
 
-    The real 2023 Pi AGV carries a YDLidar; this stands in for it. `mj_ray` is the only
+    `origin` is the *laser* origin, not the base origin -- see serve_ros for the mount
+    offset. Angles are measured in the base frame, so `yaw + angle_min` is the first beam.
+
+    The real 2023 Pi AGV carries a YDLidar X2; this stands in for it. `mj_ray` is the only
     per-step ranging primitive MuJoCo offers -- rangefinder sensors would mean regenerating
     `model.xml`, and depth rendering costs an order of magnitude more per beam. Same call
     shape as tools/scene_placement.py::_standing_on.
 
-    Misses come back as `max_range + 1`: JSON has no `inf`, and every consumer already has
-    to treat anything past range_max as no-return.
+    On the beam ordering, which is easy to get backwards: the X2 is launched with
+    `inverted: true` because it is mounted upside down, and `myagv_active.launch` then
+    publishes `base_footprint -> laser_frame` with a roll of pi. Those two mirrors cancel,
+    so in the base frame the published scan runs counter-clockwise from -pi -- which is
+    what this function produces. Do not "fix" one without the other.
+
+    Misses come back as `max_range + 1`; see bridge.rosbridge_server.laser_scan for why
+    that rather than the X2's 0.0.
     """
     angles = yaw + np.linspace(angle_min, angle_max, beams, endpoint=False)
     geomid = np.zeros(1, dtype=np.int32)
@@ -562,6 +571,7 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
         scan_body = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_BODY, scan["body"]
         )
+    scan_clock = {"next": 0.0}
     depth_clock = {"next": 0.0}
     target = {"at": None}
 
@@ -612,11 +622,24 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
         seq = server.next_seq()
         server.publish(TOPIC_ODOM, odometry(seq, x, y, yaw, vx, vy, wz))
 
-        if scan is not None:
+        if scan is not None and time.monotonic() >= scan_clock["next"]:
+            # The X2 spins at a fixed 10 Hz regardless of how fast anything else runs, so
+            # /scan gets its own clock rather than riding the control rate. A client that
+            # assumes one scan per cmd_vel would break on the real robot.
+            scan_clock["next"] = time.monotonic() + scan["period"]
+            # myagv_active.launch mounts the laser 65 mm ahead of base_footprint and 80 mm
+            # up. Casting from the base centre instead would shift every reading by that
+            # much, which is a whole map cell at the 5 cm resolution gmapping uses.
             ranges = laser_scan_ranges(
                 model,
                 data,
-                np.array([x, y, scan["height"]]),
+                np.array(
+                    [
+                        x + scan["offset_x"] * np.cos(yaw),
+                        y + scan["offset_x"] * np.sin(yaw),
+                        scan["offset_z"],
+                    ]
+                ),
                 yaw,
                 scan["beams"],
                 scan["max_range"],
@@ -631,8 +654,9 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
                     -np.pi,
                     np.pi - step_angle,
                     step_angle,
+                    range_min=scan["min_range"],
                     range_max=scan["max_range"],
-                    scan_time=dt,
+                    scan_time=scan["period"],
                 ),
             )
 
@@ -726,12 +750,23 @@ def main() -> int:
         "--watchdog", type=float, default=0.5,
         help="stop the base if no cmd_vel arrives for this many seconds",
     )
+    # The lidar defaults are the YDLidar X2's, from ydlidar_ros_driver/launch/X2.launch
+    # and the base_footprint -> laser_frame transform in myagv_active.launch.
     ap.add_argument("--scan-beams", type=int, default=360, dest="scan_beams",
-                    help="rays in the simulated lidar's 360 deg sweep, published on /scan")
-    ap.add_argument("--scan-range", type=float, default=8.0, dest="scan_range",
-                    metavar="M", help="lidar maximum range in metres")
-    ap.add_argument("--scan-height", type=float, default=0.14, dest="scan_height",
-                    metavar="M", help="lidar height above the floor (myAGV deck top)")
+                    help="rays in the simulated lidar's 360 deg sweep, published on /scan. "
+                         "The X2's 3 kHz sample rate at 10 Hz gives ~300; 360 is close and "
+                         "keeps one beam per degree")
+    ap.add_argument("--scan-range", type=float, default=12.0, dest="scan_range",
+                    metavar="M", help="lidar maximum range in metres (X2: 12.0)")
+    ap.add_argument("--scan-min-range", type=float, default=0.1, dest="scan_min_range",
+                    metavar="M", help="lidar minimum range in metres (X2: 0.1)")
+    ap.add_argument("--scan-offset", type=float, nargs=2, default=[0.065, 0.08],
+                    dest="scan_offset", metavar=("X", "Z"),
+                    help="laser origin ahead of and above base_footprint, matching the "
+                         "static transform in myagv_active.launch")
+    ap.add_argument("--scan-hz", type=float, default=10.0, dest="scan_hz",
+                    help="scan rate; the X2 spins at a fixed 10 Hz independent of the "
+                         "control rate")
     ap.add_argument("--no-scan", action="store_true", dest="no_scan",
                     help="do not publish /scan")
     ap.add_argument("--depth-hz", type=float, default=5.0, dest="depth_hz",
@@ -739,6 +774,10 @@ def main() -> int:
                          "1.2 MB a frame, so this is deliberately slower than the control rate")
     ap.add_argument("--depth-size", type=int, nargs=2, default=[320, 240], dest="depth_size",
                     metavar=("W", "H"))
+    ap.add_argument("--depth-range", type=float, default=8.0, dest="depth_range",
+                    metavar="M", help="depth beyond this reads as 'no return' (0 in 16UC1). "
+                                      "Its own flag, not the lidar's: the two sensors have "
+                                      "nothing to do with each other")
     ap.add_argument("--no-depth", action="store_true", dest="no_depth",
                     help="do not publish the depth image or camera info")
     args = ap.parse_args()
@@ -905,7 +944,10 @@ def main() -> int:
             scan_cfg = {
                 "beams": args.scan_beams,
                 "max_range": args.scan_range,
-                "height": args.scan_height,
+                "min_range": args.scan_min_range,
+                "offset_x": args.scan_offset[0],
+                "offset_z": args.scan_offset[1],
+                "period": 1.0 / max(args.scan_hz, 1e-3),
                 # Rays start at the robot's own root body and must not range it.
                 "body": f"{ns}{robot_cls.robot_model_root_name()}",
             }
@@ -915,7 +957,7 @@ def main() -> int:
             depth_cfg = {
                 "size": args.depth_size,
                 "period": 1.0 / max(args.depth_hz, 1e-3),
-                "max_range": args.scan_range,
+                "max_range": args.depth_range,
                 "fovy": fovy,
             }
         controller = serve_ros(

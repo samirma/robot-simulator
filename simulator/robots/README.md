@@ -128,17 +128,44 @@ Consequences worth knowing:
 
 ### The laser is ray-cast, not a sensor in the MJCF
 
-The real 2023 Pi AGV carries a YDLidar publishing `/scan`; the model has no `<sensor>`
-element at all. Rather than regenerate `model.xml` with a ring of rangefinders,
-`tools/spawn_robot.py::laser_scan_ranges` casts `mujoco.mj_ray` in a fan from the deck
-(0.14 m, `--scan-height`) and publishes `sensor_msgs/LaserScan` over rosbridge. 360 beams
-cost about 1 ms, against a 50 ms control period.
+The real 2023 Pi AGV carries a **YDLidar X2** publishing `/scan`; the model has no
+`<sensor>` element at all. Rather than regenerate `model.xml` with a ring of
+rangefinders, `tools/spawn_robot.py::laser_scan_ranges` casts `mujoco.mj_ray` in a fan
+and publishes `sensor_msgs/LaserScan` over rosbridge. 360 beams cost about 1 ms, against
+a 100 ms scan period.
 
-Two details that are load-bearing:
+The parameters are the hardware's, not invented — from `ydlidar_ros_driver/launch/X2.launch`
+and the `base_footprint -> laser_frame` static transform in `myagv_odometry/launch/myagv_active.launch`,
+both on the [`myagv_ros_2023Pi`](https://github.com/elephantrobotics/myagv_ros/tree/myagv_ros_2023Pi)
+branch:
+
+| | value | flag |
+|---|---|---|
+| `frame_id` | `laser_frame` | — |
+| `range_min` / `range_max` | 0.1 / 12.0 m | `--scan-min-range` / `--scan-range` |
+| rate | 10 Hz, independent of `--control-hz` | `--scan-hz` |
+| mount, off `base_footprint` | x +0.065 m, z +0.08 m | `--scan-offset` |
+| beams | 360 (the X2's 3 kHz at 10 Hz is ~300) | `--scan-beams` |
+
+Details that are load-bearing:
 
 * the rays exclude the robot's own root body, or every beam returns its chassis at 11 cm;
-* a miss is sent as `range_max + 1` rather than `inf`, because JSON has no infinity.
-  Consumers already have to treat anything beyond `range_max` as no-return.
+* the fan is cast from the **laser** origin, not the base origin. 65 mm is a whole cell
+  at the 5 cm resolution `myagv_navigation`'s gmapping uses, and casting from the base
+  centre instead is invisible in a viewer and ruins a map;
+* the scan runs **counter-clockwise from `-pi`** in the base frame. The X2 is launched
+  `inverted: true` because it is mounted upside down, and the static transform then rolls
+  `laser_frame` by pi; the two mirrors cancel. Do not change one without the other.
+
+Two deliberate departures from the hardware, both of which a correct client tolerates
+anyway — it should be testing `range_min <= r <= range_max`, which is true under every
+convention:
+
+* a miss is sent as `range_max + 1` rather than `inf`, because JSON has no infinity. The
+  real driver runs `invalid_range_is_inf: false` and reports `0.0`;
+* the X2's `ignore_array: "-50,50"` blind wedge is not modelled. Its orientation cannot
+  be confirmed without the hardware, and guessing wrong would carve free space out of a
+  real obstacle.
 
 The depth image (`--depth-hz`, default 5 Hz, 320×240 uint16 millimetres) comes from a
 second `mujoco.Renderer` in depth mode; it is deliberately slower and smaller than the

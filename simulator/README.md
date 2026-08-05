@@ -94,8 +94,21 @@ the same client drives the simulated and the real myAGV:
 ./run.sh view --robot myagv --ros-port 9090
 ```
 
-Subscribes `cmd_vel` (`geometry_msgs/Twist`), publishes `odom` (`nav_msgs/Odometry`) and
-`/camera/image_raw/compressed` (`sensor_msgs/CompressedImage`).
+Subscribes `cmd_vel` (`geometry_msgs/Twist`) and publishes:
+
+| topic | type | notes |
+|---|---|---|
+| `/odom` | `nav_msgs/Odometry` | `odom` → `base_footprint`, `myAGV.cpp`'s covariances |
+| `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | base64 JPEG, `--camera-size`, `--jpeg-quality` |
+| `/scan` | `sensor_msgs/LaserScan` | ray-cast stand-in for the YDLidar X2, 10 Hz |
+| `/camera/depth/image_raw` | `sensor_msgs/Image` | `16UC1` millimetres, `--depth-hz` (5 Hz) |
+| `/camera/rgb/camera_info` | `sensor_msgs/CameraInfo` | intrinsics for the depth image |
+
+`/scan` follows the real lidar's parameters — `laser_frame`, 0.1–12.0 m, 10 Hz, mounted
+65 mm ahead of and 80 mm above `base_footprint`. `--scan-beams`, `--scan-range`,
+`--scan-min-range`, `--scan-offset`, `--scan-hz` and `--no-scan` adjust it;
+[robots/README.md](robots/README.md) records where each default comes from and the two
+places it deliberately departs from the hardware.
 
 `bridge/rosbridge_server.py` serves the rosbridge protocol in-process. ROS has no
 official macOS build, and MuJoCo needs the Homebrew framework Python while ROS on macOS

@@ -96,17 +96,30 @@ def laser_scan(
     angle_max: float,
     angle_increment: float,
     *,
-    range_min: float = 0.05,
-    range_max: float = 8.0,
-    scan_time: float = 0.05,
-    frame_id: str = "laser",
+    range_min: float = 0.1,
+    range_max: float = 12.0,
+    scan_time: float = 0.1,
+    frame_id: str = "laser_frame",
 ) -> dict:
-    """sensor_msgs/LaserScan.
+    """sensor_msgs/LaserScan, matching what the 2023 Pi AGV's lidar publishes.
+
+    The defaults are the YDLidar X2's, read off `ydlidar_ros_driver/launch/X2.launch` on
+    the `myagv_ros_2023Pi` branch: `frame_id: laser_frame`, `range_min: 0.1`,
+    `range_max: 12.0`, `frequency: 10.0` (hence the 0.1 s scan_time). A consumer written
+    against the real robot sees the same numbers here.
 
     Unlike CompressedImage, `ranges` is a float32[] and goes over the wire as a plain JSON
-    array -- rosbridge base64-encodes uint8[] only. An out-of-range return is `inf` in ROS,
-    which JSON cannot express, so misses are sent as `range_max + 1`; every consumer
-    already has to treat anything above range_max as "no return".
+    array -- rosbridge base64-encodes uint8[] only.
+
+    Two deliberate departures from the X2, both of which a client must tolerate anyway:
+
+    - Misses are sent as `range_max + 1`. In ROS they would be `inf`, which JSON cannot
+      express; the real driver runs with `invalid_range_is_inf: false` and reports `0.0`.
+      Anything outside [range_min, range_max] means "no return" under all three
+      conventions, which is the test a client should be applying.
+    - The X2 is launched with `ignore_array: "-50,50"`, a blind wedge where the chassis
+      occludes it. That is not modelled: its orientation cannot be confirmed without the
+      hardware, and guessing wrong would carve free space out of a real obstacle.
     """
     values = [float(r) for r in ranges]
     return {

@@ -5,6 +5,8 @@
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
 #   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
 #                 [--robot so101]      ...optionally with an out-of-tree robot in it
+#                 [--ros-port 9090]    ...and on the myagv_ros topics: cmd_vel in;
+#                                      odom, camera, /scan, depth + camera_info out
 #   ./run.sh sim  [--robot droid ...]  house + robot + scripted task, with viewer
 #   ./run.sh bridge [--port 8000 ...]  same as sim, driven by an external controller
 #   ./run.sh serve  [--port 8000]      run the example control server for `bridge`
