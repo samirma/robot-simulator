@@ -24,7 +24,7 @@ an external control bridge.
 | `assets/` | `MLSPACES_ASSETS_DIR` — unversioned symlink tree that MuJoCo loads from |
 | `bridge/` | external control server + the policy that talks to it |
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
-| `robots/` | out-of-tree robot definitions (so101, myagv, lekiwi, rebot_b601) |
+| `robots/` | out-of-tree robot definitions (so101, myagv, lekiwi, rebot_b601, ainex) |
 | `tools/render_robots.py` | render every loadable robot; doubles as a load test |
 
 ## Commands
@@ -86,13 +86,20 @@ useful to confirm the loop end to end).
 
 ### ROS
 
-Mobile robots can instead be presented on the topics
-[`elephantrobotics/myagv_ros`](https://github.com/elephantrobotics/myagv_ros) defines, so
-the same client drives the simulated and the real myAGV:
+Mobile robots can instead be presented on **their own manufacturer's ROS topics**, so the
+same client drives the simulated robot and the real one:
 
 ```bash
-./run.sh view --robot myagv --ros-port 9090
+./run.sh view --robot myagv --ros-port 9090   # cmd_vel / odom
+./run.sh view --robot ainex --ros-port 9090   # /walking/*, /app/*, bus servos
 ```
+
+Each robot's contract lives beside it in `robots/<name>/ros_surface.py`, because the
+contract is part of the robot definition — and the two that exist share **no topic at
+all**. What they do share (renderers, the depth stream, the ray-cast lidar, and the
+velocity-to-setpoint integration) is in `tools/spawn_robot.py`.
+
+#### myagv, lekiwi
 
 Subscribes `cmd_vel` (`geometry_msgs/Twist`) and publishes:
 
@@ -109,6 +116,29 @@ Subscribes `cmd_vel` (`geometry_msgs/Twist`) and publishes:
 `--scan-min-range`, `--scan-offset`, `--scan-hz` and `--no-scan` adjust it;
 [robots/README.md](robots/README.md) records where each default comes from and the two
 places it deliberately departs from the hardware.
+
+#### ainex
+
+The Hiwonder AiNex is a 24-DoF biped, and **its interface has no `cmd_vel`, no `odom` and
+no `tf`** — none of the three appears anywhere in `Hiwonder/ainex`. It is commanded as a
+state machine:
+
+| direction | name | type |
+|---|---|---|
+| sub | `/walking/set_param`, `/app/set_walking_param` | `ainex_interfaces/WalkingParam`, `AppWalkingParam` |
+| sub | `/app/set_action` | `std_msgs/String` — replays a recorded action group |
+| sub | `/ros_robot_controller/bus_servo/set_position` | raw servo counts by id |
+| sub | `/head_pan_controller/command`, `/head_tilt_controller/command` | `ainex_interfaces/HeadState` |
+| srv | `/walking/command` | `SetWalkingCommand` — enable, disable, start, stop, enable_control, disable_control |
+| srv | `/walking/get_param`, `/walking/is_walking`, `/walking/init_pose` | |
+| pub | `/joint_states`, `/walking/is_walking`, `/imu`, `/camera/image_raw/compressed`, `/scan` | |
+
+Walking is `/walking/command start` after setting a parameter block; grasping is
+`/app/set_action clamp_left` and friends. `--action-dir` points the action player at a
+real robot's `ActionGroups` directory, whose `.d6a` files it reads directly.
+[robots/README.md](robots/README.md) lists what is faithful and what is not — notably that
+`/scan` is a virtual lidar on a robot that carries none, and that the gait is animated
+rather than balanced.
 
 `bridge/rosbridge_server.py` serves the rosbridge protocol in-process. ROS has no
 official macOS build, and MuJoCo needs the Homebrew framework Python while ROS on macOS
@@ -164,7 +194,7 @@ is running will block until it finishes rather than fail.
 datagen pipeline: `franka` / `droid` (Franka FR3), `rby1` (Rainbow RB-Y1),
 `yam` / `bimanual_yam` (I2RT YAM), `rum` (floating gripper).
 
-**Out-of-tree**, in `robots/`: `so101`, `myagv`, `lekiwi`, `rebot_b601`.
+**Out-of-tree**, in `robots/`: `so101`, `myagv`, `lekiwi`, `rebot_b601`, `ainex`.
 
 ```bash
 ./run.sh view --robot so101                      # spawn it in a house, interactive

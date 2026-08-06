@@ -1,0 +1,5 @@
+# Both claws to their measured open angle. See ainex.py::GRIPPER_ANGLES -- the claw swings
+# through an arc, so "open" is mid-travel and not an end of the joint range.
+frames:
+  - duration: 0.4
+    servos: {l_gripper: 0.690, r_gripper: -0.520}

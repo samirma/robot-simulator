@@ -24,6 +24,7 @@ sampler or a scripted policy, so it works for robots that have no grasp library.
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 import time
 from pathlib import Path
@@ -42,12 +43,40 @@ ROBOTS = {
     "myagv": ("robots.myagv", "MyAGVRobotConfig", "MyAGVRobot"),
     "lekiwi": ("robots.lekiwi", "LeKiwiRobotConfig", "LeKiwiRobot"),
     "rebot_b601": ("robots.rebot_b601", "B601RobotConfig", "B601Robot"),
+    "ainex": ("robots.ainex", "AiNexRobotConfig", "AiNexRobot"),
+}
+
+# name -> (module, function) presenting that robot's ROS topics. Each robot owns its own
+# contract, because the contract *is* part of the robot definition: the myAGV speaks
+# `cmd_vel`/`odom` and the AiNex speaks `/walking/*` and shares not one topic with it.
+# Putting them here would make this file the place every vendor's ROS interface accretes.
+# What they share -- renderers, /scan, the velocity-to-setpoint integration -- is below.
+ROS_SURFACES = {
+    "myagv": ("robots.myagv.ros_surface", "serve_ros"),
+    "lekiwi": ("robots.myagv.ros_surface", "serve_ros"),
+    "ainex": ("robots.ainex.ros_surface", "serve_ros"),
+}
+
+# Per-robot lidar defaults, since the YDLidar X2's mount is meaningless for a robot that
+# does not carry one. Overridden by any explicit --scan-* flag.
+SCAN_DEFAULTS = {
+    # Transcribed from ydlidar_ros_driver/launch/X2.launch and the
+    # base_footprint -> laser_frame transform in myagv_active.launch.
+    "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
+    "lekiwi": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
+    # INVENTED, not transcribed: the AiNex has no lidar at all (see robots/README.md).
+    # Mid-torso on a 0.46 m robot, centred -- above the leg swing, low enough to see the
+    # edges of furniture. The range is cut to the room scale a robot walking at 0.2 m/s
+    # actually operates in.
+    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
 }
 
 # Robots whose base is three virtual holonomic joints must be grafted in at the origin
 # and then *driven* to their spawn pose, because the slide joints are world-aligned.
 # Robots on a mocap mount are placed by the attach pos/quat instead.
-HOLONOMIC_BASE_ROBOTS = {"myagv", "lekiwi"}
+# The AiNex is a biped, but its torso rides the same three virtual joints: its gait is
+# animated over a planar base rather than balanced. See robots/ainex/ainex.py.
+HOLONOMIC_BASE_ROBOTS = {"myagv", "lekiwi", "ainex"}
 
 # Arms: no base of their own, so they are bolted to a work surface rather than stood on
 # the floor. (lekiwi has an arm too, but it also has wheels -- it places as a mobile base.)
@@ -452,6 +481,7 @@ def laser_scan_ranges(
     bodyexclude: int = -1,
     angle_min: float = -np.pi,
     angle_max: float = np.pi,
+    exclude_bodies: frozenset[int] | None = None,
 ) -> np.ndarray:
     """A 2D laser scan by ray casting, counter-clockwise from `angle_min`.
 
@@ -471,228 +501,253 @@ def laser_scan_ranges(
 
     Misses come back as `max_range + 1`; see bridge.rosbridge_server.laser_scan for why
     that rather than the X2's 0.0.
+
+    `exclude_bodies` exists for legged robots. `mj_ray` takes a single `bodyexclude`,
+    which is enough when all of a robot's geometry hangs off its root body -- the myAGV's
+    chassis box does -- but a biped's thighs, shins and arms are separate bodies that a
+    torso-mounted scanner would otherwise range at a few centimetres on most sweeps. That
+    produces a completely plausible-looking /scan that silently ruins a map, which is the
+    class of failure robots/myagv/test_scan.py exists to catch. Each beam that lands on an
+    excluded body is re-cast from just past the hit; a robot's own limbs are thin along
+    any one beam, so one or two re-casts always suffice in practice.
+
+    Rejected alternative: `mj_ray`'s `geomgroup` mask, which would be cheaper and exact.
+    It couples the scan to a scene-authoring convention verified only for iTHOR, and the
+    failure mode is a wall the lidar cannot see.
     """
     angles = yaw + np.linspace(angle_min, angle_max, beams, endpoint=False)
     geomid = np.zeros(1, dtype=np.int32)
     ranges = np.full(beams, max_range + 1.0)
     origin = np.ascontiguousarray(origin, dtype=np.float64)
+    exclude = exclude_bodies or frozenset()
+    # Enough to clear a limb; unbounded re-casting would turn a bad pose into a hang.
+    max_recast = 4
+    nudge = 1e-3
 
     for i, a in enumerate(angles):
         vec = np.array([np.cos(a), np.sin(a), 0.0])
-        dist = mujoco.mj_ray(model, data, origin, vec, None, 1, bodyexclude, geomid)
-        if geomid[0] >= 0 and 0.0 <= dist <= max_range:
-            ranges[i] = dist
+        start = origin
+        travelled = 0.0
+        for _ in range(max_recast + 1):
+            dist = mujoco.mj_ray(model, data, start, vec, None, 1, bodyexclude, geomid)
+            if geomid[0] < 0 or dist < 0.0:
+                break
+            total = travelled + dist
+            if model.geom_bodyid[geomid[0]] in exclude:
+                travelled = total + nudge
+                start = np.ascontiguousarray(origin + vec * travelled, dtype=np.float64)
+                continue
+            if total <= max_range:
+                ranges[i] = total
+            break
     return ranges
 
 
-def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
-              control_hz: float, watchdog_s: float, scan: dict | None = None,
-              depth: dict | None = None):
-    """Present the robot on the myagv_ros topics and return a per-step callback.
+class SensorTopics:
+    """Topic names for the streams every ROS surface shares.
 
-    Subscribes `cmd_vel` and publishes `odom` plus a compressed camera image, so a ROS
-    client drives the simulated robot exactly as it drives the real one. See
-    bridge/rosbridge_server.py for why the protocol is served in-process.
-
-    The base integrates the commanded velocity here rather than in the client: that is
-    what `cmd_vel` means, and it keeps the client identical for real hardware.
+    A frozen-in-all-but-name record rather than a dataclass so this module keeps its
+    single dependency-free import list. Defaults are the myAGV's, which is where these
+    names came from; the AiNex overrides `scan` only in the sense that it names the same
+    topic for a lidar it does not physically have.
     """
-    sys.path.insert(0, str(SIM_ROOT))
-    from bridge.rosbridge_server import (
-        TOPIC_CAMERA,
-        TOPIC_CAMERA_INFO,
-        TOPIC_CMD_VEL,
-        TOPIC_DEPTH,
-        TOPIC_ODOM,
-        TOPIC_SCAN,
-        RosBridgeServer,
-        camera_info,
-        compressed_image,
-        image,
-        laser_scan,
-        odometry,
-    )
 
-    if "base" not in view.move_group_ids():
-        raise SystemExit(
-            "--ros-port needs a robot with a mobile base (myagv, lekiwi); "
-            f"this one has move groups {view.move_group_ids()}"
-        )
-    base = view.get_move_group("base")
+    __slots__ = ("camera", "scan", "depth", "camera_info")
 
-    renderer = None
-    if camera is not None:
-        width, height = camera_size
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        renderer = mujoco.Renderer(model, height, width)
+    def __init__(self, camera: str, scan: str, depth: str, camera_info: str) -> None:
+        self.camera, self.scan = camera, scan
+        self.depth, self.camera_info = depth, camera_info
 
-    # A second renderer, because a MuJoCo renderer is either in depth mode or not, and
-    # toggling it per frame would fight the colour stream sharing the same object.
-    depth_renderer = None
-    if depth is not None and camera is not None:
-        dw, dh = depth["size"]
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, dw)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, dh)
-        depth_renderer = mujoco.Renderer(model, dh, dw)
-        depth_renderer.enable_depth_rendering()
 
-    server = RosBridgeServer(port=port)
-    command = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "at": 0.0}
+class PlanarSetpoint:
+    """Integrate a body-frame velocity into a world-frame position setpoint.
 
-    def on_cmd_vel(msg: dict) -> None:
-        linear = msg.get("linear") or {}
-        angular = msg.get("angular") or {}
-        command["vx"] = float(linear.get("x", 0.0))
-        command["vy"] = float(linear.get("y", 0.0))
-        command["wz"] = float(angular.get("z", 0.0))
-        command["at"] = time.monotonic()
+    Lifted out of the myAGV's ROS surface so that a second surface cannot re-introduce
+    the bug it fixes. These are position actuators, and re-deriving the setpoint from the
+    measured pose every step left it only ever one increment (14 mm at 0.28 m/s) ahead of
+    a robot that was chasing it -- the base settled at roughly a **sixth** of the
+    commanded speed. Integrating the target instead makes a commanded velocity mean what
+    it says.
 
-    server.on(TOPIC_CMD_VEL, on_cmd_vel)
-    server.start()
-    published = [TOPIC_ODOM]
-    if renderer is not None:
-        published.append(TOPIC_CAMERA)
-    if scan is not None:
-        published.append(TOPIC_SCAN)
-    if depth_renderer is not None:
-        published += [TOPIC_DEPTH, TOPIC_CAMERA_INFO]
-    print(
-        f"ROS topics on ws://0.0.0.0:{port} "
-        f"(sub {TOPIC_CMD_VEL}; pub {', '.join(published)})",
-        file=sys.stderr,
-    )
+    The lead clamp keeps the property that made the old version tempting: a robot held up
+    by a wall stops advancing its target rather than winding up a lunge it releases the
+    moment it comes free. Yaw gets the tighter lead because it is the axis with the least
+    inertia (~0.05 kg m2 on the myAGV), and a setpoint far ahead of the robot yanks it
+    round hard enough to shove the base sideways through the position servo -- which
+    reads as translation during a pure rotation.
+    """
 
-    dt = 1.0 / control_hz
-    # The lidar rides on the robot's root body, which is also the one body its own rays
-    # must ignore -- the myAGV's only collision geom is the chassis box on that body.
-    scan_body = -1
-    if scan is not None:
-        scan_body = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, scan["body"]
-        )
-    scan_clock = {"next": 0.0}
-    depth_clock = {"next": 0.0}
-    target = {"at": None}
+    def __init__(self, lead_m: float = TARGET_LEAD_M, lead_rad: float = TARGET_LEAD_RAD):
+        self._target: np.ndarray | None = None
+        self._lead_m = lead_m
+        self._lead_rad = lead_rad
 
-    def step(data):
-        if data is None:
-            if renderer is not None:
-                renderer.close()
-            if depth_renderer is not None:
-                depth_renderer.close()
-            server.stop()
-            return
+    def reset(self) -> None:
+        self._target = None
 
-        # Watchdog. myAGVSub.cpp latches the last cmd_vel and keeps executing it, so a
-        # client that disconnects mid-command would leave the robot driving; stopping is
-        # the behaviour we want even though it is not what the firmware does.
-        vx, vy, wz = command["vx"], command["vy"], command["wz"]
-        if command["at"] and time.monotonic() - command["at"] > watchdog_s:
-            vx = vy = wz = 0.0
+    def step(self, x: float, y: float, yaw: float,
+             vx: float, vy: float, wz: float, dt: float) -> np.ndarray:
+        """Advance the setpoint by one control period and return [x, y, yaw]."""
+        if self._target is None:
+            self._target = np.array([x, y, yaw])
 
-        pose = base.pose
-        x, y = float(pose[0, 3]), float(pose[1, 3])
-        yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
-
-        # Body-frame velocity -> world-frame target. The target is carried forward from
-        # step to step rather than re-derived from the measured pose each time: these are
-        # position actuators, so re-basing on the measurement left the setpoint only ever
-        # one increment (14 mm at 0.28 m/s) ahead of the robot, and the servo settled at
-        # roughly a sixth of the commanded speed. Integrating the target instead makes
-        # cmd_vel mean what it says.
         c, s = np.cos(yaw), np.sin(yaw)
-        if target["at"] is None:
-            target["at"] = np.array([x, y, yaw])
-        target["at"] = target["at"] + np.array(
+        self._target = self._target + np.array(
             [(vx * c - vy * s) * dt, (vx * s + vy * c) * dt, wz * dt]
         )
-        # ...but never more than a short lead ahead of where the robot actually is, so a
-        # robot held up by a wall stops advancing instead of winding up a setpoint it will
-        # lunge to the moment it comes free.
-        lag = target["at"][:2] - np.array([x, y])
+
+        lag = self._target[:2] - np.array([x, y])
         dist = float(np.linalg.norm(lag))
-        if dist > TARGET_LEAD_M:
-            target["at"][:2] = np.array([x, y]) + lag / dist * TARGET_LEAD_M
-        yaw_lag = float(np.arctan2(np.sin(target["at"][2] - yaw), np.cos(target["at"][2] - yaw)))
-        if abs(yaw_lag) > TARGET_LEAD_RAD:
-            target["at"][2] = yaw + np.sign(yaw_lag) * TARGET_LEAD_RAD
-        base.ctrl = target["at"]
+        if dist > self._lead_m:
+            self._target[:2] = np.array([x, y]) + lag / dist * self._lead_m
+        yaw_lag = float(
+            np.arctan2(np.sin(self._target[2] - yaw), np.cos(self._target[2] - yaw))
+        )
+        if abs(yaw_lag) > self._lead_rad:
+            self._target[2] = yaw + np.sign(yaw_lag) * self._lead_rad
+        return self._target
 
-        seq = server.next_seq()
-        server.publish(TOPIC_ODOM, odometry(seq, x, y, yaw, vx, vy, wz))
 
-        if scan is not None and time.monotonic() >= scan_clock["next"]:
-            # The X2 spins at a fixed 10 Hz regardless of how fast anything else runs, so
-            # /scan gets its own clock rather than riding the control rate. A client that
-            # assumes one scan per cmd_vel would break on the real robot.
-            scan_clock["next"] = time.monotonic() + scan["period"]
-            # myagv_active.launch mounts the laser 65 mm ahead of base_footprint and 80 mm
-            # up. Casting from the base centre instead would shift every reading by that
-            # much, which is a whole map cell at the 5 cm resolution gmapping uses.
+class SensorStreams:
+    """Camera, depth, camera_info and /scan -- shared by every robot's ROS surface.
+
+    Everything here is a property of the scene and of where the sensors are mounted, not
+    of the robot's control contract, which is why two robots with entirely disjoint topic
+    sets still share it. The topic *names* are passed in, since those are the per-robot
+    part.
+    """
+
+    def __init__(self, server, model, camera: str | None, camera_size,
+                 jpeg_quality: int, scan: dict | None, depth: dict | None,
+                 topics: SensorTopics) -> None:
+        self._server = server
+        self._model = model
+        self._camera = camera
+        self._jpeg_quality = jpeg_quality
+        self._scan = scan
+        self._depth = depth
+        self._topics = topics
+        self._scan_next = 0.0
+        self._depth_next = 0.0
+
+        self._renderer = None
+        if camera is not None:
+            width, height = camera_size
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+            model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+            self._renderer = mujoco.Renderer(model, height, width)
+
+        # A second renderer, because a MuJoCo renderer is either in depth mode or not and
+        # toggling it per frame would fight the colour stream sharing the same object.
+        self._depth_renderer = None
+        if depth is not None and camera is not None:
+            dw, dh = depth["size"]
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth, dw)
+            model.vis.global_.offheight = max(model.vis.global_.offheight, dh)
+            self._depth_renderer = mujoco.Renderer(model, dh, dw)
+            self._depth_renderer.enable_depth_rendering()
+
+        # The rays must not range the robot itself. One `bodyexclude` covers a robot whose
+        # geometry hangs off a single root body; `exclude_bodies` covers the rest.
+        self._scan_body = -1
+        self._scan_exclude: frozenset[int] = frozenset()
+        if scan is not None:
+            self._scan_body = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, scan["body"]
+            )
+            self._scan_exclude = frozenset(scan.get("exclude_bodies") or ())
+
+    @property
+    def published(self) -> list[str]:
+        out = []
+        if self._renderer is not None:
+            out.append(self._topics.camera)
+        if self._scan is not None:
+            out.append(self._topics.scan)
+        if self._depth_renderer is not None:
+            out += [self._topics.depth, self._topics.camera_info]
+        return out
+
+    def publish(self, data, seq: int, x: float, y: float, yaw: float) -> None:
+        from bridge.rosbridge_server import (
+            camera_info,
+            compressed_image,
+            image,
+            laser_scan,
+        )
+
+        now = time.monotonic()
+
+        if self._scan is not None and now >= self._scan_next:
+            # A real lidar spins at a fixed rate regardless of how fast anything else
+            # runs, so /scan gets its own clock rather than riding the control rate. A
+            # client that assumed one scan per command would break on real hardware.
+            self._scan_next = now + self._scan["period"]
+            scan = self._scan
             ranges = laser_scan_ranges(
-                model,
+                self._model,
                 data,
-                np.array(
-                    [
-                        x + scan["offset_x"] * np.cos(yaw),
-                        y + scan["offset_x"] * np.sin(yaw),
-                        scan["offset_z"],
-                    ]
-                ),
+                np.array([
+                    x + scan["offset_x"] * np.cos(yaw),
+                    y + scan["offset_x"] * np.sin(yaw),
+                    scan["offset_z"],
+                ]),
                 yaw,
                 scan["beams"],
                 scan["max_range"],
-                bodyexclude=scan_body,
+                bodyexclude=self._scan_body,
+                exclude_bodies=self._scan_exclude,
             )
             step_angle = 2 * np.pi / scan["beams"]
-            server.publish(
-                TOPIC_SCAN,
+            self._server.publish(
+                self._topics.scan,
                 laser_scan(
-                    seq,
-                    ranges,
-                    -np.pi,
-                    np.pi - step_angle,
-                    step_angle,
-                    range_min=scan["min_range"],
-                    range_max=scan["max_range"],
+                    seq, ranges, -np.pi, np.pi - step_angle, step_angle,
+                    range_min=scan["min_range"], range_max=scan["max_range"],
                     scan_time=scan["period"],
                 ),
             )
 
-        if depth_renderer is not None and time.monotonic() >= depth_clock["next"]:
-            depth_clock["next"] = time.monotonic() + depth["period"]
-            depth_renderer.update_scene(data, camera=camera)
+        if self._depth_renderer is not None and now >= self._depth_next:
+            self._depth_next = now + self._depth["period"]
+            self._depth_renderer.update_scene(data, camera=self._camera)
             # Metres to millimetres in uint16: 640x480 float32 is 1.2 MB a frame, which a
             # JSON websocket will not carry at any useful rate. Anything beyond the sensor
             # range becomes 0, which is what "no return" means in a 16UC1 depth image.
-            metres = depth_renderer.render()
+            metres = self._depth_renderer.render()
             mm = np.where(
-                np.isfinite(metres) & (metres < depth["max_range"]),
-                metres * 1000.0,
-                0.0,
+                np.isfinite(metres) & (metres < self._depth["max_range"]),
+                metres * 1000.0, 0.0,
             ).astype(np.uint16)
-            dw, dh = depth["size"]
-            server.publish(TOPIC_DEPTH, image(seq, mm.tobytes(), "16UC1", dw, dh))
-            server.publish(TOPIC_CAMERA_INFO, camera_info(seq, dw, dh, depth["fovy"]))
+            dw, dh = self._depth["size"]
+            self._server.publish(self._topics.depth, image(seq, mm.tobytes(), "16UC1", dw, dh))
+            self._server.publish(
+                self._topics.camera_info, camera_info(seq, dw, dh, self._depth["fovy"])
+            )
 
-        if renderer is not None:
-            renderer.update_scene(data, camera=camera)
-            frame = renderer.render()
+        if self._renderer is not None:
+            self._renderer.update_scene(data, camera=self._camera)
+            frame = self._renderer.render()
             try:
                 import cv2
 
                 ok, buf = cv2.imencode(
                     ".jpg",
                     cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                    [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
+                    [cv2.IMWRITE_JPEG_QUALITY, self._jpeg_quality],
                 )
                 if ok:
-                    server.publish(TOPIC_CAMERA, compressed_image(seq, buf.tobytes()))
+                    self._server.publish(
+                        self._topics.camera, compressed_image(seq, buf.tobytes())
+                    )
             except Exception as exc:
                 print(f"camera encode failed: {exc}", file=sys.stderr)
 
-    return step
+    def close(self) -> None:
+        if self._renderer is not None:
+            self._renderer.close()
+        if self._depth_renderer is not None:
+            self._depth_renderer.close()
 
 
 def main() -> int:
@@ -756,19 +811,26 @@ def main() -> int:
                     help="rays in the simulated lidar's 360 deg sweep, published on /scan. "
                          "The X2's 3 kHz sample rate at 10 Hz gives ~300; 360 is close and "
                          "keeps one beam per degree")
-    ap.add_argument("--scan-range", type=float, default=12.0, dest="scan_range",
-                    metavar="M", help="lidar maximum range in metres (X2: 12.0)")
-    ap.add_argument("--scan-min-range", type=float, default=0.1, dest="scan_min_range",
-                    metavar="M", help="lidar minimum range in metres (X2: 0.1)")
-    ap.add_argument("--scan-offset", type=float, nargs=2, default=[0.065, 0.08],
+    # These three default per robot (SCAN_DEFAULTS): the X2's figures are the myAGV's
+    # hardware, and the AiNex has no lidar for them to describe.
+    ap.add_argument("--scan-range", type=float, default=None, dest="scan_range",
+                    metavar="M", help="lidar maximum range in metres (myagv/X2: 12.0)")
+    ap.add_argument("--scan-min-range", type=float, default=None, dest="scan_min_range",
+                    metavar="M", help="lidar minimum range in metres (myagv/X2: 0.1)")
+    ap.add_argument("--scan-offset", type=float, nargs=2, default=None,
                     dest="scan_offset", metavar=("X", "Z"),
-                    help="laser origin ahead of and above base_footprint, matching the "
-                         "static transform in myagv_active.launch")
+                    help="laser origin ahead of and above the base; defaults to the "
+                         "static transform in myagv_active.launch for the myAGV")
     ap.add_argument("--scan-hz", type=float, default=10.0, dest="scan_hz",
                     help="scan rate; the X2 spins at a fixed 10 Hz independent of the "
                          "control rate")
     ap.add_argument("--no-scan", action="store_true", dest="no_scan",
                     help="do not publish /scan")
+    ap.add_argument("--action-dir", default=None, dest="action_dir", metavar="DIR",
+                    help="AiNex only: directory of action groups for /app/set_action. "
+                         "Reads Hiwonder's .d6a format, so this can point straight at a "
+                         "real robot's ActionGroups directory; defaults to the small "
+                         "in-tree set in robots/ainex/actions")
     ap.add_argument("--depth-hz", type=float, default=5.0, dest="depth_hz",
                     help="rate for the depth image; 640x480 float over a websocket is "
                          "1.2 MB a frame, so this is deliberately slower than the control rate")
@@ -852,12 +914,17 @@ def main() -> int:
     view = config.robot_view_factory(data, config.robot_namespace)
     apply_init_qpos(view, config)
 
-    if args.gripper != "rest" and "gripper" in view.move_group_ids():
-        gripper = view.get_move_group("gripper")
-        gripper.set_gripper_ctrl_open(args.gripper == "open")
-        # ctrl alone only shows up once the sim runs; the joint has to be moved too for a
-        # still render to show anything.
-        gripper.joint_pos = gripper.ctrl
+    # Any number of grippers: the AiNex has two ("left_gripper", "right_gripper") where
+    # every other robot here has exactly one called "gripper".
+    if args.gripper != "rest":
+        for group_id in view.move_group_ids():
+            if not group_id.endswith("gripper"):
+                continue
+            gripper = view.get_move_group(group_id)
+            gripper.set_gripper_ctrl_open(args.gripper == "open")
+            # ctrl alone only shows up once the sim runs; the joint has to be moved too
+            # for a still render to show anything.
+            gripper.joint_pos = gripper.ctrl
 
     if holonomic:
         base_pose = np.eye(4)
@@ -939,17 +1006,34 @@ def main() -> int:
         raise SystemExit("use either --ros-port or --control, not both")
 
     if args.ros_port:
+        if args.robot not in ROS_SURFACES:
+            raise SystemExit(
+                f"--ros-port: no ROS surface for {args.robot!r}; "
+                f"available: {', '.join(sorted(ROS_SURFACES))}"
+            )
+        module_name, func_name = ROS_SURFACES[args.robot]
+        serve_ros = getattr(importlib.import_module(module_name), func_name)
+
         scan_cfg = None
         if not args.no_scan:
+            defaults = SCAN_DEFAULTS.get(args.robot, SCAN_DEFAULTS["myagv"])
+            offset = args.scan_offset or defaults["offset"]
             scan_cfg = {
                 "beams": args.scan_beams,
-                "max_range": args.scan_range,
-                "min_range": args.scan_min_range,
-                "offset_x": args.scan_offset[0],
-                "offset_z": args.scan_offset[1],
+                "max_range": args.scan_range or defaults["max_range"],
+                "min_range": args.scan_min_range or defaults["min_range"],
+                "offset_x": offset[0],
+                "offset_z": offset[1],
                 "period": 1.0 / max(args.scan_hz, 1e-3),
                 # Rays start at the robot's own root body and must not range it.
                 "body": f"{ns}{robot_cls.robot_model_root_name()}",
+                # A legged robot's limbs are separate bodies, and mj_ray takes only one
+                # bodyexclude. Without this a torso-mounted scanner ranges its own thigh.
+                "exclude_bodies": frozenset(
+                    i for i in range(model.nbody)
+                    if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
+                    and n.startswith(ns)
+                ),
             }
         depth_cfg = None
         if not args.no_depth and camera is not None:
@@ -963,6 +1047,7 @@ def main() -> int:
         controller = serve_ros(
             args.ros_port, view, model, camera, args.camera_size, args.jpeg_quality,
             args.control_hz, args.watchdog, scan=scan_cfg, depth=depth_cfg,
+            extra={"action_dir": args.action_dir},
         )
     elif args.control:
         controller = connect_control(

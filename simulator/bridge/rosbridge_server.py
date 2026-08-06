@@ -1,8 +1,14 @@
 #!/usr/bin/env python
 """A minimal rosbridge v2.0 server, so the simulator can be driven as a ROS robot.
 
-The simulator presents the same topics `elephantrobotics/myagv_ros` does, which lets
-one teleop client drive either the simulated or the real myAGV without changing a line:
+Each robot brings its own topic set, because each vendor's ROS interface is its own
+thing: `robots/myagv/ros_surface.py` presents what `elephantrobotics/myagv_ros` does, and
+`robots/ainex/ros_surface.py` what `Hiwonder/ainex` does. The two have **no topic in
+common** -- the AiNex has no `/cmd_vel` and no `/odom` at all. The constants below are the
+myAGV's, kept here because they were here first and several tools import them; a robot
+whose contract differs declares its own (see `robots/ainex/topics.py`).
+
+The myAGV contract, as an example of the shape:
 
     teleop -> robot    cmd_vel                          geometry_msgs/Twist
     robot  -> teleop   odom                             nav_msgs/Odometry
@@ -14,8 +20,10 @@ would mean migrating the whole molmospaces stack. rosbridge is plain JSON over a
 websocket, so serving it in-process costs far less than that migration — and the real
 robot runs the stock `ros-noetic-rosbridge-suite`, so the client is identical.
 
-Implemented ops: advertise, unadvertise, publish, subscribe, unsubscribe. No services,
-no TF, no params — anything else gets a `status` warning rather than an error.
+Implemented ops: advertise, unadvertise, publish, subscribe, unsubscribe, call_service.
+`advertise_service` and `unadvertise_service` are accepted as no-ops — nothing here
+consumes a client-provided service. Still no TF and no params; anything else gets a
+`status` warning rather than an error.
 
 Standalone, for protocol testing without the simulator:
 
@@ -239,6 +247,8 @@ class RosBridgeServer:
         self._clients: dict[Any, set[str]] = {}
         # topic -> callback invoked when a client publishes to it
         self._handlers: dict[str, Callable[[dict], None]] = {}
+        # service name -> callback returning the response's `values`
+        self._services: dict[str, Callable[[dict], dict]] = {}
         self._seq = 0
 
     # -- lifecycle ---------------------------------------------------------------
@@ -246,6 +256,19 @@ class RosBridgeServer:
     def on(self, topic: str, callback: Callable[[dict], None]) -> None:
         """Register a handler for messages clients publish to `topic`."""
         self._handlers[normalise(topic)] = callback
+
+    def service(self, name: str, callback: Callable[[dict], dict]) -> None:
+        """Register a handler for `call_service` on `name`.
+
+        The handler receives the request's `args` and returns the response's `values`.
+        Raising is reported as `result: false` with the message in `values`, which is what
+        rosbridge does for a service that threw -- a caller is blocked on the response, so
+        it needs an answer either way.
+
+        Like `on`, the handler runs on the calling client's reader thread rather than on
+        the simulation thread, so it may only touch small shared state; never MjData.
+        """
+        self._services[normalise(name)] = callback
 
     def start(self) -> None:
         self._server = ws_server.serve(
@@ -347,11 +370,54 @@ class RosBridgeServer:
                 log.exception("handler for %s failed", topic)
                 self._status(websocket, "error", f"handler for {topic} failed: {exc}")
 
+        elif op == "call_service":
+            # rosbridge names the field `service`, not `topic`. And unlike `publish` --
+            # where this bridge deliberately ignores ids -- the reply MUST echo `id`: the
+            # caller is blocked waiting on it, so dropping it hangs the client rather than
+            # failing it, which is a much worse failure to debug.
+            name = normalise(message.get("service", ""))
+            call_id = message.get("id")
+            handler = self._services.get(name)
+            if handler is None:
+                self._service_response(
+                    websocket, name, call_id, False, {"message": f"no service {name}"}
+                )
+                return
+            try:
+                values = handler(message.get("args") or {}) or {}
+            except Exception as exc:
+                log.exception("service %s failed", name)
+                self._service_response(
+                    websocket, name, call_id, False, {"message": str(exc)}
+                )
+                return
+            self._service_response(websocket, name, call_id, True, values)
+
+        elif op in ("advertise_service", "unadvertise_service"):
+            # A client offering a service of its own. Nothing here consumes one, and
+            # roslibpy advertises eagerly, so this is a no-op like `advertise`.
+            log.info(
+                "client advertised service %s (%s)",
+                message.get("service"),
+                message.get("type"),
+            )
+
         elif op in ("set_level", "status"):
             pass  # client-side logging controls; nothing to do
 
         else:
             self._status(websocket, "warning", f"unsupported op {op!r}")
+
+    def _service_response(self, websocket, service: str, call_id, result: bool,
+                          values: dict) -> None:
+        frame = {"op": "service_response", "service": service,
+                 "values": values, "result": result}
+        if call_id is not None:
+            frame["id"] = call_id
+        try:
+            websocket.send(json.dumps(frame))
+        except Exception:
+            pass
 
     def _status(self, websocket, level: str, msg: str) -> None:
         try:

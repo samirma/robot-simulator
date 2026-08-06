@@ -1,0 +1,9 @@
+# Nod, with a small look up first. Head only, so it composes with whatever the arms
+# happen to be doing.
+frames:
+  - duration: 0.4
+    servos: {head_tilt: 0.35}
+  - duration: 0.4
+    servos: {head_tilt: -0.20}
+  - duration: 0.4
+    servos: {head_tilt: 0.0}

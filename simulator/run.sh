@@ -4,9 +4,13 @@
 #   ./run.sh setup                     install venv + package, fetch default assets
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
 #   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
-#                 [--robot so101]      ...optionally with an out-of-tree robot in it
-#                 [--ros-port 9090]    ...and on the myagv_ros topics: cmd_vel in;
-#                                      odom, camera, /scan, depth + camera_info out
+#                 [--robot so101]      ...optionally with an out-of-tree robot in it:
+#                                      so101 | myagv | lekiwi | rebot_b601 | ainex
+#                 [--ros-port 9090]    ...and on that robot's own vendor ROS topics
+#                                      (myagv, lekiwi and ainex only):
+#                                      myagv/lekiwi -> cmd_vel in, odom + camera + /scan
+#                                      out; ainex -> /walking/* and /app/* in, joint_states
+#                                      + camera + /scan out (it has no cmd_vel at all)
 #   ./run.sh sim  [--robot droid ...]  house + robot + scripted task, with viewer
 #   ./run.sh bridge [--port 8000 ...]  same as sim, driven by an external controller
 #   ./run.sh serve  [--port 8000]      run the example control server for `bridge`
@@ -221,7 +225,8 @@ case "$cmd" in
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
     echo
     echo "sim/bridge flags are forwarded to run_pipeline.py:"
-    echo "  --robot   franka|droid|rum|rby1|yam|bimanual_yam"
+    echo "  --robot   franka|droid|rum|rby1|yam|bimanual_yam   (built-ins only;"
+    echo "            out-of-tree robots load with 'view')"
     echo "  --task_type pick|open|close|pick_and_place|packing|nav_to_obj"
     echo "  --scene_dataset ithor|procthor-10k|procthor-objaverse"
     echo "  --house_inds N   --seed N   --samples_per_house N"
