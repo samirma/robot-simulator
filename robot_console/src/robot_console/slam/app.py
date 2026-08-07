@@ -38,9 +38,10 @@ from robot_console.slam import frontier as frontier_mod
 from robot_console.slam import mapio
 from robot_console.slam.cli import SlamOptions
 from robot_console.slam.controller import PathFollower, scale_to_limits
+from robot_console.slam.explorer import SWEEP_RATE, Explorer
 from robot_console.slam.grid import OccupancyGrid
 from robot_console.slam.mapview import MapView, placeholder as map_placeholder
-from robot_console.slam.planner import CostMap, costmap_for, plan
+from robot_console.slam.planner import CLEARANCE_M, CostMap, costmap_for, plan
 from robot_console.slam.pose import PoseTracker
 from robot_console.slam.scan import LaserScan, parse_scan, scan_points, transform_points
 from robot_console.teleop import Action, Command, TeleopState, action_for_key
@@ -54,9 +55,6 @@ KEY_PLAN = ord("p")
 # How far the robot may be from the last planned-against pose before the path is stale.
 REPLAN_DISTANCE_M = 0.6
 REPLAN_SECONDS = 3.0
-
-# How long "no frontiers left" has to hold before exploration calls itself done.
-EXPLORED_CONFIRM_SECONDS = 2.0
 
 # Map redraw rate. Well below the loop rate on purpose -- see the render call.
 MAP_RENDER_HZ = 15.0
@@ -351,12 +349,18 @@ class _Session:
         self.cost: Optional[CostMap] = None
         self.frontiers: List = []
         self.trail: List[np.ndarray] = []
-        self.blacklist: List[np.ndarray] = []
         self.finished: Optional[str] = None
+        # `--robot-radius` used to be parsed, clamped and then dropped on the floor: every
+        # costmap was built from the module default regardless of what was asked for.
+        self._plan_radius = float(options.robot_radius) + CLEARANCE_M
+        self.explorer = Explorer(
+            min_cells=options.frontier_min_cells,
+            distance_bias=options.distance_bias,
+            stall_seconds=options.stall_timeout,
+        )
         self.last_odom_logged = -1
         self.scans = 0
         self.integrated = 0
-        self._empty_since: Optional[float] = None
         self.activity = "idle"
         self.note = ""
         self._planned_at: Optional[np.ndarray] = None
@@ -442,45 +446,58 @@ class _Session:
             # exploring a house and exiting immediately.
             return Command()
         pose = self.tracker.pose
-        if self._needs_replan(pose, now):
-            self._replan_frontier(pose, now)
-        if self.path is None:
-            # One empty result is not a conclusion: the robot may be standing on the only
-            # frontier, or a replan may have raced a map update. Insist that it stays true.
-            if self._empty_since is None:
-                self._empty_since = now
-                return Command()
-            if now - self._empty_since >= EXPLORED_CONFIRM_SECONDS:
-                self.finished = "explored"
+
+        if self.explorer.sweeping(now):
+            self.activity = "explore"
+            return Command(wz=SWEEP_RATE)
+
+        if self.explorer.needs_replan(pose, now):
+            self.cost = costmap_for(
+                self.grid, self.cost, allow_unknown=True, radius=self._plan_radius
+            )
+            self._apply(self.explorer.replan(self.grid, self.cost, pose, now))
+        if self.finished is not None:
             return Command()
-        self._empty_since = None
+        if self.path is None:
+            return Command(wz=SWEEP_RATE) if self.explorer.sweeping(now) else Command()
 
         result = self.follower.step(pose, self.path, scan=self.scan, now=now)
         if result.arrived:
             self.note = "reached frontier"
+            self.explorer.on_arrived(now)
             self.path = None
-            self._planned_when = 0.0
             return Command()
         if self.follower.is_stuck(now):
-            # Real failure: time has passed and the robot got no closer. Blacklist the
-            # goal so the next choice is a different one.
-            if self.goal is not None:
-                self.blacklist.append(self.goal.copy())
+            # Real failure: time has passed and the robot got no closer.
+            strikes = self.explorer.on_stuck(now)
             self.path = None
-            self._planned_when = 0.0
-            self.note = "stuck, trying elsewhere"
+            self.goal = None
+            self.note = f"stuck, trying elsewhere (strike {strikes})"
+            self.follower.reset()
             return Command()
         if result.should_replan:
             # Only a local obstruction. It says nothing about whether the frontier is a
-            # good goal, so the goal is kept and just the route is redrawn -- blacklisting
-            # here burns through every frontier in the house in a couple of seconds while
-            # the robot never moves.
+            # good goal, so the goal is kept and just the route is redrawn -- suppressing
+            # it here burns through every frontier in the house in a couple of seconds
+            # while the robot never moves.
+            self.explorer.on_blocked(now)
             self.path = None
-            self._planned_when = 0.0
             self.note = "blocked, rerouting"
             return Command()
         self.activity = "explore"
         return scale_to_limits(result.command, self.options.max_speed)
+
+    def _apply(self, decision) -> None:
+        """Fold an `Explorer.Decision` into the session's own state."""
+        self.path = decision.path
+        self.goal = decision.goal
+        self.frontiers = decision.frontiers
+        if decision.note:
+            self.note = decision.note
+        if decision.finished:
+            self.finished = decision.finished
+        if decision.path is not None:
+            self._reset_follower_for(decision.goal)
 
     def _navigate(self, now: float) -> Command:
         pose = self.tracker.pose
@@ -513,13 +530,14 @@ class _Session:
 
     def _set_goal(self, point: np.ndarray, now: float) -> None:
         self.goal = np.asarray(point, dtype=np.float64)[:2]
-        self.blacklist.clear()
         self._replan_goal(self.tracker.pose, now, announce=True)
 
     def _replan_goal(self, pose, now: float, *, announce: bool = False) -> None:
         if self.goal is None:
             return
-        self.cost = costmap_for(self.grid, self.cost, allow_unknown=False)
+        self.cost = costmap_for(
+            self.grid, self.cost, allow_unknown=False, radius=self._plan_radius
+        )
         self.path = plan(self.cost, pose[:2], self.goal)
         self._planned_at = np.asarray(pose[:2]).copy()
         self._planned_when = now
@@ -529,25 +547,6 @@ class _Session:
             self.goal = None
         elif announce:
             self.note = f"driving to ({self.goal[0]:.2f}, {self.goal[1]:.2f})"
-
-    def _replan_frontier(self, pose, now: float) -> None:
-        # Unknown space is drivable here: exploring means going where nothing has been
-        # seen, and blocking it would make every frontier unreachable by construction.
-        self.cost = costmap_for(self.grid, self.cost, allow_unknown=True)
-        target, path = frontier_mod.choose_goal(
-            self.grid, self.cost, pose, blacklist=self.blacklist
-        )
-        self.frontiers = frontier_mod.find_frontiers(self.grid)
-        self._planned_at = np.asarray(pose[:2]).copy()
-        self._planned_when = now
-        if target is None:
-            self.path = None
-            self.goal = None
-            self.follower.reset()
-            return
-        self._reset_follower_for(target.centroid)
-        self.goal = target.centroid
-        self.path = path
 
     def _reset_follower_for(self, goal) -> None:
         """Clear the stuck watchdog only when the goal genuinely changed.

@@ -15,6 +15,8 @@ from typing import Optional, Sequence
 
 from robot_console import __version__
 from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT, split_host_port
+from robot_console.slam.explorer import STALL_SECONDS
+from robot_console.slam.frontier import DISTANCE_BIAS_M, MIN_FRONTIER_CELLS
 from robot_console.slam.grid import DEFAULT_RESOLUTION
 from robot_console.slam.planner import ROBOT_RADIUS_M
 from robot_console.teleop import HOLD_TIMEOUT, SPEED_DEFAULT, SPEED_MAX, SPEED_MIN
@@ -58,6 +60,9 @@ class SlamOptions:
     camera_window: bool = True
     no_match: bool = False
     timeout: Optional[float] = None
+    stall_timeout: float = STALL_SECONDS
+    frontier_min_cells: int = MIN_FRONTIER_CELLS
+    distance_bias: float = DISTANCE_BIAS_M
     autosave: float = 30.0
     record: Optional[Path] = None
 
@@ -128,6 +133,17 @@ def build_parser(mode: Optional[str] = None) -> argparse.ArgumentParser:
                              "simulator, where odom is ground truth; not on hardware")
     parser.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
                         help="stop after this long (explore defaults to unlimited)")
+    parser.add_argument("--stall-timeout", type=float, default=STALL_SECONDS,
+                        metavar="SECONDS",
+                        help="give up after this long with no new ground mapped "
+                             "(explore; 0 disables)")
+    parser.add_argument("--frontier-min-cells", type=int, default=MIN_FRONTIER_CELLS,
+                        metavar="CELLS",
+                        help="smallest frontier worth driving to; explore relaxes this "
+                             "before it gives up")
+    parser.add_argument("--distance-bias", type=float, default=DISTANCE_BIAS_M,
+                        metavar="METRES",
+                        help="how much a big far frontier is worth against a small near one")
     parser.add_argument("--autosave", type=float, default=30.0, metavar="SECONDS",
                         help="save the map this often while running; 0 disables")
 
@@ -179,6 +195,9 @@ def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None)
         camera_window=args.camera_window,
         no_match=args.no_match,
         timeout=float(args.timeout) if args.timeout else None,
+        stall_timeout=float(args.stall_timeout) if args.stall_timeout > 0 else float("inf"),
+        frontier_min_cells=max(1, int(args.frontier_min_cells)),
+        distance_bias=max(0.01, float(args.distance_bias)),
         autosave=max(0.0, float(args.autosave)),
     )
 

@@ -94,3 +94,55 @@ def test_help_mentions_the_keys():
     text = build_parser().format_help()
     for fragment in ("W/S", "A/D", "Q/E", "Space", "Esc", "Hold a key", "focus"):
         assert fragment in text
+
+
+# ------------------------------------------------------------------ robot profiles
+
+
+def test_robots_imports_without_the_missing_ainex_link():
+    """`robots.py` was committed without `ainex_link.py`; that must not break the myAGV.
+
+    A module-scope import of the missing module made `robot_console.robots` -- and every
+    camera-mapping entry point behind it -- unimportable, for a robot none of them use.
+    """
+    from robot_console.robots import DEFAULT_ROBOT, PROFILES
+
+    assert DEFAULT_ROBOT == "myagv"
+    assert sorted(PROFILES) == ["ainex", "myagv"]
+    assert PROFILES["myagv"].name == "myagv"
+    assert PROFILES["myagv"].has_odom
+
+
+def test_the_ainex_profile_resolves_with_its_link_present():
+    """`ainex_link.py` was reconstructed from the simulator's transcription of the
+    vendor stack; the lazy-profile machinery must now hand out a working profile
+    (and would raise a clear RuntimeError again if the module ever went missing)."""
+    from robot_console.robots import PROFILES
+
+    profile = PROFILES["ainex"]
+    assert profile.name == "ainex"
+    assert not profile.has_odom, "the AiNex publishes no odometry; vslam dead-reckons"
+    assert profile.speed_max < PROFILES["myagv"].speed_max, "a biped walks, not rolls"
+
+
+def test_walking_params_invert_the_gait_model():
+    """v = 4A/T, so A = vT/4 -- and the envelope caps, never raises."""
+    from robot_console.ainex_link import PERIOD_S, STRIDE_FACTOR, walking_params
+    from robot_console.teleop import Command
+
+    wp = walking_params(Command(vx=0.1))
+    assert wp["x_move_amplitude"] == pytest.approx(0.1 * PERIOD_S / STRIDE_FACTOR)
+    assert wp["period_time"] == pytest.approx(PERIOD_S * 1000.0), "milliseconds on the wire"
+
+    flat_out = walking_params(Command(vx=99.0))
+    assert flat_out["x_move_amplitude"] == pytest.approx(0.02), "clamped to the envelope"
+
+    turn = walking_params(Command(wz=-99.0))
+    assert turn["angle_move_amplitude"] == pytest.approx(-10.0), "degrees, vendor units"
+
+
+def test_an_unknown_robot_is_a_keyerror_naming_the_known_ones():
+    from robot_console.robots import PROFILES
+
+    with pytest.raises(KeyError, match="myagv"):
+        PROFILES["forklift"]

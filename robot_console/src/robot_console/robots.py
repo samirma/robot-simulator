@@ -15,11 +15,23 @@ behaves byte-for-byte as it always has.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, Sequence, Tuple
+from typing import Any, Callable, Mapping, Sequence, Tuple
 
-from robot_console import ainex_link, hud, preflight, teleop
-from robot_console.ainex_link import AiNexLink
+from robot_console import hud, preflight, teleop
 from robot_console.bridge import RobotLink
+from robot_console.topics import TOPIC_CAMERA_INFO, TOPIC_DEPTH
+
+# `ainex_link` is imported lazily, inside `profile()`, and that is not a style choice.
+# The AiNex half of this file was committed without the module it depends on, so a
+# module-scope import makes `robot_console.robots` unimportable -- and with it every
+# camera-mapping entry point, none of which need the AiNex at all. Resolving a profile
+# only when it is asked for keeps the myAGV working and turns the gap into an honest
+# error at the point of use.
+_MISSING_AINEX = (
+    "AiNex support is incomplete: robot_console/ainex_link.py is missing from this "
+    "checkout (commit cdba576 added robots.py without it). The myAGV is unaffected -- "
+    "use --robot myagv."
+)
 
 # The AiNex walks; it does not roll. Same keys, honest words.
 AINEX_HINTS: Sequence[Tuple[str, str]] = (
@@ -59,23 +71,30 @@ class RobotProfile:
 
 
 def _make_myagv_link(options: Any) -> RobotLink:
+    # camera_info/depth are read with getattr because teleop's Options has no such fields
+    # and never will -- only the camera-driven mapper asks for them. Defaulting here keeps
+    # one link class serving both callers instead of two nearly-identical ones.
     return RobotLink(
         options.host,
         options.port,
         cmd_topic=options.cmd_topic,
         odom_topic=options.odom_topic,
         camera_topic=options.camera_topic,
+        camera_info_topic=getattr(options, "camera_info_topic", TOPIC_CAMERA_INFO),
+        depth_topic=getattr(options, "depth_topic", TOPIC_DEPTH),
     )
 
 
-def _make_ainex_link(options: Any) -> AiNexLink:
+def _make_ainex_link(options: Any):
     # --cmd-topic and --odom-topic are myAGV knobs; the AiNex has no equivalent of
     # either, so only the camera override applies.
+    from robot_console.ainex_link import AiNexLink  # noqa: F401  (see _MISSING_AINEX)
+
     return AiNexLink(options.host, options.port, camera_topic=options.camera_topic)
 
 
-PROFILES = {
-    "myagv": RobotProfile(
+def _myagv_profile() -> "RobotProfile":
+    return RobotProfile(
         name="myagv",
         make_link=_make_myagv_link,
         speed_min=teleop.SPEED_MIN,
@@ -88,8 +107,15 @@ PROFILES = {
         hints=hud.HINTS,
         startup_instructions=preflight.startup_instructions,
         speed_limit_label="the real myAGV limit",
-    ),
-    "ainex": RobotProfile(
+    )
+
+
+def _ainex_profile() -> "RobotProfile":
+    try:
+        from robot_console import ainex_link
+    except ImportError as exc:  # pragma: no cover - depends on a missing file
+        raise RuntimeError(_MISSING_AINEX) from exc
+    return RobotProfile(
         name="ainex",
         make_link=_make_ainex_link,
         speed_min=ainex_link.SPEED_MIN,
@@ -100,9 +126,48 @@ PROFILES = {
         turn_max=ainex_link.TURN_MAX,
         has_odom=False,
         hints=AINEX_HINTS,
-        startup_instructions=preflight.startup_instructions_ainex,
+        startup_instructions=getattr(
+            preflight, "startup_instructions_ainex", preflight.startup_instructions
+        ),
         speed_limit_label="the AiNex gait envelope",
-    ),
-}
+    )
+
+
+_FACTORIES = {"myagv": _myagv_profile, "ainex": _ainex_profile}
 
 DEFAULT_ROBOT = "myagv"
+
+
+def profile(name: str) -> "RobotProfile":
+    """The `RobotProfile` for `name`, built on demand.
+
+    Raises `RuntimeError` with something actionable when a robot's support is present in
+    this file but its link module is not, rather than an ImportError at interpreter start
+    that takes unrelated robots down with it.
+    """
+    try:
+        factory = _FACTORIES[name]
+    except KeyError:
+        raise KeyError(f"unknown robot {name!r}; known: {', '.join(sorted(_FACTORIES))}") from None
+    return factory()
+
+
+class _Profiles(Mapping):
+    """`PROFILES` as it always was -- a mapping of name to profile -- but resolved lazily.
+
+    Kept as a Mapping because callers legitimately do `sorted(PROFILES)` for `--robot`'s
+    choices and `PROFILES[args.robot]` to pick one. Listing the robots must not require
+    being able to construct every one of them.
+    """
+
+    def __getitem__(self, name: str) -> "RobotProfile":
+        return profile(name)
+
+    def __iter__(self):
+        return iter(_FACTORIES)
+
+    def __len__(self) -> int:
+        return len(_FACTORIES)
+
+
+PROFILES = _Profiles()

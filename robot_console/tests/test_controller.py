@@ -130,6 +130,28 @@ def test_stuck_detection_fires_only_after_a_stall():
     assert follower.is_stuck(now=11.0)
 
 
+def test_a_permanently_braked_robot_is_eventually_stuck():
+    """The regression for a hang, not an inefficiency.
+
+    The brake returns early, and it used to return before the progress watchdog was
+    armed. `_best_at` stayed None, so `is_stuck` answered False forever; the explorer
+    rerouted to the same goal every tick, never blacklisted it, and never finished.
+    """
+    follower = PathFollower(speed=0.2)
+    scan = scan_with_obstacle_ahead(STOP_M * 0.5)
+    for t in range(0, 12):
+        result = follower.step((0.0, 0.0, 0.0), STRAIGHT, scan=scan, now=float(t))
+        assert result.blocked
+    assert follower.is_stuck(now=11.0)
+
+
+def test_a_braked_robot_is_not_stuck_straight_away():
+    follower = PathFollower(speed=0.2)
+    scan = scan_with_obstacle_ahead(STOP_M * 0.5)
+    follower.step((0.0, 0.0, 0.0), STRAIGHT, scan=scan, now=0.0)
+    assert not follower.is_stuck(now=1.0)
+
+
 def test_reset_clears_the_stuck_history():
     follower = PathFollower(speed=0.2)
     for t in range(0, 12):

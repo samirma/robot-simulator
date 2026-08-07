@@ -11,8 +11,6 @@ Two **independent** projects that talk over network protocols, never Python impo
 | `simulator/` | Simulate robots in furnished houses with MuJoCo and MolmoSpaces. |
 | `robot_console/` | Drive, map and navigate a compatible simulated *or physical* robot over ROS/rosbridge. |
 
-`goal.md` is the specification for both and is the authority on intended behaviour.
-
 The separation is a hard constraint, not a preference: **`robot_console` must stay
 installable and runnable on a machine with no MuJoCo, no MolmoSpaces, and no
 `simulator/` checkout.** Its only runtime dependencies are `numpy`, `opencv-python`, and
@@ -139,8 +137,9 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
   uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
   (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan
   matching, keyframed), `planner.py` (inflate + A*), `frontier.py`, `controller.py`
-  (path → holonomic `Command`), `mapview.py`, `app.py`, `cli.py`. Everything but the two
-  `app.py`/`mapview.py` files is pure and tested offline.
+  (path → holonomic `Command`), `explorer.py` (the give-up ladder and goal commitment),
+  `mapview.py`, `app.py`, `cli.py`. Everything but the two `app.py`/`mapview.py` files is
+  pure and tested offline — including a whole exploration run, via `tests/simworld.py`.
 - `explore.py`, `mapping.py`, `navigate.py` — thin entry points over `slam/cli.py`
 
 ### SLAM invariants
@@ -166,6 +165,30 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - A `blocked` result reroutes; only `is_stuck` blacklists the goal. Blacklisting on a
   local obstruction burns through every frontier in the house in seconds while the robot
   stands still.
+- **Frontiers are ranked geodesically, off one `planner.distance_field`.** Straight-line
+  distance puts a frontier a metre away through a wall ahead of one three metres down an
+  open corridor. One wavefront scores every cluster at once, so there is no shortlist to
+  cap — and a capped shortlist is what used to make "the map is finished" and "my best
+  twelve guesses all failed" the same answer.
+- **The goal is a cell near the cluster, never the centroid.** A cluster that wraps a
+  corner has its centroid inside the wall it wraps, so the biggest frontiers were the
+  likeliest to be discarded as unreachable. It is picked as the cheapest reachable cell
+  in a standoff-wide collar, which also stops the base driving its own centre onto the
+  boundary and into its own obstacle brake.
+- **The progress watchdog must be armed before any early return in `PathFollower.step`.**
+  The obstacle brake returns early; when it did so before arming, `is_stuck` answered
+  `False` forever and a braked robot re-routed to the same goal every tick, never
+  blacklisting it and never finishing. That is a hang, not an inefficiency.
+- **Running out of frontiers is not the same as being finished.** `slam/explorer.py`
+  walks a ladder — relax `min_cells`, flush the suppression list once, enclosed sensor
+  holes, one sweep — and only then says `explored`. Each rung re-scores the *same*
+  wavefront, which is what makes trying again affordable.
+- Suppression decays and counts strikes; the radius is 0.25 m because a doorway is about
+  0.8 m and a wider one sealed a room's only entrance from a single bad approach.
+- **Frontier detection filters unknown regions thinner than a cell or two.** A mapped
+  wall is a dashed line — grazing beams skip cells — so the slivers between the dashes
+  look like frontiers and can never be resolved. Left in, they are what a run spends its
+  endgame driving at. Same reason `unknown_pockets` ignores anything touching a wall.
 
 ### Invariants worth knowing before editing
 

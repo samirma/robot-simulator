@@ -119,13 +119,19 @@ class PathFollower:
         heading = delta / distance
         travel = math.atan2(-heading[0] * s + heading[1] * c, heading[0] * c + heading[1] * s)
 
-        blocked = False
         if scan is not None:
             clearance = nearest_obstacle(scan, BRAKE_HALF_ANGLE, bearing=travel)
             if clearance <= STOP_M:
                 # Something is in the way that the map did not know about. Stop and let the
                 # caller replan; creeping forward on a stale path is how a base wedges
                 # itself under a chair.
+                #
+                # The watchdog is armed *before* returning, and that is the whole point: a
+                # robot held still by the brake is exactly what "not making progress"
+                # means. Returning early without it left `_best_at` at None, so `is_stuck`
+                # answered False forever, the explorer rerouted to the same goal every
+                # tick, and the run neither blacklisted the goal nor ever finished.
+                self._track_progress(remaining, now)
                 return FollowResult(
                     Command(), blocked=True, target=target, remaining=remaining
                 )
@@ -151,7 +157,6 @@ class PathFollower:
         self._track_progress(remaining, now)
         return FollowResult(
             Command(vx=vx, vy=vy, wz=wz),
-            blocked=blocked,
             target=target,
             remaining=remaining,
         )

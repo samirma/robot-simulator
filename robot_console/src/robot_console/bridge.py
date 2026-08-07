@@ -18,10 +18,14 @@ import roslibpy
 from robot_console.teleop import Command
 from robot_console.topics import (
     TOPIC_CAMERA,
+    TOPIC_CAMERA_INFO,
     TOPIC_CMD_VEL,
+    TOPIC_DEPTH,
     TOPIC_ODOM,
     TOPIC_SCAN,
+    TYPE_CAMERA_INFO,
     TYPE_COMPRESSED_IMAGE,
+    TYPE_IMAGE,
     TYPE_LASER_SCAN,
     TYPE_ODOM,
     TYPE_TWIST,
@@ -111,6 +115,8 @@ class RobotLink:
         odom_topic: str = TOPIC_ODOM,
         camera_topic: str = TOPIC_CAMERA,
         scan_topic: str = TOPIC_SCAN,
+        camera_info_topic: str = TOPIC_CAMERA_INFO,
+        depth_topic: str = TOPIC_DEPTH,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -118,11 +124,15 @@ class RobotLink:
         self._odom_name = normalise(odom_topic)
         self._camera_name = normalise(camera_topic)
         self._scan_name = normalise(scan_topic)
+        self._camera_info_name = normalise(camera_info_topic)
+        self._depth_name = normalise(depth_topic)
         self._ros: Optional[roslibpy.Ros] = None
         self._cmd: Optional[roslibpy.Topic] = None
         self._odom: Optional[roslibpy.Topic] = None
         self._camera: Optional[roslibpy.Topic] = None
         self._scan: Optional[roslibpy.Topic] = None
+        self._camera_info: Optional[roslibpy.Topic] = None
+        self._depth: Optional[roslibpy.Topic] = None
         self._closed = False
 
     # ---------------------------------------------------------------- lifecycle
@@ -175,6 +185,32 @@ class RobotLink:
         self._scan = roslibpy.Topic(self._ros, self._scan_name, TYPE_LASER_SCAN)
         self._scan.subscribe(callback)
 
+    def subscribe_camera_info(self, callback: Callable[[dict], None]) -> None:
+        """Hand raw `sensor_msgs/CameraInfo` dicts to `callback`.
+
+        Latched in spirit but not in fact: the intrinsics arrive whenever the publisher
+        feels like it, and a camera-driven mapper cannot turn a pixel into a metre until
+        they do, so it waits for the first one rather than assuming a lens.
+        """
+        if self._ros is None:
+            raise RuntimeError("not connected")
+        self._camera_info = roslibpy.Topic(
+            self._ros, self._camera_info_name, TYPE_CAMERA_INFO
+        )
+        self._camera_info.subscribe(callback)
+
+    def subscribe_depth(self, callback: Callable[[dict], None]) -> None:
+        """Hand raw `sensor_msgs/Image` depth dicts to `callback`.
+
+        Raw for the same reason as the camera and the scan: a 320x240 16-bit frame is
+        150 kB of base64 to decode, and this runs on roslibpy's reactor thread, which is
+        also carrying `/odom` and `/cmd_vel`. Park it; decode it in the main loop.
+        """
+        if self._ros is None:
+            raise RuntimeError("not connected")
+        self._depth = roslibpy.Topic(self._ros, self._depth_name, TYPE_IMAGE)
+        self._depth.subscribe(callback)
+
     def publish_cmd_vel(self, command: Command) -> None:
         if self._cmd is None or not self.is_connected:
             return
@@ -197,7 +233,9 @@ class RobotLink:
             self.stop()
         except Exception:
             pass
-        for topic in (self._odom, self._camera, self._scan):
+        for topic in (
+            self._odom, self._camera, self._scan, self._camera_info, self._depth,
+        ):
             try:
                 if topic is not None:
                     topic.unsubscribe()

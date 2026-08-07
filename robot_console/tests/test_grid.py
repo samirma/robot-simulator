@@ -8,6 +8,8 @@ from synthetic import mapped_room, raycast, wall_distance
 
 from robot_console.slam.grid import (
     FREE,
+    L_FREE,
+    L_OCCUPIED,
     OCCUPIED,
     UNKNOWN,
     OccupancyGrid,
@@ -150,3 +152,43 @@ def test_revision_advances_on_change():
     before = grid.revision
     grid.integrate((0.1, 0.1, 0.0), np.array([[0.3, 0.1]]))
     assert grid.revision > before
+
+
+# ------------------------------------------------------------------ evidence weights
+
+
+def test_the_default_weights_are_the_module_constants():
+    """Whatever else changes, the lidar's tuning must not move."""
+    grid = OccupancyGrid(0.05)
+    assert grid.l_free == L_FREE
+    assert grid.l_occupied == L_OCCUPIED
+
+
+def test_heavier_free_evidence_clears_a_cell_in_fewer_passes():
+    """The camera path needs this: a ~60 degree wedge revisits a cell far less often.
+
+    At the lidar's weight most of a keyframe's sweep never leaves UNKNOWN, which reads
+    downstream as thousands of phantom frontiers rather than as open floor.
+    """
+    beam = np.array([[1.0, 0.0]])
+    lidar = OccupancyGrid(0.05, width=64, height=64, origin=(-1.0, -1.0))
+    camera = OccupancyGrid(0.05, width=64, height=64, origin=(-1.0, -1.0), l_free=-0.75)
+    for _ in range(2):
+        lidar.integrate((0.0, 0.0, 0.0), beam)
+        camera.integrate((0.0, 0.0, 0.0), beam)
+    probe = np.array([[0.5, 0.0]])
+    assert camera.is_free(probe[0]), "two heavier passes should clear it"
+    assert not lidar.is_free(probe[0]), "two light passes should not"
+
+
+def test_heavier_occupied_evidence_marks_a_wall_sooner():
+    grid = OccupancyGrid(0.05, width=64, height=64, origin=(-1.0, -1.0), l_occupied=2.0)
+    grid.integrate((0.0, 0.0, 0.0), np.array([[1.0, 0.0]]))
+    cell = grid.world_to_cell(np.array([[1.0, 0.0]]))[0]
+    assert grid.classify()[cell[1], cell[0]] == OCCUPIED
+
+
+def test_a_copy_keeps_the_weights_it_was_built_with():
+    grid = OccupancyGrid(0.05, l_free=-0.75, l_occupied=0.5)
+    clone = grid.copy()
+    assert (clone.l_free, clone.l_occupied) == (-0.75, 0.5)

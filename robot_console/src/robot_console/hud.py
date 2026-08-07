@@ -60,8 +60,15 @@ def draw_overlay(
     speed: Optional[float] = None,
     speed_max: Optional[float] = None,
     moving: bool = False,
+    hints: Optional[Sequence[Tuple[str, str]]] = None,
 ) -> np.ndarray:
-    """Return a copy of `frame` with the key hints drawn on it."""
+    """Return a copy of `frame` with the key hints drawn on it.
+
+    `hints` overrides the myAGV wording. The keys are the same for every robot but what
+    they do is not -- one rolls and one walks -- and a legend that says "forward" to
+    something that sidesteps is worse than no legend.
+    """
+    hints = HINTS if hints is None else hints
     canvas = frame.copy()
     height, width = canvas.shape[:2]
 
@@ -76,12 +83,12 @@ def draw_overlay(
     key_column = 12
     text_column = key_column + int(74 * (scale / 0.5))
     panel_width = min(width - 24, int(250 * (scale / 0.5)))
-    panel_height = line_height * (len(HINTS) + 1) + 18
+    panel_height = line_height * (len(hints) + 1) + 18
 
     _panel(canvas, 12, 12, panel_width, panel_height)
 
     y = 12 + line_height
-    for key, description in HINTS:
+    for key, description in hints:
         cv2.putText(canvas, key, (12 + key_column, y), FONT, scale, (120, 220, 255), 1, cv2.LINE_AA)
         cv2.putText(canvas, description, (12 + text_column, y), FONT, scale, (235, 235, 235), 1, cv2.LINE_AA)
         y += line_height

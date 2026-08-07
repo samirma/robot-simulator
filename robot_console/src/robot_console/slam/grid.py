@@ -55,6 +55,8 @@ class OccupancyGrid:
         height: int = 256,
         origin: Sequence[float] = (0.0, 0.0),
         data: Optional[np.ndarray] = None,
+        l_free: float = L_FREE,
+        l_occupied: float = L_OCCUPIED,
     ) -> None:
         if resolution <= 0:
             raise ValueError("resolution must be positive")
@@ -64,6 +66,13 @@ class OccupancyGrid:
         else:
             self.data = np.zeros((int(height), int(width)), dtype=np.float32)
         self.origin = np.asarray(origin, dtype=np.float64).copy()
+        # Per-instance because how much one observation is worth is a property of the
+        # *sensor*, not of the map. A 360-beam lidar sweeps a cell from many angles, so
+        # the defaults above are tuned for evidence arriving often; a camera-derived scan
+        # covers a ~60 degree wedge and revisits a cell far less, so it needs each look to
+        # count for more or most of the map never leaves UNKNOWN.
+        self.l_free = float(l_free)
+        self.l_occupied = float(l_occupied)
         # Bumped on every change so consumers (the likelihood field, the renderer) know
         # when a cached derivative is stale without diffing the array.
         self.revision = 0
@@ -164,14 +173,14 @@ class OccupancyGrid:
             fc = free_cells[inside]
             # `np.add.at` rather than fancy-index `+=`: a cell crossed by several beams
             # must accumulate every one of them, and plain indexing keeps only the last.
-            np.add.at(self.data, (fc[:, 1], fc[:, 0]), L_FREE)
+            np.add.at(self.data, (fc[:, 1], fc[:, 0]), self.l_free)
 
         inside = self.contains(ends)
         ec = ends[inside]
         if ec.size:
             # Plain L_OCCUPIED, not a correction: `_bresenham_rays` already excluded each
             # ray's own endpoint from the free pass.
-            np.add.at(self.data, (ec[:, 1], ec[:, 0]), L_OCCUPIED)
+            np.add.at(self.data, (ec[:, 1], ec[:, 0]), self.l_occupied)
 
         np.clip(self.data, -L_CLAMP, L_CLAMP, out=self.data)
         self.revision += 1
@@ -199,7 +208,10 @@ class OccupancyGrid:
         return bool(self.data[cell[1], cell[0]] <= FREE_LOGODDS)
 
     def copy(self) -> "OccupancyGrid":
-        clone = OccupancyGrid(self.resolution, origin=self.origin, data=self.data.copy())
+        clone = OccupancyGrid(
+            self.resolution, origin=self.origin, data=self.data.copy(),
+            l_free=self.l_free, l_occupied=self.l_occupied,
+        )
         clone.revision = self.revision
         return clone
 

@@ -276,9 +276,17 @@ robot that drives fine and maps badly otherwise leaves nothing in the log to exp
 - **SLAM has no loop closure.** Local consistency is maintained by scan matching, but
   drift accumulated around a long loop is not corrected when the robot returns to a
   place it has already mapped. Big spaces will not close perfectly.
-- Exploration reports "explored" once no frontier is reachable, which is not always the
-  same as none remaining -- frontiers behind furniture the base cannot fit past are
-  blacklisted and left. In the synthetic two-room test it mapped 44 of ~46 m².
+- Exploration reports "explored" only after a ladder of increasingly desperate retries
+  has come back empty -- a lower frontier threshold, one flush of the suppression list,
+  the enclosed sensor holes, and a last look round. `tests/test_exploration_coverage.py`
+  drives a four-room floorplan offline and asserts it maps every reachable square metre
+  and leaves no frontier behind; on that house it does, including the room whose only
+  entrance is a 0.7 m doorway. A run that genuinely gets nowhere ends as `stalled`
+  (`--stall-timeout`) rather than pretending to be finished.
+- Unknown space behind a wall is not chased. Walls are recorded a cell thick and grazing
+  beams skip cells, so a mapped wall has unknown slivers along it that look exactly like
+  frontiers; they are filtered by thickness, because they can never be resolved. A real
+  opening thinner than two cells at the working resolution would be filtered with them.
 - The map grows without bound, and there is no downsampling. At 5 cm a large house is
   fine; a warehouse would want a coarser `--resolution`.
 - `mp4v` is the recording codec; `avc1` is missing from many `opencv-python` builds. If
