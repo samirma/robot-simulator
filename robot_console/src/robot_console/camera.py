@@ -26,12 +26,14 @@ def is_jpeg(fmt: object) -> bool:
     return isinstance(fmt, str) and "jpeg" in fmt.lower()
 
 
-def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
-    """Decode a CompressedImage message to a BGR ndarray, or None.
+def compressed_image_bytes(msg: Mapping) -> Optional[bytes]:
+    """The raw JPEG bytes of a CompressedImage message, or None.
 
-    Returns None rather than raising for every malformed input: one corrupt frame in a
-    20 Hz stream must not take the teleop loop -- and therefore the watchdog feed --
-    down with it.
+    Split out from `decode_compressed_image` because a consumer that is going to send the
+    image somewhere else wants the bytes it already has, not a decoded array it would have
+    to re-encode. The visual mapper puts these straight on the wire to its engine, and a
+    decode/re-encode round trip there would cost time and a generation of JPEG artefacts
+    for nothing.
     """
     if not isinstance(msg, Mapping):
         return None
@@ -44,12 +46,60 @@ def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
         raw = base64.b64decode(data, validate=False)
     except (binascii.Error, ValueError):
         return None
-    if not raw:
+    return raw or None
+
+
+def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
+    """Decode a CompressedImage message to a BGR ndarray, or None.
+
+    Returns None rather than raising for every malformed input: one corrupt frame in a
+    20 Hz stream must not take the teleop loop -- and therefore the watchdog feed --
+    down with it.
+    """
+    raw = compressed_image_bytes(msg)
+    if raw is None:
         return None
     frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
     if frame is None or frame.size == 0:
         return None
     return frame
+
+
+def decode_depth_image(msg: Mapping) -> Optional[np.ndarray]:
+    """Decode a `sensor_msgs/Image` depth frame to `(H, W)` float32 **metres**, or None.
+
+    The wire format is `16UC1` millimetres, which is what both the simulator and a real
+    RealSense publish. Two conversions matter and neither is optional:
+
+    - millimetres to metres, because everything downstream of this is metric;
+    - **0 means "no return", not "zero metres"** -- a surface out of range, too dark, or
+      too shiny. Left as 0 it becomes a wall pressed against the lens, which is exactly
+      the reading that would make a mapper brake or carve a hole in its map. NaN is the
+      value the engine protocol expects for "no data here".
+    """
+    if not isinstance(msg, Mapping):
+        return None
+    if msg.get("encoding") != "16UC1":
+        return None
+    data = msg.get("data")
+    if not isinstance(data, str) or not data:
+        return None
+    try:
+        height, width = int(msg["height"]), int(msg["width"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if height <= 0 or width <= 0:
+        return None
+    try:
+        raw = base64.b64decode(data, validate=False)
+    except (binascii.Error, ValueError):
+        return None
+    if len(raw) < height * width * 2:
+        return None
+    mm = np.frombuffer(raw, dtype=np.uint16, count=height * width).reshape(height, width)
+    metres = mm.astype(np.float32) / 1000.0
+    metres[mm == 0] = np.nan
+    return metres
 
 
 def header_seq(msg: Mapping) -> Optional[int]:

@@ -1,6 +1,6 @@
 # robot_console
 
-Keyboard teleoperation with a live camera feed for a [myAGV], over rosbridge.
+Keyboard teleoperation, mapping and navigation for a [myAGV], over rosbridge.
 
 The console is an independent project. Its only dependencies are `numpy`,
 `opencv-python`, and `roslibpy`, so it installs and runs on a machine that has never
@@ -32,6 +32,40 @@ just a launcher. It re-installs by itself when `pyproject.toml` changes, and
 
 Before connecting it checks that something is listening, and prints how to start each
 kind of robot when nothing is. `--no-preflight` skips the check.
+
+## Mapping and navigation
+
+`bin/slam.sh` is the same launcher with three modes, all built on `/scan`:
+
+```bash
+./bin/slam.sh explore  --out runs/house    # drive around by itself until the map is done
+./bin/slam.sh map      --out runs/house    # drive by hand, map builds live
+./bin/slam.sh navigate --map runs/house    # click a point, the robot drives there
+```
+
+- **explore** picks the boundary between mapped and unmapped space, plans to it, drives
+  there, and repeats. It terminates because a map with no frontiers left is finished by
+  definition. `Space` pauses; any drive key takes over.
+- **map** is `teleop.sh` with a map window beside the camera. `M` saves without quitting.
+- **navigate** loads a saved map and localizes into it by scan matching, so the robot
+  does not have to be put back where the mapping run started. Left click sets a goal,
+  right click or `Space` cancels. The live map keeps updating -- furniture that has moved
+  gets planned around -- but the saved map is only overwritten if you press `M`.
+
+Maps are written as a **`map_server` pgm/yaml pair**, which is what
+`myagv_navigation`'s `navigation_active.launch` loads, so a map built in the simulator
+can be handed to the real robot and back. A `map.npz` sidecar carries the raw log-odds
+so a map can be reloaded and *kept building* rather than only navigated.
+
+This is the same sensor choice Elephant Robotics makes -- `myagv_slam_laser.launch` runs
+gmapping on the YDLidar X2 -- reimplemented in numpy and OpenCV so it needs no ROS. It
+is occupancy-grid SLAM with correlative scan matching: **no loop closure, no global
+optimiser**. On an identical trajectory with 6 % odometry drift, scan matching roughly
+halves the map smear (median wall offset 0.28 m -> 0.13 m, p90 0.68 m -> 0.28 m) at
+about 2 ms per keyframe. It does not correct global drift after a long loop.
+
+`--no-match` trusts `/odom` and skips matching, which is reasonable against the
+simulator, where odometry is ground truth, and is not on hardware.
 
 ## Controls
 
@@ -115,6 +149,18 @@ line straight back to `/cmd_vel` without translating anything. `frame.header_seq
 | console -> robot | `/cmd_vel` | `geometry_msgs/Twist` | `linear.x`, `linear.y`, `angular.z` |
 | robot -> console | `/odom` | `nav_msgs/Odometry` | pose, twist; `odom` -> `base_footprint` |
 | robot -> console | `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | base64 JPEG |
+| robot -> console | `/scan` | `sensor_msgs/LaserScan` | `ranges`, angles, `range_min`/`range_max` |
+
+`/scan` is the YDLidar X2's topic: `laser_frame`, 0.1-12.0 m, 10 Hz, mounted 65 mm ahead
+of and 80 mm above `base_footprint` (`myagv_active.launch`'s static transform, which
+`slam/scan.py` applies -- 65 mm is more than a whole map cell). Only the teleop console
+ignores it; the SLAM commands need it.
+
+Unlike `CompressedImage`, `ranges` arrives as a **plain JSON float array** -- rosbridge
+base64-encodes `uint8[]` only. A no-return is reported three different ways depending on
+who is publishing: `0.0` by the real driver (`invalid_range_is_inf: false`), `inf` by a
+stock one, and `range_max + 1` by the simulator, which cannot express infinity in JSON.
+The console tests `range_min <= r <= range_max`, which rejects all three and `NaN` too.
 
 Body frame, ROS convention: `+x` forward, `+y` left, `+z` counter-clockwise. The base is
 holonomic -- the myAGV is Mecanum-wheeled, so `linear.y` is a real strafe, not a
@@ -132,12 +178,15 @@ real `image_transport` republisher sends `"rgb8; jpeg compressed bgr8"`.
 On the AGV:
 
 ```bash
-roslaunch myagv_odometry myagv_active.launch      # odometry, publishes /odom
+roslaunch myagv_odometry myagv_active.launch      # odometry + the YDLidar: /odom, /scan
 roslaunch rosbridge_server rosbridge_websocket.launch
 # plus a camera publisher for /camera/image_raw/compressed
 ```
 
-Then `./bin/teleop.sh --host <agv-ip>`.
+`myagv_active.launch` already starts the lidar (it includes
+`ydlidar_ros_driver/launch/X2.launch`) and publishes the `base_footprint -> laser_frame`
+transform, so `/scan` needs nothing extra. Then `./bin/teleop.sh --host <agv-ip>`, or
+`./bin/slam.sh explore --host <agv-ip>`.
 
 **The real myAGV has no command watchdog.** `myagv_odometry_node` stores the last Twist
 it received in a global and writes it to the motors at 100 Hz forever, so a robot told
@@ -174,6 +223,7 @@ the same results as one object.
 
 ```
 bin/teleop.sh              venv bootstrap + launcher
+bin/slam.sh                the same, dispatching explore | map | navigate
 src/robot_console/
   topics.py                topic names and type strings -- the contract in one place
   teleop.py                keymap, latch state, speed model   (pure)
@@ -184,14 +234,34 @@ src/robot_console/
   app.py                   the teleop loop
   cli.py                   argument parsing
   smoke.py                 live integration check
-tests/                     offline suite + fake_bridge.py
+  explore.py mapping.py navigate.py    the three SLAM entry points (thin)
+  slam/
+    scan.py                LaserScan -> base-frame points        (pure)
+    grid.py                the log-odds occupancy map            (pure)
+    mapio.py               map.pgm + map.yaml + npz sidecar
+    matcher.py             correlative scan matching             (pure)
+    pose.py                odom propagation + keyframed matching (pure)
+    planner.py             obstacle inflation and A*             (pure)
+    frontier.py            where the map stops, and what to fill (pure)
+    controller.py          path -> /cmd_vel for a holonomic base (pure)
+    mapview.py             rendering, and clicks back into metres
+    app.py                 the loop the three commands are modes of
+    cli.py                 argument parsing
+tests/                     offline suite + fake_bridge.py + synthetic.py
 ```
 
-Everything with interesting behaviour is pure and tested; `app.py` is wiring. The loop
-runs on the main thread and does everything -- read a key, publish `/cmd_vel` at 20 Hz,
-draw the frame. `cv2.imshow` must own the main thread on macOS, and a separate publisher
-thread would keep the robot driving while the UI was wedged. With one loop, a stalled UI
-stops feeding the command stream, so a freeze degrades into a stop.
+Everything with interesting behaviour is pure and tested; both `app.py` files are
+wiring. The loop runs on the main thread and does everything -- read a key, publish
+`/cmd_vel` at 20 Hz, fold in a scan, draw the frame. `cv2.imshow` must own the main
+thread on macOS, and a separate publisher thread would keep the robot driving while the
+UI was wedged. With one loop, a stalled UI stops feeding the command stream, so a freeze
+degrades into a stop. That matters more in an autonomous mode than in teleop, because
+nobody is watching the window.
+
+Which is why scan matching is keyframed rather than run on every scan: it happens only
+after 0.15 m or 10 deg of motion and never faster than `--slam-hz`. The loop measures
+its own tick time against the publish period and says so when it overruns, because a
+robot that drives fine and maps badly otherwise leaves nothing in the log to explain it.
 
 ## Limitations
 
@@ -199,7 +269,26 @@ stops feeding the command stream, so a freeze degrades into a stop.
   to `--hold-timeout` after you let go. A keyboard with repeat disabled will stutter;
   `--latch` is the fallback.
 - Real myAGV hardware has not been tested here; only the simulator path has been run.
-- No TF, services, or parameters -- the console uses three topics.
+- No TF, services, or parameters -- the console uses four topics. The
+  `base_footprint -> laser_frame` transform is applied from a constant in `slam/scan.py`
+  rather than read from `/tf`, because the bridge does not carry TF; a robot with the
+  lidar mounted elsewhere needs that constant changed.
+- **SLAM has no loop closure.** Local consistency is maintained by scan matching, but
+  drift accumulated around a long loop is not corrected when the robot returns to a
+  place it has already mapped. Big spaces will not close perfectly.
+- Exploration reports "explored" only after a ladder of increasingly desperate retries
+  has come back empty -- a lower frontier threshold, one flush of the suppression list,
+  the enclosed sensor holes, and a last look round. `tests/test_exploration_coverage.py`
+  drives a four-room floorplan offline and asserts it maps every reachable square metre
+  and leaves no frontier behind; on that house it does, including the room whose only
+  entrance is a 0.7 m doorway. A run that genuinely gets nowhere ends as `stalled`
+  (`--stall-timeout`) rather than pretending to be finished.
+- Unknown space behind a wall is not chased. Walls are recorded a cell thick and grazing
+  beams skip cells, so a mapped wall has unknown slivers along it that look exactly like
+  frontiers; they are filtered by thickness, because they can never be resolved. A real
+  opening thinner than two cells at the working resolution would be filtered with them.
+- The map grows without bound, and there is no downsampling. At 5 cm a large house is
+  fine; a warehouse would want a coarser `--resolution`.
 - `mp4v` is the recording codec; `avc1` is missing from many `opencv-python` builds. If
   the writer cannot open, the drive continues and `commands.jsonl` is still written.
 

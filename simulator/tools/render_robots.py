@@ -27,6 +27,7 @@ def robot_registry() -> dict[str, tuple]:
     """label -> (config class, human description). Imported lazily; molmo_spaces is slow."""
     from molmo_spaces.configs import robot_configs as rc
 
+    from robots.ainex import AiNexRobotConfig
     from robots.myagv import MyAGVRobotConfig
     from robots.lekiwi import LeKiwiRobotConfig
     from robots.rebot_b601 import B601RobotConfig
@@ -46,6 +47,7 @@ def robot_registry() -> dict[str, tuple]:
         "myagv": (MyAGVRobotConfig, "Elephant Robotics myAGV Pi (out-of-tree)"),
         "lekiwi": (LeKiwiRobotConfig, "LeKiwi: SO-ARM100 on a kiwi base (out-of-tree)"),
         "rebot_b601": (B601RobotConfig, "Seeed reBot Arm B601-DM (out-of-tree)"),
+        "ainex": (AiNexRobotConfig, "Hiwonder AiNex 24-DoF humanoid (out-of-tree)"),
     }
 
 

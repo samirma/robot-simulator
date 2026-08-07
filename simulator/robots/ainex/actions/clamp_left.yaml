@@ -1,0 +1,15 @@
+# Reach out with the left hand, open, close on whatever is there, and draw it back in.
+#
+# The reach pose is measured, not invented: it puts the left TCP ~73 mm in front of the
+# torso at ~0.41 m off the floor. That is the top of this robot's usable band -- it cannot
+# bend forward (the torso is on planar joints), so it never reaches the ground. See
+# README.md in this directory.
+frames:
+  - duration: 0.5          # open first, so the claw arrives ready
+    servos: {l_gripper: 0.690}
+  - duration: 0.7          # reach
+    servos: {l_sho_pitch: -0.520, l_sho_roll: 1.290, l_el_pitch: 1.200, l_el_yaw: -1.930}
+  - duration: 0.5          # close
+    servos: {l_gripper: -1.810}
+  - duration: 0.7          # draw back in, holding the grip
+    servos: {l_sho_pitch: 0.0, l_sho_roll: 1.293, l_el_pitch: -0.10, l_el_yaw: -1.926}

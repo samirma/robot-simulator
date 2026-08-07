@@ -1,0 +1,5 @@
+# Identical to `stand`. The vendor treats the init pose as the walk-ready pose -- the gait
+# swings from an already-loaded hip and knee rather than from a straight stand.
+frames:
+  - duration: 0.8
+    servos: {}

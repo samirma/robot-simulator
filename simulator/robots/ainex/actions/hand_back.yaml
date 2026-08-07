@@ -1,0 +1,14 @@
+# Arms and claws back to the init pose, leaving the legs wherever they are.
+frames:
+  - duration: 0.6
+    servos:
+      l_sho_pitch: 0.0
+      l_sho_roll: 1.293
+      l_el_pitch: -0.10
+      l_el_yaw: -1.926
+      l_gripper: 0.0
+      r_sho_pitch: 0.0
+      r_sho_roll: -1.293
+      r_el_pitch: 0.10
+      r_el_yaw: 1.926
+      r_gripper: 0.0

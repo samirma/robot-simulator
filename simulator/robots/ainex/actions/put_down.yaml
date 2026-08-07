@@ -1,0 +1,6 @@
+# Both hands release together, then return to the init pose.
+frames:
+  - duration: 0.4
+    servos: {l_gripper: 0.690, r_gripper: -0.520}
+  - duration: 0.6
+    servos: {l_sho_pitch: 0.0, l_el_pitch: -0.10, r_sho_pitch: 0.0, r_el_pitch: 0.10}

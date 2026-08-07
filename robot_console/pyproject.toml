@@ -25,9 +25,24 @@ dev = [
     # test double, not a dependency of the console.
     "websockets",
 ]
+# The visual-SLAM engine's venv (.venv-vslam), never the console's. It is a separate
+# process for exactly this reason, and the list stays short because the tracker itself
+# is C++: `tools/build_stella.sh` builds stella_vslam into .vendor/ and installs the
+# `_stella` pybind11 module into this venv, which is why neither appears here.
+vslam = [
+    "numpy",
+    "opencv-python",
+    "pybind11",
+    # The live 3D view. Optional at runtime -- the engine logs and carries on when it
+    # is missing or cannot spawn -- but there is no reason not to install it here.
+    "rerun-sdk",
+]
 
 [project.scripts]
 robot-console-teleop = "robot_console.cli:main"
+robot-console-explore = "robot_console.explore:main"
+robot-console-mapping = "robot_console.mapping:main"
+robot-console-navigate = "robot_console.navigate:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/robot_console"]

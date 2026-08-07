@@ -1,7 +1,7 @@
-- Read `goal.md` and `specs.json`.
-- Create `target_specs.json`: `specs.json` with the goals from `goal.md` incorporated, valid against the same `spec.schema.json`. `target_specs.json` describes the intended final state; `specs.json` describes only the current, verified state.
+- Read `CLAUDE.md` and `specs.json`, and take the goal for this run from the task you were given.
+- Create `target_specs.json`: `specs.json` with that goal incorporated, valid against the same `spec.schema.json`. `target_specs.json` describes the intended final state; `specs.json` describes only the current, verified state.
 - Use `target_specs.json` to create `implementation_plan.json`, a step-by-step plan with verification stages, written to the schema `plan.schema.json`. While writing the plan, investigate the project at `/Users/U124317/robot/simulator` to ensure the steps are detailed enough and consistent with the current implementation. If existing specs or plans contradict the implementation, treat source and executable verification as authoritative and correct stale artifacts before continuing.
-- Implement the steps in `implementation_plan.json`, aiming for the state described in `target_specs.json` to accomplish the `goal.md` instructions.
+- Implement the steps in `implementation_plan.json`, aiming for the state described in `target_specs.json` to accomplish the goal for this run.
 - Track progress inside `implementation_plan.json` itself: every phase, and every step in `phases[].steps`, carries a `status` of `PENDING`, `WORKING`, `BLOCKED`, or `DONE`. A phase's status summarises its steps rather than moving on its own — `DONE` only once every step is, `PENDING` only while none has started — so update it whenever a step's status changes.
   - Start with all steps marked `PENDING`.
   - Set a step to `WORKING` when you begin it. Set it to `DONE` once its implementation and applicable verification are complete. A phase is `DONE` only when every step is `DONE` and its phase gate passes.

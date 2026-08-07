@@ -1,0 +1,8 @@
+# Put down whatever the left hand is holding: reach out, release, withdraw.
+frames:
+  - duration: 0.7
+    servos: {l_sho_pitch: -0.520, l_sho_roll: 1.290, l_el_pitch: 1.200, l_el_yaw: -1.930}
+  - duration: 0.4
+    servos: {l_gripper: 0.690}
+  - duration: 0.7
+    servos: {l_sho_pitch: 0.0, l_sho_roll: 1.293, l_el_pitch: -0.10, l_el_yaw: -1.926}

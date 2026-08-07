@@ -1,0 +1,5 @@
+# The vendor's init pose: what move_to_init_pose drives to and every action returns to.
+# An empty servo map means "all 24 joints at init_pose.yaml".
+frames:
+  - duration: 0.8
+    servos: {}

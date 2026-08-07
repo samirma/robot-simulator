@@ -17,7 +17,7 @@ import dataclasses
 import socket
 import sys
 import time
-from typing import TextIO
+from typing import Callable, Optional, TextIO
 
 
 @dataclasses.dataclass(frozen=True)
@@ -84,17 +84,40 @@ Or, on a real myAGV over the network:
 Bypass this check with --no-preflight."""
 
 
+def startup_instructions_ainex(host: str, port: int) -> str:
+    """What to start when the robot being driven is the AiNex."""
+    return f"""Start the simulator in another terminal:
+
+    cd ../simulator
+    ./run.sh view --robot ainex --scene ithor:1 --ros-port {port}
+
+Or, on a real AiNex over the network:
+
+    # on the robot (the vendor stack brings rosbridge up itself)
+    roslaunch ainex_bringup bringup.launch
+    # then, here
+    --host <ainex-ip>
+
+Bypass this check with --no-preflight."""
+
+
 def preflight(
     host: str,
     port: int,
     *,
     timeout: float = 1.5,
     stream: TextIO = sys.stderr,
+    instructions: Optional[Callable[[str, int], str]] = None,
 ) -> bool:
-    """Probe, and print the startup instructions if nothing is there."""
+    """Probe, and print the startup instructions if nothing is there.
+
+    `instructions` lets a caller substitute the text for the robot it is actually driving
+    -- the thing to launch differs per robot, and telling someone to start a myAGV when
+    they asked for something else is worse than saying nothing.
+    """
     result = probe_tcp(host, port, timeout)
     if result.ok:
         return True
     print(f"error: no rosbridge on {result.url} ({result.detail})\n", file=stream)
-    print(startup_instructions(host, port), file=stream)
+    print((instructions or startup_instructions)(host, port), file=stream)
     return False

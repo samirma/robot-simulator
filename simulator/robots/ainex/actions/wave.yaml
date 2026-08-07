@@ -1,0 +1,12 @@
+# Raise the left arm and swing the forearm twice.
+frames:
+  - duration: 0.6
+    servos: {l_sho_pitch: 1.400, l_sho_roll: 0.600, l_el_pitch: -0.400}
+  - duration: 0.35
+    servos: {l_el_yaw: -0.900}
+  - duration: 0.35
+    servos: {l_el_yaw: -1.900}
+  - duration: 0.35
+    servos: {l_el_yaw: -0.900}
+  - duration: 0.6
+    servos: {l_sho_pitch: 0.0, l_sho_roll: 1.293, l_el_pitch: -0.10, l_el_yaw: -1.926}

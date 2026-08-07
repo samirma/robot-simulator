@@ -180,6 +180,13 @@ class TeleopState:
     speed: float = SPEED_DEFAULT
     speed_max: float = SPEED_MAX
     hold_timeout: Optional[float] = HOLD_TIMEOUT
+    # The rest of the speed envelope, per instance because it belongs to the robot rather
+    # than to this module. The defaults are the myAGV's, so a caller that says nothing
+    # behaves exactly as it did when there was only one robot.
+    speed_min: float = SPEED_MIN
+    speed_step: float = SPEED_STEP
+    turn_ratio: float = TURN_RATIO
+    turn_max: float = TURN_MAX
     axis: tuple = (0.0, 0.0, 0.0)
     last_action: Action = Action.NONE
     running: bool = True
@@ -198,9 +205,9 @@ class TeleopState:
         elif action is Action.STOP:
             self._disarm()
         elif action is Action.FASTER:
-            self.speed = self._clamp(self.speed + SPEED_STEP)
+            self.speed = self._clamp(self.speed + self.speed_step)
         elif action is Action.SLOWER:
-            self.speed = self._clamp(self.speed - SPEED_STEP)
+            self.speed = self._clamp(self.speed - self.speed_step)
         elif action is Action.HELP:
             self.show_help = not self.show_help
         elif action in MOTION_ACTIONS:
@@ -239,14 +246,14 @@ class TeleopState:
         return self.axis != (0.0, 0.0, 0.0)
 
     def _clamp(self, value: float) -> float:
-        return min(self.speed_max, max(SPEED_MIN, float(value)))
+        return min(self.speed_max, max(self.speed_min, float(value)))
 
     def command(self) -> Command:
         fx, fy, fw = self.axis
         return Command(
             vx=fx * self.speed,
             vy=fy * self.speed,
-            wz=fw * min(self.speed * TURN_RATIO, TURN_MAX),
+            wz=fw * min(self.speed * self.turn_ratio, self.turn_max),
         )
 
     @property
@@ -255,4 +262,4 @@ class TeleopState:
 
     @property
     def at_min_speed(self) -> bool:
-        return self.speed <= SPEED_MIN + 1e-9
+        return self.speed <= self.speed_min + 1e-9

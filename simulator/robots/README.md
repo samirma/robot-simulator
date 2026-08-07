@@ -13,6 +13,7 @@ Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 | `myagv` | spawn, view, holonomic drive, camera stream, keyboard teleop |
 | `lekiwi` | spawn, view, holonomic drive, arm + gripper |
 | `rebot_b601` | spawn, view, arm + gripper (no self-collision) |
+| `ainex` | spawn, view, animated-gait locomotion, two arms + claws, head, action groups |
 
 ## What each robot needs
 
@@ -128,17 +129,44 @@ Consequences worth knowing:
 
 ### The laser is ray-cast, not a sensor in the MJCF
 
-The real 2023 Pi AGV carries a YDLidar publishing `/scan`; the model has no `<sensor>`
-element at all. Rather than regenerate `model.xml` with a ring of rangefinders,
-`tools/spawn_robot.py::laser_scan_ranges` casts `mujoco.mj_ray` in a fan from the deck
-(0.14 m, `--scan-height`) and publishes `sensor_msgs/LaserScan` over rosbridge. 360 beams
-cost about 1 ms, against a 50 ms control period.
+The real 2023 Pi AGV carries a **YDLidar X2** publishing `/scan`; the model has no
+`<sensor>` element at all. Rather than regenerate `model.xml` with a ring of
+rangefinders, `tools/spawn_robot.py::laser_scan_ranges` casts `mujoco.mj_ray` in a fan
+and publishes `sensor_msgs/LaserScan` over rosbridge. 360 beams cost about 1 ms, against
+a 100 ms scan period.
 
-Two details that are load-bearing:
+The parameters are the hardware's, not invented — from `ydlidar_ros_driver/launch/X2.launch`
+and the `base_footprint -> laser_frame` static transform in `myagv_odometry/launch/myagv_active.launch`,
+both on the [`myagv_ros_2023Pi`](https://github.com/elephantrobotics/myagv_ros/tree/myagv_ros_2023Pi)
+branch:
+
+| | value | flag |
+|---|---|---|
+| `frame_id` | `laser_frame` | — |
+| `range_min` / `range_max` | 0.1 / 12.0 m | `--scan-min-range` / `--scan-range` |
+| rate | 10 Hz, independent of `--control-hz` | `--scan-hz` |
+| mount, off `base_footprint` | x +0.065 m, z +0.08 m | `--scan-offset` |
+| beams | 360 (the X2's 3 kHz at 10 Hz is ~300) | `--scan-beams` |
+
+Details that are load-bearing:
 
 * the rays exclude the robot's own root body, or every beam returns its chassis at 11 cm;
-* a miss is sent as `range_max + 1` rather than `inf`, because JSON has no infinity.
-  Consumers already have to treat anything beyond `range_max` as no-return.
+* the fan is cast from the **laser** origin, not the base origin. 65 mm is a whole cell
+  at the 5 cm resolution `myagv_navigation`'s gmapping uses, and casting from the base
+  centre instead is invisible in a viewer and ruins a map;
+* the scan runs **counter-clockwise from `-pi`** in the base frame. The X2 is launched
+  `inverted: true` because it is mounted upside down, and the static transform then rolls
+  `laser_frame` by pi; the two mirrors cancel. Do not change one without the other.
+
+Two deliberate departures from the hardware, both of which a correct client tolerates
+anyway — it should be testing `range_min <= r <= range_max`, which is true under every
+convention:
+
+* a miss is sent as `range_max + 1` rather than `inf`, because JSON has no infinity. The
+  real driver runs `invalid_range_is_inf: false` and reports `0.0`;
+* the X2's `ignore_array: "-50,50"` blind wedge is not modelled. Its orientation cannot
+  be confirmed without the hardware, and guessing wrong would carve free space out of a
+  real obstacle.
 
 The depth image (`--depth-hz`, default 5 Hz, 320×240 uint16 millimetres) comes from a
 second `mujoco.Renderer` in depth mode; it is deliberately slower and smaller than the
@@ -231,3 +259,146 @@ sensible beside the shoulder's makes joints 4–6 oscillate instead of hold.
   `MjSpec` defaults to Euler, where the wrist goes NaN. Every MolmoSpaces house already
   uses `implicitfast`, so this only matters for standalone scenes.
 * Collision uses per-link convex hulls, which are coarser than the visual meshes.
+
+## ainex
+
+[Hiwonder AiNex](https://www.hiwonder.com/products/ainex): a 24-DoF biped humanoid,
+193 × 135 × 415 mm, 2.45 kg, walking at 21 cm/s on HX-series serial bus servos. Two 5-DoF
+arms ending in a single hinged claw, a 2-DoF pan/tilt head carrying the only camera, a
+9-axis IMU, and **no lidar, no depth sensor and no wheels**.
+
+```bash
+./run.sh view --robot ainex                          # spawn it in a house
+./run.sh view --robot ainex --ros-port 9090          # ...on its own vendor ROS topics
+python robots/ainex/test_attach.py                   # self-test (empty world)
+python robots/ainex/test_attach.py --scene <house>   # self-test (in a house)
+python robots/ainex/test_ros.py                      # self-test of the ROS surface
+```
+
+It is the first robot here that walks rather than rolls, and the first whose ROS contract
+has nothing in common with the myAGV's. Both facts drive everything below. Provenance and
+the vendored files are in [ainex/urdf/PROVENANCE.md](ainex/urdf/PROVENANCE.md).
+
+### It does not actually walk
+
+The real robot's gait engine is `walking_module.so` — a precompiled ARM binary with no
+source — so there is nothing to port, and authoring a balance controller for a 2.35 kg
+biped is a research project rather than an integration. So the torso rides **the same
+virtual slide-X / slide-Y / hinge-Z base `myagv` uses for its Mecanum drive**, and the
+twelve leg joints are animated over the top at a phase matched to the distance covered.
+
+That trade buys a robot that navigates reliably and never falls. It costs balance
+entirely: there is no ZMP, no push recovery, and `WalkingParam`'s balance gains are
+accepted on the wire and ignored because nothing exists for them to act on.
+
+The animation is still made to be honest where it is cheap to be. `gait.py` solves a
+2-link sagittal IK to a commanded foot position rather than writing per-joint sinusoids,
+which buys two properties across the *whole* envelope rather than at one tuned point:
+
+* the stance foot stays at a constant height under the hip, so ride height is a constant;
+* **the stance foot does not skate.** Stance is deliberately linear in phase, because the
+  base advances at a constant velocity and only a foot moving at constant speed cancels
+  against it exactly. A cosine stance matches over the half-cycle but lags mid-stance,
+  which measured ~8 mm of skate at the top of the envelope; `test_attach.py` checks this.
+
+### Where the walking speed comes from
+
+`WalkingParam` is field-for-field the ROBOTIS preview-control module's, in which
+`period_time` T is a full cycle and `x_move_amplitude` A is a foot's body-frame half-sweep.
+A foot in stance is fixed to the ground, so the body advances 2A per stance and 4A per
+cycle:
+
+    v = 4A / T
+
+At the vendor's default `period_time: 400` ms and the envelope maximum A = 0.02 m that is
+**0.200 m/s** against Hiwonder's published **0.21 m/s** — 4.8% low. The other two readings
+of the amplitude give 0.100 and 0.050 m/s. That agreement is the entire argument for the
+factor of four, and it is why the constant is written as a derivation rather than a number.
+
+The lateral and yaw factors reuse the same geometry but are **not** calibrated: Hiwonder
+publish a walking speed and no sidestep or turn rate.
+
+Worth knowing: the published figure is not reachable through `/app/set_walking_param`. That
+interface uses the requested x/y/angle only for their **sign** and replaces the magnitude
+with a per-tier constant, so its fastest setting is 0.16 m/s. Full-envelope amplitudes
+arrive only over `/walking/set_param`. That is the vendor's behaviour, not a simplification
+— and note its `speed` field is 1-based with **4 as the fastest**, the opposite of the
+ordering `gait_manager.move()` uses for its own preset list.
+
+### Grasping is replayed trajectories, not IK
+
+The real AiNex has no inverse-kinematics service and no Cartesian arm interface at all.
+Every manipulation it performs is a recorded servo trajectory replayed open-loop by
+`MotionManager.run_action`, triggered over ROS by `/app/set_action`. This follows that
+model: `robots/ainex/actions/` holds a small set of keyframed poses, and `actions.py` also
+reads Hiwonder's own `.d6a` (SQLite) format so `--action-dir` can point straight at a real
+robot's `ActionGroups` directory.
+
+**The hands reach between roughly 0.25 m and 0.43 m above the floor, and never lower.**
+The arms are short relative to the robot's 0.46 m height, and because the torso is bolted
+to planar joints it **cannot pitch** — so unlike the real robot it cannot bend forward over
+its feet. It grasps from a surface at its own chest height. This is the sharpest
+consequence of the planar base; `test_attach.py` asserts the band so it cannot regress
+silently.
+
+### One correction to the vendor description
+
+The URDF fixes `camera_link` to `body_link`. That is wrong about the hardware — Hiwonder's
+own README calls it a "2-DOF HD camera" and it sits on the pan/tilt head — and harmless in
+RViz, where nobody looks through it. Here the camera *is* the sensor, so leaving it on the
+torso would make `/head_pan_controller/command` and every look-at behaviour untestable:
+panning the head would not move the view. It is reparented to `head_tilt_link` at a pose
+measured from the vendor's own numbers, so the neutral view is unchanged and only its
+behaviour under head motion differs.
+
+Note that `head_pan`'s axis is `0 0 -1`, as every joint's is, so a positive command yaws
+the head **clockwise**. That is the robot's convention; "fixing" it would mean disagreeing
+with the hardware.
+
+### Faithful, and not
+
+**Faithful:** the 24-joint topology and the servo-id map; the count↔radian mapping,
+including the per-joint `init` offset and the two deliberately inverted `sho_pitch` servos;
+the native topics and services, with no `/cmd_vel`, no `/odom` and no `/tf`; grasping as
+action-group replay with no IK; the gait envelope and the 0.20 m/s it yields at the default
+gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion topic.
+
+**Deliberate departures**, each of them load-bearing somewhere:
+
+* **`/scan` is a virtual lidar and the real AiNex has none.** The mount pose is invented,
+  not transcribed — mid-torso, which is above the leg swing. Enabled by default because
+  it is what makes the robot navigable; `--no-scan` turns it off.
+* Locomotion is a planar base plus a cosmetic gait: no balance, no falling, and the torso
+  cannot pitch or roll.
+* `gravcomp` is on, so it does not sag the way a 2.35 kg robot on hobby servos really does.
+  Without it every limb pose, including the replayed grasps, would land somewhere other
+  than commanded.
+* The feet do not collide with the floor. Colliding feet grip at default friction and fight
+  the world-aligned position servos — the same failure `lekiwi`'s omni wheels had, an
+  undershooting base picking up uncommanded yaw. Only one torso hull and the two hands
+  collide with the world.
+* `/imu` reports real yaw and yaw rate with roll and pitch identically zero, because the
+  base has no roll or pitch degree of freedom. Covariances are `-1`, the ROS convention for
+  "not reported".
+* The shipped action groups are ours, not Hiwonder's — see the licence note below.
+* Scan misses are `range_max + 1` rather than `inf`, inherited from the existing convention
+  (JSON has no infinity).
+
+### Two URDF-import behaviours specific to this robot
+
+* **MuJoCo merges *two* links into the worldbody, not one.** `base_link` is jointless and
+  `body_link` hangs off it by a fixed joint, so compiling the vendor file untouched yields
+  **five disconnected root bodies** and drops 0.743 kg of the 2.3475 out of the tree.
+  Adding the virtual planar joints to `body_link` is what makes it a body at all.
+* **`discardvisual` defaults to true for URDF**, and step 3 of the surgery turns almost the
+  whole robot non-colliding on purpose. Leave the flag alone and the AiNex compiles down to
+  two hand meshes and a hull — a robot that drives correctly and renders as nothing.
+  `lekiwi` does the same collision surgery without needing this, because it loads an MJCF.
+
+### Licence
+
+**`Hiwonder/ainex` carries no LICENSE file** despite being published as open source, and
+that covers the URDF, the 25 meshes and `servo_controller.yaml` — not just the action
+groups. This is the only robot here whose vendor files are not under an identified licence;
+[URDF.md](URDF.md) records it explicitly. No Hiwonder action groups are redistributed here
+for the same reason: the format is read so that an owner supplies their own.
