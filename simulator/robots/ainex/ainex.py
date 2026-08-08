@@ -7,14 +7,14 @@ no source, so there is nothing to port; and authoring a balance controller for a
 biped is a research project, not an integration.
 
 Instead the torso rides the same virtual slide-X / slide-Y / hinge-Z base that `myagv`
-uses for its Mecanum drive and `lekiwi` for its kiwi drive, and the twelve leg joints are
-animated over the top by `gait.py` at a phase and stride matched to the base's velocity.
+uses for its Mecanum drive, and the twelve leg joints are animated over the top by
+`gait.py` at a phase and stride matched to the base's velocity.
 The result navigates reliably, never falls, and puts its feet where a walking robot would
 -- see `gait.py` on why the stance foot does not skate. What it does not do is balance.
 The arms, grippers and head are genuinely actuated and are what grasping uses.
 
-The vendor URDF is loaded untouched and the spec edited in memory, as for `lekiwi` and
-`rebot_b601`: MuJoCo strips the directory from URDF mesh filenames, so a patched copy
+The vendor URDF is loaded untouched and the spec edited in memory, as for `rebot_b601`:
+MuJoCo strips the directory from URDF mesh filenames, so a patched copy
 elsewhere on disk would silently fail to find the 25 STLs
 (`robots/URDF.md`). See `robots/ainex/urdf/PROVENANCE.md` for what was vendored.
 """
@@ -190,8 +190,8 @@ class AiNexRobot(Robot):
         # that drives correctly and renders as nothing. It costs one line and is invisible
         # until you look at a render, so `test_attach.py` counts geoms.
         #
-        # `lekiwi` does the same collision surgery without needing this, because it loads
-        # an MJCF and the flag only defaults on for URDF.
+        # A robot loaded from an MJCF needs none of this: the flag only defaults on for
+        # URDF, so the same collision surgery there costs nothing.
         spec.compiler.discardvisual = False
 
         torso = spec.body(TORSO_BODY)
@@ -228,7 +228,7 @@ class AiNexRobot(Robot):
         #    Deleting first is unconditional so that this works against a source that
         #    floats the torso on a freejoint as well as against the vendor URDF, which
         #    carries no joint here at all. A body may hold at most 6 DoF, so a freejoint
-        #    and these three cannot coexist -- the lesson lekiwi records.
+        #    and these three cannot coexist.
         #
         #    On this robot the joints do something extra: without a DoF, `body_link` is
         #    jointless and MuJoCo merges it into the worldbody exactly as it merges
@@ -249,9 +249,8 @@ class AiNexRobot(Robot):
 
         # 3. Collision: one torso hull, and the hands.
         #
-        #    This is lekiwi's step 5 with a biped's twist. Nothing about locomotion comes
-        #    from foot contact -- the torso rides world-aligned position actuators -- so
-        #    colliding feet do exactly what lekiwi's omni wheels did: grip the floor at
+        #    Nothing about locomotion comes from foot contact -- the torso rides
+        #    world-aligned position actuators -- so colliding feet grip the floor at
         #    default friction and fight the servo, which shows up as a base that
         #    undershoots and picks up yaw it was never commanded. The feet are decorative
         #    in precisely the sense the myAGV's wheels are.
@@ -449,9 +448,8 @@ class AiNexRobot(Robot):
                     rgba=[1, 0, 0, 0.4],
                     mass=0.0,
                 )
-            # TCP on the *fixed* hand, so it does not swing with the claw -- the same
-            # choice lekiwi makes. Midway between the two markers is where a grasped
-            # object actually sits.
+            # TCP on the *fixed* hand, so it does not swing with the claw. Midway between
+            # the two markers is where a grasped object actually sits.
             hand.add_site(
                 name=f"{side}_tcp", pos=((np.asarray(palm) + tip) / 2.0).tolist(), group=3
             )
@@ -613,8 +611,8 @@ class AiNexRobot(Robot):
         pos = list(pos) + [0.0] if len(pos) == 2 else list(pos)
 
         # World-aligned slide joints, so the robot is grafted in at the origin and driven
-        # to its spawn pose (`robot_view.base.pose = ...`), exactly as myagv and lekiwi
-        # are. Attaching it anywhere else would silently give it a wrong "forward".
+        # to its spawn pose (`robot_view.base.pose = ...`), exactly as myagv is. Attaching
+        # it anywhere else would silently give it a wrong "forward".
         if not np.allclose(pos, [0.0, 0.0, 0.0]) or not np.allclose(quat, [1.0, 0.0, 0.0, 0.0]):
             raise ValueError(
                 "AiNex must be attached at the origin with identity rotation; set its "

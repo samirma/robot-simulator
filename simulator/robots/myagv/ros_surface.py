@@ -14,8 +14,9 @@ one topic with this one. What the two do share -- renderers, the depth stream, t
 ray-cast lidar, and the velocity-to-setpoint integration -- is in `spawn_robot.py` as
 `SensorStreams` and `PlanarSetpoint`.
 
-`lekiwi` uses this surface too: it is a holonomic base with a camera, which is the whole
-of what this contract assumes.
+Nothing here is myAGV-specific beyond the topic names and the lidar mount: any holonomic
+base with a camera is the whole of what this contract assumes, so a second one would
+reuse this surface rather than grow its own.
 """
 
 from __future__ import annotations

@@ -5,10 +5,10 @@
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
 #   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
 #                 [--robot so101]      ...optionally with an out-of-tree robot in it:
-#                                      so101 | myagv | lekiwi | rebot_b601 | ainex
+#                                      so101 | myagv | rebot_b601 | ainex
 #                 [--ros-port 9090]    ...and on that robot's own vendor ROS topics
-#                                      (myagv, lekiwi and ainex only):
-#                                      myagv/lekiwi -> cmd_vel in, odom + camera + /scan
+#                                      (myagv and ainex only):
+#                                      myagv -> cmd_vel in, odom + camera + /scan
 #                                      out; ainex -> /walking/* and /app/* in, joint_states
 #                                      + camera + /scan out (it has no cmd_vel at all)
 #   ./run.sh sim  [--robot droid ...]  house + robot + scripted task, with viewer

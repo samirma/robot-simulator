@@ -22,7 +22,6 @@ hand-curated files there could be pruned by a later `./run.sh assets`.
 |---|---|---|
 | `so101` | [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) `Simulation/SO101` — `so101_new_calib.urdf`, `so101_old_calib.urdf` | no — loads Menagerie MJCF |
 | `myagv` | [elephantrobotics/myagv_ros](https://github.com/elephantrobotics/myagv_ros) `myagv_ros_2023Pi` — `myAGV.urdf` + COLLADA meshes | **meshes only** — `make_model.py` converts the DAE files; the URDF itself is visualisation-only (no wheels, collision or inertia) |
-| `lekiwi` | [SIGRobotics-UIUC/LeKiwi](https://github.com/SIGRobotics-UIUC/LeKiwi) `URDF/LeKiwi.urdf` | no — loads the Ekumen MJCF, which embeds the SO-ARM100 arm |
 | `rebot_b601` | [vectorBH6/reBotArm_control_py](https://github.com/vectorBH6/reBotArm_control_py) `00-arm-rs_asm-v3.urdf` + STL meshes, plus the `reBot-DevArm_fixend_description` variant | **yes** — loaded from URDF, since no MJCF exists for it |
 | `ainex` | [Hiwonder/ainex](https://github.com/Hiwonder/ainex) `ainex_description` — `ainex.urdf.xacro` flattened to `ainex.urdf`, plus 25 STL meshes. **No licence stated** — see below | **yes** — no MJCF exists that is not itself a derivative of this |
 

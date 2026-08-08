@@ -29,7 +29,6 @@ def robot_registry() -> dict[str, tuple]:
 
     from robots.ainex import AiNexRobotConfig
     from robots.myagv import MyAGVRobotConfig
-    from robots.lekiwi import LeKiwiRobotConfig
     from robots.rebot_b601 import B601RobotConfig
     from robots.so101 import SO101RobotConfig
 
@@ -45,7 +44,6 @@ def robot_registry() -> dict[str, tuple]:
         "floating_robotiq": (rc.FloatingRobotiq2f85RobotConfig, "Floating Robotiq 2F-85"),
         "so101": (SO101RobotConfig, "TheRobotStudio SO-101 (out-of-tree)"),
         "myagv": (MyAGVRobotConfig, "Elephant Robotics myAGV Pi (out-of-tree)"),
-        "lekiwi": (LeKiwiRobotConfig, "LeKiwi: SO-ARM100 on a kiwi base (out-of-tree)"),
         "rebot_b601": (B601RobotConfig, "Seeed reBot Arm B601-DM (out-of-tree)"),
         "ainex": (AiNexRobotConfig, "Hiwonder AiNex 24-DoF humanoid (out-of-tree)"),
     }

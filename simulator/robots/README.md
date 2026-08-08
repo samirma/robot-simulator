@@ -11,7 +11,6 @@ Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 |---|---|
 | `so101` | spawn, view, joint control (local and over the bridge) |
 | `myagv` | spawn, view, holonomic drive, camera stream, keyboard teleop |
-| `lekiwi` | spawn, view, holonomic drive, arm + gripper |
 | `rebot_b601` | spawn, view, arm + gripper (no self-collision) |
 | `ainex` | spawn, view, animated-gait locomotion, two arms + claws, head, action groups |
 
@@ -191,33 +190,6 @@ actuator. `test_attach.py --scene` places itself on open floor first and drives 
 the middle of the room for the same reason: "drove into a wall and stopped" is correct
 behaviour that would otherwise read as a failure.
 
-## lekiwi
-
-SO-ARM100 arm on a three-wheel kiwi base, from
-[Ekumen-OS/lekiwi](https://github.com/Ekumen-OS/lekiwi). Upstream is a genuine omni
-drive — three hinge joints with velocity actuators — which this adapter **replaces with
-the same virtual holonomic base as `myagv`**, since MolmoSpaces has no kiwi
-inverse-kinematics controller (`controllers/base_pose.py` sketches a swerve variant but
-is marked untested and its `pose` handling is broken).
-
-The upstream file is loaded untouched and the spec is edited in memory, which keeps
-`upstream/` pristine and avoids rewriting the relative `meshdir` and `<attach file=...>`
-paths a copied XML would break.
-
-Four things upstream does that had to be undone, each of which broke the base until fixed:
-
-1. **Contact pairs naming a `floor` geom** that only exists in upstream's own
-   `scene.xml` — the model will not even compile standalone with them.
-2. **A free joint on the chassis.** A body may carry at most 6 DoF, so it cannot coexist
-   with the three virtual joints; and with it gone the chassis sits at its declared z=0,
-   buried in the floor, hence the ride-height offset on attach.
-3. **Wheel and plate colliders.** Those contact pairs were what gave the omni wheels
-   their sideways slip. Without them the chassis grips the floor at default friction and
-   fights the virtual joints — the base under-shot by half and picked up ~20° of
-   uncommanded yaw. Every chassis collider is replaced by one lifted box hull.
-4. The arm is **SO-ARM100**, the SO-101's predecessor, with joints
-   `Rotation, Pitch, Elbow, Wrist_Pitch, Wrist_Roll` and a `Jaw` gripper.
-
 ## rebot_b601
 
 [Seeed Studio reBot Arm B601-DM](https://www.seeedstudio.com/reBot-Arm-B601-DM-p-6740.html):
@@ -374,9 +346,8 @@ gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion t
   Without it every limb pose, including the replayed grasps, would land somewhere other
   than commanded.
 * The feet do not collide with the floor. Colliding feet grip at default friction and fight
-  the world-aligned position servos — the same failure `lekiwi`'s omni wheels had, an
-  undershooting base picking up uncommanded yaw. Only one torso hull and the two hands
-  collide with the world.
+  the world-aligned position servos, which shows up as an undershooting base picking up
+  uncommanded yaw. Only one torso hull and the two hands collide with the world.
 * `/imu` reports real yaw and yaw rate with roll and pitch identically zero, because the
   base has no roll or pitch degree of freedom. Covariances are `-1`, the ROS convention for
   "not reported".
@@ -393,7 +364,7 @@ gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion t
 * **`discardvisual` defaults to true for URDF**, and step 3 of the surgery turns almost the
   whole robot non-colliding on purpose. Leave the flag alone and the AiNex compiles down to
   two hand meshes and a hull — a robot that drives correctly and renders as nothing.
-  `lekiwi` does the same collision surgery without needing this, because it loads an MJCF.
+  A robot loaded from an MJCF needs no such guard: the flag only defaults on for URDF.
 
 ### Licence
 

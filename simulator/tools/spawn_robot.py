@@ -41,7 +41,6 @@ if str(SIM_ROOT) not in sys.path:
 ROBOTS = {
     "so101": ("robots.so101", "SO101RobotConfig", "SO101Robot"),
     "myagv": ("robots.myagv", "MyAGVRobotConfig", "MyAGVRobot"),
-    "lekiwi": ("robots.lekiwi", "LeKiwiRobotConfig", "LeKiwiRobot"),
     "rebot_b601": ("robots.rebot_b601", "B601RobotConfig", "B601Robot"),
     "ainex": ("robots.ainex", "AiNexRobotConfig", "AiNexRobot"),
 }
@@ -53,7 +52,6 @@ ROBOTS = {
 # What they share -- renderers, /scan, the velocity-to-setpoint integration -- is below.
 ROS_SURFACES = {
     "myagv": ("robots.myagv.ros_surface", "serve_ros"),
-    "lekiwi": ("robots.myagv.ros_surface", "serve_ros"),
     "ainex": ("robots.ainex.ros_surface", "serve_ros"),
 }
 
@@ -63,7 +61,6 @@ SCAN_DEFAULTS = {
     # Transcribed from ydlidar_ros_driver/launch/X2.launch and the
     # base_footprint -> laser_frame transform in myagv_active.launch.
     "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
-    "lekiwi": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
     # INVENTED, not transcribed: the AiNex has no lidar at all (see robots/README.md).
     # Mid-torso on a 0.46 m robot, centred -- above the leg swing, low enough to see the
     # edges of furniture. The range is cut to the room scale a robot walking at 0.2 m/s
@@ -76,10 +73,10 @@ SCAN_DEFAULTS = {
 # Robots on a mocap mount are placed by the attach pos/quat instead.
 # The AiNex is a biped, but its torso rides the same three virtual joints: its gait is
 # animated over a planar base rather than balanced. See robots/ainex/ainex.py.
-HOLONOMIC_BASE_ROBOTS = {"myagv", "lekiwi", "ainex"}
+HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
 
 # Arms: no base of their own, so they are bolted to a work surface rather than stood on
-# the floor. (lekiwi has an arm too, but it also has wheels -- it places as a mobile base.)
+# the floor. A robot with both an arm and wheels places as a mobile base.
 TABLETOP_ROBOTS = {"so101", "rebot_b601"}
 
 # The annulus on that surface the arm can comfortably work in. The SO-101 is a ~0.4 m

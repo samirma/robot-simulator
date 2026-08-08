@@ -6,7 +6,7 @@ source, so it cannot be ported. What *is* open is its parameter block
 app-layer preset table in `ainex_controller.py`. All three are reproduced here.
 
 The simulated robot does not balance: its torso rides three virtual planar joints (see
-`ainex.py`), exactly as `myagv`'s Mecanum base and `lekiwi`'s kiwi drive do. So this
+`ainex.py`), exactly as `myagv`'s Mecanum base does. So this
 module has two jobs, and they are deliberately separate:
 
 * `planar_velocity` -- what a given parameter set *means* as a body-frame velocity, which

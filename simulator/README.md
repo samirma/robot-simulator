@@ -24,7 +24,7 @@ an external control bridge.
 | `assets/` | `MLSPACES_ASSETS_DIR` — unversioned symlink tree that MuJoCo loads from |
 | `bridge/` | external control server + the policy that talks to it |
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
-| `robots/` | out-of-tree robot definitions (so101, myagv, lekiwi, rebot_b601, ainex) |
+| `robots/` | out-of-tree robot definitions (so101, myagv, rebot_b601, ainex) |
 | `tools/render_robots.py` | render every loadable robot; doubles as a load test |
 
 ## Commands
@@ -99,7 +99,7 @@ contract is part of the robot definition — and the two that exist share **no t
 all**. What they do share (renderers, the depth stream, the ray-cast lidar, and the
 velocity-to-setpoint integration) is in `tools/spawn_robot.py`.
 
-#### myagv, lekiwi
+#### myagv
 
 Subscribes `cmd_vel` (`geometry_msgs/Twist`) and publishes:
 
@@ -194,7 +194,7 @@ is running will block until it finishes rather than fail.
 datagen pipeline: `franka` / `droid` (Franka FR3), `rby1` (Rainbow RB-Y1),
 `yam` / `bimanual_yam` (I2RT YAM), `rum` (floating gripper).
 
-**Out-of-tree**, in `robots/`: `so101`, `myagv`, `lekiwi`, `rebot_b601`, `ainex`.
+**Out-of-tree**, in `robots/`: `so101`, `myagv`, `rebot_b601`, `ainex`.
 
 ```bash
 ./run.sh view --robot so101                      # spawn it in a house, interactive

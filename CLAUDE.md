@@ -56,7 +56,7 @@ python tools/render_robots.py --outdir /tmp/robots   # render/load test for ever
 - `bridge/rosbridge_server.py` — the **mobile-base** bridge, wired up by `serve_ros()`
   in `tools/spawn_robot.py`. Plain rosbridge JSON over a websocket, served in-process.
   This is what `robot_console` talks to. ROS-only mode: mutually exclusive with
-  `--control`, and only for robots with a mobile base (`myagv`, `lekiwi`).
+  `--control`, and only for robots with a mobile base (`myagv`).
 
 ### Out-of-tree robots
 

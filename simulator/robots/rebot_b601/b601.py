@@ -3,9 +3,9 @@
 The vendor model (`vectorBH6/reBotArm_control_py`, `urdf/00-arm-rs_asm-v3/`) is a raw
 SolidWorks URDF export. It has real link geometry, joint limits and inertias, but
 **no actuators, no TCP frame and no MuJoCo-specific tuning** — so this class loads the
-URDF and finishes the model in memory. As with LeKiwi, editing the spec on load beats
-generating a patched file: MuJoCo strips the directory from URDF mesh paths, so a copy
-elsewhere on disk would silently fail to find its meshes.
+URDF and finishes the model in memory. Editing the spec on load beats generating a
+patched file: MuJoCo strips the directory from URDF mesh paths, so a copy elsewhere on
+disk would silently fail to find its meshes.
 
 Two consequences of importing a URDF are worth knowing:
 
