@@ -64,6 +64,20 @@ _MJ_TO_CV = np.diag([1.0, -1.0, -1.0])
 _STALL_TICKS = 15
 _STALL_PROGRESS_M = 0.002
 
+# How far ahead of the base's *actual* yaw a command may sit. Same value and same reason
+# as `TARGET_LEAD_RAD` in tools/spawn_robot.py: the base is a position servo, so an
+# integrated setpoint runs away from a base that geometry is holding up, and the base then
+# lunges the moment it comes free. Unobstructed the clamp costs nothing -- measured on
+# train_40, a commanded 0.6 rad/s is achieved at 0.588 rad/s for every lead from 0.15 to
+# 2.5 rad -- so it is purely a guard for the blocked case.
+TARGET_LEAD_RAD = 0.15
+
+# A circuit that cannot make progress must still end. `travelled` accumulates the base's
+# own movement, and a robot wedged in a corner jitters by a millimetre a tick -- enough to
+# reach any distance eventually, at 15 frames a second of identical footage. Measured: a
+# wedged 25 m circuit ran to 2224 s of sim time, 33k frames and 39 GB before it "finished".
+_CIRCUIT_TIME_BUDGET = 6.0
+
 
 def camera_intrinsics(model, cam_id: int, width: int, height: int) -> dict:
     """Pinhole intrinsics from a MuJoCo camera's vertical FOV.
@@ -318,22 +332,41 @@ def circuit(cap: Capture, yaw: float, *, speed: float, standoff: float, turn_rat
     away = False
     start_xy = np.asarray(start_xy, dtype=np.float64)
     stalled = 0
+    # Ideal time for `distance` at `speed`, times a generous factor for turns and
+    # obstacles. Past it the circuit is not slow, it is stuck.
+    deadline = cap.data.time + _CIRCUIT_TIME_BUDGET * distance / max(speed, 1e-6)
 
     while travelled < distance:
+        if cap.data.time > deadline:
+            print(f"  circuit gave up after {travelled:.1f} m of {distance:.1f} m: "
+                  f"no progress in {_CIRCUIT_TIME_BUDGET:.0f}x the time it should take",
+                  file=sys.stderr)
+            break
         if cap.camera_clearance() < standoff:
             # Turn toward the more open side. Sampling both beats always turning one way,
             # which in a rectangular room walks into the same corner every lap.
             direction = 1.0 if (cap.camera_clearance(bearing=math.pi / 2)
                                 >= cap.camera_clearance(bearing=-math.pi / 2)) else -1.0
             turned = 0.0
+            was = float(np.asarray(cap.base.joint_pos, dtype=np.float64)[2])
             while turned < 2.0 * math.pi:
                 if cap.camera_clearance() > standoff * 1.5:
                     break
+                # Integrated, but with the lag clamped, exactly as `PlanarSetpoint` does
+                # on the ROS path: an unclamped command runs away from a base held up by
+                # geometry, and `turned` then counts rotation that never happened -- which
+                # is how a wedged robot decides it has already looked everywhere.
                 yaw += direction * turn_rate * cap.period
-                turned += turn_rate * cap.period
+                actual = float(np.asarray(cap.base.joint_pos, dtype=np.float64)[2])
+                lag = math.atan2(math.sin(yaw - actual), math.cos(yaw - actual))
+                if abs(lag) > TARGET_LEAD_RAD:
+                    yaw = actual + math.copysign(TARGET_LEAD_RAD, lag)
                 here = np.asarray(cap.base.joint_pos, dtype=np.float64)[:2]
                 cap.base.ctrl = np.array([here[0], here[1], yaw], dtype=np.float64)
                 cap.run_until(cap.data.time + cap.period)
+                now = float(np.asarray(cap.base.joint_pos, dtype=np.float64)[2])
+                turned += abs(now - was)
+                was = now
             continue
 
         # Command a setpoint just ahead of where the base actually is, re-read every tick.

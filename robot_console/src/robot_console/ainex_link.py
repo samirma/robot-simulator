@@ -188,7 +188,7 @@ class AiNexLink:
         """The AiNex publishes no odometry; asking for it is a caller bug, not a shrug."""
         raise RuntimeError(
             "the AiNex has no /odom -- its profile says has_odom=False, and callers "
-            "must integrate commands (vslam.deadreckon) instead"
+            "must integrate their own commands instead"
         )
 
     # ---------------------------------------------------------------- driving

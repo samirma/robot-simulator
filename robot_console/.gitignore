@@ -1,17 +1,9 @@
 # Python
 .venv/
-# The visual-SLAM engine's own venv, holding the compiled `_stella` module and the
-# rerun viewer -- deliberately outside the console's three-dependency install.
-# `.venv/` does not match it.
-.venv-vslam/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
-
-# Built C++ dependencies for the stella_vslam engine (~200 MB of sources, dylibs and
-# the ORB vocabulary). Rebuilt by tools/build_stella.sh, never committed.
-.vendor/
 
 # Teleop recordings (--record writes here by convention)
 runs/

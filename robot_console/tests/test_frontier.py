@@ -334,8 +334,8 @@ def test_a_large_enclosed_region_is_a_room_not_a_hole():
 # ------------------------------------------------------------------ compatibility
 
 
-def test_choose_goal_accepts_the_kwargs_vslam_passes():
-    """`vslam/app.py` passes `snap_to_frontier_cell`, which used to be a TypeError."""
+def test_choose_goal_accepts_its_optional_kwargs():
+    """`snap_to_frontier_cell` and `max_candidates` used to be a TypeError."""
     grid = half_seen_room()
     target, path = frontier.choose_goal(
         grid, CostMap(grid, allow_unknown=True), (1.0, 1.0, 0.0),

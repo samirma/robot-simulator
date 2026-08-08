@@ -90,9 +90,9 @@ POCKET_MAX_CELLS = 400
 
 @dataclasses.dataclass(frozen=True)
 class Frontier:
-    # `centroid` stays the identity of a frontier: `mapview` draws it and `vslam` steers by
-    # it. `goal` is where the robot is actually sent, which is a different point whenever
-    # the centroid is not somewhere the base can stand.
+    # `centroid` stays the identity of a frontier, and is what `mapview` draws. `goal` is
+    # where the robot is actually sent, which is a different point whenever the centroid is
+    # not somewhere the base can stand.
     centroid: np.ndarray
     size: int
     distance: float = 0.0
@@ -217,8 +217,8 @@ class Blacklist:
 class _HardBlacklist:
     """Adapter for a bare sequence of points: suppression with no expiry.
 
-    `vslam` keeps its own expiry and hands over a plain list, and so do the older tests.
-    Treating that as permanent within the call is exactly the old behaviour.
+    A caller that keeps its own expiry hands over a plain list, and so do the older
+    tests. Treating that as permanent within the call is exactly the old behaviour.
     """
 
     def __init__(self, points: Sequence[Sequence[float]], radius: float) -> None:

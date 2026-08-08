@@ -121,7 +121,7 @@ def test_the_ainex_profile_resolves_with_its_link_present():
 
     profile = PROFILES["ainex"]
     assert profile.name == "ainex"
-    assert not profile.has_odom, "the AiNex publishes no odometry; vslam dead-reckons"
+    assert not profile.has_odom, "the AiNex publishes no odometry at all"
     assert profile.speed_max < PROFILES["myagv"].speed_max, "a biped walks, not rolls"
 
 
