@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Keyboard teleoperation for a myAGV, simulated or real.
+# Keyboard teleoperation for a mobile robot, simulated or real.
 #
-#   ./bin/teleop.sh                        drive a robot on ws://127.0.0.1:9090
+#   ./bin/teleop.sh                        drive a myAGV on ws://127.0.0.1:9090
+#   ./bin/teleop.sh --robot ainex          ...an AiNex, which walks rather than rolls
 #   ./bin/teleop.sh --host 192.168.1.42    ...a real myAGV on the network
 #   ./bin/teleop.sh --record runs/drive1   ...writing feed.mp4 + commands.jsonl
 #   ./bin/teleop.sh --no-preflight         skip the "is anything listening" check
 #   ./bin/teleop.sh --help                 every flag
 #
+# --robot picks the speed envelope, the on-screen wording and the wire contract: the
+# myAGV is driven by a Twist on /cmd_vel and reports /odom back; the AiNex has neither,
+# and the same keys are turned into gait parameters instead. Each robot's speed limits
+# are its own hardware's, so a drive rehearsed in the simulator matches.
+#
 # Keys (the camera window must have focus):
 #   W/S forward-back   A/D strafe   Q/E rotate   Space stop   +/- speed   Esc quit
+#   On the AiNex these walk, sidestep and turn -- same keys, different gait.
 #
 # The first run creates .venv and installs the package; after that this is just a
 # launcher. Flags are forwarded to `python -m robot_console`.

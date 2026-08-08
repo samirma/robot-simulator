@@ -1,6 +1,7 @@
 # robot_console
 
-Keyboard teleoperation, mapping and navigation for a [myAGV], over rosbridge.
+Keyboard teleoperation, mapping and navigation for a [myAGV], over rosbridge. Teleop
+also drives a Hiwonder AiNex — see [`--robot`](#--robot).
 
 The console is an independent project. Its only dependencies are `numpy`,
 `opencv-python`, and `roslibpy`, so it installs and runs on a machine that has never
@@ -24,6 +25,7 @@ cd robot_console
 ./bin/teleop.sh                        # ws://127.0.0.1:9090
 ./bin/teleop.sh --host 192.168.1.42    # a real myAGV on the network
 ./bin/teleop.sh --record runs/drive1   # ...writing feed.mp4 + commands.jsonl
+./bin/teleop.sh --robot ainex          # a different robot; see below
 ```
 
 The first run creates `.venv` and installs the package; after that `bin/teleop.sh` is
@@ -32,6 +34,31 @@ just a launcher. It re-installs by itself when `pyproject.toml` changes, and
 
 Before connecting it checks that something is listening, and prints how to start each
 kind of robot when nothing is. `--no-preflight` skips the check.
+
+### `--robot`
+
+Two robots, two wire contracts. The keys, the loop and the recording format are the same
+for both; what changes is the speed envelope, the on-screen wording and what goes on the
+wire.
+
+| `--robot` | Contract | Speeds | Turn cap | Start it with |
+|---|---|---|---|---|
+| `myagv` (default) | `/cmd_vel` + `/odom` | 0.05 – 0.28 m/s, step 0.05 | 1.00 rad/s | `./run.sh view --robot myagv --scene ithor:1 --ros-port 9090` |
+| `ainex` | `/walking/set_param` + `/walking/command` | 0.02 – 0.20 m/s, step 0.02 | 1.00 rad/s | `./run.sh view --robot ainex --scene ithor:1 --ros-port 9090` |
+
+Each envelope is its own hardware's, not a house default: the myAGV's is
+`myagv_teleop.py`'s, and the AiNex's falls out of its gait limits — 4A/T with A ≤ 0.02 m
+at a 400 ms period is 0.20 m/s and no more. Rehearsing a drive in the simulator is only
+useful if the simulator refuses what the hardware would refuse.
+
+The AiNex is the one that is not a Twist robot. It has **no `/cmd_vel`, no `/odom` and no
+`/tf`** — walking is a parameter block plus a `start`/`stop` service, so
+`robot_console/ainex_link.py` turns each velocity intent into gait parameters, the status
+line shows `odom n/a` rather than pretending a stream dropped, and `--cmd-topic` /
+`--odom-topic` do not apply.
+
+`--robot` is teleop only. `bin/slam.sh` still assumes a myAGV: it needs `/odom` and a
+myAGV chassis radius.
 
 ## Mapping and navigation
 
@@ -229,6 +256,8 @@ src/robot_console/
   teleop.py                keymap, latch state, speed model   (pure)
   camera.py                CompressedImage decode + the frame mailbox
   bridge.py                RobotLink, and pure odometry parsing
+  robots.py                --robot: one RobotProfile per robot, resolved lazily
+  ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
   preflight.py             reachability probe + startup instructions
   app.py                   the teleop loop

@@ -62,7 +62,7 @@ def probe_tcp(host: str, port: int, timeout: float = 1.5) -> PreflightResult:
 
 
 def startup_instructions(host: str, port: int) -> str:
-    """What to start, for whichever of the three robots the user meant."""
+    """What to start for a myAGV, in whichever of its three forms the user meant."""
     return f"""Start the simulator in another terminal:
 
     cd ../simulator

@@ -72,6 +72,20 @@ def test_max_speed_override(capsys):
     assert "exceeds the real myAGV limit" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "robot, fragment",
+    [
+        ("myagv", "the real myAGV limit"),
+        ("ainex", "the AiNex gait envelope"),
+    ],
+)
+def test_the_max_speed_warning_names_the_right_robots_limit(robot, fragment, capsys):
+    """Telling someone they have passed the myAGV's limit while they drive an AiNex is
+    worse than saying nothing: the number they are being measured against is not theirs."""
+    parse_args(["--robot", robot, "--max-speed", "9"])
+    assert fragment in capsys.readouterr().err
+
+
 def test_hold_timeout_defaults_to_release_on_key_up():
     assert parse_args([]).hold_timeout == pytest.approx(HOLD_TIMEOUT)
 
@@ -146,3 +160,67 @@ def test_an_unknown_robot_is_a_keyerror_naming_the_known_ones():
 
     with pytest.raises(KeyError, match="myagv"):
         PROFILES["forklift"]
+
+
+# ------------------------------------------------------------------ --robot
+
+
+def test_robot_defaults_to_the_myagv():
+    from robot_console.robots import DEFAULT_ROBOT
+
+    assert parse_args([]).robot == DEFAULT_ROBOT == "myagv"
+
+
+@pytest.mark.parametrize("robot", ["myagv", "ainex"])
+def test_robot_flag_selects_each_supported_robot(robot):
+    assert parse_args(["--robot", robot]).robot == robot
+
+
+def test_an_unsupported_robot_is_a_usage_error_listing_the_supported_ones(capsys):
+    with pytest.raises(SystemExit):
+        parse_args(["--robot", "forklift"])
+    err = capsys.readouterr().err
+    for robot in ("myagv", "ainex"):
+        assert robot in err
+
+
+def test_listing_the_robots_does_not_construct_them(monkeypatch):
+    """`--robot`'s choices come from the factory table, not from calling it. Otherwise a
+    robot with a broken link module would take `--help` down with it."""
+    import robot_console.robots as robots
+
+    def explode() -> None:
+        raise AssertionError("a profile was constructed just to list the choices")
+
+    monkeypatch.setitem(robots._FACTORIES, "ainex", explode)
+    assert "ainex" in build_parser().format_help()
+
+
+@pytest.mark.parametrize(
+    "robot, module",
+    [("myagv", "robot_console.teleop"), ("ainex", "robot_console.ainex_link")],
+)
+def test_speed_defaults_and_caps_follow_the_robot(robot, module):
+    import importlib
+
+    envelope = importlib.import_module(module)
+    options = parse_args(["--robot", robot])
+    assert options.speed == pytest.approx(envelope.SPEED_DEFAULT)
+    assert options.max_speed == pytest.approx(envelope.SPEED_MAX)
+    # And an out-of-range request lands on that robot's limits, not the myAGV's.
+    assert parse_args(["--robot", robot, "--speed", "99"]).speed == pytest.approx(envelope.SPEED_MAX)
+    assert parse_args(["--robot", robot, "--speed", "0"]).speed == pytest.approx(envelope.SPEED_MIN)
+
+
+def test_a_missing_link_module_exits_rather_than_tracebacks(monkeypatch, capsys):
+    """The lazy factories exist so a robot whose link module is absent produces an
+    actionable sentence. `main` must not turn that back into a traceback."""
+    import robot_console.cli as cli
+    import robot_console.robots as robots
+
+    def missing() -> None:
+        raise RuntimeError("AiNex support is incomplete: ainex_link.py is missing")
+
+    monkeypatch.setitem(robots._FACTORIES, "ainex", missing)
+    assert cli.main(["--robot", "ainex"]) == 2
+    assert "ainex_link.py is missing" in capsys.readouterr().err

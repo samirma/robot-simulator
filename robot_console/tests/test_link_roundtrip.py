@@ -1,9 +1,11 @@
 """Proof that the bytes roslibpy emits are the bytes the bridge accepts.
 
-Everything roslibpy touches lives in this one module, behind a session-scoped fixture
-holding exactly one connection. roslibpy drives a process-global Twisted reactor that
-cannot be restarted once terminated, so a second `RobotLink` in another test would
-either hang or fail depending on ordering.
+Everything roslibpy touches lives in this one module, behind module-scoped fixtures that
+never call `terminate()`. roslibpy drives a process-global Twisted reactor that cannot be
+restarted once terminated, so a link opened in another test module would either hang or
+fail depending on ordering. Two connections coexist here -- a `RobotLink` and an
+`AiNexLink`, since the two robots share no topic and so cannot share a fixture -- which
+is fine: the reactor is shared, only shutting it down is fatal.
 """
 
 import base64
@@ -174,3 +176,69 @@ def test_receives_and_parses_a_laser_scan(server, subscriptions):
     assert scan.range_max == pytest.approx(12.0)
     assert scan.valid.sum() > 300
     assert scan_points(scan).shape[1] == 2
+
+
+# ---------------------------------------------------------------- the AiNex
+
+
+@pytest.fixture(scope="module")
+def walker(server):
+    """A second connection, to the same fake bridge. See the module docstring."""
+    from robot_console.ainex_link import AiNexLink
+
+    connection = AiNexLink("127.0.0.1", server.port)
+    connection.connect(timeout=10.0)
+    yield connection
+    connection.close(hard_exit_after=None)
+
+
+def _await_calls(server, count, timeout=5.0):
+    from robot_console.ainex_link import SRV_WALKING_COMMAND
+
+    server.wait_for_service_call(SRV_WALKING_COMMAND, count, timeout=timeout)
+    return [args.get("command") for args in server.calls_on(SRV_WALKING_COMMAND)]
+
+
+def test_the_walking_link_connects(walker):
+    assert walker.is_connected
+
+
+def test_a_repeated_command_starts_the_gait_once(server, walker):
+    """The vendor node restarts its gait phase on `start`, so a `start` per publish makes
+    the robot shuffle in place instead of walking. At 20 Hz that is the whole difference
+    between a robot that moves and one that does not."""
+    from robot_console.ainex_link import PERIOD_S, STRIDE_FACTOR, TOPIC_SET_WALKING_PARAM
+    from robot_console.teleop import Command
+
+    params_before = len(server.received_on(TOPIC_SET_WALKING_PARAM))
+    calls_before = len(_await_calls(server, 0, timeout=0.0))
+
+    for _ in range(5):
+        walker.publish_cmd_vel(Command(vx=0.1))
+    assert server.wait_for_publish(TOPIC_SET_WALKING_PARAM, params_before + 1)
+    assert _await_calls(server, calls_before + 1)[calls_before:] == ["start"]
+
+    # Give any redundant traffic time to arrive before claiming there was none.
+    time.sleep(0.3)
+    assert len(server.received_on(TOPIC_SET_WALKING_PARAM)) == params_before + 1
+    assert len(server.calls_on("/walking/command")) == calls_before + 1
+
+    message = server.received_on(TOPIC_SET_WALKING_PARAM)[-1]
+    assert message["x_move_amplitude"] == pytest.approx(0.1 * PERIOD_S / STRIDE_FACTOR)
+    assert message["period_time"] == pytest.approx(PERIOD_S * 1000.0), "milliseconds on the wire"
+
+
+def test_a_zero_command_stops_the_gait(server, walker):
+    from robot_console.teleop import Command
+
+    calls_before = len(_await_calls(server, 0, timeout=0.0))
+    walker.publish_cmd_vel(Command())
+    assert _await_calls(server, calls_before + 1)[calls_before:] == ["stop"]
+
+
+def test_stop_is_unconditional(server, walker):
+    """`publish_cmd_vel` deduplicates; `stop()` must not. It is the exit path, and a
+    stale idea of "already stopped" is how a robot is left walking."""
+    calls_before = len(_await_calls(server, 0, timeout=0.0))
+    walker.stop()
+    assert _await_calls(server, calls_before + 1)[calls_before:] == ["stop"]
