@@ -45,7 +45,7 @@ GRIPPER_CTRL_OPEN = 1.74533
 
 
 class SO101BaseGroup(MocapRobotBaseGroup):
-    """Unactuated mocap mount the arm is bolted to; teleported during task sampling.
+    """Unactuated mocap mount the arm is bolted to; placed by teleporting.
 
     Note the body is named ``mount`` rather than ``base``: the SO-101's own root body is
     already called ``base``, and both get the same namespace prefix when the robot is

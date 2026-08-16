@@ -33,15 +33,14 @@ Everything goes through `./run.sh`; it sources `env.sh` for asset paths and `MUJ
 ./run.sh assets ithor               # pre-fetch iTHOR houses/objects/grasps (~13 GB)
 ./run.sh view --scene ithor:1       # a house in the viewer
 ./run.sh view --robot myagv --scene ithor:1 --ros-port 9090   # + robot, as a ROS robot
-./run.sh sim --robot droid          # upstream scripted task + datagen pipeline
 ./run.sh serve --controller wave    # websocket control server (terminal 1)
-./run.sh bridge --robot droid       # pipeline driven by that server (terminal 2)
+./run.sh view --robot so101 --control 127.0.0.1:8000   # driven by that server (terminal 2)
 ./run.sh shell                      # interactive shell in the venv
 ./run.sh help
 ```
 
 Robot self-tests are standalone scripts, not pytest — a failure points at the robot
-definition rather than at task sampling:
+definition:
 
 ```bash
 python robots/myagv/test_attach.py [--scene /path/to/house.xml]
@@ -50,9 +49,9 @@ python tools/render_robots.py --outdir /tmp/robots   # render/load test for ever
 
 ### Two unrelated bridges — do not conflate them
 
-- `bridge/server.py`, `policy.py`, `run_bridge_sim.py`, `example_controller.py` — the
-  **arm-robot** bridge. msgpack-numpy over binary websocket frames. The simulator
-  connects *out* to a controller started by `./run.sh serve`.
+- `bridge/server.py`, `example_controller.py` — the **arm-robot** bridge. msgpack-numpy
+  over binary websocket frames. The simulator (`tools/spawn_robot.py::connect_control`,
+  behind `view --control`) connects *out* to a controller started by `./run.sh serve`.
 - `bridge/rosbridge_server.py` — the **mobile-base** bridge, wired up by `serve_ros()`
   in `tools/spawn_robot.py`. Plain rosbridge JSON over a websocket, served in-process.
   This is what `robot_console` talks to. ROS-only mode: mutually exclusive with
@@ -83,9 +82,8 @@ calling `tools/spawn_robot.py` directly.
 Multi-room houses live in `assets/scenes/procthor-10k-*`; `assets/scenes/ithor` holds
 single rooms (FloorPlan1-30 kitchens, 201+ living rooms, 301+ bedrooms, 401+ bathrooms).
 
-Out-of-tree robots load with `view` only; `sim`/`bridge` support the built-in robots
-(`franka`, `droid`, `rum`, `rby1`, `yam`, `bimanual_yam`) because the scripted planners
-need grasp libraries these lack.
+Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `droid`,
+`rum`, `rby1`, `yam`, `bimanual_yam`) live upstream and are not wired into the launcher.
 
 ### macOS constraints (these explain otherwise-baffling code)
 

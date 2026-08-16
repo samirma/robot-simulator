@@ -11,9 +11,8 @@
 #                                      myagv -> cmd_vel in, odom + camera + /scan
 #                                      out; ainex -> /walking/* and /app/* in, joint_states
 #                                      + camera + /scan out (it has no cmd_vel at all)
-#   ./run.sh sim  [--robot droid ...]  house + robot + scripted task, with viewer
-#   ./run.sh bridge [--port 8000 ...]  same as sim, driven by an external controller
-#   ./run.sh serve  [--port 8000]      run the example control server for `bridge`
+#   ./run.sh serve  [--port 8000]      run the external control server, paired with
+#                                      `view --robot <name> --control 127.0.0.1:8000`
 #   ./run.sh shell                     interactive shell inside the venv
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.
@@ -147,51 +146,16 @@ do_view() {
   # Deliberately a script, not `-m mujoco.viewer`: see tools/view_scene.py.
   # The path must be absolute, which resolve_scene.py guarantees.
   if [ -n "$robot" ]; then
-    # Spawns an out-of-tree robot (robots/<name>/) into the house. No task or policy
-    # is involved, so this works for robots that have no grasp library yet.
+    # Spawns an out-of-tree robot (robots/<name>/) into the house. Nothing beyond the
+    # scene and the robot is involved, so this works for robots that have no grasp
+    # library yet.
     exec "$MJPY" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --scene "$xml" \
       "${rest[@]+"${rest[@]}"}"
   fi
   exec "$MJPY" "$SIM_ROOT/tools/view_scene.py" "$xml" "${rest[@]+"${rest[@]}"}"
 }
 
-# ---------------------------------------------------------------- sim
-
-do_sim() {
-  ensure_setup
-  local -a args=("$@")
-  # Default to the viewer; pass --no-viewer for a headless run.
-  local viewer=1
-  local -a filtered=()
-  for a in "${args[@]+"${args[@]}"}"; do
-    if [ "$a" = "--no-viewer" ]; then viewer=0; else filtered+=("$a"); fi
-  done
-  [ "$viewer" = 1 ] && filtered+=("--viewer")
-
-  local runner="$PY"
-  [ "$viewer" = 1 ] && runner="$MJPY"
-
-  cd "$MOLMOSPACES_DIR"
-  exec "$runner" scripts/datagen/run_pipeline.py "${filtered[@]+"${filtered[@]}"}"
-}
-
-# ---------------------------------------------------------------- bridge
-
-do_bridge() {
-  ensure_setup
-  local -a args=("$@")
-  local viewer=1
-  local -a filtered=()
-  for a in "${args[@]+"${args[@]}"}"; do
-    if [ "$a" = "--no-viewer" ]; then viewer=0; else filtered+=("$a"); fi
-  done
-  [ "$viewer" = 1 ] && filtered+=("--viewer")
-
-  local runner="$PY"
-  [ "$viewer" = 1 ] && runner="$MJPY"
-
-  exec "$runner" "$SIM_ROOT/bridge/run_bridge_sim.py" "${filtered[@]+"${filtered[@]}"}"
-}
+# ---------------------------------------------------------------- serve
 
 do_serve() {
   ensure_setup
@@ -215,22 +179,12 @@ case "$cmd" in
   setup)  do_setup "$@" ;;
   assets) do_assets "$@" ;;
   view)   do_view "$@" ;;
-  sim)    do_sim "$@" ;;
-  bridge) do_bridge "$@" ;;
   serve)  do_serve "$@" ;;
   shell)  do_shell "$@" ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the
     # first non-comment line, with the leading "# " stripped.
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
-    echo
-    echo "sim/bridge flags are forwarded to run_pipeline.py:"
-    echo "  --robot   franka|droid|rum|rby1|yam|bimanual_yam   (built-ins only;"
-    echo "            out-of-tree robots load with 'view')"
-    echo "  --task_type pick|open|close|pick_and_place|packing|nav_to_obj"
-    echo "  --scene_dataset ithor|procthor-10k|procthor-objaverse"
-    echo "  --house_inds N   --seed N   --samples_per_house N"
-    echo "  --randomize_scene True   --no-viewer"
     ;;
   *) die "unknown command '$cmd' (try: ./run.sh help)" ;;
 esac

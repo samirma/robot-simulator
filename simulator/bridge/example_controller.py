@@ -3,24 +3,22 @@
 Run it with:
 
     ./run.sh serve --controller bridge.example_controller:reach_forward
-    ./run.sh bridge --robot droid          # in another terminal
+    ./run.sh view --robot so101 --control 127.0.0.1:8000   # in another terminal
 
 A controller is just a callable taking the observation dict and returning an
-action dict. It is called once per policy step, synchronously, off the event loop.
+action dict. It is called once per control step, synchronously, off the event loop.
 
-Useful observation keys (Franka; see README for the full list):
+Useful observation keys (see bridge/server.py for the wire protocol):
 
-    obs["actions/joint_pos"]  {"arm": [7], "gripper": [1]}  last commanded action,
-                                                            already the right width
-    obs["qpos"]               {"base": [], "arm": [7], "gripper": [2]}  measured
-    obs["tcp_pose"]           ndarray(7,)   end-effector pose, xyz + wxyz quat
-    obs["exo_camera_1"]       ndarray(720, 1280, 3) uint8
-    obs["wrist_camera"]       ndarray(720, 1280, 3) uint8
-    obs["grasp_state_pickup_obj"]["gripper"]  {"touching": bool, "held": bool}
-    obs["task"]               str, e.g. "Pick up the kitchen utensil"
+    obs["actions/joint_pos"]  {"arm": [...], "gripper": [...]}  last commanded
+                                                                action, already the
+                                                                right width
+    obs["qpos"]               measured joint positions, keyed by move group
+    obs["tcp_pose"]           ndarray(3,)   end-effector position, xyz
+    obs["camera_jpeg"]        JPEG bytes of the robot's camera, when streaming
 
-Command the *commanded* width, not the measured one: the Franka gripper reports
-two finger joints but takes a single actuator value.
+Command the *commanded* width, not the measured one: a gripper may report more
+finger joints than it takes actuator values.
 """
 
 from __future__ import annotations
@@ -37,7 +35,7 @@ def reach_forward(obs: dict) -> dict:
     """Ramp the shoulder joint forward, then close the gripper once in contact.
 
     Deliberately simple -- it demonstrates reading state, ramping a command, and
-    reacting to a sensor, without pretending to solve the task.
+    reacting to a sensor, without pretending to do anything useful.
     """
     commanded = obs["actions/joint_pos"]
     arm = np.asarray(commanded["arm"], dtype=np.float64)

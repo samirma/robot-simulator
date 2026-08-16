@@ -1,25 +1,22 @@
 #!/usr/bin/env python
 """External control server for the MolmoSpaces simulator.
 
-The simulator is the *client*: it connects out over a websocket, sends an
-observation dict each step, and applies the action dict it gets back. This is
-the protocol already implemented by ``molmo_spaces.policy.learned_policy
-.websocket_policy.WebsocketPolicy`` (client) and
-``molmo_spaces.evaluation.policy_server.WebsocketPolicyServer`` (server); this
-module is a dependency-light server for driving the robot from your own code,
-with no InferencePolicy wrapper in between.
+The simulator is the *client*: it connects out over a websocket
+(``tools/spawn_robot.py::connect_control``, wired behind ``view --control``),
+sends an observation dict each step, and applies the action dict it gets back.
+This module is a dependency-light server for driving the robot from your own
+code.
 
 Wire protocol (msgpack-numpy framed, binary websocket messages):
 
     server -> client   metadata dict, once, on connect
-    client -> server   observation dict   {"qpos", "qvel", "robot_base_pose",
-                                           <camera images>, "task", ...}
+    client -> server   observation dict   {"qpos", "qvel", "actions/joint_pos",
+                                           <camera images>, ...}
     server -> client   action dict        {"arm": ndarray, "gripper": ndarray}
 
 Action semantics follow the robot's ``command_mode`` (see
-``molmo_spaces/configs/robot_configs.py``). For the Franka configs used by
-``run.sh sim``, both arm and gripper are ``joint_position``: absolute joint
-targets in radians / metres.
+``molmo_spaces/configs/robot_configs.py``); for joint-position robots both arm
+and gripper are absolute joint targets in radians / metres.
 
 Usage:
     ./run.sh serve                       # hold position (default)
@@ -186,8 +183,6 @@ class BridgeServer:
                             "move groups: %s",
                             {k: len(v) for k, v in obs["qpos"].items()},
                         )
-                    if obs.get("task"):
-                        log.info("task: %s", obs["task"])
 
                 # The controller is user code and may block; keep it off the
                 # event loop so slow controllers don't stall the websocket.

@@ -10,7 +10,7 @@ spots on the floor but with under 0.35 m of clearance, i.e. wedged against furni
 Instead, use the occupancy map every scene already ships as `<scene>_map.png`, and pick
 a spot in an annulus around an object the robot could actually reach for -- the same
 shape as upstream's `MujocoEnv.place_robot_near` (molmo_spaces/env/env.py:761), lifted
-out of the env because `tools/` deliberately does not depend on the env/task-sampler
+out of the env because `tools/` deliberately does not depend on the upstream env
 stack.
 
     from tools.scene_placement import find_robot_placement

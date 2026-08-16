@@ -59,10 +59,9 @@ Re-run `python robots/so101/make_model.py` after changing `so101.xml`.
 
 * **5 DoF, so arbitrary 6-DoF Cartesian poses are unreachable.** The arm Jacobian has
   rank 5; IK is under-determined in orientation. Joint-space control is exact.
-* **No grasp library**, so the scripted pick/place planners and the datagen pipeline
-  (`run.sh sim`) do not work with it — those need per-gripper grasp sets, which exist
-  only for `droid` (Franka) and `rum`. Use `run.sh view --robot so101` plus the
-  bridge instead.
+* **No grasp library** — per-gripper grasp sets exist upstream only for `droid`
+  (Franka) and `rum`. Use `run.sh view --robot so101` plus the external control
+  server instead.
 * **The gripper is a single hinged jaw**, not a parallel-jaw. `inter_finger_dist` is
   measured between the jaw tips and varies non-linearly with the joint angle; the
   finger axis is only exactly perpendicular to the approach at one opening

@@ -35,9 +35,7 @@ else
   export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 fi
 
-# run_pipeline.py imports sibling modules (robot_conversion_patches) by bare name,
-# so its own directory has to be importable.
-export PYTHONPATH="$MOLMOSPACES_DIR:$MOLMOSPACES_DIR/scripts/datagen:$SIM_ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$MOLMOSPACES_DIR:$SIM_ROOT:${PYTHONPATH:-}"
 
 # Quieter, more deterministic runs.
 export TOKENIZERS_PARALLELISM=false

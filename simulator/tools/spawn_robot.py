@@ -17,8 +17,8 @@ Where "somewhere worth being" depends on what the robot is:
 * A **mobile base** is put on the most open floor the house has, which is where a robot
   that has to drive wants to start.
 
-This is the "spawn and look at it" path. It deliberately does not involve the task
-sampler or a scripted policy, so it works for robots that have no grasp library.
+This is the "spawn and look at it" path. Nothing beyond the scene and the robot is
+involved, so it works for robots that have no grasp library.
 """
 
 from __future__ import annotations
@@ -174,9 +174,8 @@ def add_tabletop_objects(spec, xy_min, xy_max, top_z: float, n: int) -> list[np.
     Only runs when the house gave us a work surface with nothing on it. Primitive boxes
     rather than library assets on purpose: `install_uid` wants a network fetch and a uid
     known to be small enough to pick up, and this is the fallback path -- it should not be
-    the one that needs the internet. Shaped after
-    `molmo_spaces/tasks/task_scene_utils.py::add_pickup_target`, but positioned from the
-    surface we actually measured instead of a hardcoded z.
+    the one that needs the internet. Positioned from the surface we actually measured
+    instead of a hardcoded z.
     """
     xy_min = np.asarray(xy_min, dtype=float)
     xy_max = np.asarray(xy_max, dtype=float)
@@ -373,8 +372,7 @@ def connect_control(
     Frames are JPEG-encoded rather than sent raw: 640x480x3 raw is ~920 KB, which at
     20 Hz is 18 MB/s and enough to stall the control loop.
 
-    This is the lightweight path for a robot spawned straight into a scene; the
-    datagen-pipeline equivalent is bridge/run_bridge_sim.py.
+    This is the lightweight path for a robot spawned straight into a scene.
     """
     import msgpack_numpy
     import websockets.sync.client as ws_client
@@ -384,8 +382,7 @@ def connect_control(
     # Wait for the control server rather than dying if it is not up yet. `open_timeout`
     # covers the handshake, not a refused connection, so without this loop whichever of
     # the two processes starts first simply exits — and the simulator takes ~20 s to load
-    # a scene, so it is usually the one left waiting. Same retry the upstream
-    # WebsocketPolicy uses.
+    # a scene, so it is usually the one left waiting.
     deadline = time.monotonic() + connect_timeout
     attempt = 0
     while True:
@@ -443,7 +440,6 @@ def connect_control(
             "actions/joint_pos": {
                 gid: np.asarray(g.ctrl).tolist() for gid, g in groups.items()
             },
-            "task": "",
         }
         if "arm" in groups:
             obs["tcp_pose"] = groups["arm"].leaf_frame_to_world[:3, 3]
@@ -777,7 +773,7 @@ def main() -> int:
         help="drive the robot from an external control server (see bridge/server.py)",
     )
     ap.add_argument(
-        "--control-hz", type=float, default=20.0, dest="control_hz", help="policy rate"
+        "--control-hz", type=float, default=20.0, dest="control_hz", help="control loop rate"
     )
     ap.add_argument(
         "--camera",

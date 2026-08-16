@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """Standalone check that the SO-101 attaches to a scene and its move groups work.
 
-Runs without the datagen pipeline, so failures point at the robot definition rather
-than at task sampling.
+Runs standalone, so failures point at the robot definition.
 
     python robots/so101/test_attach.py [--scene /path/to/house.xml] [--render out.png]
 """

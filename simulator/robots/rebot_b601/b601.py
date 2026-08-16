@@ -137,7 +137,7 @@ class B601Robot(Robot):
         spec.meshdir = MESHDIR
 
         # 0. Gravity compensation. The config asks for it, but MolmoSpaces only applies
-        #    that through the datagen pipeline's control overrides — so a robot spawned
+        #    that through its upstream control overrides — so a robot spawned
         #    directly (tools/spawn_robot.py, the self-test) would sag. Setting it on the
         #    bodies makes the behaviour the same either way. Without it this arm droops
         #    over a radian at the shoulder: its links are heavy relative to the modest

@@ -1,8 +1,7 @@
 #!/usr/bin/env python
 """Standalone check that the myAGV attaches and drives.
 
-Runs without the datagen pipeline, so a failure points at the robot definition rather
-than at task sampling.
+Runs standalone, so a failure points at the robot definition.
 
     python robots/myagv/test_attach.py [--scene /path/to/house.xml] [--render out.png]
 """
