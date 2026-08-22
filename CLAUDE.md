@@ -25,7 +25,7 @@ build.
 
 ### The multi-engine split (the central invariant)
 
-`simulator/` is not one simulator but **three interchangeable engines plus a shared
+`simulator/` is not one simulator but **two interchangeable engines plus a shared
 layer**:
 
 ```
@@ -36,7 +36,6 @@ simulator/
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
   robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
-  coppeliasim/  engine #3 — CoppeliaSim (ZMQ remote API)
 ```
 
 Each engine has its own `run.sh`, `env.sh`, `tools/spawn_robot.py`, and `uv` venv, and each
@@ -54,8 +53,8 @@ contract every engine obeys.
 ## simulator/molmospaces/  (the reference engine)
 
 Everything goes through `./run.sh` (from inside `simulator/molmospaces/`); it sources
-`env.sh` for asset paths and `MUJOCO_GL`. The other engines (`robocasa/`, `coppeliasim/`)
-mirror this launcher surface — see their READMEs.
+`env.sh` for asset paths and `MUJOCO_GL`. The other engine (`robocasa/`)
+mirrors this launcher surface — see its README.
 
 ```bash
 cd simulator/molmospaces
@@ -92,10 +91,8 @@ Both now live in `simulator/shared/contracts/` and are reused by every engine:
   websocket, served in-process. This is what `robot_console` talks to. ROS-only mode:
   mutually exclusive with `--control`, and only for robots with a mobile base (`myagv`).
 
-The MuJoCo engines additionally share `simulator/shared/mujoco_bridge.py` (holonomic
-`cmd_vel` integration, ray-cast `/scan`, camera encode) — it imports `mujoco`, so the
-CoppeliaSim engine does **not** use it and sources its observations over the ZMQ API
-instead.
+Both MuJoCo engines additionally share `simulator/shared/mujoco_bridge.py` (holonomic
+`cmd_vel` integration, ray-cast `/scan`, camera encode) — it imports `mujoco`.
 
 ### Out-of-tree robots
 

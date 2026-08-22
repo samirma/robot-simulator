@@ -3,7 +3,7 @@
 The MJCF (`model.xml` + `assets/`), the URDF, and the upstream source models for each
 robot live under `shared/robots/<name>/` so every simulator engine loads *the same*
 hardware description. Only the engine-specific adapter code (how that model is wired into
-MolmoSpaces, robosuite, or CoppeliaSim) differs per engine.
+MolmoSpaces or robosuite) differs per engine.
 
 This is deliberately a plain module, not a package named `robots`: each engine already
 puts its own `robots/` adapter package on `PYTHONPATH`, so a second importable `robots`

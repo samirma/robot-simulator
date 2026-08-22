@@ -13,6 +13,7 @@ connects to a RoboCasa-hosted robot with no changes — that is the whole point 
 ./run.sh view --robot myagv --scene kitchen:1 --ros-port 9090
 ./run.sh view --robot so101 --scene kitchen:3/5 --control 127.0.0.1:8000
 ./run.sh view --robot myagv --scene empty --ros-port 9090 --headless
+.venv/bin/python tools/screenshot.py --scene kitchen:1   # headless render of each robot
 ./run.sh shell
 ```
 
@@ -61,6 +62,7 @@ myAGV or the real 2023 Pi myAGV; a RoboCasa SO-101 speaks the identical control 
 robocasa/
   run.sh env.sh
   tools/spawn_robot.py     kitchen build + robot attach + shared-bridge serve loop
+  tools/screenshot.py      headless render of each robot in a kitchen (a smoke check)
   upstream/                robosuite (master) + robocasa clones (gitignored)
   .venv/ data/             (gitignored)
 ```
