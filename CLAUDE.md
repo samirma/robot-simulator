@@ -8,7 +8,7 @@ Two **independent** projects that talk over network protocols, never Python impo
 
 | Project | Responsibility |
 |---|---|
-| `simulator/` | Simulate robots and expose generic network servers for observations and actuator targets. |
+| `simulator/` | Simulate robots with a choice of **engine**, exposing generic network servers for observations and actuator targets. |
 | `robot_console/` | Drive, map and navigate compatible simulated or physical robots; all control policy lives here. |
 
 The separation is a hard constraint, not a preference: **`robot_console` must stay
@@ -23,21 +23,53 @@ inside `robot_console` is a feature worth preserving.
 Each project has its own `uv` venv and its own launcher script. There is no top-level
 build.
 
+### The multi-engine split (the central invariant)
+
+`simulator/` is not one simulator but **three interchangeable engines plus a shared
+layer**:
+
+```
+simulator/
+  shared/       cross-engine resources: the wire bridge and the robot specs
+    contracts/    rosbridge_server.py (myAGV topics) + control_server.py (SO-101) — pure transport, no MuJoCo
+    robots/       so101/ + myagv/ hardware specs (MJCF, meshes, URDF) — engine-neutral
+    mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
+  molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
+  robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
+  coppeliasim/  engine #3 — CoppeliaSim (ZMQ remote API)
+```
+
+Each engine has its own `run.sh`, `env.sh`, `tools/spawn_robot.py`, and `uv` venv, and each
+must spawn at least `so101` and `myagv`. **`robot_console` connects and controls a robot
+identically regardless of which engine hosts it — because every engine presents the *real
+hardware's* interface** by feeding the one shared bridge in `simulator/shared/contracts/`:
+the myAGV on its vendor `elephantrobotics/myagv_ros` rosbridge topics, the SO-101 on the
+`molmospaces-control-v1` msgpack-numpy contract. An engine change that makes the console
+able to tell the engines apart is a regression. Per-engine specifics live in each engine's
+`README.md`; the sections below cover MolmoSpaces (the reference engine) and then the ROS
+contract every engine obeys.
+
 ---
 
-## simulator/
+## simulator/molmospaces/  (the reference engine)
 
-Everything goes through `./run.sh`; it sources `env.sh` for asset paths and `MUJOCO_GL`.
+Everything goes through `./run.sh` (from inside `simulator/molmospaces/`); it sources
+`env.sh` for asset paths and `MUJOCO_GL`. The other engines (`robocasa/`, `coppeliasim/`)
+mirror this launcher surface — see their READMEs.
 
 ```bash
+cd simulator/molmospaces
 ./run.sh setup                      # venv + install molmospaces[mujoco] + default assets
 ./run.sh assets ithor               # pre-fetch iTHOR houses/objects/grasps (~13 GB)
 ./run.sh view --scene ithor:1       # a house in the viewer
 ./run.sh view --robot myagv --scene ithor:1 --ros-port 9090   # + robot, as a ROS robot
-./run.sh view --robot so101 --control-port 8000   # generic arm control server
+./run.sh view --robot so101 --control 127.0.0.1:8000   # generic arm control server
 ./run.sh shell                      # interactive shell in the venv
 ./run.sh help
 ```
+
+`--control HOST:PORT` is the current spelling (the console's `robot-console-arm --control
+HOST:PORT` mirrors it); `--control-port PORT` is kept as an alias.
 
 Robot self-tests are standalone scripts, not pytest — a failure points at the robot
 definition:
@@ -49,22 +81,31 @@ python tools/render_robots.py --outdir /tmp/robots   # render/load test for ever
 
 ### Two unrelated bridges — do not conflate them
 
-- `bridge/control_server.py` — the simulator-side **arm-robot transport**. msgpack-numpy
-  over binary websocket frames, hosted by `view --control-port`. It only sends
+Both now live in `simulator/shared/contracts/` and are reused by every engine:
+
+- `shared/contracts/control_server.py` — the **arm-robot transport**. msgpack-numpy
+  over binary websocket frames, hosted by `view --control`. It only sends
   observations and applies returned targets. All clients and action-selection code live
   in `robot_console` (`arm_client.py`, `inspect_so101.py`, `so101_driver.py`).
-- `bridge/rosbridge_server.py` — the **mobile-base** bridge, wired up by `serve_ros()`
-  in `tools/spawn_robot.py`. Plain rosbridge JSON over a websocket, served in-process.
-  This is what `robot_console` talks to. ROS-only mode: mutually exclusive with
-  `--control-port`, and only for robots with a mobile base (`myagv`).
+- `shared/contracts/rosbridge_server.py` — the **mobile-base** bridge, wired up by
+  `serve_ros()` in each engine's `tools/spawn_robot.py`. Plain rosbridge JSON over a
+  websocket, served in-process. This is what `robot_console` talks to. ROS-only mode:
+  mutually exclusive with `--control`, and only for robots with a mobile base (`myagv`).
+
+The MuJoCo engines additionally share `simulator/shared/mujoco_bridge.py` (holonomic
+`cmd_vel` integration, ray-cast `/scan`, camera encode) — it imports `mujoco`, so the
+CoppeliaSim engine does **not** use it and sources its observations over the ZMQ API
+instead.
 
 ### Out-of-tree robots
 
-Registered in the `ROBOTS` dict at the top of `tools/spawn_robot.py` (name → module,
-config class, robot class; imported lazily). Each lives in `robots/<name>/` with its
-MJCF, `make_model.py`, a `RobotView`/`Robot`/`BaseRobotConfig` trio, and a
-`test_attach.py`. `BaseRobotConfig.robot_dir` accepts an external directory, so none of
-this requires forking the upstream clone — **never modify `molmospaces/`**.
+Registered in the `ROBOTS` dict at the top of `molmospaces/tools/spawn_robot.py` (name →
+module, config class, robot class; imported lazily). The shared MJCF and meshes live in
+`simulator/shared/robots/<name>/`; the MolmoSpaces-coupled `RobotView`/`Robot`/`BaseRobotConfig`
+trio and `make_model.py` live in `molmospaces/robots/<name>/` as thin adapters over that
+shared spec, alongside a `test_attach.py`. `BaseRobotConfig.robot_dir` accepts an external
+directory, so none of this requires forking the upstream clone — **never modify
+`molmospaces/upstream/`** (the vendored allenai/molmospaces checkout).
 
 Three sets in `spawn_robot.py` drive placement and are the thing to check when a robot
 spawns wrong: `HOLONOMIC_BASE_ROBOTS`, `TABLETOP_ROBOTS`, `ARM_REACH`.

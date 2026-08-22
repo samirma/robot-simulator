@@ -117,13 +117,26 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8000)
+    ap.add_argument(
+        "--control",
+        default=None,
+        metavar="HOST:PORT",
+        help="control server address, e.g. 127.0.0.1:8000 (overrides --host/--port); "
+        "the same form the simulator's `run.sh view --control` takes",
+    )
     ap.add_argument("--connect-timeout", type=float, default=180.0)
     ap.add_argument("--controller", default="hold", help="hold, wave, or module:callable")
     args = ap.parse_args()
+    host, port = args.host, args.port
+    if args.control is not None:
+        # Reuse the console's own host:port parser so both entry points agree.
+        from robot_console.cli import split_host_port
+
+        host, port = split_host_port(args.control, default_port=port)
     ArmClient(
         load_controller(args.controller),
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         connect_timeout=args.connect_timeout,
     ).run()
 

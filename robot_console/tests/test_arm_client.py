@@ -35,3 +35,26 @@ def test_arm_client_receives_metadata_and_returns_action():
     assert client.metadata == {"model_name": "test-arm"}
     np.testing.assert_allclose(received[0]["arm"], [0.1, 0.2])
     np.testing.assert_allclose(received[0]["gripper"], [0.3])
+
+
+def test_control_flag_sets_host_and_port(monkeypatch):
+    """`--control host:port` mirrors the simulator's flag and overrides --host/--port."""
+    import sys
+
+    import robot_console.arm_client as ac
+
+    captured = {}
+
+    class _StubClient:
+        def __init__(self, controller, host, port, connect_timeout):
+            captured["host"] = host
+            captured["port"] = port
+
+        def run(self):
+            captured["ran"] = True
+
+    monkeypatch.setattr(ac, "ArmClient", _StubClient)
+    monkeypatch.setattr(sys, "argv", ["robot-console-arm", "--control", "192.168.1.7:8123"])
+    ac.main()
+
+    assert captured == {"host": "192.168.1.7", "port": 8123, "ran": True}
