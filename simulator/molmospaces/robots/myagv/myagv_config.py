@@ -13,10 +13,13 @@ from molmo_spaces.configs.robot_configs import BaseRobotConfig
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.robots.robot_views.abstract import RobotViewFactory
 
+from robots_spec import spec_dir
+
 from .myagv import MyAGVRobot
 from .myagv_view import MyAGVRobotView
 
-ROBOT_DIR = Path(__file__).resolve().parent
+# The model.xml + meshes are the engine-neutral spec, shared across simulator engines.
+ROBOT_DIR = spec_dir("myagv")
 
 
 class MyAGVCameraSystem(CameraSystemConfig):

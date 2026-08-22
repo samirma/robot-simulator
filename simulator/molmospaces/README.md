@@ -83,7 +83,7 @@ uv pip install -e '.[inspect]'  # requires Python 3.10+
 
 # terminal 1: simulator-hosted generic control endpoint
 cd ../simulator
-./run.sh view --robot so101 --scene robots/so101/inspect_scene.xml \
+./run.sh view --robot so101 --scene ../shared/robots/so101/inspect_scene.xml \
   --control-port 8000 --control-hz 20 --timeout 300
 
 # terminal 2: real SOArmEmbodiment, with a safe no-LLM smoke motion

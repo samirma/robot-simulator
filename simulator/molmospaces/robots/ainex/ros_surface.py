@@ -63,7 +63,7 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
               control_hz: float, watchdog_s: float, scan: dict | None = None,
               depth: dict | None = None, extra: dict | None = None):
     """Present the AiNex on its manufacturer's topics and return a per-step callback."""
-    from bridge.rosbridge_server import RosBridgeServer, header
+    from contracts.rosbridge_server import RosBridgeServer, header
     from tools.spawn_robot import PlanarSetpoint, SensorStreams, SensorTopics
 
     for group in ("base", "legs"):
@@ -397,7 +397,7 @@ def _imu_msg(seq: int, yaw: float, wz: float) -> dict:
     the real 9-axis IMU. Covariance of -1 in the first element is the ROS convention for
     "this quantity is not reported", which is the honest thing to say about the rest.
     """
-    from bridge.rosbridge_server import header as make_header
+    from contracts.rosbridge_server import header as make_header
 
     return {
         "header": make_header(seq, topics.FRAME_IMU),

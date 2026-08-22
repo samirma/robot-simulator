@@ -35,6 +35,10 @@ import numpy as np
 SIM_ROOT = Path(__file__).resolve().parents[1]
 if str(SIM_ROOT) not in sys.path:
     sys.path.insert(0, str(SIM_ROOT))
+# The wire bridge (contracts.*) and robot specs (robots_spec) live in simulator/shared.
+_SHARED = SIM_ROOT.parent / "shared"
+if _SHARED.is_dir() and str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
 
 # name -> (module, config class, robot class), kept lazy so importing one robot does
 # not require the others to be installed.
@@ -376,7 +380,7 @@ def serve_control(
     This is the lightweight path for a robot spawned straight into a scene.
     """
     groups = {gid: view.get_move_group(gid) for gid in view.move_group_ids()}
-    from bridge.control_server import ControlServer
+    from contracts.control_server import ControlServer
 
     server = ControlServer(
         host,
@@ -475,7 +479,7 @@ def laser_scan_ranges(
     so in the base frame the published scan runs counter-clockwise from -pi -- which is
     what this function produces. Do not "fix" one without the other.
 
-    Misses come back as `max_range + 1`; see bridge.rosbridge_server.laser_scan for why
+    Misses come back as `max_range + 1`; see contracts.rosbridge_server.laser_scan for why
     that rather than the X2's 0.0.
 
     `exclude_bodies` exists for legged robots. `mj_ray` takes a single `bodyexclude`,
@@ -645,7 +649,7 @@ class SensorStreams:
         return out
 
     def publish(self, data, seq: int, x: float, y: float, yaw: float) -> None:
-        from bridge.rosbridge_server import (
+        from contracts.rosbridge_server import (
             camera_info,
             compressed_image,
             image,
@@ -750,6 +754,11 @@ def main() -> int:
     ap.add_argument("--elevation", type=float, default=-15.0)
     ap.add_argument("--timeout", type=float, default=None, help="auto-close the viewer after N s")
     ap.add_argument(
+        "--headless", action="store_true", dest="headless",
+        help="run the simulation and any --ros-port/--control server WITHOUT opening the "
+             "viewer (for automated checks and displayless hosts)",
+    )
+    ap.add_argument(
         "--control-port",
         type=int,
         default=None,
@@ -759,6 +768,11 @@ def main() -> int:
     )
     ap.add_argument("--control-host", default="0.0.0.0", dest="control_host",
                     help="interface for --control-port (default: all interfaces)")
+    ap.add_argument(
+        "--control", default=None, dest="control", metavar="HOST:PORT",
+        help="serve the generic control endpoint on HOST:PORT "
+             "(shorthand for --control-host HOST --control-port PORT)",
+    )
     ap.add_argument(
         "--control-hz", type=float, default=20.0, dest="control_hz", help="control loop rate"
     )
@@ -986,6 +1000,23 @@ def main() -> int:
     elif camera.lower() == "none":
         camera = None
 
+    # `--control HOST:PORT` is the hardware-style shorthand; a bare `:PORT` or `PORT`
+    # keeps the default interface. It sets the same fields as --control-host/--control-port.
+    if args.control is not None:
+        if args.control_port is not None:
+            raise SystemExit("use either --control or --control-port, not both")
+        spec = args.control
+        if ":" in spec:
+            host, _, port = spec.rpartition(":")
+            if host:
+                args.control_host = host
+        else:
+            port = spec
+        try:
+            args.control_port = int(port)
+        except ValueError:
+            raise SystemExit(f"--control: expected HOST:PORT or PORT, got {args.control!r}")
+
     if args.ros_port and args.control_port:
         raise SystemExit("use either --ros-port or --control-port, not both")
 
@@ -1043,11 +1074,36 @@ def main() -> int:
     control_period = 1.0 / args.control_hz
     next_control = 0.0
 
+    deadline = None if args.timeout is None else time.monotonic() + args.timeout
+
+    if args.headless:
+        # Same step + control loop as the viewer path, but no window: this is what an
+        # automated console-connectivity check and a displayless host run, and it keeps
+        # the ROS/control servers behaving identically to the interactive path.
+        try:
+            while True:
+                step_start = time.time()
+                now = time.monotonic()
+                if controller is not None and now >= next_control:
+                    controller(data)
+                    next_control = now + control_period
+                mujoco.mj_step(model, data)
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                slack = model.opt.timestep - (time.time() - step_start)
+                if slack > 0:
+                    time.sleep(slack)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if controller is not None:
+                controller(None)  # close
+        return 0
+
     # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
     # function-local and shadow the module-level import above.
     from mujoco import viewer as mj_viewer
 
-    deadline = None if args.timeout is None else time.monotonic() + args.timeout
     try:
         with mj_viewer.launch_passive(model, data) as viewer:
             viewer.cam.lookat[:] = lookat

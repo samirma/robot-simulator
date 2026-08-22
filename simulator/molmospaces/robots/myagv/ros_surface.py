@@ -41,7 +41,7 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
     what `cmd_vel` means, and it keeps the client identical for real hardware. See
     bridge/rosbridge_server.py for why the protocol is served in-process.
     """
-    from bridge.rosbridge_server import (
+    from contracts.rosbridge_server import (
         TOPIC_CAMERA,
         TOPIC_CAMERA_INFO,
         TOPIC_CMD_VEL,

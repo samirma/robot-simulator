@@ -37,8 +37,15 @@ import mujoco
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-UPSTREAM = HERE / "so101.xml"
-OUT = HERE / "model.xml"
+# The generated model and its upstream source live in the shared spec dir, so every
+# engine consumes the same MJCF. This adapter (make_model.py) stays engine-side.
+import sys as _sys
+_sys.path.insert(0, str(HERE.parents[2] / "shared"))
+from robots_spec import spec_dir as _spec_dir  # noqa: E402
+
+SPEC = _spec_dir("so101")
+UPSTREAM = SPEC / "so101.xml"
+OUT = SPEC / "model.xml"
 
 # Gripper joint angle at which the finger axis is measured. ~0.04 m between jaw tips.
 NOMINAL_GRIP = 0.3

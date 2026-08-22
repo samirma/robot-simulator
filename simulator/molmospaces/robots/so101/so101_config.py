@@ -15,10 +15,13 @@ from molmo_spaces.configs.robot_configs import BaseRobotConfig
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.robots.robot_views.abstract import RobotViewFactory
 
+from robots_spec import spec_dir
+
 from .so101 import SO101Robot
 from .so101_view import SO101RobotView
 
-ROBOT_DIR = Path(__file__).resolve().parent
+# The model.xml + meshes are the engine-neutral spec, shared across simulator engines.
+ROBOT_DIR = spec_dir("so101")
 
 # Elbow-up rest pose that keeps the arm clear of its own mount and points the gripper
 # forward and slightly down, so the wrist camera sees the workspace.

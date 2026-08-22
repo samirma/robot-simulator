@@ -14,7 +14,11 @@ SIM_ROOT="$(dirname "$_env_src")"
 SIM_ROOT="$(realpath "$SIM_ROOT" 2>/dev/null || echo "${SIM_ROOT%/.}")"
 unset _env_src
 export SIM_ROOT
-export MOLMOSPACES_DIR="$SIM_ROOT/molmospaces"
+# The upstream allenai/molmospaces clone, fetched by `run.sh setup`.
+export MOLMOSPACES_DIR="$SIM_ROOT/upstream"
+# Cross-engine resources (the wire bridge and robot spec files), shared by every
+# simulator engine. Resolved without cd; realpath is an external binary.
+export SHARED_ROOT="$(realpath "$SIM_ROOT/../shared" 2>/dev/null || echo "$SIM_ROOT/../shared")"
 export VENV_DIR="$SIM_ROOT/.venv"
 
 # --- Asset storage -----------------------------------------------------------
@@ -35,7 +39,7 @@ else
   export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 fi
 
-export PYTHONPATH="$MOLMOSPACES_DIR:$SIM_ROOT:${PYTHONPATH:-}"
+export PYTHONPATH="$MOLMOSPACES_DIR:$SIM_ROOT:$SHARED_ROOT:${PYTHONPATH:-}"
 
 # Quieter, more deterministic runs.
 export TOKENIZERS_PARALLELISM=false

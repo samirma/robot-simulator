@@ -16,29 +16,38 @@ __pycache__/
 # Per-machine agent state. .claude/settings.json, if added, IS shared.
 .claude/settings.local.json
 
-# --- Simulator: everything here is produced by ./run.sh, never authored ---
+# --- Simulators: everything here is produced by each engine's ./run.sh ---
 #
-# The upstream clone, fetched by `run.sh setup`. It carries its own .git, so
-# committing it would embed a second repository rather than its contents.
-simulator/molmospaces/
+# Per-engine venvs.
+simulator/*/.venv/
+
+# The upstream clones, fetched by each engine's `run.sh setup`. They carry their
+# own .git, so committing them would embed a second repository rather than its
+# contents.
+simulator/molmospaces/upstream/
+simulator/robocasa/upstream/
+simulator/coppeliasim/app/
 
 # MLSPACES_CACHE_DIR: downloaded versioned assets, ~14 GB.
 # Restored with `./run.sh assets ithor`.
-simulator/data/
+simulator/molmospaces/data/
 
 # MLSPACES_ASSETS_DIR: the symlink tree MolmoSpaces generates and force-refreshes
 # (MLSPACES_FORCE_INSTALL=True), ~1.6 GB, plus datagen episode output. Curated robot
-# files live in robots/<name>/ precisely so they are not in here -- see
-# simulator/robots/URDF.md.
-simulator/assets/
+# files live in shared/robots/<name>/ precisely so they are not in here.
+simulator/molmospaces/assets/
+
+# RoboCasa / robosuite downloaded assets and macros.
+simulator/robocasa/assets/
+simulator/robocasa/data/
 
 # Scratch run output (keep the committed evidence videos, drop scratch runs).
-simulator/outputs/
-simulator/runs/
-simulator/logs/
+simulator/*/outputs/
+simulator/*/runs/
+simulator/*/logs/
 
 # Profiling output from the upstream test suites.
-simulator/mlspaces_tests/**/profiling_results.txt
+simulator/**/mlspaces_tests/**/profiling_results.txt
 
 *.log
 

@@ -8,7 +8,7 @@ import time
 import msgpack_numpy
 import numpy as np
 import websockets.sync.client as ws_client
-from control_server import ControlServer
+from contracts.control_server import ControlServer
 
 
 def main() -> int:

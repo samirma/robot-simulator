@@ -36,9 +36,16 @@ import numpy as np
 import trimesh
 
 HERE = Path(__file__).resolve().parent
-UPSTREAM = HERE / "urdf"
-ASSETS = HERE / "assets"
-OUT = HERE / "model.xml"
+# The generated model, meshes and URDF source live in the shared spec dir, so every
+# engine consumes the same MJCF. This adapter (make_model.py) stays engine-side.
+import sys as _sys
+_sys.path.insert(0, str(HERE.parents[2] / "shared"))
+from robots_spec import spec_dir as _spec_dir  # noqa: E402
+
+SPEC = _spec_dir("myagv")
+UPSTREAM = SPEC / "urdf"
+ASSETS = SPEC / "assets"
+OUT = SPEC / "model.xml"
 
 # Published myAGV 2023 Pi specs (elephantrobotics.com/en/myagv-2023-pi-specifications-en/)
 CHASSIS_L = 0.31115  # m, along +x (forward)
