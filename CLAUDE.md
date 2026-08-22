@@ -8,13 +8,14 @@ Two **independent** projects that talk over network protocols, never Python impo
 
 | Project | Responsibility |
 |---|---|
-| `simulator/` | Simulate robots in furnished houses with MuJoCo and MolmoSpaces. |
-| `robot_console/` | Drive, map and navigate a compatible simulated *or physical* robot over ROS/rosbridge. |
+| `simulator/` | Simulate robots and expose generic network servers for observations and actuator targets. |
+| `robot_console/` | Drive, map and navigate compatible simulated or physical robots; all control policy lives here. |
 
 The separation is a hard constraint, not a preference: **`robot_console` must stay
 installable and runnable on a machine with no MuJoCo, no MolmoSpaces, and no
-`simulator/` checkout.** Its only runtime dependencies are `numpy`, `opencv-python`, and
-`roslibpy`. Never import from `simulator/` in console code or its tests — the console's
+`simulator/` checkout.** Its base runtime dependencies are `numpy`, `opencv-python`, and
+`roslibpy`; arm/Inspect integrations are optional extras and still must not depend on
+MuJoCo or simulator code. Never import from `simulator/` in console code or its tests — the console's
 test double for the bridge (`robot_console/tests/fake_bridge.py`) is deliberately a
 separate reimplementation for this reason. `.venv/bin/python -c "import mujoco"` failing
 inside `robot_console` is a feature worth preserving.
@@ -33,8 +34,7 @@ Everything goes through `./run.sh`; it sources `env.sh` for asset paths and `MUJ
 ./run.sh assets ithor               # pre-fetch iTHOR houses/objects/grasps (~13 GB)
 ./run.sh view --scene ithor:1       # a house in the viewer
 ./run.sh view --robot myagv --scene ithor:1 --ros-port 9090   # + robot, as a ROS robot
-./run.sh serve --controller wave    # websocket control server (terminal 1)
-./run.sh view --robot so101 --control 127.0.0.1:8000   # driven by that server (terminal 2)
+./run.sh view --robot so101 --control-port 8000   # generic arm control server
 ./run.sh shell                      # interactive shell in the venv
 ./run.sh help
 ```
@@ -49,13 +49,14 @@ python tools/render_robots.py --outdir /tmp/robots   # render/load test for ever
 
 ### Two unrelated bridges — do not conflate them
 
-- `bridge/server.py`, `example_controller.py` — the **arm-robot** bridge. msgpack-numpy
-  over binary websocket frames. The simulator (`tools/spawn_robot.py::connect_control`,
-  behind `view --control`) connects *out* to a controller started by `./run.sh serve`.
+- `bridge/control_server.py` — the simulator-side **arm-robot transport**. msgpack-numpy
+  over binary websocket frames, hosted by `view --control-port`. It only sends
+  observations and applies returned targets. All clients and action-selection code live
+  in `robot_console` (`arm_client.py`, `inspect_so101.py`, `so101_driver.py`).
 - `bridge/rosbridge_server.py` — the **mobile-base** bridge, wired up by `serve_ros()`
   in `tools/spawn_robot.py`. Plain rosbridge JSON over a websocket, served in-process.
   This is what `robot_console` talks to. ROS-only mode: mutually exclusive with
-  `--control`, and only for robots with a mobile base (`myagv`).
+  `--control-port`, and only for robots with a mobile base (`myagv`).
 
 ### Out-of-tree robots
 
@@ -131,6 +132,8 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `camera.py` — CompressedImage decode + `LatestFrame`, the thread hand-off
 - `bridge.py` — `RobotLink` (roslibpy) and pure `parse_odom`
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
+- `arm_client.py` — generic msgpack-numpy simulator client; `so101_driver.py` and
+  `inspect_so101.py` adapt it to the optional unmodified Inspect Robots SO-101 stack
 - `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
   uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
   (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan

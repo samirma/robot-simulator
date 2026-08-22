@@ -22,7 +22,7 @@ an external control bridge.
 | `.venv/` | Python 3.11 virtualenv, managed by `uv` |
 | `data/mujoco/` | `MLSPACES_CACHE_DIR` — versioned downloaded assets |
 | `assets/` | `MLSPACES_ASSETS_DIR` — unversioned symlink tree that MuJoCo loads from |
-| `bridge/` | external control server + the in-process rosbridge |
+| `bridge/` | simulator-hosted generic control servers |
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
 | `robots/` | out-of-tree robot definitions (so101, myagv, rebot_b601, ainex) |
 | `tools/render_robots.py` | render every loadable robot; doubles as a load test |
@@ -33,41 +33,69 @@ an external control bridge.
 ./run.sh setup                     venv + install + default assets (idempotent)
 ./run.sh assets [ithor|list|<src>] bulk pre-fetch for offline use
 ./run.sh view [--scene ithor:1]    a house in the MuJoCo viewer, no robot
-./run.sh serve [--controller ...]  the control server that `view --control` connects to
 ./run.sh shell                     interactive shell in the venv
 ```
 
 ## External control
 
-The simulator connects **out** to a control server over a websocket and applies
-whatever actions it gets back — so your controller is an ordinary process that
-can live anywhere, in any language that can speak websockets + msgpack.
+The simulator hosts a generic websocket server that publishes observations and applies
+the actuator targets returned by one external client. It contains no action-selection
+or robot-control policy; controllers live in `robot_console` and can target this server
+without importing MuJoCo or MolmoSpaces.
 
 ```bash
-./run.sh serve --controller wave --verbose             # terminal 1: start the server first
-./run.sh view --robot so101 --control 127.0.0.1:8000   # terminal 2
+./run.sh view --robot so101 --control-port 8000         # terminal 1: simulator server
+cd ../robot_console
+.venv/bin/robot-console-arm --controller wave --port 8000  # terminal 2: control client
 ```
 
 Protocol (msgpack-numpy over binary websocket frames):
 
 ```
-server -> sim    metadata dict, once, on connect
-sim -> server    observation  {"qpos", "qvel", "actions/joint_pos", <cameras>}
-server -> sim    action       {"arm": ndarray, "gripper": ndarray}
+sim -> client    metadata dict, once, on connect
+sim -> client    observation  {"qpos", "qvel", "actions/joint_pos", <cameras>}
+client -> sim    action       {"arm": ndarray, "gripper": ndarray}
 ```
 
 Action semantics follow the robot's `command_mode`
 (`molmospaces/molmo_spaces/configs/robot_configs.py`); for joint-position
 robots both are absolute joint targets.
 
-Write your own controller as any `obs -> action` callable and point at it:
+Write your own controller in `robot_console` as any `obs -> action` callable and point
+the client at it:
 
 ```bash
-./run.sh serve --controller mypkg.mymodule:my_controller
+.venv/bin/robot-console-arm --controller mypkg.mymodule:my_controller
 ```
 
-Built-ins: `hold` (stay put, the default) and `wave` (sweep the last arm joint,
-useful to confirm the loop end to end).
+The console provides `hold` (the default) and `wave` clients for protocol checks.
+
+### Inspect Robots SO-101
+
+The Inspect Robots adapter and policy live in `robot_console`; the simulator only
+provides this scene and its generic control server.
+
+Install the console's optional Inspect Robots dependencies, then run both projects:
+
+```bash
+cd ../robot_console
+uv pip install -e '.[inspect]'  # requires Python 3.10+
+
+# terminal 1: simulator-hosted generic control endpoint
+cd ../simulator
+./run.sh view --robot so101 --scene robots/so101/inspect_scene.xml \
+  --control-port 8000 --control-hz 20 --timeout 300
+
+# terminal 2: real SOArmEmbodiment, with a safe no-LLM smoke motion
+cd ../robot_console
+.venv/bin/robot-console-inspect-so101 --smoke --port 8000
+```
+
+For the local Ollama model, omit `--smoke`; defaults are
+`qwen3.8:27b-mlx` at `http://127.0.0.1:11434/v1` and the instruction
+`Pick up the blue cup and place it inside the open orange box.`. Inspect Robots and its
+SO-101 package are never imported by the simulator process and are not modified by this
+integration.
 
 ### ROS
 
@@ -185,8 +213,8 @@ is running will block until it finishes rather than fail.
 ./run.sh view --robot so101                      # spawn it in a house, interactive
 ./run.sh view --robot myagv                      # ...or any other out-of-tree robot
 python tools/render_robots.py --outdir /tmp/robots     # render them all
-./run.sh serve --controller wave                 # terminal 1
-./run.sh view --robot so101 --control 127.0.0.1:8000   # terminal 2: external control
+./run.sh view --robot so101 --control-port 8000       # terminal 1: simulator server
+../robot_console/.venv/bin/robot-console-arm --controller wave --port 8000  # terminal 2
 python robots/so101/test_attach.py               # self-test in an empty world
 ```
 

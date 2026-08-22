@@ -355,14 +355,15 @@ def warn_on_penetration(model, data, namespace: str, depth: float = -0.001) -> N
         return
 
 
-def connect_control(
-    endpoint: str, view, model, camera: str | None, camera_size, jpeg_quality: int,
-    connect_timeout: float = 180.0,
+def serve_control(
+    host: str, port: int, view, model, camera: str | None, camera_size,
+    jpeg_quality: int, robot_name: str,
 ):
-    """Connect to a bridge control server and return a step callback.
+    """Serve the generic robot-control protocol and return a step callback.
 
-    Speaks the same msgpack-numpy protocol as bridge/server.py: send an observation,
-    receive a dict of `{move_group: target}`, write those into the move-group ctrl.
+    Send an observation, receive a dict of `{move_group: target}`, and write those
+    targets into the move-group controls. The server provides mechanism only; all
+    decisions about what action to return belong to the external client.
     Calling the returned function with None closes the connection.
 
     Robot-agnostic: whatever move groups the RobotView exposes are sent and accepted,
@@ -374,36 +375,20 @@ def connect_control(
 
     This is the lightweight path for a robot spawned straight into a scene.
     """
-    import msgpack_numpy
-    import websockets.sync.client as ws_client
-
-    uri = endpoint if endpoint.startswith("ws") else f"ws://{endpoint}"
-
-    # Wait for the control server rather than dying if it is not up yet. `open_timeout`
-    # covers the handshake, not a refused connection, so without this loop whichever of
-    # the two processes starts first simply exits — and the simulator takes ~20 s to load
-    # a scene, so it is usually the one left waiting.
-    deadline = time.monotonic() + connect_timeout
-    attempt = 0
-    while True:
-        try:
-            conn = ws_client.connect(uri, compression=None, max_size=None, open_timeout=30)
-            break
-        except (ConnectionRefusedError, OSError) as exc:
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"no control server at {uri} after {connect_timeout:.0f}s. "
-                    "Start one with: cd ../robot_console && ./bin/teleop.sh"
-                ) from exc
-            if attempt == 0:
-                print(f"waiting for a control server at {uri} ...", file=sys.stderr)
-            attempt += 1
-            time.sleep(2.0)
-
-    metadata = msgpack_numpy.unpackb(conn.recv(timeout=10))
-    print(f"control server: {metadata}", file=sys.stderr)
-
     groups = {gid: view.get_move_group(gid) for gid in view.move_group_ids()}
+    from bridge.control_server import ControlServer
+
+    server = ControlServer(
+        host,
+        port,
+        metadata={
+            "model_name": robot_name,
+            "protocol": "molmospaces-control-v1",
+            "move_groups": {gid: len(np.asarray(group.ctrl)) for gid, group in groups.items()},
+        },
+    )
+    server.start()
+    print(f"control server listening on ws://{host}:{port}", file=sys.stderr)
 
     renderer = None
     if camera is not None:
@@ -431,7 +416,7 @@ def connect_control(
         if data is None:
             if renderer is not None:
                 renderer.close()
-            conn.close()
+            server.stop()
             return
 
         obs = {
@@ -452,11 +437,9 @@ def connect_control(
             renderer.update_scene(data, camera=camera)
             obs.update(encode(renderer.render()))
 
-        conn.send(msgpack_numpy.packb(obs))
-        reply = conn.recv(timeout=30)
-        if isinstance(reply, str):
-            raise RuntimeError(f"control server error:\n{reply}")
-        action = msgpack_numpy.unpackb(reply)
+        action = server.publish(obs)
+        if action is None:
+            return
         for gid, target in action.items():
             if gid in groups:
                 groups[gid].ctrl = np.asarray(target, dtype=np.float64)
@@ -767,32 +750,32 @@ def main() -> int:
     ap.add_argument("--elevation", type=float, default=-15.0)
     ap.add_argument("--timeout", type=float, default=None, help="auto-close the viewer after N s")
     ap.add_argument(
-        "--control",
+        "--control-port",
+        type=int,
         default=None,
-        metavar="HOST:PORT",
-        help="drive the robot from an external control server (see bridge/server.py)",
+        dest="control_port",
+        metavar="PORT",
+        help="serve observations and accept actuator targets from an external client",
     )
+    ap.add_argument("--control-host", default="0.0.0.0", dest="control_host",
+                    help="interface for --control-port (default: all interfaces)")
     ap.add_argument(
         "--control-hz", type=float, default=20.0, dest="control_hz", help="control loop rate"
     )
     ap.add_argument(
         "--camera",
         default=None,
-        help="MJCF camera to stream with --control; defaults to the robot's front_camera "
+        help="MJCF camera to stream with --control-port; defaults to the robot's front_camera "
         "if it has one. Use 'none' to disable.",
     )
     ap.add_argument("--camera-size", type=int, nargs=2, default=[640, 480], dest="camera_size",
                     metavar=("W", "H"))
     ap.add_argument("--jpeg-quality", type=int, default=70, dest="jpeg_quality")
     ap.add_argument(
-        "--connect-timeout", type=float, default=180.0, dest="connect_timeout",
-        help="seconds to wait for the control server before giving up",
-    )
-    ap.add_argument(
         "--ros-port", type=int, default=None, dest="ros_port",
         metavar="PORT",
         help="present the robot on the myagv_ros topics via rosbridge (usually 9090). "
-        "Mutually exclusive with --control.",
+        "Mutually exclusive with --control-port.",
     )
     ap.add_argument(
         "--watchdog", type=float, default=0.5,
@@ -989,14 +972,22 @@ def main() -> int:
 
     camera = args.camera
     if camera is None:
-        # Default to the robot's own forward camera when it has one.
-        default_cam = f"{ns}front_camera"
-        camera = default_cam if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, default_cam) >= 0 else None
+        # Prefer a stable workspace view for tabletop arms, then the conventional
+        # forward camera, and finally a wrist view. SO-101 names all three differently.
+        candidates = (f"{ns}exo_camera", f"{ns}front_camera", f"{ns}wrist_cam")
+        camera = next(
+            (
+                name
+                for name in candidates
+                if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name) >= 0
+            ),
+            None,
+        )
     elif camera.lower() == "none":
         camera = None
 
-    if args.ros_port and args.control:
-        raise SystemExit("use either --ros-port or --control, not both")
+    if args.ros_port and args.control_port:
+        raise SystemExit("use either --ros-port or --control-port, not both")
 
     if args.ros_port:
         if args.robot not in ROS_SURFACES:
@@ -1042,10 +1033,10 @@ def main() -> int:
             args.control_hz, args.watchdog, scan=scan_cfg, depth=depth_cfg,
             extra={"action_dir": args.action_dir},
         )
-    elif args.control:
-        controller = connect_control(
-            args.control, view, model, camera, args.camera_size, args.jpeg_quality,
-            args.connect_timeout,
+    elif args.control_port:
+        controller = serve_control(
+            args.control_host, args.control_port, view, model, camera,
+            args.camera_size, args.jpeg_quality, args.robot,
         )
     else:
         controller = None
@@ -1057,26 +1048,28 @@ def main() -> int:
     from mujoco import viewer as mj_viewer
 
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
-    with mj_viewer.launch_passive(model, data) as viewer:
-        viewer.cam.lookat[:] = lookat
-        viewer.cam.distance = distance
-        viewer.cam.azimuth = azimuth
-        viewer.cam.elevation = args.elevation
-        while viewer.is_running():
-            step_start = time.time()
-            now = time.monotonic()
-            if controller is not None and now >= next_control:
-                controller(data)
-                next_control = now + control_period
-            mujoco.mj_step(model, data)
-            viewer.sync()
-            if deadline is not None and time.monotonic() > deadline:
-                break
-            slack = model.opt.timestep - (time.time() - step_start)
-            if slack > 0:
-                time.sleep(slack)
-    if controller is not None:
-        controller(None)  # close
+    try:
+        with mj_viewer.launch_passive(model, data) as viewer:
+            viewer.cam.lookat[:] = lookat
+            viewer.cam.distance = distance
+            viewer.cam.azimuth = azimuth
+            viewer.cam.elevation = args.elevation
+            while viewer.is_running():
+                step_start = time.time()
+                now = time.monotonic()
+                if controller is not None and now >= next_control:
+                    controller(data)
+                    next_control = now + control_period
+                mujoco.mj_step(model, data)
+                viewer.sync()
+                if deadline is not None and time.monotonic() > deadline:
+                    break
+                slack = model.opt.timestep - (time.time() - step_start)
+                if slack > 0:
+                    time.sleep(slack)
+    finally:
+        if controller is not None:
+            controller(None)  # close
     return 0
 
 

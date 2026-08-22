@@ -11,8 +11,7 @@
 #                                      myagv -> cmd_vel in, odom + camera + /scan
 #                                      out; ainex -> /walking/* and /app/* in, joint_states
 #                                      + camera + /scan out (it has no cmd_vel at all)
-#   ./run.sh serve  [--port 8000]      run the external control server, paired with
-#                                      `view --robot <name> --control 127.0.0.1:8000`
+#                 [--control-port 8000] ...or as a generic observation/action server
 #   ./run.sh shell                     interactive shell inside the venv
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.
@@ -133,14 +132,21 @@ do_view() {
     esac
   done
 
-  local dataset="${scene%%:*}"
-  local index="${scene##*:}"
-  [ "$dataset" = "$index" ] && index=0
-
-  echo ">> resolving $dataset scene #$index (downloading if needed)"
   local xml
-  xml="$("$PY" "$SIM_ROOT/tools/resolve_scene.py" "$dataset" "$index")" \
-    || die "could not resolve scene $scene"
+  if [ -f "$scene" ]; then
+    case "$scene" in
+      /*) xml="$scene" ;;
+      *)  xml="$PWD/$scene" ;;
+    esac
+    echo ">> using scene file $scene"
+  else
+    local dataset="${scene%%:*}"
+    local index="${scene##*:}"
+    [ "$dataset" = "$index" ] && index=0
+    echo ">> resolving $dataset scene #$index (downloading if needed)"
+    xml="$("$PY" "$SIM_ROOT/tools/resolve_scene.py" "$dataset" "$index")" \
+      || die "could not resolve scene $scene"
+  fi
   echo ">> $xml"
 
   # Deliberately a script, not `-m mujoco.viewer`: see tools/view_scene.py.
@@ -153,13 +159,6 @@ do_view() {
       "${rest[@]+"${rest[@]}"}"
   fi
   exec "$MJPY" "$SIM_ROOT/tools/view_scene.py" "$xml" "${rest[@]+"${rest[@]}"}"
-}
-
-# ---------------------------------------------------------------- serve
-
-do_serve() {
-  ensure_setup
-  exec "$PY" "$SIM_ROOT/bridge/server.py" "$@"
 }
 
 # ---------------------------------------------------------------- shell
@@ -179,7 +178,6 @@ case "$cmd" in
   setup)  do_setup "$@" ;;
   assets) do_assets "$@" ;;
   view)   do_view "$@" ;;
-  serve)  do_serve "$@" ;;
   shell)  do_shell "$@" ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the

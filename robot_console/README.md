@@ -3,11 +3,11 @@
 Keyboard teleoperation, mapping and navigation for a [myAGV], over rosbridge. Teleop
 also drives a Hiwonder AiNex — see [`--robot`](#--robot).
 
-The console is an independent project. Its only dependencies are `numpy`,
+The console is an independent project. Its base dependencies are `numpy`,
 `opencv-python`, and `roslibpy`, so it installs and runs on a machine that has never
 seen MuJoCo, MolmoSpaces, or the `simulator/` checkout. It speaks the myAGV ROS
-interface over a websocket and nothing else, which is what lets the same binary drive a
-simulated robot or a real one.
+interface and the simulator's generic arm protocol over websockets. Optional arm and
+Inspect Robots dependencies do not introduce a simulator import.
 
 ## Quick start
 
@@ -34,6 +34,37 @@ just a launcher. It re-installs by itself when `pyproject.toml` changes, and
 
 Before connecting it checks that something is listening, and prints how to start each
 kind of robot when nothing is. `--no-preflight` skips the check.
+
+## Arm control
+
+For non-ROS arms, the simulator hosts a generic msgpack-numpy observation/action
+server and this project supplies the control client:
+
+```bash
+# terminal 1
+cd ../simulator
+./run.sh view --robot so101 --control-port 8000
+
+# terminal 2
+cd ../robot_console
+uv pip install -e '.[arm]'
+.venv/bin/robot-console-arm --controller wave --port 8000
+```
+
+`hold` is the safe default. A custom controller is an `observation -> action` callable
+selected with `--controller package.module:function`; `example_arm_controller.py`
+contains a worked example.
+
+The SO-101 Inspect Robots integration is also entirely console-side:
+
+```bash
+uv pip install -e '.[inspect]'  # requires Python 3.10+
+.venv/bin/robot-console-inspect-so101 --smoke --port 8000
+.venv/bin/robot-console-inspect-so101 --port 8000  # local Ollama evaluation
+```
+
+It injects `SimulatorSO101` as the unmodified `inspect-robots-so101` hardware driver.
+The simulator knows nothing about Inspect Robots, Ollama, prompts, or control policy.
 
 ### `--robot`
 

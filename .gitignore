@@ -35,6 +35,7 @@ simulator/assets/
 # Scratch run output (keep the committed evidence videos, drop scratch runs).
 simulator/outputs/
 simulator/runs/
+simulator/logs/
 
 # Profiling output from the upstream test suites.
 simulator/mlspaces_tests/**/profiling_results.txt
