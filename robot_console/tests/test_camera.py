@@ -9,7 +9,6 @@ from robot_console.camera import (
     LatestFrame,
     compressed_image_bytes,
     decode_compressed_image,
-    decode_depth_image,
     header_seq,
     is_jpeg,
 )
@@ -173,39 +172,3 @@ def test_decoding_agrees_with_the_raw_bytes_it_is_built_on():
     msg = {"format": "jpeg", "data": base64.b64encode(buf.tobytes()).decode()}
     assert decode_compressed_image(msg) is not None
     assert compressed_image_bytes(msg) == buf.tobytes()
-
-
-# ------------------------------------------------------------------ depth
-
-
-def depth_message(mm: np.ndarray) -> dict:
-    return {
-        "encoding": "16UC1",
-        "height": mm.shape[0],
-        "width": mm.shape[1],
-        "step": mm.shape[1] * 2,
-        "data": base64.b64encode(mm.astype(np.uint16).tobytes()).decode(),
-    }
-
-
-def test_depth_comes_back_in_metres():
-    out = decode_depth_image(depth_message(np.array([[1500, 250], [3000, 10]])))
-    np.testing.assert_allclose(out[0], [1.5, 0.25])
-    np.testing.assert_allclose(out[1], [3.0, 0.01])
-    assert out.dtype == np.float32
-
-
-def test_a_zero_depth_reading_is_no_return_not_zero_metres():
-    """0 means the sensor saw nothing; left as 0.0 it is a wall against the lens."""
-    out = decode_depth_image(depth_message(np.array([[0, 2000]])))
-    assert np.isnan(out[0, 0])
-    assert out[0, 1] == pytest.approx(2.0)
-
-
-@pytest.mark.parametrize("msg", [
-    None, {}, {"encoding": "32FC1", "height": 1, "width": 1, "data": "AA=="},
-    {"encoding": "16UC1", "height": 0, "width": 0, "data": "AA=="},
-    {"encoding": "16UC1", "height": 4, "width": 4, "data": "AA=="},   # truncated
-])
-def test_decode_depth_image_never_raises(msg):
-    assert decode_depth_image(msg) is None

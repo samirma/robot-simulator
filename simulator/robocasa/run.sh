@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# RoboCasa (robosuite + MuJoCo) simulator launcher.
+# RoboCasa simulator launcher (engine #2: MuJoCo + robosuite + RoboCasa kitchens).
 #
-#   ./run.sh setup                     install venv + robosuite + robocasa + assets
-#   ./run.sh view [--scene kitchen:1]  open a kitchen in the MuJoCo viewer
-#                 [--robot so101]      ...with a shared robot spawned in it:
-#                                      so101 | myagv
-#                 [--ros-port 9090]    ...on the myAGV's vendor ROS topics (myagv only)
-#                 [--control 127.0.0.1:8000] ...or as a generic control server (so101)
-#                 [--headless]         ...run the sim + servers with no viewer window
-#   ./run.sh shell                     interactive shell inside the venv
-#
-# The robot models and the wire bridge come from simulator/shared, so robot_console
-# connects to a RoboCasa-hosted robot exactly as it does to a MolmoSpaces one.
+#   ./run.sh setup                       clone upstream + venv + editable install
+#   ./run.sh assets                      download the kitchen assets (~10 GB)
+#   ./run.sh view [--layout 1] [--style 3] [--robot PandaOmron]
+#                                        open a kitchen in the MuJoCo viewer;
+#                                        layout 1-60, style 1-60
+#   ./run.sh --layout 1 --style 3        shorthand for `view --layout 1 --style 3`
+#   ./run.sh shell                       interactive shell inside the venv
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.
 set -euo pipefail
 
+# Resolved without cd; see the note in env.sh about title-escape capture.
 _self="${BASH_SOURCE[0]}"
 case "$_self" in /*) ;; *) _self="$PWD/$_self" ;; esac
 SIM_ROOT="$(dirname "$_self")"
@@ -29,7 +26,14 @@ PY="$VENV_DIR/bin/python"
 MJPY="$VENV_DIR/bin/mjpython"
 [ "$(uname -s)" = "Darwin" ] || MJPY="$PY"
 
+# robocasa v1.0 targets robosuite's master branch (its Kitchen env passes
+# lite_physics/load_model_on_init, which no v1.5.x tag accepts).
+ROBOSUITE_REF=master
+ROBOCASA_REF=v1.0
+
 die() { echo "error: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------- setup
 
 find_python311() {
   for c in /opt/homebrew/opt/python@3.11/bin/python3.11 \
@@ -40,83 +44,66 @@ find_python311() {
   return 1
 }
 
-# ---------------------------------------------------------------- setup
-
 do_setup() {
   command -v uv >/dev/null || die "uv not found; install from https://docs.astral.sh/uv/"
-  command -v git >/dev/null || die "git not found"
+
+  if [ ! -d "$ROBOSUITE_DIR" ]; then
+    echo ">> cloning robosuite $ROBOSUITE_REF"
+    git clone --depth 1 --branch "$ROBOSUITE_REF" \
+      https://github.com/ARISE-Initiative/robosuite.git "$ROBOSUITE_DIR"
+  fi
+  if [ ! -d "$ROBOCASA_DIR" ]; then
+    echo ">> cloning robocasa $ROBOCASA_REF"
+    git clone --depth 1 --branch "$ROBOCASA_REF" \
+      https://github.com/robocasa/robocasa.git "$ROBOCASA_DIR"
+  fi
 
   if [ ! -x "$PY" ]; then
-    # mjpython needs a shared libpython, which uv's standalone CPython does not ship,
-    # so the venv is built on a Homebrew/system framework Python 3.11.
+    # mjpython needs a shared libpython, which uv's standalone CPython does not
+    # ship, so the venv is built on a Homebrew/system framework Python 3.11.
     py311="$(find_python311)" || die "python 3.11 not found. Run: brew install python@3.11"
     echo ">> creating venv on $py311"
     uv venv --python "$py311" "$VENV_DIR"
   fi
 
-  mkdir -p "$UPSTREAM_DIR"
+  echo ">> installing robosuite + robocasa (editable)"
+  # Editable, mirroring the molmospaces engine: out-of-tree robots and engines
+  # build on these without forking the upstream clones. Never modify upstream/.
+  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$ROBOSUITE_DIR" -e "$ROBOCASA_DIR"
 
-  # robosuite: the docs are explicit -- use the master branch, not a tag.
-  if [ ! -d "$ROBOSUITE_DIR/.git" ]; then
-    echo ">> cloning robosuite (master)"
-    git clone https://github.com/ARISE-Initiative/robosuite.git "$ROBOSUITE_DIR"
-  fi
-  echo ">> installing robosuite"
-  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$ROBOSUITE_DIR"
-
-  if [ ! -d "$ROBOCASA_DIR/.git" ]; then
-    echo ">> cloning robocasa"
-    git clone https://github.com/robocasa/robocasa.git "$ROBOCASA_DIR"
-  fi
-  echo ">> installing robocasa"
-  # robocasa's full dependency set pulls heavy RL/learning packages (tianshou, lerobot)
-  # that are irrelevant to hosting a kitchen scene and often fail to resolve on macOS
-  # arm64. We only need the scene/arena + robosuite, so install without deps and add the
-  # handful the models code actually imports.
-  if ! VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$ROBOCASA_DIR"; then
-    echo ">> full robocasa install failed; retrying without heavy deps"
-    VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$ROBOCASA_DIR" --no-deps
-    VIRTUAL_ENV="$VENV_DIR" uv pip install \
-      "mujoco==3.3.1" numpy scipy opencv-python Pillow imageio h5py \
-      termcolor tqdm pyyaml
-  fi
-
-  # robocasa pins mujoco==3.3.1; make sure that is what we have.
-  VIRTUAL_ENV="$VENV_DIR" uv pip install "mujoco==3.3.1"
-  # The shared control server / camera path needs these.
-  VIRTUAL_ENV="$VENV_DIR" uv pip install msgpack-numpy websockets
-
-  echo ">> setting up robocasa macros"
-  "$PY" -m robocasa.scripts.setup_macros || true
-
-  echo ">> downloading kitchen assets (~10 GB)"
-  # The downloader prompts "Proceed? (y/n)"; setup is non-interactive here.
-  echo y | "$PY" -m robocasa.scripts.download_kitchen_assets
-
-  echo ">> setup complete"
+  echo ">> setup complete; run './run.sh assets' to fetch the kitchen assets"
 }
 
 ensure_setup() {
   [ -x "$PY" ] || die "not installed yet - run: ./run.sh setup"
+  [ -d "$ROBOCASA_DIR" ] || die "upstream clones missing - run: ./run.sh setup"
+}
+
+# ---------------------------------------------------------------- assets
+
+do_assets() {
+  ensure_setup
+  echo ">> downloading kitchen assets (~10 GB) into $ROBOCASA_DIR/robocasa/models/assets"
+  # The v1.0 script 404s on the lightwheel zips (nvidia renamed the repo) and
+  # skips the base fixtures.zip; tools/download_lightwheel_assets.py covers both.
+  "$PY" -m robocasa.scripts.download_kitchen_assets "$@" || true
+  "$PY" "$SIM_ROOT/tools/download_lightwheel_assets.py"
 }
 
 # ---------------------------------------------------------------- view
 
 do_view() {
   ensure_setup
-  # spawn_robot parses --robot/--scene/--ros-port/--control/--headless itself.
-  local runner="$MJPY"
-  # A headless run does not need the viewer's main thread, so plain python is fine
-  # (and works on displayless hosts).
-  case " $* " in *" --headless "*) runner="$PY" ;; esac
-  exec "$runner" "$SIM_ROOT/tools/spawn_robot.py" "$@"
+  # Deliberately a script, not `-m mujoco.viewer`, and under mjpython on macOS:
+  # the passive viewer must own the main thread. See tools/view_kitchen.py.
+  exec "$MJPY" "$SIM_ROOT/tools/view_kitchen.py" "$@"
 }
 
 # ---------------------------------------------------------------- shell
 
 do_shell() {
   ensure_setup
-  echo ">> venv: $VENV_DIR   MUJOCO_GL=$MUJOCO_GL"
+  echo ">> venv: $VENV_DIR   upstream: $SIM_ROOT/upstream   MUJOCO_GL=$MUJOCO_GL"
   exec "${SHELL:-/bin/bash}" -i
 }
 
@@ -127,10 +114,17 @@ cmd="${1:-help}"
 
 case "$cmd" in
   setup)  do_setup "$@" ;;
+  assets) do_assets "$@" ;;
   view)   do_view "$@" ;;
   shell)  do_shell "$@" ;;
   help|-h|--help)
+    # Print the header comment block: everything after the shebang up to the
+    # first non-comment line, with the leading "# " stripped.
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
+    ;;
+  -*)
+    # `./run.sh --layout 1 --style 3` == `./run.sh view --layout 1 --style 3`
+    do_view "$cmd" "$@"
     ;;
   *) die "unknown command '$cmd' (try: ./run.sh help)" ;;
 esac

@@ -152,15 +152,35 @@ def test_receives_and_decodes_a_camera_frame(server, subscriptions):
     assert decoded.shape == image.shape
 
 
-def test_receives_and_parses_a_laser_scan(server, subscriptions):
+def ydlidar_scan_message(count=360):
+    """A `sensor_msgs/LaserScan` shaped like the YDLidar X2's, CCW from -pi.
+
+    Built inline rather than ray-cast from a scene: nothing in the console interprets
+    a scan any more, so the only thing left worth pinning down is the wire encoding.
+    """
+    return {
+        "header": {"seq": 3, "frame_id": "laser_frame"},
+        "angle_min": -math.pi,
+        "angle_max": math.pi,
+        "angle_increment": 2 * math.pi / count,
+        "range_min": 0.1,
+        "range_max": 12.0,
+        # One out-of-range return among the valid ones. The three invalid spellings a
+        # client has to cope with are 0.0, inf and range_max + 1; this is the last.
+        "ranges": [13.0] + [2.5] * (count - 1),
+    }
+
+
+def test_receives_a_laser_scan_as_a_plain_float_array(server, subscriptions):
     """A scan over the wire is a plain JSON float array -- rosbridge base64-encodes
-    uint8[] only, so unlike CompressedImage this must not be decoded."""
-    from synthetic import scan_message
+    uint8[] only, so unlike CompressedImage this must not be decoded.
 
-    from robot_console.slam.scan import parse_scan, scan_points
-
+    Nothing in the console consumes `/scan` since the SLAM subsystem was removed, but
+    the topic is still part of the ROS contract and the myAGV still publishes it. This
+    is what keeps `RobotLink.subscribe_scan` honest.
+    """
     _, _, scans = subscriptions
-    message = scan_message(1.5, 2.0, 0.3)
+    message = ydlidar_scan_message()
     server.publish(TOPIC_SCAN, message)
 
     deadline = time.monotonic() + 5.0
@@ -170,12 +190,18 @@ def test_receives_and_parses_a_laser_scan(server, subscriptions):
         time.sleep(0.02)
     assert taken is not None
 
-    scan = parse_scan(taken[0])
-    assert scan.count == len(message["ranges"])
-    assert scan.frame_id == "laser_frame", "the YDLidar X2's own frame"
-    assert scan.range_max == pytest.approx(12.0)
-    assert scan.valid.sum() > 300
-    assert scan_points(scan).shape[1] == 2
+    scan = taken[0]
+    ranges = scan["ranges"]
+    assert not isinstance(ranges, str), "ranges is a float array, never base64"
+    assert len(ranges) == len(message["ranges"])
+    assert all(isinstance(r, (int, float)) for r in ranges)
+    assert scan["header"]["frame_id"] == "laser_frame", "the YDLidar X2's own frame"
+    assert scan["range_max"] == pytest.approx(12.0)
+    assert scan["range_min"] == pytest.approx(0.1)
+    # range_max + 1 is the simulator's spelling of "no return"; it must survive the wire
+    # as-is rather than being clamped, so a client can still tell it from a real hit.
+    valid = [r for r in ranges if scan["range_min"] <= r <= scan["range_max"]]
+    assert len(valid) == len(ranges) - 1
 
 
 # ---------------------------------------------------------------- the AiNex

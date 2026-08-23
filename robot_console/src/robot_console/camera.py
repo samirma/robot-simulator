@@ -65,43 +65,6 @@ def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
     return frame
 
 
-def decode_depth_image(msg: Mapping) -> Optional[np.ndarray]:
-    """Decode a `sensor_msgs/Image` depth frame to `(H, W)` float32 **metres**, or None.
-
-    The wire format is `16UC1` millimetres, which is what both the simulator and a real
-    RealSense publish. Two conversions matter and neither is optional:
-
-    - millimetres to metres, because everything downstream of this is metric;
-    - **0 means "no return", not "zero metres"** -- a surface out of range, too dark, or
-      too shiny. Left as 0 it becomes a wall pressed against the lens, which is exactly
-      the reading that would make a mapper brake or carve a hole in its map. NaN is the
-      value the engine protocol expects for "no data here".
-    """
-    if not isinstance(msg, Mapping):
-        return None
-    if msg.get("encoding") != "16UC1":
-        return None
-    data = msg.get("data")
-    if not isinstance(data, str) or not data:
-        return None
-    try:
-        height, width = int(msg["height"]), int(msg["width"])
-    except (KeyError, TypeError, ValueError):
-        return None
-    if height <= 0 or width <= 0:
-        return None
-    try:
-        raw = base64.b64decode(data, validate=False)
-    except (binascii.Error, ValueError):
-        return None
-    if len(raw) < height * width * 2:
-        return None
-    mm = np.frombuffer(raw, dtype=np.uint16, count=height * width).reshape(height, width)
-    metres = mm.astype(np.float32) / 1000.0
-    metres[mm == 0] = np.nan
-    return metres
-
-
 def header_seq(msg: Mapping) -> Optional[int]:
     """The `header.seq` counter, if present. Used to align video with the command log."""
     try:
