@@ -173,7 +173,7 @@ class SensorStreams:
 
     def __init__(self, server, model, camera: str | None, camera_size,
                  jpeg_quality: int, scan: dict | None, depth: dict | None,
-                 topics: SensorTopics) -> None:
+                 topics: SensorTopics, scene_option: "mujoco.MjvOption | None" = None) -> None:
         self._server = server
         self._model = model
         self._camera = camera
@@ -183,6 +183,10 @@ class SensorStreams:
         self._topics = topics
         self._scan_next = 0.0
         self._depth_next = 0.0
+        # Engines whose scenes carry debug-only geometry (RoboCasa's collision geoms,
+        # painted in random semi-transparent colours) pass a scene_option to keep it out
+        # of the camera stream; None renders whatever MuJoCo's defaults show.
+        self._scene_option = scene_option
 
         self._renderer = None
         if camera is not None:
@@ -264,7 +268,9 @@ class SensorStreams:
 
         if self._depth_renderer is not None and now >= self._depth_next:
             self._depth_next = now + self._depth["period"]
-            self._depth_renderer.update_scene(data, camera=self._camera)
+            self._depth_renderer.update_scene(
+                data, camera=self._camera, scene_option=self._scene_option
+            )
             # Metres to millimetres in uint16: 640x480 float32 is 1.2 MB a frame, which a
             # JSON websocket will not carry at any useful rate. Anything beyond the sensor
             # range becomes 0, which is what "no return" means in a 16UC1 depth image.
@@ -280,7 +286,9 @@ class SensorStreams:
             )
 
         if self._renderer is not None:
-            self._renderer.update_scene(data, camera=self._camera)
+            self._renderer.update_scene(
+                data, camera=self._camera, scene_option=self._scene_option
+            )
             frame = self._renderer.render()
             try:
                 import cv2
