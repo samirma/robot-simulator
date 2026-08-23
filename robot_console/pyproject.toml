@@ -39,9 +39,6 @@ inspect = [
 ]
 [project.scripts]
 robot-console-teleop = "robot_console.cli:main"
-robot-console-explore = "robot_console.explore:main"
-robot-console-mapping = "robot_console.mapping:main"
-robot-console-navigate = "robot_console.navigate:main"
 robot-console-arm = "robot_console.arm_client:main"
 robot-console-inspect-so101 = "robot_console.inspect_so101:main"
 

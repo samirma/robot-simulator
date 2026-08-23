@@ -19,12 +19,11 @@ from typing import Any, Callable, Mapping, Sequence, Tuple
 
 from robot_console import hud, preflight, teleop
 from robot_console.bridge import RobotLink
-from robot_console.topics import TOPIC_CAMERA_INFO, TOPIC_DEPTH
 
 # `ainex_link` is imported lazily, inside `profile()`, and that is not a style choice.
 # The AiNex half of this file was committed without the module it depends on, so a
-# module-scope import makes `robot_console.robots` unimportable -- and with it every
-# camera-mapping entry point, none of which need the AiNex at all. Resolving a profile
+# module-scope import makes `robot_console.robots` unimportable -- and with it the
+# teleop entry point, which does not need the AiNex at all. Resolving a profile
 # only when it is asked for keeps the myAGV working and turns the gap into an honest
 # error at the point of use.
 _MISSING_AINEX = (
@@ -71,17 +70,12 @@ class RobotProfile:
 
 
 def _make_myagv_link(options: Any) -> RobotLink:
-    # camera_info/depth are read with getattr because teleop's Options has no such fields
-    # and never will -- only the camera-driven mapper asks for them. Defaulting here keeps
-    # one link class serving both callers instead of two nearly-identical ones.
     return RobotLink(
         options.host,
         options.port,
         cmd_topic=options.cmd_topic,
         odom_topic=options.odom_topic,
         camera_topic=options.camera_topic,
-        camera_info_topic=getattr(options, "camera_info_topic", TOPIC_CAMERA_INFO),
-        depth_topic=getattr(options, "depth_topic", TOPIC_DEPTH),
     )
 
 

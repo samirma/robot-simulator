@@ -9,7 +9,7 @@ Two **independent** projects that talk over network protocols, never Python impo
 | Project | Responsibility |
 |---|---|
 | `simulator/` | Simulate robots with a choice of **engine**, exposing generic network servers for observations and actuator targets. |
-| `robot_console/` | Drive, map and navigate compatible simulated or physical robots; all control policy lives here. |
+| `robot_console/` | Drive compatible simulated or physical robots; all control policy lives here. |
 
 The separation is a hard constraint, not a preference: **`robot_console` must stay
 installable and runnable on a machine with no MuJoCo, no MolmoSpaces, and no
@@ -147,10 +147,6 @@ Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `
 ./bin/teleop.sh --no-preflight          # skip the reachability check
 ./bin/teleop.sh --reinstall
 
-./bin/slam.sh explore  --out runs/house # autonomous frontier exploration
-./bin/slam.sh map      --out runs/house # teleop with the map building live
-./bin/slam.sh navigate --map runs/house # click a point, drive there
-
 uv pip install -e '.[dev]'
 .venv/bin/python -m pytest                       # offline; no robot, no display
 .venv/bin/python -m pytest tests/test_teleop.py::test_motion_expires_when_the_key_stops_repeating
@@ -172,62 +168,6 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
 - `arm_client.py` — generic msgpack-numpy simulator client; `so101_driver.py` and
   `inspect_so101.py` adapt it to the optional unmodified Inspect Robots SO-101 stack
-- `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
-  uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
-  (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan
-  matching, keyframed), `planner.py` (inflate + A*), `frontier.py`, `controller.py`
-  (path → holonomic `Command`), `explorer.py` (the give-up ladder and goal commitment),
-  `mapview.py`, `app.py`, `cli.py`. Everything but the two `app.py`/`mapview.py` files is
-  pure and tested offline — including a whole exploration run, via `tests/simworld.py`.
-- `explore.py`, `mapping.py`, `navigate.py` — thin entry points over `slam/cli.py`
-
-### SLAM invariants
-
-- **Scan matching is keyframed, not per-scan.** It runs after 0.15 m or 10° of motion,
-  capped by `--slam-hz`, because it shares the thread with the 20 Hz `/cmd_vel` stream.
-  `slam/app.py::_Budget` measures tick time against the publish period and warns on
-  overrun — a robot that drives fine and maps badly leaves no other trace.
-- The map is **grown, never shifted**: `OccupancyGrid.grow_to_include` only pads outward
-  and moves `origin` to match, so a pose already computed against the map stays valid.
-- Maps are saved in `map_server` format because that is what `navigation_active.launch`
-  loads. The `.npz` sidecar is what makes a reloaded map *continuable*; the yaml is the
-  authority on geometry, and a sidecar that disagrees is discarded.
-- `navigate` plans with unknown space **blocked**; `explore` plans with it **free**. The
-  same costmap for both would either forbid exploring or route a navigation run through
-  a region no sensor has seen.
-- Invalid laser returns arrive as `0.0` (real driver), `inf` (stock driver) or
-  `range_max + 1` (simulator). Always test `range_min <= r <= range_max`.
-- **The obstacle brake looks along the direction of travel, not straight ahead.** The
-  base is Mecanum; checking `+x` while strafing brakes for things it is moving away from
-  and wedges the robot anywhere something happens to sit in front of it. `nearest_obstacle`
-  takes a `bearing` for this reason.
-- A `blocked` result reroutes; only `is_stuck` blacklists the goal. Blacklisting on a
-  local obstruction burns through every frontier in the house in seconds while the robot
-  stands still.
-- **Frontiers are ranked geodesically, off one `planner.distance_field`.** Straight-line
-  distance puts a frontier a metre away through a wall ahead of one three metres down an
-  open corridor. One wavefront scores every cluster at once, so there is no shortlist to
-  cap — and a capped shortlist is what used to make "the map is finished" and "my best
-  twelve guesses all failed" the same answer.
-- **The goal is a cell near the cluster, never the centroid.** A cluster that wraps a
-  corner has its centroid inside the wall it wraps, so the biggest frontiers were the
-  likeliest to be discarded as unreachable. It is picked as the cheapest reachable cell
-  in a standoff-wide collar, which also stops the base driving its own centre onto the
-  boundary and into its own obstacle brake.
-- **The progress watchdog must be armed before any early return in `PathFollower.step`.**
-  The obstacle brake returns early; when it did so before arming, `is_stuck` answered
-  `False` forever and a braked robot re-routed to the same goal every tick, never
-  blacklisting it and never finishing. That is a hang, not an inefficiency.
-- **Running out of frontiers is not the same as being finished.** `slam/explorer.py`
-  walks a ladder — relax `min_cells`, flush the suppression list once, enclosed sensor
-  holes, one sweep — and only then says `explored`. Each rung re-scores the *same*
-  wavefront, which is what makes trying again affordable.
-- Suppression decays and counts strikes; the radius is 0.25 m because a doorway is about
-  0.8 m and a wider one sealed a room's only entrance from a single bad approach.
-- **Frontier detection filters unknown regions thinner than a cell or two.** A mapped
-  wall is a dashed line — grazing beams skip cells — so the slivers between the dashes
-  look like frontiers and can never be resolved. Left in, they are what a run spends its
-  endgame driving at. Same reason `unknown_pockets` ignores anything touching a wall.
 
 ### Invariants worth knowing before editing
 
@@ -262,11 +202,18 @@ is holonomic (the myAGV is Mecanum), so `linear.y` is a real strafe.
 
 `/scan` follows the **YDLidar X2** — `ydlidar_ros_driver/launch/X2.launch`: frame
 `laser_frame`, 0.1–12.0 m, 10 Hz, CCW from `-pi`, mounted at
-`base_footprint + (0.065, 0, 0.08)` per `myagv_active.launch`'s static transform. Both
-sides encode that mount offset; 65 mm is more than a map cell at 5 cm, and dropping it
-smears every wall by a cell. The driver's `inverted: true` and the transform's roll of
-π cancel, so no sign flip is needed anywhere — changing one without the other is the
-easy mistake. `ranges` is a plain JSON float array; only `uint8[]` is base64.
+`base_footprint + (0.065, 0, 0.08)` per `myagv_active.launch`'s static transform. The
+simulator encodes that mount offset; **no console command consumes `/scan`** since the
+mapping subsystem was removed, so any future client has to apply the offset itself — 65
+mm is more than a 5 cm map cell, and dropping it smears every wall by a cell. The
+driver's `inverted: true` and the transform's roll of π cancel, so no sign flip is
+needed anywhere — changing one without the other is the easy mistake.
+
+`ranges` is a plain JSON float array; only `uint8[]` is base64. Invalid returns arrive
+as `0.0` (real driver), `inf` (stock driver) or `range_max + 1` (simulator, which cannot
+express infinity in JSON) — always test `range_min <= r <= range_max`, which rejects all
+three and `NaN` too. `RobotLink.subscribe_scan` still delivers the topic; nothing in the
+console reads it, and `tests/test_link_roundtrip.py` is what keeps the encoding pinned.
 
 Bridge quirks that clients must not rely on: no status handshake on connect, `id` fields
 ignored and never echoed, no loopback of published topics, `advertise`/`unadvertise` are

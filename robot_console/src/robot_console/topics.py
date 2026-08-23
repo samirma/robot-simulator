@@ -1,7 +1,8 @@
 """The ROS contract, in one place.
 
-These names and type strings must match `simulator/bridge/rosbridge_server.py` and the
-real `elephantrobotics/myagv_ros` stack. They are ROS1 single-slash type strings
+These names and type strings must match
+`simulator/shared/contracts/rosbridge_server.py` and the real
+`elephantrobotics/myagv_ros` stack. They are ROS1 single-slash type strings
 (`geometry_msgs/Twist`), not the ROS2 `geometry_msgs/msg/Twist` form.
 """
 
@@ -11,20 +12,14 @@ TOPIC_CMD_VEL = "/cmd_vel"
 TOPIC_ODOM = "/odom"
 TOPIC_CAMERA = "/camera/image_raw/compressed"
 # The YDLidar X2's topic, published by ydlidar_ros_driver on the real robot and by the
-# simulator's ray-cast stand-in. This is what the SLAM tools map from.
+# simulator's ray-cast stand-in. Nothing in the console consumes it since the mapping
+# subsystem was removed, but it is part of the contract and both robots still emit it.
 TOPIC_SCAN = "/scan"
-# The camera-driven mapper needs intrinsics before it can turn pixels into metres, and
-# depth when the engine wants a metric prompt rather than a monocular guess. Both are
-# published by the simulator (bridge/rosbridge_server.py) and by a real RGB-D driver.
-TOPIC_CAMERA_INFO = "/camera/rgb/camera_info"
-TOPIC_DEPTH = "/camera/depth/image_raw"
 
 TYPE_TWIST = "geometry_msgs/Twist"
 TYPE_ODOM = "nav_msgs/Odometry"
 TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
 TYPE_LASER_SCAN = "sensor_msgs/LaserScan"
-TYPE_IMAGE = "sensor_msgs/Image"
-TYPE_CAMERA_INFO = "sensor_msgs/CameraInfo"
 
 # The simulator's bridge normalises names itself, but stock rosbridge_suite does not:
 # a relative `cmd_vel` there resolves against the node namespace and silently misses.

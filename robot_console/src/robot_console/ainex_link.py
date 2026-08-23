@@ -34,7 +34,7 @@ from typing import Callable, Optional
 import roslibpy
 
 from robot_console.teleop import Command
-from robot_console.topics import TOPIC_CAMERA_INFO, TOPIC_DEPTH, normalise
+from robot_console.topics import normalise
 
 # --- the vendor's contract (simulator/robots/ainex/topics.py) ---------------------------
 
@@ -45,8 +45,6 @@ SRV_WALKING_COMMAND = "/walking/command"
 TYPE_WALKING_PARAM = "ainex_interfaces/WalkingParam"
 TYPE_SET_WALKING_COMMAND = "ainex_interfaces/SetWalkingCommand"
 TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
-TYPE_IMAGE = "sensor_msgs/Image"
-TYPE_CAMERA_INFO = "sensor_msgs/CameraInfo"
 
 # --- the gait envelope (simulator/robots/ainex/gait.py, vendor walking_param.yaml) ------
 
@@ -120,20 +118,14 @@ class AiNexLink:
         port: int = 9090,
         *,
         camera_topic: str = TOPIC_CAMERA,
-        camera_info_topic: str = TOPIC_CAMERA_INFO,
-        depth_topic: str = TOPIC_DEPTH,
     ) -> None:
         self.host = host
         self.port = int(port)
         self._camera_name = normalise(camera_topic)
-        self._camera_info_name = normalise(camera_info_topic)
-        self._depth_name = normalise(depth_topic)
         self._ros: Optional[roslibpy.Ros] = None
         self._param: Optional[roslibpy.Topic] = None
         self._command_srv: Optional[roslibpy.Service] = None
         self._camera: Optional[roslibpy.Topic] = None
-        self._camera_info: Optional[roslibpy.Topic] = None
-        self._depth: Optional[roslibpy.Topic] = None
         self._closed = False
         # Written from the main loop, read in close(); the lock is cheap honesty about
         # the reactor thread also being around.
@@ -171,18 +163,6 @@ class AiNexLink:
             raise RuntimeError("not connected")
         self._camera = roslibpy.Topic(self._ros, self._camera_name, TYPE_COMPRESSED_IMAGE)
         self._camera.subscribe(callback)
-
-    def subscribe_camera_info(self, callback: Callable[[dict], None]) -> None:
-        if self._ros is None:
-            raise RuntimeError("not connected")
-        self._camera_info = roslibpy.Topic(self._ros, self._camera_info_name, TYPE_CAMERA_INFO)
-        self._camera_info.subscribe(callback)
-
-    def subscribe_depth(self, callback: Callable[[dict], None]) -> None:
-        if self._ros is None:
-            raise RuntimeError("not connected")
-        self._depth = roslibpy.Topic(self._ros, self._depth_name, TYPE_IMAGE)
-        self._depth.subscribe(callback)
 
     def subscribe_odom(self, callback) -> None:
         """The AiNex publishes no odometry; asking for it is a caller bug, not a shrug."""
@@ -238,8 +218,8 @@ class AiNexLink:
         if self._command_srv is None or not self.is_connected:
             return
         try:
-            # Fire-and-forget: this runs on the main loop, which is also feeding the map
-            # and (in explore) the frontier planner. Blocking on a service round trip
+            # Fire-and-forget: this runs on the main loop, which is also decoding the
+            # camera and feeding the command stream. Blocking on a service round trip
             # would stall both for however long the bridge feels like taking.
             self._command_srv.call(
                 roslibpy.ServiceRequest({"command": command}),
@@ -262,7 +242,7 @@ class AiNexLink:
             self.stop()
         except Exception:
             pass
-        for topic in (self._camera, self._camera_info, self._depth):
+        for topic in (self._camera,):
             try:
                 if topic is not None:
                     topic.unsubscribe()
