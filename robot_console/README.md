@@ -55,16 +55,81 @@ uv pip install -e '.[arm]'
 selected with `--controller package.module:function`; `example_arm_controller.py`
 contains a worked example.
 
-The SO-101 Inspect Robots integration is also entirely console-side:
+The SO-101 Inspect Robots integration is also entirely console-side, and is
+**installed in `.venv`** (the `[inspect]` extra: inspect-robots 0.57.1,
+inspect-robots-agent 0.26.0, inspect-robots-so101 0.4.0 — small pure-Python packages,
+unlike the `[vla]` extra, which is why they may share the main venv):
 
 ```bash
-uv pip install -e '.[inspect]'  # requires Python 3.10+
+uv pip install -e '.[inspect]'  # requires Python 3.10+; already done in this checkout
 .venv/bin/robot-console-inspect-so101 --smoke --port 8000
-.venv/bin/robot-console-inspect-so101 --port 8000  # local Ollama evaluation
+.venv/bin/robot-console-inspect-so101 --port 8000 --record runs/ep1  # + feed.mp4
 ```
 
 It injects `SimulatorSO101` as the unmodified `inspect-robots-so101` hardware driver.
 The simulator knows nothing about Inspect Robots, Ollama, prompts, or control policy.
+`--record DIR` writes the whole episode to `feed.mp4` — the tee sits on the ArmClient
+thread, so the video includes the seconds the arm holds still while the LLM thinks.
+
+`bin/run-inspect-robots.sh` wraps this for both simulator engines at once:
+
+```bash
+cd ../simulator && ./kitchen_arm.sh serve      # terminal 1: both engines
+./bin/run-inspect-robots.sh                    # terminal 2: default task, both, recorded
+./bin/run-inspect-robots.sh "wave at the camera" --ports 8000
+```
+
+It bootstraps the `[inspect]` extra, starts oMLX serving Qwen3.8-27B-4bit if nothing
+answers on port 8080, and records each episode to `runs/inspect-<port>/feed.mp4`. The
+backend choice is measured, not assumed — see the script header: oMLX answers the same
+vision + tool-call probe in 8-9 s warm vs llama.cpp's 10.7 s, and ChatGPT's
+gpt-5.6-luna is unusable because opencode's OAuth exposes no OpenAI-compatible
+endpoint for other clients.
+
+Two defaults the script overrides matter more than they look, because of how the
+agent toolset executes motion. One `move_joints` call precomputes a linear ramp of
+`ceil(max|Δ|/step_limit)` embodiment steps — `step_limit = min(max_speed_frac/
+control_hz, 0.05) × joint_range` — and the LLM is not consulted again until the ramp
+finishes, while `max_steps` counts those embodiment steps. At `inspect_so101.py`'s own
+conservative defaults (speed 0.05, steps 30) a single 62° move plans 113 steps and the
+trial dies 30 steps in, having moved ~16° in total: an episode that looks frozen. The
+script therefore runs speed 0.5 / steps 400 / 20 LLM calls, and passes
+`bin/so101_learnings.md` as `--prior-learnings` — the tool's `targets` schema is an
+unconstrained JSON object, and without the worked example in that file the model's
+first call reliably arrives without `targets` and is burned on a schema error. The
+script also appends one verified per-staging fact (which joint-0 angle faces the
+apple) because the sign differs between the engines' camera setups and a model that
+guesses wrong once tends to ride a joint limit to a confident `give_up`.
+
+Honest expectations, from seven recorded episodes: with these settings Qwen3.8-27B
+executes the task procedure convincingly — decisive reach in the right direction,
+descent, gripper closes, lift-and-check, retry — but its visuomotor precision over the
+last few centimetres is not reliably good enough to complete a grasp within the call
+budget. The remaining levers are a stronger VLM behind the same `--model`/`--base-url`
+flags, a second (wrist) camera view, or more LLM calls per episode.
+
+### VLA control (`bin/arm_task.sh`)
+
+A vision-language-action model (MolmoAct2-SO100_101, Ai2 — fine-tuned for exactly this
+arm) performs a task described in plain text, in both simulator engines:
+
+```bash
+# terminal 1: both engines, the arm staged next to a bowl and an apple
+cd ../simulator && ./kitchen_arm.sh serve
+
+# terminal 2
+./bin/arm_task.sh                        # default: put the apple in the bowl, both sims
+./bin/arm_task.sh "push the bowl left"   # custom task text
+./bin/arm_task.sh --dry-run --ports 8000 # predict + print; the arm holds still
+```
+
+The first run creates `.venv-vla` (torch lives there, never in `.venv`) and downloads
+~22 GB of weights. It speaks the same `molmospaces-control-v1` protocol as
+`robot-console-arm` — ROS is not an option for the arm, because the simulators'
+rosbridge carries the myAGV's vendor topics only and a real SO-101 does not speak ROS.
+`--dry-run` prints the fed state next to the predicted chunk; run it after changing
+`--joint-offsets`/`--gripper-mode`, since a correct mapping predicts near the current
+pose for a resting arm.
 
 ### `--robot`
 
@@ -114,6 +179,11 @@ Maps are written as a **`map_server` pgm/yaml pair**, which is what
 `myagv_navigation`'s `navigation_active.launch` loads, so a map built in the simulator
 can be handed to the real robot and back. A `map.npz` sidecar carries the raw log-odds
 so a map can be reloaded and *kept building* rather than only navigated.
+
+Nothing here knows which simulator is on the other end of the socket, and that is worth
+stating because it has been checked rather than assumed: the same
+`robot-console-explore` builds a map of a MolmoSpaces iTHOR house and of a RoboCasa
+kitchen, over the same four topics, with no flag telling it which.
 
 This is the same sensor choice Elephant Robotics makes -- `myagv_slam_laser.launch` runs
 gmapping on the YDLidar X2 -- reimplemented in numpy and OpenCV so it needs no ROS. It

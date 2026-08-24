@@ -4,9 +4,37 @@ from __future__ import annotations
 
 import argparse
 import threading
+from pathlib import Path
 
 from .arm_client import ArmClient
-from .so101_driver import JOINT_HIGH, JOINT_LOW, SimulatorSO101
+from .so101_driver import JOINT_HIGH, JOINT_LOW, SimulatorSO101, _decode_front
+
+
+class RecordingSO101(SimulatorSO101):
+    """A SimulatorSO101 that also writes every camera frame to a Recorder.
+
+    The tee lives in ``__call__`` deliberately: the ArmClient thread sees every
+    simulator observation at the control rate whether or not the policy is thinking,
+    so the video shows the whole episode -- including the seconds the arm holds still
+    waiting on an LLM -- rather than only the frames the embodiment happened to poll.
+    """
+
+    def __init__(self, recorder) -> None:
+        super().__init__()
+        self._recorder = recorder
+
+    def __call__(self, obs):
+        action = super().__call__(obs)
+        try:
+            import cv2
+
+            frame = _decode_front(obs)
+            self._recorder.add_frame(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+        except Exception:
+            # A frame that will not decode is a lost video frame, never a lost
+            # command: this thread's real job is answering observations.
+            pass
+        return action
 
 
 def run_eval(args: argparse.Namespace, driver: SimulatorSO101) -> None:
@@ -116,9 +144,20 @@ def main() -> int:
     ap.add_argument("--log-dir", default="runs/so101-inspect")
     ap.add_argument("--prior-learnings", default=None)
     ap.add_argument("--smoke", action="store_true", help="test without calling an LLM")
+    ap.add_argument("--record", metavar="DIR", default=None,
+                    help="also write feed.mp4 + commands.jsonl of the whole episode")
     args = ap.parse_args()
 
-    driver = SimulatorSO101()
+    recorder = None
+    if args.record:
+        from .recorder import Recorder
+
+        recorder = Recorder(Path(args.record))
+        recorder.start({"source": "inspect_so101", "port": args.port,
+                        "instruction": args.instruction, "model": args.model})
+        driver = RecordingSO101(recorder)
+    else:
+        driver = SimulatorSO101()
     client = ArmClient(driver, args.host, args.port, args.connect_timeout)
     client_error: list[BaseException] = []
 
@@ -147,6 +186,9 @@ def main() -> int:
         driver.disconnect()
         client.close()
         thread.join(timeout=5.0)
+        if recorder is not None:
+            summary = recorder.close()
+            print(f"recorded: {summary}")
     if client_error:
         raise client_error[0]
     return 0

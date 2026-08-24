@@ -32,10 +32,12 @@ layer**:
 simulator/
   shared/       cross-engine resources: the wire bridge and the robot specs
     contracts/    rosbridge_server.py (myAGV topics) + control_server.py (SO-101) — pure transport, no MuJoCo
+    ros_surfaces/ per-robot topic sets + the loop that feeds them (myagv.py) — one copy, every engine
     robots/       so101/ + myagv/ hardware specs (MJCF, meshes, URDF) — engine-neutral
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
   robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
+  kitchen_arm.sh  the SO-101 in both engines at once, around the same objects
 ```
 
 Each engine has its own `run.sh`, `env.sh`, `tools/spawn_robot.py`, and `uv` venv, and each
@@ -47,6 +49,21 @@ the myAGV on its vendor `elephantrobotics/myagv_ros` rosbridge topics, the SO-10
 able to tell the engines apart is a regression. Per-engine specifics live in each engine's
 `README.md`; the sections below cover MolmoSpaces (the reference engine) and then the ROS
 contract every engine obeys.
+
+"Cannot tell them apart" is a testable claim, not an aspiration, and it is easy to break
+by accident: the SO-101 in MolmoSpaces exposes a `base` move group — the unactuated mocap
+mount it is bolted to, zero controls — and a `base_pose` observation, so the RoboCasa
+engine advertises both too even though it bolts the arm straight into the worldbody. The
+same goes for the depth stream, which nothing consumes: both engines publish it, because
+one that did not could be identified by its topic list. To check, run the same client
+against both (`kitchen_arm.sh serve`) and compare the metadata and the observation keys.
+
+A **ROS surface** — the topic set one robot's vendor stack presents, plus the loop that
+feeds it — belongs to the robot, not to an engine, and so lives in `shared/ros_surfaces/`.
+Each engine's adapter is only the part that knows how *that* engine names a base: the
+MolmoSpaces one pulls a move group out of a `RobotView`, and the RoboCasa one builds
+`mujoco_bridge.PlanarJointBase` from raw joints. Two copies of the loop itself would be
+two chances for the engines to drift.
 
 ---
 
@@ -63,9 +80,15 @@ cd simulator/molmospaces
 ./run.sh view --scene ithor:1       # a house in the viewer
 ./run.sh view --robot myagv --scene ithor:1 --ros-port 9090   # + robot, as a ROS robot
 ./run.sh view --robot so101 --control 127.0.0.1:8000   # generic arm control server
+./run.sh view --robot so101 --scene ithor:1 --target bowl,apple  # ...facing those objects
 ./run.sh shell                      # interactive shell in the venv
 ./run.sh help
 ```
+
+`--target CAT,CAT` ranks the scene's grasp targets by category, which is how an arm is
+set up around *specific* objects rather than whatever `find_grasp_targets` liked best. It
+ranks rather than filters: a surface holding one of the two is still better than one
+holding neither, and filtering would turn a near miss into an error.
 
 `--control HOST:PORT` is the current spelling (the console's `robot-console-arm --control
 HOST:PORT` mirrors it); `--control-port PORT` is kept as an alias.
@@ -138,6 +161,54 @@ Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `
 
 ---
 
+## simulator/robocasa/  (engine #2)
+
+Mirrors the reference engine's launcher surface. `view` grows a `--robot` that is
+deliberately overloaded: `myagv`/`so101` go to `tools/spawn_robot.py` and get the vendor
+wire contracts, anything else is a robosuite robot name for `tools/view_kitchen.py`.
+
+```bash
+./run.sh view --robot myagv --ros-port 9090            # myAGV on its vendor ROS topics
+./run.sh view --robot so101 --control 127.0.0.1:8000   # SO-101 control protocol
+./run.sh view --robot so101 --objects bowl,apple       # ...with objects inside its reach
+./run.sh view --robot myagv --headless --ros-port 9090 # displayless; what checks run
+```
+
+**RoboCasa is a scene provider here, not a robot stack.** The kitchen is built from
+`KitchenArena` with `mujoco_robots=[]` — 44 fixtures, 825 geoms, *zero* actuators — and
+the shared robot MJCF is grafted into that spec and stepped by plain MuJoCo. Going
+through `robosuite.make` instead drags in a robosuite robot with its own controller
+stack, action space and observation dict, which would then have to be cut back out of
+the compiled model, and would stand a Panda in the middle of every camera frame and
+every map. The robots here are not robosuite robots and must not become them: the myAGV
+is a vendor ROS device and the SO-101 speaks `molmospaces-control-v1`.
+
+Three traps, all of which produce results that look like bugs somewhere else:
+
+- **Geom groups are inverted from the MolmoSpaces convention.** RoboCasa collision hulls
+  are group 0 — 501 of them in layout 1, painted in random translucent colours — and the
+  visual meshes are group 1. Anything that renders must go through `visual_only()`, or
+  the camera streams a kitchen full of red and green boxes. The shared robot MJCFs use
+  the opposite convention (2 visual, 3 collision), so the mask has to pass both.
+- **Worktops come from RoboCasa, never from geometry.** `Counter.get_reset_regions()`
+  returns the free rectangles the dataset itself places objects on. Inferring them from
+  collision AABBs fails in one specific, repeatable way: a sink basin's floor is "a flat
+  surface at counter height" whose centre is a clean 0.22 m clear of anything, so it
+  outscores every real worktop and the arm gets mounted in the sink.
+- **Clearance is measured to geom surfaces, not centres** (`world_boxes`). A kitchen is
+  four long wall boxes; the centre of a 5 m wall is metres from a robot pressed against
+  it, so a centre-distance search parks the robot inside the wall.
+
+A RoboCasa kitchen contains no loose objects at all — everything is a fixture — so an arm
+has nothing to reach for until `--objects` spawns some from RoboCasa's own registry. That
+is the one real asymmetry with MolmoSpaces, where iTHOR houses come with graspables and
+their metadata, and it is why **arm-with-objects work belongs in MolmoSpaces**:
+`tools/scene_placement.py` there finds a surface that already has graspable objects on it
+and mounts the arm so they land in its working annulus. `simulator/kitchen_arm.sh` sets
+both engines up around the same object pair for comparison.
+
+---
+
 ## robot_console/
 
 ```bash
@@ -172,6 +243,26 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
 - `arm_client.py` — generic msgpack-numpy simulator client; `so101_driver.py` and
   `inspect_so101.py` adapt it to the optional unmodified Inspect Robots SO-101 stack
+- `inspect_so101.py` also backs `bin/run-inspect-robots.sh`: an LLM agent
+  (Inspect Robots `LLMAgentPolicy`) drives the arm in both engines, recorded to
+  `feed.mp4` via `--record` (`RecordingSO101` tees frames on the ArmClient thread).
+  The `[inspect]` extra is installed in `.venv`; the default backend is Qwen3.8-27B
+  on oMLX port 8080 (llama.cpp is the measured fallback; ChatGPT models behind
+  opencode's OAuth are unreachable — no OpenAI-compatible endpoint exists for them).
+  The script's speed/steps defaults are load-bearing: one `move_joints` call is a
+  precomputed ramp whose steps count against `max_steps`, so the conservative
+  `inspect_so101.py` defaults (0.05/30) produce an episode that truncates its first
+  move at ~16° of travel and looks frozen. `bin/so101_learnings.md` rides along as
+  `--prior-learnings` because the tool's `targets` schema is an unconstrained object
+  and the model's first call otherwise arrives without it.
+- `arm_task.py` — a VLA model (MolmoAct2-SO100_101) drives the SO-101 from task text,
+  reusing `SimulatorSO101` on the same daemon-thread pattern as `inspect_so101.py`.
+  Torch-free by design: everything torch lives in `molmoact.py`, imported only inside
+  `main()`, so the offline suite tests the episode loop with stubs. `bin/arm_task.sh`
+  installs the `[vla]` extra into its own `.venv-vla` — never into `.venv`, which
+  must stay light enough that pytest is fast and teleop bootstraps stay cheap. ROS was
+  deliberately not used for the arm: the rosbridge carries the myAGV's vendor topics
+  only, and a real SO-101 does not speak ROS.
 - `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
   uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
   (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan
