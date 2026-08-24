@@ -1,31 +1,18 @@
-"""The myAGV's ROS contract: `cmd_vel` in, `odom` out.
+"""The myAGV's ROS contract, as this engine presents it.
 
-This is what `elephantrobotics/myagv_ros` presents, so one client drives either the
-simulated or the real myAGV without changing a line:
+The contract itself -- `cmd_vel` in, `odom`/camera/`/scan` out, on the vendor's topic
+names -- lives in `simulator/shared/ros_surfaces/myagv.py`, because every engine has to
+present exactly the same one and two copies of that loop would be two chances to drift.
+What is left here is the MolmoSpaces-specific half: pulling the base move group out of a
+`RobotView`, which is this engine's way of saying "the thing with a pose and a ctrl".
 
-    console -> robot   /cmd_vel                        geometry_msgs/Twist
-    robot -> console   /odom                           nav_msgs/Odometry
-    robot -> console   /camera/image_raw/compressed    sensor_msgs/CompressedImage
-    robot -> console   /scan                           sensor_msgs/LaserScan
-
-It lives beside the robot rather than in `tools/spawn_robot.py` because the topic set
-*is* part of a robot definition, and the AiNex proves the point: its contract shares not
-one topic with this one. What the two do share -- renderers, the depth stream, the
-ray-cast lidar, and the velocity-to-setpoint integration -- is in `spawn_robot.py` as
-`SensorStreams` and `PlanarSetpoint`.
-
-Nothing here is myAGV-specific beyond the topic names and the lidar mount: any holonomic
-base with a camera is the whole of what this contract assumes, so a second one would
-reuse this surface rather than grow its own.
+See the shared module for the topic table and the reasoning about the drive model.
 """
 
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
-
-import numpy as np
 
 SIM_ROOT = Path(__file__).resolve().parents[2]
 if str(SIM_ROOT) not in sys.path:
@@ -37,78 +24,26 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
               depth: dict | None = None, extra: dict | None = None):
     """Present the robot on the myagv_ros topics and return a per-step callback.
 
-    The base integrates the commanded `cmd_vel` here rather than in the client: that is
-    what `cmd_vel` means, and it keeps the client identical for real hardware. See
-    bridge/rosbridge_server.py for why the protocol is served in-process.
+    `extra` is accepted and ignored: `tools/spawn_robot.py` passes the same bag to every
+    ROS surface, and the AiNex is the one that reads it.
     """
-    from contracts.rosbridge_server import (
-        TOPIC_CAMERA,
-        TOPIC_CAMERA_INFO,
-        TOPIC_CMD_VEL,
-        TOPIC_DEPTH,
-        TOPIC_ODOM,
-        TOPIC_SCAN,
-        RosBridgeServer,
-        odometry,
-    )
-    from tools.spawn_robot import PlanarSetpoint, SensorStreams, SensorTopics
+    from ros_surfaces.myagv import serve_ros as _serve_ros
 
     if "base" not in view.move_group_ids():
         raise SystemExit(
             "the myagv ROS surface needs a robot with a mobile base; "
             f"this one has move groups {view.move_group_ids()}"
         )
-    base = view.get_move_group("base")
 
-    server = RosBridgeServer(port=port)
-    command = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "at": 0.0}
-
-    def on_cmd_vel(msg: dict) -> None:
-        linear = msg.get("linear") or {}
-        angular = msg.get("angular") or {}
-        command["vx"] = float(linear.get("x", 0.0))
-        command["vy"] = float(linear.get("y", 0.0))
-        command["wz"] = float(angular.get("z", 0.0))
-        command["at"] = time.monotonic()
-
-    server.on(TOPIC_CMD_VEL, on_cmd_vel)
-
-    sensors = SensorStreams(
-        server, model, camera, camera_size, jpeg_quality, scan, depth,
-        SensorTopics(TOPIC_CAMERA, TOPIC_SCAN, TOPIC_DEPTH, TOPIC_CAMERA_INFO),
+    return _serve_ros(
+        port,
+        view.get_move_group("base"),
+        model,
+        camera,
+        camera_size,
+        jpeg_quality,
+        control_hz,
+        watchdog_s,
+        scan=scan,
+        depth=depth,
     )
-    setpoint = PlanarSetpoint()
-
-    server.start()
-    print(
-        f"ROS topics on ws://0.0.0.0:{port} "
-        f"(sub {TOPIC_CMD_VEL}; pub {', '.join([TOPIC_ODOM, *sensors.published])})",
-        file=sys.stderr,
-    )
-
-    dt = 1.0 / control_hz
-
-    def step(data):
-        if data is None:
-            sensors.close()
-            server.stop()
-            return
-
-        # Watchdog. myAGVSub.cpp latches the last cmd_vel and keeps executing it, so a
-        # client that disconnects mid-command would leave the robot driving; stopping is
-        # the behaviour we want even though it is not what the firmware does.
-        vx, vy, wz = command["vx"], command["vy"], command["wz"]
-        if command["at"] and time.monotonic() - command["at"] > watchdog_s:
-            vx = vy = wz = 0.0
-
-        pose = base.pose
-        x, y = float(pose[0, 3]), float(pose[1, 3])
-        yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
-
-        base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
-
-        seq = server.next_seq()
-        server.publish(TOPIC_ODOM, odometry(seq, x, y, yaw, vx, vy, wz))
-        sensors.publish(data, seq, x, y, yaw)
-
-    return step

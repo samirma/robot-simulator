@@ -310,3 +310,88 @@ class SensorStreams:
             self._renderer.close()
         if self._depth_renderer is not None:
             self._depth_renderer.close()
+
+
+class PlanarJointBase:
+    """A holonomic base as three world-aligned joints, straight off a raw MuJoCo model.
+
+    The mobile robots here are driven by a virtual (slide-x, slide-y, hinge-z) trio and
+    matching position actuators rather than by simulated Mecanum contacts; see
+    `shared/robots/myagv/model.xml`. An engine built on MolmoSpaces gets the same three
+    numbers through its `HoloJointsRobotBaseGroup` move group, so the ROS surfaces are
+    written against this two-property interface (`pose`, `ctrl`) and work with either.
+
+    Reading the joints rather than the body transform is exact *because* the robot is
+    grafted in at the origin with identity rotation -- which the holonomic spawn path
+    guarantees, since world-aligned slide joints mean nothing anywhere else. The
+    constructor checks that rather than trusting it.
+    """
+
+    __slots__ = ("_data", "_qpos", "_ctrl", "_body")
+
+    AXES = ("x", "y", "theta")
+
+    def __init__(self, model, data, prefix: str = "", root: str = "base") -> None:
+        self._data = data
+        self._qpos = []
+        self._ctrl = []
+        for axis in self.AXES:
+            joint = f"{prefix}{root}_{axis}"
+            actuator = f"{joint}_act"
+            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, joint)
+            aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator)
+            if jid < 0 or aid < 0:
+                raise ValueError(
+                    f"no planar base in this model: expected joint {joint!r} and "
+                    f"actuator {actuator!r}"
+                )
+            self._qpos.append(int(model.jnt_qposadr[jid]))
+            self._ctrl.append(aid)
+
+        self._body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{root}")
+        if self._body < 0:
+            raise ValueError(f"no body named {prefix}{root!r}")
+        # The joints are the pose only if the body's own frame is the world frame.
+        offset = model.body_pos[self._body]
+        quat = model.body_quat[self._body]
+        if not (np.allclose(offset, 0.0, atol=1e-9) and np.allclose(quat, [1, 0, 0, 0], atol=1e-9)):
+            raise ValueError(
+                f"{prefix}{root} is attached at pos={offset} quat={quat}, not at the "
+                "origin with identity rotation; its world-aligned slide joints would no "
+                "longer mean world x/y. Attach at the origin and set the pose instead."
+            )
+
+    @property
+    def xytheta(self) -> np.ndarray:
+        return np.array([float(self._data.qpos[i]) for i in self._qpos])
+
+    @property
+    def pose(self) -> np.ndarray:
+        """The base pose as a 4x4, the shape every ROS surface reads."""
+        x, y, yaw = self.xytheta
+        c, s = np.cos(yaw), np.sin(yaw)
+        pose = np.eye(4)
+        pose[:2, :2] = [[c, -s], [s, c]]
+        pose[0, 3], pose[1, 3] = x, y
+        return pose
+
+    @property
+    def ctrl(self) -> np.ndarray:
+        return np.array([float(self._data.ctrl[i]) for i in self._ctrl])
+
+    @ctrl.setter
+    def ctrl(self, target) -> None:
+        target = np.asarray(target, dtype=np.float64)
+        for i, value in zip(self._ctrl, target):
+            self._data.ctrl[i] = value
+
+    def teleport(self, x: float, y: float, yaw: float) -> None:
+        """Put the base somewhere at spawn time, holding the target there.
+
+        Both halves are needed: writing only the joints makes the robot drive straight
+        back to the actuators' default target of 0 on the first step, and writing only
+        the target makes it drive there from the origin through whatever is in between.
+        """
+        for i, value in zip(self._qpos, (x, y, yaw)):
+            self._data.qpos[i] = value
+        self.ctrl = (x, y, yaw)

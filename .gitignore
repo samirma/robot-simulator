@@ -45,6 +45,9 @@ simulator/*/outputs/
 simulator/*/runs/
 simulator/*/logs/
 
+# Screenshots written by kitchen_arm.sh; regenerate with `./kitchen_arm.sh shot`.
+simulator/shots/
+
 # Profiling output from the upstream test suites.
 simulator/**/mlspaces_tests/**/profiling_results.txt
 

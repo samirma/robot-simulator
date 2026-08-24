@@ -210,7 +210,8 @@ def add_tabletop_objects(spec, xy_min, xy_max, top_z: float, n: int) -> list[np.
     return positions
 
 
-def place_arm_on_table(scene_path: str, model, data, robot: str, reach, n_spawn: int):
+def place_arm_on_table(scene_path: str, model, data, robot: str, reach, n_spawn: int,
+                       want: tuple[str, ...] = ()):
     """Choose the surface, guarantee something is on it, and return (mount, spawn_request).
 
     Detection has to happen against a compiled model, but spawning objects happens on the
@@ -231,6 +232,30 @@ def place_arm_on_table(scene_path: str, model, data, robot: str, reach, n_spawn:
 
     thormap = load_scene_map(scene_path)
     targets = find_grasp_targets(scene_path, model, data, thormap=thormap)
+    if want and targets:
+        # `--target` asks for a surface holding particular things, which is how two
+        # engines get set up around the *same* objects: iTHOR's island carries a Bowl
+        # and an Apple, and so does the RoboCasa worktop, but only if both are told
+        # which pair to build the scene around. Ranking rather than filtering, because
+        # a surface that has one of the two is still better than one that has neither,
+        # and dropping every other candidate would turn a near miss into an error.
+        def _wanted(target) -> int:
+            category = (target.object_category or target.object_name or "").lower()
+            return sum(1 for w in want if w in category)
+
+        on_surface: dict[str, int] = {}
+        for target in targets:
+            on_surface[target.support_name] = on_surface.get(target.support_name, 0) + _wanted(target)
+        # Stable sort, so the original best-first order breaks ties.
+        targets = sorted(
+            targets,
+            key=lambda t: (-_wanted(t), -on_surface.get(t.support_name, 0)),
+        )
+        matched = [t for t in targets if _wanted(t)]
+        print(
+            f"--target {','.join(want)}: {len(matched)} of {len(targets)} candidate objects match",
+            file=sys.stderr,
+        )
     if targets:
         # Most targets share a surface, so the blocker sweep -- which walks every geom in
         # the house -- is cached by the height it was taken at.
@@ -464,6 +489,9 @@ def main() -> int:
                     help="override xy placement; an arm keeps the height of the surface "
                          "it is mounted on")
     ap.add_argument("--yaw", type=float, default=None, help="override facing, in degrees")
+    ap.add_argument("--target", default=None, metavar="CAT,CAT",
+                    help="prefer a work surface holding these object categories, "
+                         "e.g. 'bowl,apple' (substring match on the scene category)")
     ap.add_argument("--reach", type=float, nargs=2, default=None, metavar=("MIN", "MAX"),
                     help="arm working annulus on the table, in metres (default per robot)")
     ap.add_argument("--gripper", choices=("rest", "open", "closed"), default="rest",
@@ -576,8 +604,10 @@ def main() -> int:
 
     if tabletop:
         reach = tuple(args.reach) if args.reach else ARM_REACH[args.robot]
+        want = tuple(w.strip().lower() for w in (args.target or "").split(",") if w.strip())
         mount, to_spawn = place_arm_on_table(
-            args.scene, scene_model, scene_data, args.robot, reach, args.spawn_objects
+            args.scene, scene_model, scene_data, args.robot, reach, args.spawn_objects,
+            want=want,
         )
         if to_spawn is not None:
             add_tabletop_objects(spec, *to_spawn)

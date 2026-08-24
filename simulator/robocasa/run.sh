@@ -6,6 +6,12 @@
 #   ./run.sh view [--layout 1] [--style 3] [--robot PandaOmron]
 #                                        open a kitchen in the MuJoCo viewer;
 #                                        layout 1-60, style 1-60
+#                 [--robot myagv|so101]  ...with a shared robot in it instead, on the
+#                                        real hardware's interface:
+#                 [--ros-port 9090]      myagv -> cmd_vel in, odom + camera + /scan out
+#                 [--control HOST:PORT]  so101 -> generic observation/action server
+#                 [--headless]           ...with no window (displayless hosts, checks)
+#                 [--render out.png]     ...or just write a PNG and exit
 #   ./run.sh --layout 1 --style 3        shorthand for `view --layout 1 --style 3`
 #   ./run.sh shell                       interactive shell inside the venv
 #
@@ -94,9 +100,37 @@ do_assets() {
 
 do_view() {
   ensure_setup
+  local robot=""
+  local headless=0
+  local -a rest=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --robot) robot="$2"; shift 2 ;;
+      # Both take no window, so they must not be routed through mjpython: it exists
+      # for the main-thread constraint of the passive viewer and nothing else.
+      --headless|--render) headless=1; rest+=("$1"); shift ;;
+      *) rest+=("$1"); shift ;;
+    esac
+  done
+
+  # `--robot` is overloaded, and deliberately so: the two robot vocabularies here are
+  # disjoint, and making the user learn two flag names to say "put this robot in the
+  # kitchen" would be worse. A shared robot goes to spawn_robot.py and gets the vendor
+  # wire contracts; anything else is a robosuite robot name for the plain viewer, which
+  # is where `--robot PandaOmron` has always gone.
+  case "$robot" in
+    myagv|so101)
+      local py="$MJPY"
+      [ "$headless" = 1 ] && py="$PY"
+      exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" "${rest[@]+"${rest[@]}"}"
+      ;;
+    "") ;;
+    *) rest+=(--robot "$robot") ;;
+  esac
+
   # Deliberately a script, not `-m mujoco.viewer`, and under mjpython on macOS:
   # the passive viewer must own the main thread. See tools/view_kitchen.py.
-  exec "$MJPY" "$SIM_ROOT/tools/view_kitchen.py" "$@"
+  exec "$MJPY" "$SIM_ROOT/tools/view_kitchen.py" "${rest[@]+"${rest[@]}"}"
 }
 
 # ---------------------------------------------------------------- shell
