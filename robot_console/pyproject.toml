@@ -37,6 +37,28 @@ inspect = [
     "msgpack-numpy",
     "websockets",
 ]
+# The MolmoAct2 VLA controller (bin/arm_task.sh). Installed into its own venv
+# (.venv-vla) by that launcher, never into .venv: torch is a multi-gigabyte
+# dependency and the offline test suite must stay fast and torch-free.
+# transformers is pinned because the checkpoint's trust_remote_code modules are
+# written against a specific API generation and break across majors: the
+# MolmoAct2-SO100_101 config says transformers_version 5.3.0, and 4.x chokes on
+# its list-shaped extra_special_tokens.
+vla = [
+    "msgpack-numpy",
+    "websockets",
+    "torch",
+    "torchvision",
+    "transformers>=5.3,<6",
+    "einops",
+    "pillow",
+    "accelerate",
+    "huggingface_hub",
+    # The checkpoint's tokenizer config routes through transformers' slow-tokenizer
+    # loader, which needs both of these even though tokenizer.json is present.
+    "protobuf",
+    "sentencepiece",
+]
 [project.scripts]
 robot-console-teleop = "robot_console.cli:main"
 robot-console-explore = "robot_console.explore:main"
@@ -44,6 +66,7 @@ robot-console-mapping = "robot_console.mapping:main"
 robot-console-navigate = "robot_console.navigate:main"
 robot-console-arm = "robot_console.arm_client:main"
 robot-console-inspect-so101 = "robot_console.inspect_so101:main"
+robot-console-arm-task = "robot_console.arm_task:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/robot_console"]

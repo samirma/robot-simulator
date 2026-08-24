@@ -1,5 +1,7 @@
 # Python
 .venv/
+# The VLA controller's own venv (bin/arm_task.sh); torch lives here, not in .venv.
+.venv-vla/
 __pycache__/
 *.py[cod]
 *.egg-info/
