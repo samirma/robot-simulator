@@ -3,7 +3,7 @@
 #
 #   ./kitchen_arm.sh                 render a screenshot from each engine into shots/
 #   ./kitchen_arm.sh view            open both engines in the MuJoCo viewer
-#   ./kitchen_arm.sh serve           run both headless, each on its own rosbridge port
+#   ./kitchen_arm.sh serve           run headless on rosbridge (see --engine)
 #   ./kitchen_arm.sh inspect         stage the task, run inspect-robot against it, PASS/FAIL
 #   ./kitchen_arm.sh cameras         open the live camera page on a running `serve`/`inspect`
 #   ./kitchen_arm.sh help
@@ -14,9 +14,11 @@
 #   --out DIR              where screenshots go (default: shots/)
 #   --ports 9090,9091      rosbridge ports for `serve`/`inspect` (molmospaces, robocasa)
 #
-#   inspect only:
+#   serve / inspect:
 #   --policy P             so101_waypoint (default) | molmoact2
-#   --engine E             molmospaces (default) | robocasa | both
+#   --engine E             molmospaces (default) | robocasa | both. `serve` and
+#                          `inspect` need only the engines named here to be set up;
+#                          `shot` and `view` are comparisons and need both.
 #   --steps N              episode budget (default 400)
 #   --episodes N           run N episodes and report the pass count (default 1)
 #   --wrist                also stream the eye-in-hand camera
@@ -126,11 +128,17 @@ need_engine() {
   [ -x "$1/.venv/bin/python" ] \
     || die "$(basename "$1") is not set up yet - run: cd $1 && ./run.sh setup"
 }
-case "$cmd:$ENGINE" in
-  inspect:molmospaces) need_engine "$MOLMO" ;;
-  inspect:robocasa)    need_engine "$ROBOCASA" ;;
-  cameras:*)           ;;
-  *)                   need_engine "$MOLMO"; need_engine "$ROBOCASA" ;;
+# `shot` and `view` are comparisons and need both engines by definition. `serve` and
+# `inspect` take --engine, so they need only the ones they were asked for -- setting up
+# the second engine is a large download, and requiring it to run the first is a barrier
+# with nothing behind it. `cameras` starts no engine at all.
+case "$cmd" in
+  cameras) ;;
+  serve|inspect)
+    [ "$ENGINE" = "robocasa" ]    || need_engine "$MOLMO"
+    [ "$ENGINE" = "molmospaces" ] || need_engine "$ROBOCASA"
+    ;;
+  *) need_engine "$MOLMO"; need_engine "$ROBOCASA" ;;
 esac
 
 # ---------------------------------------------------------------- engines
@@ -177,6 +185,16 @@ viewer() {
 # right default here -- but it is also a popular port, and a sibling checkout running its
 # own simulator is the likeliest thing holding it. Naming the holder turns a puzzling
 # failure into an obvious one.
+# The engines this invocation covers, as `name:port`, honouring --engine.
+engine_list() {
+  case "$ENGINE" in
+    molmospaces) echo "molmospaces:$MOLMO_PORT" ;;
+    robocasa)    echo "robocasa:$ROBOCASA_PORT" ;;
+    both)        echo "molmospaces:$MOLMO_PORT robocasa:$ROBOCASA_PORT" ;;
+  esac
+}
+engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
+
 port_free() {
   nc -z 127.0.0.1 "$1" 2>/dev/null || return 0
   local holder
@@ -249,27 +267,28 @@ case "$cmd" in
     ;;
 
   serve)
-    # Checked up front, because the failure otherwise arrives as a websockets traceback
-    # from inside an engine that has already spent a minute compiling a kitchen.
-    port_free "$MOLMO_PORT"; port_free "$ROBOCASA_PORT"
     wrist_arg=(); [ "$WRIST" -eq 1 ] && wrist_arg=(--wrist-camera)
-    echo ">> molmospaces so101 on ws://127.0.0.1:$MOLMO_PORT"
-    molmospaces "$(py "$MOLMO")" --headless --ros-port "$MOLMO_PORT" \
-      --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
-    molmo_pid=$!
-    echo ">> robocasa so101 on ws://127.0.0.1:$ROBOCASA_PORT"
-    robocasa "$(py "$ROBOCASA")" --headless --ros-port "$ROBOCASA_PORT" \
-      --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
-    robocasa_pid=$!
-    # EXIT as well as INT/TERM: without it a `die` anywhere below leaves both engines
-    # holding their ports, and the next run fails the port check for no visible reason.
-    trap 'stop_engine "$molmo_pid" "$MOLMO_PORT"; stop_engine "$robocasa_pid" "$ROBOCASA_PORT"' INT TERM EXIT
+    pids=()
+    # EXIT as well as INT/TERM: without it a `die` anywhere below leaves an engine
+    # holding its port, and the next run fails the port check for no visible reason.
+    trap 'for i in "${!pids[@]}"; do stop_engine "${pids[$i]}" "${serve_ports[$i]}"; done' INT TERM EXIT
+    serve_ports=()
+    for spec in $(engine_list); do
+      name="${spec%%:*}"; port="${spec##*:}"
+      # Checked up front, because the failure otherwise arrives as a websockets
+      # traceback from an engine that has already spent a minute compiling a kitchen.
+      port_free "$port"
+      echo ">> $name so101 on ws://127.0.0.1:$port"
+      "$name" "$(py "$(engine_root "$name")")" --headless --ros-port "$port" \
+        --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
+      pids+=("$!"); serve_ports+=("$port")
+    done
     echo
-    echo "drive either one with the same client, from robot_console/:"
+    echo "drive any of them with the same client, from robot_console/:"
     echo "  inspect-robot run --task apple_on_plate --policy so101_waypoint \\"
-    echo "      --embodiment so101_ros -E url=ws://127.0.0.1:$MOLMO_PORT \\"
-    echo "      -T max_steps=$STEPS --max-action-delta 0.65"
-    echo "  ./kitchen_arm.sh cameras          # the live camera page"
+    echo "      --embodiment so101_ros -E url=ws://127.0.0.1:${serve_ports[0]} \\"
+    echo "      -E fresh_obs_timeout_s=2.0 -T max_steps=$STEPS --max-action-delta 0.65"
+    echo "  ./kitchen_arm.sh cameras --ports ${serve_ports[0]},$ROBOCASA_PORT"
     wait
     ;;
 
@@ -300,18 +319,14 @@ case "$cmd" in
     cd $CONSOLE && uv venv --python 3.12 $(basename "$RUN_VENV") \
         && VIRTUAL_ENV=$(basename "$RUN_VENV") uv pip install -e '.[$extra]'"
 
-    engines=()
-    [ "$ENGINE" = "molmospaces" ] || [ "$ENGINE" = "both" ] && engines+=("molmospaces:$MOLMO_PORT")
-    [ "$ENGINE" = "robocasa" ]    || [ "$ENGINE" = "both" ] && engines+=("robocasa:$ROBOCASA_PORT")
-
     overall=0
-    for spec in "${engines[@]}"; do
+    for spec in $(engine_list); do
       name="${spec%%:*}"; port="${spec##*:}"; url="ws://127.0.0.1:$port"
       port_free "$port"
       wrist_arg=(); [ "$WRIST" -eq 1 ] && wrist_arg=(--wrist-camera)
 
       say "== $name: staging apple_on_plate on $url"
-      "$name" "$(py "$([ "$name" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA")")" \
+      "$name" "$(py "$(engine_root "$name")")" \
         --headless --ros-port "$port" --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
       sim_pid=$!
       trap 'stop_engine "$sim_pid" "$port"' INT TERM EXIT

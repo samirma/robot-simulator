@@ -506,6 +506,35 @@ Constants that look arbitrary and are not. Each was measured, and each was wrong
 a VLA on this task is a coin toss even on the rig it was tuned for, and one episode of
 `--policy molmoact2` tells you nothing. `--episodes N` exists for this.
 
+### Where MolmoAct2 stands here, and the measurements worth starting from
+
+`so101_waypoint` 5/5 on the iTHOR kitchen; `molmoact2` 0/4. The gap is **not** a plumbing
+fault, and it is worth knowing that before anyone re-debugs the transport: the recorded
+actions are healthy — 0.7 to 1.9 rad of travel per joint, the jaw cycling its full 0..1,
+a median per-step change of 0.016 rad and no chunk constant across its steps, which is
+the signature a dtype or calibration fault would show.
+
+What the traces show is a split. The task needs `shoulder_pan` near **-0.42 to reach the
+apple** and **+0.90 to reach the plate**. In **three of four** episodes the policy's pan
+spanned about -0.74 to -0.03 and was **never positive at all**: it worked the apple side
+and never made the 1.3 rad swing to the plate, leaving the apple nudged ~25 mm and 0.31 m
+short. In the **fourth** it did turn — pan reached +0.75 over 65 steps — and the apple
+came within **61 mm** of the plate centre, inside the 0.080 m gate, without the placement
+ever settling.
+
+So the failure is not one thing. Read `apple_plate_distance` carefully when judging this:
+it is the **closest** approach across the episode, not where the apple ended, and its
+explanation string carries the final distance. A run that reports 0.061 may have carried
+the apple over the plate and kept hold of it.
+
+A hypothesis for the three that never turned, untested: **the plate is white and this
+worktop is white marble**, where the rig these numbers came from puts the same white
+plate on a brown wood table. A policy that cannot see the receptacle has no reason to
+turn towards it. Cheap things to try, in order: render the overhead view and look at the
+plate's contrast against the counter; stage on a darker worktop (`--scene` picks another
+kitchen, `--layout`/`--style` do for RoboCasa); only then suspect the model. The contract
+fixes the plate's *geometry*, not the surface it is placed on.
+
 ---
 
 ## Workspace conventions
