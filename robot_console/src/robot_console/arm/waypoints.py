@@ -167,6 +167,26 @@ class PickPlaceConfig:
     #: this is commanded is the apple between the fingers, not a fault: the `close`
     #: waypoint runs to its step budget rather than settling, by design.
     grasp_gripper: float = 0.40
+
+    #: Which branch of the wrist roll to solve on, or None to let `level_jaw_roll`
+    #: choose. There are always **two** branches, half a turn apart, since a jaw rolled
+    #: by pi is the same level jaw -- and on this arm they are *not* interchangeable in
+    #: practice, which is worth knowing before anyone "tidies" this back up.
+    #:
+    #: Unseeded the solver picks -1.52, and that is what ships. Seeding +1.62 was tried,
+    #: because it is the branch the VLA's trained state band lives in, and it made the
+    #: *release* fail: lowering the held apple onto the plate, the arm error grew
+    #: 0.057 -> 0.087 -> 0.118 rad across the last three sub-waypoints and each ran its
+    #: full 70-step budget. That is a blocked arm, not a slow one -- the flipped jaw
+    #: fouls the plate's rim on the way down. The episode still reached the plate (the
+    #: apple landed 7-10 mm from centre, better than the 12-13 mm of the shipped branch)
+    #: but ran out of budget before the 1.0 s hold could complete.
+    #:
+    #: The VLA's need is met elsewhere and does not require this: the *start pose* it
+    #: conditions on is the task's business, and `shared/tasks/apple_on_plate.py` sets
+    #: that in-band independently. The scripted plan simply swings the wrist once on its
+    #: way to `home`, which costs it steps it has to spare.
+    wrist_roll_preference: float | None = None
     settle_steps: int = 3
     close_steps: int = 8
     #: Steps the arm holds still while opening the jaws and then waiting --
@@ -185,6 +205,19 @@ class PickPlaceConfig:
     #: the apple keeps the looser tolerance, because precision there costs steps
     #: and the grasp is only good for a few seconds once made.
     descend_tolerance: float = 0.012
+
+    #: Joint-space tolerance for *lowering the held apple onto the plate*, which used to
+    #: share `descend_tolerance` and should not. 12 mm is sized for straddling a 40 mm
+    #: apple with jaws that clear it by ~4 mm a side; putting that apple down on a 200 mm
+    #: plate is a far coarser job, and the success gate agrees -- 80 mm horizontally.
+    #:
+    #: Sharing the tight one is only free while the arm can actually hit it. Measured
+    #: after the wrist moved to its in-band roll branch: `over_plate_5`, `_6` and `_7`
+    #: each ran their full 70-step budget at an arm error of 0.02-0.09 rad, burning 176
+    #: steps, and the episode reached the plate but ran out of budget before the 1.0 s
+    #: hold could complete. The apple was landing 7-10 mm from the plate centre at the
+    #: time -- better than the 12-13 mm the tighter tolerance was buying.
+    lower_tolerance: float = 0.05
     #: Step budget per descend sub-waypoint. A tight tolerance needs room to
     #: converge; without this the descent would simply time out at the old 40.
     descend_max_steps: int = 70
@@ -286,7 +319,7 @@ def build_waypoints(config: PickPlaceConfig | None = None) -> tuple[Waypoint, ..
     waypoints += _ramp(
         "over_plate", over, drop, cfg.transit_pitch, cfg.release_pitch, cfg.grasp_gripper,
         segments=cfg.lower_segments, settle_steps=cfg.settle_steps,
-        tolerance=cfg.descend_tolerance, max_steps=cfg.descend_max_steps,
+        tolerance=cfg.lower_tolerance, max_steps=cfg.descend_max_steps,
     )
     waypoints.append(
         Waypoint("release", drop, cfg.release_pitch, GRIPPER_OPEN, cfg.release_steps,
@@ -310,7 +343,7 @@ def build_plan(
     waypoints = build_waypoints(cfg)
     targets: list[npt.NDArray[np.float64]] = []
     solves: list[IKResult] = []
-    previous_roll: float | None = None
+    previous_roll: float | None = cfg.wrist_roll_preference
     current = (
         np.zeros(len(ARM_JOINTS), dtype=np.float64)
         if seed is None

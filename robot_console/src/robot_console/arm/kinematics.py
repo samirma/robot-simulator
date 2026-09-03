@@ -49,25 +49,34 @@ GRIPPER_JOINT = "gripper_joint"
 #: Full 6-DoF command order (five arm joints then the gripper).
 JOINT_ORDER: tuple[str, ...] = (*ARM_JOINTS, GRIPPER_JOINT)
 
-#: Commanded joint ranges, radians, in the **contract** convention that the ROS
-#: surface presents -- deliberately narrower than what the MJCF allows on three
-#: joints (``elbow_flex`` 1.54 vs 1.69, ``wrist_flex`` 1.6 vs 1.658063,
-#: ``wrist_roll`` 2.3 vs 2.743847). The narrower band is the one MolmoAct2's
-#: calibration was fitted against, and clamping into a subset of the mechanism's
-#: real range is always safe. The gripper entry is the jaw hinge, normalised:
-#: the MJCF hinge runs -0.174533..1.745329 rad and the contract runs 0..1, an
-#: exact offset of +0.174533 that ``shared/ros_surfaces/so101.py`` applies in
-#: both directions. Verified by sweeping the jaw: tip separation is
-#: 7.01/20.91/38.42/55.80 mm at contract g = 0.00/0.24/0.48/0.72, against the
-#: measured curve ``gap(g) = -23.24g^2 + 92.54g - 0.84`` mm the grasp tuning was
-#: derived from, which predicts 20.86/38.29/55.79. Agreement to ~0.1 mm, so every
+#: Commanded joint ranges, radians. **These are this MJCF's own limits, not the narrower
+#: ones the sibling rig's description declares** -- and the difference is not cosmetic.
+#:
+#: `ros2_so_arm` narrows `wrist_flex` to 1.6 and `wrist_roll` to 2.3, below what the
+#: mechanism allows (1.658063 and 2.7438473). The sibling rig accepts the resulting clip
+#: as a known cost. It does not have to be paid here, because this arm is the
+#: mujoco_menagerie model with its full ranges -- and the clip lands exactly where a VLA
+#: needs the room: mapped into our frame, MolmoAct2's action band reaches +1.630 on
+#: `wrist_flex` and **+2.715 on `wrist_roll`**, so a 2.3 limit silently truncates the
+#: most-rolled 24% of what the checkpoint can ask for.
+#:
+#: (An earlier version of this comment claimed the narrower band was "the one MolmoAct2's
+#: calibration was fitted against". That was wrong, and measuring the checkpoint's own
+#: action quantiles is what showed it.)
+#:
+#: The gripper entry is the jaw hinge, normalised: the MJCF hinge runs
+#: -0.174533..1.745329 rad and the contract runs 0..1, an exact offset of +0.174533 that
+#: `shared/ros_surfaces/so101.py` applies in both directions. Verified by sweeping the
+#: jaw: tip separation is 7.01/20.91/38.42/55.80 mm at contract g = 0.00/0.24/0.48/0.72,
+#: against the measured curve `gap(g) = -23.24g^2 + 92.54g - 0.84` mm the grasp tuning
+#: was derived from, which predicts 20.86/38.29/55.79. Agreement to ~0.1 mm, so every
 #: gripper constant in `waypoints` transfers unchanged.
 JOINT_LIMITS: dict[str, tuple[float, float]] = {
     "shoulder_pan_joint": (-1.9198621771937616, 1.9198621771937634),
     "shoulder_lift_joint": (-1.7453292519943224, 1.7453292519943366),
     "elbow_flex_joint": (-1.69, 1.54),
-    "wrist_flex_joint": (-1.6, 1.6),
-    "wrist_roll_joint": (-2.3, 2.3),
+    "wrist_flex_joint": (-1.658063, 1.658063),
+    "wrist_roll_joint": (-2.7438473, 2.7438473),
     "gripper_joint": (0.0, 1.0),
 }
 

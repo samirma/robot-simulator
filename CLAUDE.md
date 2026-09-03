@@ -506,34 +506,54 @@ Constants that look arbitrary and are not. Each was measured, and each was wrong
 a VLA on this task is a coin toss even on the rig it was tuned for, and one episode of
 `--policy molmoact2` tells you nothing. `--episodes N` exists for this.
 
-### Where MolmoAct2 stands here, and the measurements worth starting from
+### Where MolmoAct2 stands here, and what moved the needle
 
-`so101_waypoint` 5/5 on the iTHOR kitchen; `molmoact2` 0/4. The gap is **not** a plumbing
-fault, and it is worth knowing that before anyone re-debugs the transport: the recorded
-actions are healthy — 0.7 to 1.9 rad of travel per joint, the jaw cycling its full 0..1,
-a median per-step change of 0.016 rad and no chunk constant across its steps, which is
-the signature a dtype or calibration fault would show.
+`so101_waypoint` passes every attempt. `molmoact2` passes **1 in 6**, and the pass count
+is the least interesting number in this section — what changed under it matters more:
 
-What the traces show is a split. The task needs `shoulder_pan` near **-0.42 to reach the
-apple** and **+0.90 to reach the plate**. In **three of four** episodes the policy's pan
-spanned about -0.74 to -0.03 and was **never positive at all**: it worked the apple side
-and never made the 1.3 rad swing to the plate, leaving the apple nudged ~25 mm and 0.31 m
-short. In the **fourth** it did turn — pan reached +0.75 over 65 steps — and the apple
-came within **61 mm** of the plate centre, inside the 0.080 m gate, without the placement
-ever settling.
+| | before | after |
+|---|---|---|
+| episodes where the apple never left spawn (~0.33 m) | 3 of 4 | 1 of 6 |
+| episodes that engaged the task at all | 1 of 4 | 5 of 6 |
+| passes | 1/4 | 1/6 |
 
-So the failure is not one thing. Read `apple_plate_distance` carefully when judging this:
-it is the **closest** approach across the episode, not where the apple ended, and its
-explanation string carries the final distance. A run that reports 0.061 may have carried
-the apple over the plate and kept hold of it.
+So the policy went from mostly *not attempting* the task to mostly attempting it and
+missing. The pass counts are not distinguishable at this sample size and should not be
+read as one; the engagement change is large enough to be worth acting on. **Report pass
+counts over many episodes, never a single run** -- `--episodes N` exists for this, and a
+VLA on this task is a coin toss even on the rig it was tuned for.
 
-A hypothesis for the three that never turned, untested: **the plate is white and this
-worktop is white marble**, where the rig these numbers came from puts the same white
-plate on a brown wood table. A policy that cannot see the receptacle has no reason to
-turn towards it. Cheap things to try, in order: render the overhead view and look at the
-plate's contrast against the counter; stage on a darker worktop (`--scene` picks another
-kitchen, `--layout`/`--style` do for RoboCasa); only then suspect the model. The contract
-fixes the plate's *geometry*, not the surface it is placed on.
+Three things were wrong, all found by measuring the checkpoint rather than the code:
+
+- **The arm started outside the trained state band.** A VLA conditions on measured joint
+  state, and this one's processor bins that state into 256 buckets and clips *silently* --
+  so an out-of-band start is not an error, it is a total failure of conditioning on every
+  step, invisibly. MolmoAct2-SO100_101's `wrist_roll` band maps to +47..+153 degrees in
+  our frame; the engine's stock rest pose sits at 0. `shared/tasks/apple_on_plate.py` now
+  starts the arm at +1.62 rad, which maps to the middle of that band.
+- **Two channels were clipping.** `ros2_so_arm` narrows `wrist_flex` to 1.6 and
+  `wrist_roll` to 2.3, below both the mechanism's own range *and* the checkpoint's action
+  band, which reaches +2.715 rad on `wrist_roll`. This arm is the mujoco_menagerie model
+  with the full ranges, so that truncation was pure loss. `JOINT_LIMITS` now uses the
+  MJCF's own limits and nothing clips.
+- **The scene had opinions.** The kitchen's own apple landed 0.10 m from the task's
+  spawn; see the workspace-clearing note above.
+
+**The two policies want different wrist branches, and that is not a bug to tidy away.**
+`level_jaw_roll` always has two solutions half a turn apart. The VLA needs the +1.62 one
+because that is where its state band lives. The scripted plan needs the -1.52 one because
+rolled the other way its jaw fouls the plate rim while lowering -- measured, the arm error
+grew 0.057 -> 0.087 -> 0.118 rad across the last three sub-waypoints with each running its
+full step budget. They are set independently: the start pose is the task's, the plan's
+branch is `PickPlaceConfig.wrist_roll_preference`.
+
+What is still untested: the plate is white and this worktop is white marble, where the
+rig these numbers came from puts the same white plate on brown wood. If the remaining
+misses are a perception problem, that is the next thing to look at -- render the overhead
+view and judge the plate's contrast, or stage on a darker worktop (`--scene` picks another
+kitchen, `--layout`/`--style` for RoboCasa). Note `apple_plate_distance` is the **closest**
+approach across an episode, not where the apple ended; its explanation string carries the
+final distance, and reading the first as the second makes a fly-past look like a near-miss.
 
 ---
 

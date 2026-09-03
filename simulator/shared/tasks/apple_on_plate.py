@@ -72,6 +72,27 @@ PLATE_TOP_Z = 2 * PLATE_HALF_HEIGHT  # 0.0204
 #: Where an apple sitting on the plate has its centre: plate top + apple radius.
 RESTING_Z = 0.040
 
+#: The pose the episode starts from: five arm joints, radians, contract order.
+#:
+#: **`wrist_roll` is +1.62 and that number is doing real work.** A VLA conditions on the
+#: measured joint state, and its processor bins that state into 256 buckets and clips
+#: silently -- so a start pose outside the band the checkpoint was trained on is a
+#: quiet, total failure of conditioning rather than a visible error. MolmoAct2-SO100_101
+#: was trained with `wrist_roll` in -63.5..+42.9 degrees of *its* frame, which maps to
+#: ours as `model = 90 - degrees(ours)`. The engine's stock rest pose has `wrist_roll`
+#: at 0, i.e. model +90 -- 47 degrees outside the band, on every step of every episode.
+#:
+#: +1.62 rad maps to model -2.8, near the middle of that band (its trained median is
+#: -11), and it is **geometrically identical** to the -1.52 the plan used to pick: the
+#: two differ by pi, and a jaw rolled half a turn is the same level jaw. Measured jaw
+#: tilt is 0.000 either way. So this costs nothing and buys in-distribution
+#: conditioning; with it the whole start state sits inside the band on every channel
+#: except the jaw, which is exactly at its q99 when fully open.
+START_ARM_QPOS = (0.0, -0.6, 1.0, 0.6, 1.62)
+
+#: Jaw fully open at the start, in contract units.
+START_GRIPPER = 1.0
+
 # ------------------------------------------------------------------ success predicate
 
 MAX_HORIZONTAL_DIST = 0.080  # plate radius 0.10 - apple radius 0.020
@@ -477,6 +498,8 @@ class AppleOnPlate:
             )
         self._base_from_world = np.linalg.inv(self._world_from_base)
 
+        self._apply_start_pose(data)
+
         self._spawn_qpos = data.qpos.copy()
         self._spawn_qvel = data.qvel.copy()
         # Actuator targets too, not just state: these are position servos, so restoring
@@ -484,6 +507,38 @@ class AppleOnPlate:
         # arm back at rest and then immediately drive it away again.
         self._spawn_ctrl = data.ctrl.copy()
         self._holding_since: float | None = None
+
+    def _apply_start_pose(self, data) -> None:
+        """Put the arm in the task's start pose before anything is snapshotted.
+
+        Both the joint state and the actuator target: these are position servos, so a
+        ctrl left where the engine's own rest pose put it would drive the arm straight
+        back out of this one on the first step.
+        """
+        from ros_surfaces.so101 import ARM_JOINTS, GRIPPER_OFFSET_RAD
+
+        targets = list(zip((n.removesuffix("_joint") for n in ARM_JOINTS), START_ARM_QPOS))
+        targets.append(("gripper", START_GRIPPER - GRIPPER_OFFSET_RAD))
+        missing = []
+        for mjcf, value in targets:
+            jid = _find_joint(self._model, mjcf)
+            if jid < 0:
+                missing.append(mjcf)
+                continue
+            data.qpos[self._model.jnt_qposadr[jid]] = value
+            # Actuators in this spec are named after the joint they drive, namespace
+            # and all, so the joint's own name is the way to find it.
+            joint_name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+            aid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_ACTUATOR, joint_name)
+            if aid >= 0:
+                data.ctrl[aid] = value
+        if missing:
+            raise SystemExit(
+                f"apple_on_plate: could not find joint(s) {missing} to apply the start "
+                "pose. Silently skipping them would start the arm out of the band the "
+                "VLA was trained on, which fails invisibly."
+            )
+        mujoco.mj_forward(self._model, data)
 
     def contact_bodies(self) -> frozenset[int]:
         """Bodies the gripper must be able to touch for the task to be possible."""
@@ -556,6 +611,18 @@ class AppleOnPlate:
         data.ctrl[:] = self._spawn_ctrl
         mujoco.mj_forward(self._model, data)
         self._holding_since = None
+
+
+def _find_joint(model, suffix: str) -> int:
+    """The id of the joint called `suffix`, whatever namespace an engine prefixed it."""
+    exact = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, suffix)
+    if exact >= 0:
+        return exact
+    matches = [
+        i for i in range(model.njnt)
+        if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, i) or "").endswith("/" + suffix)
+    ]
+    return matches[0] if len(matches) == 1 else -1
 
 
 def _find_body(model, suffix: str) -> int | None:
