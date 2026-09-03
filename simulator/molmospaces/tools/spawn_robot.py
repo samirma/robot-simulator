@@ -646,7 +646,10 @@ def main() -> int:
     if stage_task is not None:
         # The arm's base body lands exactly at attach_pos now that the riser is gone, so
         # that pose *is* the task's frame origin.
-        stage_task[0](spec, attach_pos, yaw)
+        cleared = stage_task[0](spec, attach_pos, yaw)
+        if cleared:
+            print(f"task {args.task}: cleared {len(cleared)} scene object(s) from the "
+                  f"working area: {', '.join(n.split('_')[0] for n in cleared)}", file=sys.stderr)
 
     model = spec.compile()
     data = mujoco.MjData(model)

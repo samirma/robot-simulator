@@ -166,20 +166,36 @@ def _quat_mul(a, b) -> list[float]:
 # ------------------------------------------------------------------ staging
 
 
-def stage(spec, mount_pos, yaw: float, *, hide_categories=("apple",)) -> None:
+#: Scene objects whose origin lands within this horizontal distance of the arm base, in
+#: the band from just under the work surface to a little above it, are moved out of the
+#: way. The task's own objects reach 0.34 m; this leaves a margin around that.
+#:
+#: A task owns its workspace. On the rig these numbers came from, the arm has a bare
+#: table and its dressing sits out at the edges; here the arm is mounted into a furnished
+#: kitchen whose own apple lands 0.10 m from the task's spawn and whose book and bread sit
+#: inside the working annulus. Two apples is not a harder task, it is a different one --
+#: the policy is told to fetch "the red apple" and only one of them is the 40 mm sphere
+#: the jaw can close on -- and clutter in the working area occludes the plate in the side
+#: view. Leaving it in confounds a grounding test with a disambiguation test.
+CLEAR_RADIUS = 0.55
+CLEAR_Z_BAND = (-0.15, 0.45)
+#: How far under the scene a cleared object is parked. Only has to be out of every
+#: camera's frustum; it is static once moved, so the distance costs nothing.
+SUNK_DEPTH = 50.0
+
+
+def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) -> list[str]:
     """Add the apple, the plate and the two scene cameras to an engine's spec.
 
     `mount_pos`/`yaw` locate the arm's base body in the engine's world, and everything
     below is placed relative to it, so the contract geometry survives being dropped into
     a kitchen that knows nothing about it.
 
-    `hide_categories` sinks the scene's *own* objects of those categories under the
-    floor. iTHOR's FloorPlan1 island carries an Apple of its own, roughly twice the size
-    of the one the jaw was tuned for, sitting exactly where the arm can see it -- so a
-    policy told to fetch "the red apple" gets two candidates, only one of which it can
-    physically grasp. Removing it is not cosmetic; it is the difference between a
-    grounding test and a coin flip. They are moved rather than deleted because deleting
-    a body out of a compiled iTHOR house takes its metadata references with it.
+    Loose scene objects inside `clear_radius` of the base are sunk under the floor first;
+    see `CLEAR_RADIUS`. Only *movable* bodies are touched -- anything without a free joint
+    is a fixture, and sinking a counter would take the arm's own work surface with it.
+    They are moved rather than deleted because deleting a body out of a compiled iTHOR
+    house takes its metadata references with it.
     """
     transform = base_frame(mount_pos, yaw)
     base_quat = _yaw_quat(yaw)
@@ -194,8 +210,7 @@ def stage(spec, mount_pos, yaw: float, *, hide_categories=("apple",)) -> None:
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = max(float(spec.option.impratio), 50.0)
 
-    if hide_categories:
-        _sink_scene_objects(spec, hide_categories)
+    cleared = _clear_workspace(spec, transform, clear_radius)
 
     _add_assets(spec)
 
@@ -293,6 +308,8 @@ def stage(spec, mount_pos, yaw: float, *, hide_categories=("apple",)) -> None:
         # xyaxes is not a spec field; set the equivalent orientation as a quaternion.
         camera.quat = _camera_quat(rot @ right, rot @ up)
 
+    return cleared
+
 
 def _add_assets(spec) -> None:
     """Meshes, the apple's texture, and the two materials -- once per spec."""
@@ -338,18 +355,79 @@ def _camera_quat(right: np.ndarray, up: np.ndarray) -> list[float]:
     return [float(v) for v in quat]
 
 
-def _sink_scene_objects(spec, categories) -> None:
-    """Drop the scene's own instances of these categories far below the floor."""
-    wanted = tuple(c.lower() for c in categories)
-    for body in spec.bodies:
-        name = (body.name or "").lower()
-        if not any(c in name for c in wanted):
-            continue
-        if name.startswith(("task_", "robot_")):
-            continue
-        pos = list(body.pos)
-        pos[2] -= 50.0
-        body.pos = pos
+def _clear_workspace(spec, transform: np.ndarray, radius: float) -> list[str]:
+    """Sink every loose scene body inside the task's working area. Returns their names.
+
+    Walks the body tree accumulating parent transforms, because `MjsBody.pos` is
+    **parent-relative** and a scene's graspables are usually nested a couple of levels
+    down inside whatever surface holds them. Comparing those raw positions against a
+    world-frame radius silently misses exactly the objects that are nested -- measured:
+    it caught the scene's apple and bread and left a book standing in the plate's half of
+    the frame.
+
+    Staging happens before the compile, so this cannot ask MuJoCo for world positions;
+    accumulating them here is the same arithmetic MuJoCo would do, and for objects
+    resting on a surface the spawn pose is where they are.
+    """
+    inverse = np.linalg.inv(transform)
+    moved: list[str] = []
+
+    def origins(body, here: np.ndarray, out: list) -> None:
+        """World origins of this body and every descendant."""
+        out.append(here[:3, 3])
+        for child in body.bodies:
+            origins(child, here @ _homogeneous(child.pos, child.quat), out)
+
+    def inside(point) -> bool:
+        local = inverse @ np.array([*point, 1.0])
+        return (
+            float(np.hypot(local[0], local[1])) <= radius
+            and CLEAR_Z_BAND[0] < local[2] < CLEAR_Z_BAND[1]
+        )
+
+    def walk(body, parent: np.ndarray) -> None:
+        here = parent @ _homogeneous(body.pos, body.quat)
+        name = body.name or ""
+        movable = any(j.type == mujoco.mjtJoint.mjJNT_FREE for j in body.joints)
+        if name and movable and not name.startswith(("task_", "robot_")):
+            # Judged on the whole object, not just its origin. A scene's objects are
+            # often several bodies, and the root's origin can sit well outside the
+            # region the visible parts occupy -- measured: this rule leaves a book
+            # standing next to the plate when the root is tested alone, because the
+            # part in frame is a child two levels down.
+            points: list = []
+            origins(body, here, points)
+            if any(inside(point) for point in points):
+                # Static first, THEN moved. A free body parked below the floor is still
+                # a free body: it falls, forever, accelerating -- and a scene full of
+                # objects in permanent freefall wrecks the solver. Measured: the
+                # simulated clock went *backwards* (-0.006x wall clock) and every
+                # episode died in the embodiment's own sim-clock preflight. Dropping the
+                # free joint makes it a static frame, which costs nothing to step.
+                for joint in list(body.joints):
+                    if joint.type == mujoco.mjtJoint.mjJNT_FREE:
+                        spec.delete(joint)
+                body.pos = [body.pos[0], body.pos[1], body.pos[2] - SUNK_DEPTH]
+                moved.append(name)
+                return  # its children go with it
+        for child in body.bodies:
+            walk(child, here)
+
+    for child in spec.worldbody.bodies:
+        walk(child, np.eye(4))
+    return moved
+
+
+def _homogeneous(pos, quat) -> np.ndarray:
+    out = np.eye(4)
+    w, x, y, z = (float(v) for v in quat)
+    out[:3, :3] = np.array([
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ])
+    out[:3, 3] = [float(v) for v in pos]
+    return out
 
 
 # ------------------------------------------------------------------ the arbiter
