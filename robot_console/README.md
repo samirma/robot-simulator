@@ -5,9 +5,11 @@ also drives a Hiwonder AiNex — see [`--robot`](#--robot).
 
 The console is an independent project. Its base dependencies are `numpy`,
 `opencv-python`, and `roslibpy`, so it installs and runs on a machine that has never
-seen MuJoCo, MolmoSpaces, or the `simulator/` checkout. It speaks the myAGV ROS
-interface and the simulator's generic arm protocol over websockets. Optional arm and
-Inspect Robots dependencies do not introduce a simulator import.
+seen MuJoCo, MolmoSpaces, or the `simulator/` checkout. Everything it drives, it drives
+over rosbridge: the myAGV on its vendor ROS 1 topics, the SO-101 on the ROS 2
+ros2_control topic set a real bringup for that arm presents. Optional arm and Inspect
+Robots dependencies do not introduce a simulator import; `import mujoco` failing inside
+`.venv` is a property worth preserving, and the test suite checks it.
 
 ## Quick start
 
@@ -35,126 +37,84 @@ just a launcher. It re-installs by itself when `pyproject.toml` changes, and
 Before connecting it checks that something is listening, and prints how to start each
 kind of robot when nothing is. `--no-preflight` skips the check.
 
-## Arm control
+## The arm
 
-For non-ROS arms, the simulator hosts a generic msgpack-numpy observation/action
-server and this project supplies the control client:
+The SO-101 is driven over **rosbridge**, on the ros2_control topic set a real bringup for
+that arm presents — `joint_trajectory_controller` for the five arm joints, a
+`forward_command_controller` for the jaw, one `joint_state_broadcaster` covering both.
+There is no simulator-specific protocol: the same client drives the simulated arm and a
+real one, which is the whole reason for presenting that interface rather than an easier
+one.
 
-```bash
-# terminal 1
-cd ../simulator
-./run.sh view --robot so101 --control-port 8000
-
-# terminal 2
-cd ../robot_console
-uv pip install -e '.[arm]'
-.venv/bin/robot-console-arm --controller wave --port 8000
-```
-
-`hold` is the safe default. A custom controller is an `observation -> action` callable
-selected with `--controller package.module:function`; `example_arm_controller.py`
-contains a worked example.
-
-The SO-101 Inspect Robots integration is also entirely console-side, and is
-**installed in `.venv`** (the `[inspect]` extra: inspect-robots 0.57.1,
-inspect-robots-agent 0.26.0, inspect-robots-so101 0.4.0 — small pure-Python packages,
-unlike the `[vla]` extra, which is why they may share the main venv):
+Everything arm-related lives in `src/robot_console/arm/` and registers itself with the
+[Inspect Robots](https://pypi.org/project/inspect-robots/) framework through the
+`inspect_robots.{tasks,policies,embodiments,scorers}` entry points in `pyproject.toml`.
+That is what makes the framework's own `inspect-robot` CLI able to find it — this project
+ships no arm console script of its own:
 
 ```bash
-uv pip install -e '.[inspect]'  # requires Python 3.10+; already done in this checkout
-.venv/bin/robot-console-inspect-so101 --smoke --port 8000
-.venv/bin/robot-console-inspect-so101 --port 8000 --record runs/ep1  # + feed.mp4
+uv pip install -e '.[arm]'        # numpy + inspect-robots + inspect-robots-ros
+.venv/bin/inspect-robot list tasks        # apple_on_plate
+.venv/bin/inspect-robot list policies     # molmoact2, so101_waypoint
+.venv/bin/inspect-robot list embodiments  # so101_ros
 ```
 
-It injects `SimulatorSO101` as the unmodified `inspect-robots-so101` hardware driver.
-The simulator knows nothing about Inspect Robots, Ollama, prompts, or control policy.
-`--record DIR` writes the whole episode to `feed.mp4` — the tee sits on the ArmClient
-thread, so the video includes the seconds the arm holds still while the LLM thinks.
+Registered pieces:
 
-`bin/run-inspect-robots.sh` wraps this for both simulator engines at once:
+| kind | name | what it is |
+|---|---|---|
+| task | `apple_on_plate` | pick a 20 mm apple off the work surface, place it on the plate, hold it there |
+| policy | `so101_waypoint` | the scripted plan: a task-space pick-and-place lowered through IK, closed-loop on proprioception |
+| policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text |
+| embodiment | `so101_ros` | the arm behind rosbridge |
+| scorer | `apple_on_plate_success`, `sim_task_success`, `apple_plate_distance` | three verdicts, computed independently |
+
+The usual way to run it is from the simulator, which starts the world and the client
+together and reports PASS/FAIL:
 
 ```bash
-cd ../simulator && ./kitchen_arm.sh serve      # terminal 1: both engines
-./bin/run-inspect-robots.sh                    # terminal 2: default task, both, recorded
-./bin/run-inspect-robots.sh "wave at the camera" --ports 8000
+cd ../simulator && ./kitchen_arm.sh inspect                    # scripted baseline
+cd ../simulator && ./kitchen_arm.sh inspect --policy molmoact2 --episodes 8
 ```
 
-It bootstraps the `[inspect]` extra, starts oMLX serving Qwen3.8-27B-4bit if nothing
-answers on port 8080, and records each episode to `runs/inspect-<port>/feed.mp4`. The
-backend choice is measured, not assumed — see the script header: oMLX answers the same
-vision + tool-call probe in 8-9 s warm vs llama.cpp's 10.7 s, and ChatGPT's
-gpt-5.6-luna is unusable because opencode's OAuth exposes no OpenAI-compatible
-endpoint for other clients.
-
-Two defaults the script overrides matter more than they look, because of how the
-agent toolset executes motion. One `move_joints` call precomputes a linear ramp of
-`ceil(max|Δ|/step_limit)` embodiment steps — `step_limit = min(max_speed_frac/
-control_hz, 0.05) × joint_range` — and the LLM is not consulted again until the ramp
-finishes, while `max_steps` counts those embodiment steps. At `inspect_so101.py`'s own
-conservative defaults (speed 0.05, steps 30) a single 62° move plans 113 steps and the
-trial dies 30 steps in, having moved ~16° in total: an episode that looks frozen. The
-script therefore runs speed 0.5 / steps 400 / 20 LLM calls, and passes
-`bin/so101_learnings.md` as `--prior-learnings` — the tool's `targets` schema is an
-unconstrained JSON object, and without the worked example in that file the model's
-first call reliably arrives without `targets` and is burned on a schema error. The
-script also appends one verified per-staging fact (which joint-0 angle faces the
-apple) because the sign differs between the engines' camera setups and a model that
-guesses wrong once tends to ride a joint limit to a confident `give_up`.
-
-Honest expectations, from seven recorded episodes: with these settings Qwen3.8-27B
-executes the task procedure convincingly — decisive reach in the right direction,
-descent, gripper closes, lift-and-check, retry — but its visuomotor precision over the
-last few centimetres is not reliably good enough to complete a grasp within the call
-budget. The remaining levers are a stronger VLM behind the same `--model`/`--base-url`
-flags, a second (wrist) camera view, or more LLM calls per episode.
-
-### VLA control (`bin/arm_task.sh`)
-
-A vision-language-action model (MolmoAct2-SO100_101, Ai2 — fine-tuned for exactly this
-arm) performs a task described in plain text, in both simulator engines:
+Manually, against a simulator someone else started:
 
 ```bash
-# terminal 1: both engines, the arm staged next to a bowl and an apple
-cd ../simulator && ./kitchen_arm.sh serve
-
-# terminal 2
-./bin/arm_task.sh                        # default: put the apple in the bowl, both sims
-./bin/arm_task.sh "push the bowl left"   # custom task text
-./bin/arm_task.sh --dry-run --ports 8000 # predict + print; the arm holds still
+.venv/bin/python -m robot_console.arm.preflight --url ws://127.0.0.1:9090   # reset + verify
+.venv/bin/inspect-robot run --task apple_on_plate --policy so101_waypoint \
+    --embodiment so101_ros -E url=ws://127.0.0.1:9090 -T max_steps=400 \
+    --max-action-delta 0.65
 ```
 
-The first run creates `.venv-vla` (torch lives there, never in `.venv`) and downloads
-~22 GB of weights. It speaks the same `molmospaces-control-v1` protocol as
-`robot-console-arm` — ROS is not an option for the arm, because the simulators'
-rosbridge carries the myAGV's vendor topics only and a real SO-101 does not speak ROS.
-`--dry-run` prints the fed state next to the predicted chunk; run it after changing
-`--joint-offsets`/`--gripper-mode`, since a correct mapping predicts near the current
-pose for a resting arm.
+Three flags there are load-bearing rather than decorative:
 
-### `--robot`
+- **`-T max_steps=400`.** The task's own default is smaller, and a short budget cuts the
+  episode off with the apple still in the air over the plate — a working plan scored as a
+  failure.
+- **`--max-action-delta 0.65`.** The framework applies its own per-step limiter, derived
+  from the action space, which lands near 0.03 and halves the policy's 0.06 rad step. The
+  policy is already the rate limiter and it is the one holding the measured constants;
+  this raises the framework's limit above the jaw's largest intended move and leaves the
+  bounds clamp in place.
+- **`preflight` before the episode.** `/reset` says the world was restored; this checks
+  that it *was* — the apple measured back at spawn over three consecutive samples, and the
+  plan still solving from there. A drifted apple otherwise scores zero looking exactly
+  like a policy failure, and a failed episode really does leave the apple on the floor.
 
-Two robots, two wire contracts. The keys, the loop and the recording format are the same
-for both; what changes is the speed envelope, the on-screen wording and what goes on the
-wire.
+### torch stays out of `.venv`
 
-| `--robot` | Contract | Speeds | Turn cap | Start it with |
-|---|---|---|---|---|
-| `myagv` (default) | `/cmd_vel` + `/odom` | 0.05 – 0.28 m/s, step 0.05 | 1.00 rad/s | `./run.sh view --robot myagv --scene ithor:1 --ros-port 9090` |
-| `ainex` | `/walking/set_param` + `/walking/command` | 0.02 – 0.20 m/s, step 0.02 | 1.00 rad/s | `./run.sh view --robot ainex --scene ithor:1 --ros-port 9090` |
+`molmoact2` needs torch, transformers and a ~22 GB checkpoint; the scripted policy needs
+none of it. So the VLA extra installs into a **separate** venv:
 
-Each envelope is its own hardware's, not a house default: the myAGV's is
-`myagv_teleop.py`'s, and the AiNex's falls out of its gait limits — 4A/T with A ≤ 0.02 m
-at a 400 ms period is 0.20 m/s and no more. Rehearsing a drive in the simulator is only
-useful if the simulator refuses what the hardware would refuse.
+```bash
+uv venv --python 3.12 .venv-vla && VIRTUAL_ENV=.venv-vla uv pip install -e '.[vla]'
+```
 
-The AiNex is the one that is not a Twist robot. It has **no `/cmd_vel`, no `/odom` and no
-`/tf`** — walking is a parameter block plus a `start`/`stop` service, so
-`robot_console/ainex_link.py` turns each velocity intent into gait parameters, the status
-line shows `odom n/a` rather than pretending a stream dropped, and `--cmd-topic` /
-`--odom-topic` do not apply.
+`kitchen_arm.sh inspect` picks the venv from `--policy`, so this is only worth knowing
+when running the client by hand. `arm/molmoact.py` imports torch inside `_load()` rather
+than at module scope, which is what lets `inspect-robot list policies` work — and the
+offline test suite run — in the torch-free venv.
 
-`--robot` is teleop only. `bin/slam.sh` still assumes a myAGV: it needs `/odom` and a
-myAGV chassis radius.
 
 ## Mapping and navigation
 
@@ -361,6 +321,18 @@ src/robot_console/
   ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
   preflight.py             reachability probe + startup instructions
+  arm/                     the SO-101, over rosbridge -- see "The arm" above
+    ros_client.py          the header-stamping shim (without it the arm never moves)
+    ros_settings.py        every topic name, type and camera size, in one place
+    kinematics.py          FK/IK for the SO-101                  (pure, MuJoCo-free)
+    waypoints.py policy.py the scripted pick-and-place plan      (pure)
+    molmoact.py            the MolmoAct2-SO100_101 VLA (torch imported inside _load)
+    task.py                the task, its scene and its instruction
+    success.py             the live geometric verdict            (pure)
+    scorer.py              the offline re-derivation from a log  (pure)
+    embodiment.py          the arm behind rosbridge
+    preflight.py           reset the world and verify it took
+    steptrace.py wire_trace.py   observational only; never affect an action
   app.py                   the teleop loop
   cli.py                   argument parsing
   smoke.py                 live integration check

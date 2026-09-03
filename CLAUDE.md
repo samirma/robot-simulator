@@ -31,8 +31,13 @@ layer**:
 ```
 simulator/
   shared/       cross-engine resources: the wire bridge and the robot specs
-    contracts/    rosbridge_server.py (myAGV topics) + control_server.py (SO-101) — pure transport, no MuJoCo
-    ros_surfaces/ per-robot topic sets + the loop that feeds them (myagv.py) — one copy, every engine
+    contracts/    rosbridge_server.py — pure transport, no MuJoCo: ROS 1 builders for the
+                  myAGV's vendor topics, ROS 2 builders for the SO-101's, and a small
+                  rosapi shim so browser clients can discover topics
+    ros_surfaces/ per-robot topic sets + the loop that feeds them (myagv.py, so101.py) —
+                  one copy, every engine
+    tasks/        what an engine can stage into a scene: the objects, the cameras and the
+                  definition of done (apple_on_plate.py) — engine-neutral
     robots/       so101/ + myagv/ hardware specs (MJCF, meshes, URDF) — engine-neutral
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
@@ -45,7 +50,7 @@ must spawn at least `so101` and `myagv`. **`robot_console` connects and controls
 identically regardless of which engine hosts it — because every engine presents the *real
 hardware's* interface** by feeding the one shared bridge in `simulator/shared/contracts/`:
 the myAGV on its vendor `elephantrobotics/myagv_ros` rosbridge topics, the SO-101 on the
-`molmospaces-control-v1` msgpack-numpy contract. An engine change that makes the console
+ros2_control topic set a real bringup for that arm presents. An engine change that makes the console
 able to tell the engines apart is a regression. Per-engine specifics live in each engine's
 `README.md`; the sections below cover MolmoSpaces (the reference engine) and then the ROS
 contract every engine obeys.
@@ -79,19 +84,26 @@ cd simulator/molmospaces
 ./run.sh assets ithor               # pre-fetch iTHOR houses/objects/grasps (~13 GB)
 ./run.sh view --scene ithor:1       # a house in the viewer
 ./run.sh view --robot myagv --scene ithor:1 --ros-port 9090   # + robot, as a ROS robot
-./run.sh view --robot so101 --control 127.0.0.1:8000   # generic arm control server
+./run.sh view --robot so101 --ros-port 9090            # the arm on its ROS topics
 ./run.sh view --robot so101 --scene ithor:1 --target bowl,apple  # ...facing those objects
 ./run.sh shell                      # interactive shell in the venv
 ./run.sh help
 ```
+
+`./run.sh assets ithor` is optional for the arm task: `tools/resolve_scene.py` installs
+a house on demand, so `--scene ithor:1` works from a bare `setup` and the 13 GB pull is
+only worth it for offline use or a sweep across many houses.
 
 `--target CAT,CAT` ranks the scene's grasp targets by category, which is how an arm is
 set up around *specific* objects rather than whatever `find_grasp_targets` liked best. It
 ranks rather than filters: a surface holding one of the two is still better than one
 holding neither, and filtering would turn a near miss into an error.
 
-`--control HOST:PORT` is the current spelling (the console's `robot-console-arm --control
-HOST:PORT` mirrors it); `--control-port PORT` is kept as an alias.
+`--ros-port PORT` puts a robot on its own vendor topics; `--task NAME` additionally
+stages a task's objects, cameras and success predicate into the scene (see
+`shared/tasks/`), and `--wrist-camera` adds the eye-in-hand stream. Cameras are rendered
+inside the physics loop, so each one costs control rate for every client — which is why
+the wrist view is opt-in rather than always on.
 
 Robot self-tests are standalone scripts, not pytest — a failure points at the robot
 definition:
@@ -101,18 +113,33 @@ python robots/myagv/test_attach.py [--scene /path/to/house.xml]
 python tools/render_robots.py --outdir /tmp/robots   # render/load test for every robot
 ```
 
-### Two unrelated bridges — do not conflate them
+### One bridge, two robots, two ROS dialects — do not conflate the dialects
 
-Both now live in `simulator/shared/contracts/` and are reused by every engine:
+`shared/contracts/rosbridge_server.py` is the only transport: plain rosbridge JSON over a
+websocket, served in-process, wired up by `serve_ros()` in each engine's
+`tools/spawn_robot.py`. Every robot is on it, and `robot_console` speaks nothing else.
 
-- `shared/contracts/control_server.py` — the **arm-robot transport**. msgpack-numpy
-  over binary websocket frames, hosted by `view --control`. It only sends
-  observations and applies returned targets. All clients and action-selection code live
-  in `robot_console` (`arm_client.py`, `inspect_so101.py`, `so101_driver.py`).
-- `shared/contracts/rosbridge_server.py` — the **mobile-base** bridge, wired up by
-  `serve_ros()` in each engine's `tools/spawn_robot.py`. Plain rosbridge JSON over a
-  websocket, served in-process. This is what `robot_console` talks to. ROS-only mode:
-  mutually exclusive with `--control`, and only for robots with a mobile base (`myagv`).
+What differs per robot is the **dialect**, because each one mirrors a different piece of
+real hardware:
+
+- the **myAGV** is a ROS 1 stack, so it gets single-slash type strings
+  (`geometry_msgs/Twist`) and a `secs`/`nsecs` stamp;
+- the **SO-101** is a ROS 2 ros2_control bringup, so it gets `pkg/msg/Type` and a
+  `sec`/`nanosec` stamp.
+
+Both sets of message builders live side by side in that file, clearly labelled. A client
+that had to guess which dialect a stamp was in would be a worse thing than a little
+duplication.
+
+**The SO-101 used to speak a bespoke msgpack protocol (`molmospaces-control-v1`) on its
+own port, and no longer does.** The rationale for that choice was that a real SO-101 does
+not speak ROS — true of the servo bus, but not of how anyone deploys one: the arm ships
+with a `ros2_so_arm` description and is driven through `joint_trajectory_controller` and
+a `forward_command_controller` on the jaw. Presenting *that* is what makes the simulated
+arm and a real one interchangeable, and it is what lets the `inspect-robots` ROS
+embodiment drive either without a line of adapter code. `control_server.py`,
+`arm_client.py`, `so101_driver.py`, `inspect_so101.py` and `arm_task.py` are gone rather
+than deprecated; two transports for one robot is two things to keep in step.
 
 Both MuJoCo engines additionally share `simulator/shared/mujoco_bridge.py` (holonomic
 `cmd_vel` integration, ray-cast `/scan`, camera encode) — it imports `mujoco`.
@@ -181,7 +208,7 @@ through `robosuite.make` instead drags in a robosuite robot with its own control
 stack, action space and observation dict, which would then have to be cut back out of
 the compiled model, and would stand a Panda in the middle of every camera frame and
 every map. The robots here are not robosuite robots and must not become them: the myAGV
-is a vendor ROS device and the SO-101 speaks `molmospaces-control-v1`.
+is a vendor ROS device and the SO-101 speaks the ros2_control topic set.
 
 Three traps, all of which produce results that look like bugs somewhere else:
 
@@ -210,6 +237,28 @@ both engines up around the same object pair for comparison.
 ---
 
 ## robot_console/
+
+The arm task, from `simulator/`:
+
+```bash
+./kitchen_arm.sh inspect                       # sim + inspect-robot, reports PASS/FAIL
+./kitchen_arm.sh inspect --policy molmoact2    # the VLA instead of the scripted plan
+./kitchen_arm.sh inspect --episodes 8          # a pass count, which is the only useful unit
+./kitchen_arm.sh serve                         # both engines on rosbridge, drive them yourself
+./kitchen_arm.sh cameras                       # the live camera page against a running serve
+```
+
+`inspect` is the front door and it does four things in order: stage the task into the
+engine's kitchen, wait for the *topics* (not the port — a listening socket says nothing
+about whether the scene compiled), reset and **verify** the world, then run the episode
+and report a verdict. Each of those exists because its absence produced a confusing
+failure; the comments in the script say which.
+
+**Report pass counts, never a single run.** The scripted policy has passed every attempt
+so far, but a VLA on this task is a coin toss on the reference rig, and one episode of it
+tells you nothing.
+
+The rest of the console, from `robot_console/`:
 
 ```bash
 ./bin/teleop.sh                         # first run creates .venv and installs
@@ -241,28 +290,19 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `camera.py` — CompressedImage decode + `LatestFrame`, the thread hand-off
 - `bridge.py` — `RobotLink` (roslibpy) and pure `parse_odom`
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
-- `arm_client.py` — generic msgpack-numpy simulator client; `so101_driver.py` and
-  `inspect_so101.py` adapt it to the optional unmodified Inspect Robots SO-101 stack
-- `inspect_so101.py` also backs `bin/run-inspect-robots.sh`: an LLM agent
-  (Inspect Robots `LLMAgentPolicy`) drives the arm in both engines, recorded to
-  `feed.mp4` via `--record` (`RecordingSO101` tees frames on the ArmClient thread).
-  The `[inspect]` extra is installed in `.venv`; the default backend is Qwen3.8-27B
-  on oMLX port 8080 (llama.cpp is the measured fallback; ChatGPT models behind
-  opencode's OAuth are unreachable — no OpenAI-compatible endpoint exists for them).
-  The script's speed/steps defaults are load-bearing: one `move_joints` call is a
-  precomputed ramp whose steps count against `max_steps`, so the conservative
-  `inspect_so101.py` defaults (0.05/30) produce an episode that truncates its first
-  move at ~16° of travel and looks frozen. `bin/so101_learnings.md` rides along as
-  `--prior-learnings` because the tool's `targets` schema is an unconstrained object
-  and the model's first call otherwise arrives without it.
-- `arm_task.py` — a VLA model (MolmoAct2-SO100_101) drives the SO-101 from task text,
-  reusing `SimulatorSO101` on the same daemon-thread pattern as `inspect_so101.py`.
-  Torch-free by design: everything torch lives in `molmoact.py`, imported only inside
-  `main()`, so the offline suite tests the episode loop with stubs. `bin/arm_task.sh`
-  installs the `[vla]` extra into its own `.venv-vla` — never into `.venv`, which
-  must stay light enough that pytest is fast and teleop bootstraps stay cheap. ROS was
-  deliberately not used for the arm: the rosbridge carries the myAGV's vendor topics
-  only, and a real SO-101 does not speak ROS.
+- `arm/` — the SO-101 task, and the only part of the console that drives an arm. It
+  registers itself with the `inspect-robots` framework through the
+  `inspect_robots.{tasks,policies,embodiments,scorers}` entry points in
+  `pyproject.toml`, which is what makes `inspect-robot run --task apple_on_plate
+  --policy molmoact2 --embodiment so101_ros -E url=ws://…` work with no console script
+  of its own. Inside: `ros_client.py` (the header-stamping shim, below), `ros_settings.py`
+  (every topic name and camera size in one place), `kinematics.py` (MuJoCo-free FK/IK),
+  `waypoints.py`/`policy.py` (the scripted plan), `molmoact.py` (the MolmoAct2-SO100_101
+  VLA), `task.py`/`success.py`/`scorer.py`, `embodiment.py`, and `preflight.py`
+  (reset-and-verify). Torch lives behind a function-local import so the offline suite
+  stays torch-free; `bin/` has no arm launcher any more because `kitchen_arm.sh inspect`
+  is the front door.
+
 - `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
   uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
   (`map_server` pgm/yaml + npz sidecar), `matcher.py`/`pose.py` (correlative scan
@@ -339,7 +379,9 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 
 ---
 
-## The ROS contract (both sides must agree)
+## The ROS contracts (both sides must agree)
+
+### The myAGV — a ROS 1 mobile base
 
 | Direction | Topic | Type | Fields used |
 |---|---|---|---|
@@ -378,6 +420,91 @@ Vendor reference, when changing anything on either side:
 `myagv_teleop/scripts/myagv_teleop.py` (speed 0.25 m/s, turn 0.5 rad/s, 0.52 s key
 timeout — the source of the console's speed cap and turn ratio). Simulator changes that
 make it *less* like the real robot are regressions even when nothing fails.
+
+### The SO-101 — a ROS 2 ros2_control arm
+
+| Direction | Topic / service | Type |
+|---|---|---|
+| console → robot | `/joint_trajectory_controller/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` |
+| console → robot | `/gripper_controller/commands` | `std_msgs/msg/Float64MultiArray` |
+| robot → console | `/joint_states` | `sensor_msgs/msg/JointState` |
+| robot → console | `/free_joint_publisher/free_joint_states` | `mujoco_ros2_control_msgs/msg/FreeJointStateArray` |
+| robot → console | `/task_success` | `std_msgs/msg/Bool` |
+| robot → console | `/overhead/color/compressed`, `/side/color/compressed`, `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
+| console → robot | `/reset`, `/mujoco_ros2_control_node/reset_world` | Trigger-shaped `{success, message}` |
+
+ROS 2 `pkg/msg/Type` strings and a `sec`/`nanosec` stamp. Joint order is fixed everywhere
+(`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, then the
+gripper), all `_joint`-suffixed, all radians except the gripper, which is 0 (closed) to
+1 (open).
+
+Five things that are silent when wrong, and each cost a debugging session:
+
+- **`/joint_states` comes back alphabetically sorted**, which for this arm shares *no*
+  index with the contract order — `elbow_flex_joint` first, `shoulder_pan_joint` fourth.
+  Index by name, never by position. The simulator sorts deliberately, so the hazard the
+  real broadcaster presents is exercised here rather than discovered on hardware.
+- **A `JointTrajectory` with no `header` is accepted and ignored** by a real
+  `joint_trajectory_controller`: it holds its pose and reports zero error. The gripper is
+  a `ForwardCommandController` and needs no header, so the jaw keeps working and the
+  episode looks alive while the arm never moves. `arm/ros_client.py` exists only for this.
+- **The gripper must be a topic, not an action.** The client's ROS adapter has no action
+  client at all, so a `GripperActionController` — which the stock SO-ARM controller config
+  declares — is simply undrivable.
+- **Stamps are simulated time**, not the wall clock. The success predicate holds for
+  ≥ 1.0 s *of simulated time*, the client refuses to start if simulated time is not
+  advancing against the wall clock, and the offline scorer re-derives the hold from these
+  stamps. All three read the same number.
+- **The MJCF jaw hinge is not the contract gripper.** The model runs −0.174533…1.745329
+  rad and the contract runs 0…1; the map is an exact *offset*, verified by measuring tip
+  separation against the curve the grasp tuning was fitted on (agreement to ~0.1 mm).
+  Rescaling instead would move the aperture at every value.
+
+Poses on `free_joint_states` are in the **arm base frame** with the work surface at
+z = 0 — not the engine's world frame. That is what lets one client read the same numbers
+whether the arm is bolted to a kitchen island or standing on a bare table.
+
+---
+
+## The arm task, and what is actually known about it
+
+`shared/tasks/apple_on_plate.py` is grafted onto whichever kitchen an engine compiled: it
+brings a 20 mm apple, a white plate, two scene cameras and its own arbiter, all placed
+relative to wherever the arm got mounted. The engines still supply the room — a task that
+replaced the scene would make them bystanders.
+
+**Success is computed three independent ways and disagreement is the signal.** The
+simulator's own `/task_success`, a live geometric verdict in `arm/success.py`, and an
+offline re-derivation from the recorded log in `arm/scorer.py`. Never make one read
+another's answer; `kitchen_arm.sh` prints a warning when the first two disagree, which
+they legitimately can at the margin — the episode terminates the instant its own hold
+passes 1.0 s and the simulator's hold starts a beat later.
+
+Constants that look arbitrary and are not. Each was measured, and each was wrong first:
+
+- **`condim="6"` on the apple.** Rolling friction is the *third* entry of `friction` and
+  only exists at condim 6; below that the declared value is parsed and discarded, so a
+  fruit nudged at 7 mm/s coasts for half a minute and episodes end with it on the floor.
+- **The plate's rim is 24 boxes**, because MuJoCo has no torus. Without it apples
+  delivered to within a millimetre of the centre roll straight off, and the "at rest"
+  clause never fires on a placement that looked perfect.
+- **`grasp_gripper = 0.40`, not 0.50.** The jaw is force-limited, so it only squeezes
+  while *stalled* short of its target. A 40 mm apple blocks anything under ~0.52, so 0.50
+  reaches its target and holds the apple with nothing but compliance — it creeps out
+  during the carry. Sweeping the whole plan offline, 0.35-0.45 place the apple and 0.50
+  drops it in transit.
+- **`JAW_CENTER_OFFSET = 0.002`,** found by sweeping it through an offline pick rather
+  than derived from geometry: a plausible geometric proxy (the jaw-tip midpoint) is 15 mm
+  out, and the working window is only 4 mm wide.
+- **Arrival ignores the jaw except when the jaw is what is moving.** Counting the jaw's
+  error makes arrival impossible for every carrying waypoint, because a jaw holding
+  something deliberately stalls short; ignoring it makes `close` a step count, and the
+  jaw is far slower than the arm. So the jaw counts as arrived when it reaches its target
+  *or* stops moving — a stalled jaw is either shut or pressing on something.
+
+**Report pass counts, never a single run.** The scripted policy has passed every attempt;
+a VLA on this task is a coin toss even on the rig it was tuned for, and one episode of
+`--policy molmoact2` tells you nothing. `--episodes N` exists for this.
 
 ---
 

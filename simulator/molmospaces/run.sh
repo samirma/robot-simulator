@@ -11,7 +11,8 @@
 #                                      myagv -> cmd_vel in, odom + camera + /scan
 #                                      out; ainex -> /walking/* and /app/* in, joint_states
 #                                      + camera + /scan out (it has no cmd_vel at all)
-#                 [--control-port 8000] ...or as a generic observation/action server
+#                 [--task apple_on_plate]  ...and with a task staged into the scene:
+#                                      its objects, its cameras and its success predicate
 #   ./run.sh shell                     interactive shell inside the venv
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.

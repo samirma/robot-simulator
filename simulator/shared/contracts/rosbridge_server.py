@@ -97,6 +97,120 @@ def compressed_image(seq: int, jpeg: bytes, frame_id: str = "camera") -> dict:
     }
 
 
+# --------------------------------------------------------------------- ROS 2 builders
+#
+# The myAGV builders above are ROS 1 shaped, because that is what the vendor stack is:
+# single-slash type strings and a `secs`/`nsecs` stamp. The SO-101 arm is the other
+# contract on this server -- ROS 2 Jazzy, `pkg/msg/Type`, and a `sec`/`nanosec` stamp --
+# so it gets its own builders rather than a flag on these. Two robots, two vendor
+# realities; a client that had to guess which dialect a stamp was in would be a worse
+# thing than a little duplication.
+#
+# Every one of these takes an explicit `stamp_s`, and the arm surface passes **simulated**
+# time (`MjData.time`), never the wall clock. That is load bearing in three places: the
+# success predicate holds for >= 1.0 s *of simulated time*, the client refuses to start
+# if simulated time is not advancing against the wall clock, and the offline scorer
+# re-derives the hold from these stamps. Handing it `time.time()` makes all three agree
+# on an answer that has nothing to do with the simulation.
+
+TYPE_JOINT_STATE = "sensor_msgs/msg/JointState"
+TYPE_JOINT_TRAJECTORY = "trajectory_msgs/msg/JointTrajectory"
+TYPE_FLOAT64_MULTI_ARRAY = "std_msgs/msg/Float64MultiArray"
+TYPE_BOOL = "std_msgs/msg/Bool"
+TYPE_COMPRESSED_IMAGE_ROS2 = "sensor_msgs/msg/CompressedImage"
+# Namespaced by the publishing plugin in the reference rig, and the client's settings
+# name it in full; it is a custom message, which over rosbridge JSON is just this shape.
+TYPE_FREE_JOINT_STATE_ARRAY = "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
+
+
+def header_ros2(frame_id: str, stamp_s: float) -> dict:
+    """A ROS 2 std_msgs/Header: `sec`/`nanosec`, and no `seq` field at all.
+
+    ROS 2 dropped `seq` from Header. Sending one anyway is harmless over rosbridge JSON,
+    but leaving it out is what a real ROS 2 publisher looks like on the wire, and this
+    contract is supposed to be indistinguishable from one.
+    """
+    seconds = int(stamp_s)
+    return {
+        "stamp": {"sec": seconds, "nanosec": int(round((stamp_s - seconds) * 1e9))},
+        "frame_id": frame_id,
+    }
+
+
+def compressed_image_ros2(seq: int, jpeg: bytes, stamp_s: float, frame_id: str = "camera") -> dict:
+    """sensor_msgs/msg/CompressedImage. `data` is base64, and `format` must say jpeg.
+
+    The client decodes base64 JPEG or PNG and nothing else, and it matches `format` on
+    containing "jpeg" -- real `image_transport` sends the longer
+    "rgb8; jpeg compressed bgr8", so both spellings have to keep working.
+    """
+    del seq  # ROS 2 headers carry no sequence number; kept for call-site symmetry.
+    return {
+        "header": header_ros2(frame_id, stamp_s),
+        "format": "jpeg",
+        "data": base64.b64encode(jpeg).decode("ascii"),
+    }
+
+
+def joint_state(names, positions, velocities, stamp_s: float, frame_id: str = "") -> dict:
+    """sensor_msgs/msg/JointState, with names and values sorted by name.
+
+    **Sorting is not cosmetic.** The reference ROS 2 rig's `joint_state_broadcaster`
+    returns names alphabetically, which for this arm shares no index with the contract
+    order -- `elbow_flex_joint` first, `shoulder_pan_joint` fourth. A client that read
+    by position instead of by name would be wrong about every joint, and would look
+    plausible while doing it. Sorting here means the console's real-hardware code path
+    is exercised against the same hazard the real broadcaster presents, so the bug
+    cannot hide until someone plugs in an arm.
+    """
+    order = sorted(range(len(names)), key=lambda i: names[i])
+    return {
+        "header": header_ros2(frame_id, stamp_s),
+        "name": [names[i] for i in order],
+        "position": [float(positions[i]) for i in order],
+        "velocity": [float(velocities[i]) for i in order],
+        "effort": [],
+    }
+
+
+def free_joint_state_array(entries, stamp_s: float, frame_id: str = "world") -> dict:
+    """mujoco_ros2_control_msgs/msg/FreeJointStateArray.
+
+    The field is `free_joints`, **not** `states`, and every consumer selects its body by
+    name rather than by index -- so adding a body to this list is always safe and
+    reordering it is always harmless. `entries` is an iterable of
+    `(name, (x, y, z), (qw, qx, qy, qz), (vx, vy, vz), (wx, wy, wz))`.
+    """
+    free_joints = []
+    for name, pos, quat, lin, ang in entries:
+        stamped = header_ros2(frame_id, stamp_s)
+        free_joints.append(
+            {
+                "name": name,
+                "pose": {
+                    "header": stamped,
+                    "pose": {
+                        "position": {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])},
+                        "orientation": {
+                            "w": float(quat[0]),
+                            "x": float(quat[1]),
+                            "y": float(quat[2]),
+                            "z": float(quat[3]),
+                        },
+                    },
+                },
+                "twist": {
+                    "header": stamped,
+                    "twist": {
+                        "linear": {"x": float(lin[0]), "y": float(lin[1]), "z": float(lin[2])},
+                        "angular": {"x": float(ang[0]), "y": float(ang[1]), "z": float(ang[2])},
+                    },
+                },
+            }
+        )
+    return {"header": header_ros2(frame_id, stamp_s), "free_joints": free_joints}
+
+
 def laser_scan(
     seq: int,
     ranges,
@@ -249,6 +363,9 @@ class RosBridgeServer:
         self._handlers: dict[str, Callable[[dict], None]] = {}
         # service name -> callback returning the response's `values`
         self._services: dict[str, Callable[[dict], dict]] = {}
+        # topic -> ROS type string, learned from what has actually been published. This
+        # is what `rosapi` answers from; see `serve_rosapi`.
+        self._published_types: dict[str, str] = {}
         self._seq = 0
 
     # -- lifecycle ---------------------------------------------------------------
@@ -269,6 +386,32 @@ class RosBridgeServer:
         the simulation thread, so it may only touch small shared state; never MjData.
         """
         self._services[normalise(name)] = callback
+
+    def serve_rosapi(self) -> None:
+        """Answer the `rosapi` queries a browser client uses to discover topics.
+
+        Real rosbridge ships `rosapi` alongside it, and clients written against a real
+        bridge assume it: the live camera page asks `topics_for_type` for everything
+        publishing CompressedImage rather than hard-coding a list, which is what lets a
+        camera appear when a simulator is restarted with one more of them and nothing
+        has to be edited. Without these the page connects, discovers nothing, and shows
+        an empty grid -- a failure with no error in it.
+
+        Only the two queries that page makes are implemented. `topics` reports what has
+        actually been published at least once, not what was advertised, because on this
+        server nothing advertises: publishers are the surface code, not clients.
+        """
+
+        def topics(_args: dict) -> dict:
+            names = sorted(self._published_types)
+            return {"topics": names, "types": [self._published_types[n] for n in names]}
+
+        def topics_for_type(args: dict) -> dict:
+            wanted = args.get("type")
+            return {"topics": sorted(n for n, t in self._published_types.items() if t == wanted)}
+
+        self.service("/rosapi/topics", topics)
+        self.service("/rosapi/topics_for_type", topics_for_type)
 
     def start(self) -> None:
         self._server = ws_server.serve(
@@ -303,9 +446,11 @@ class RosBridgeServer:
 
     # -- publishing --------------------------------------------------------------
 
-    def publish(self, topic: str, msg: dict) -> None:
+    def publish(self, topic: str, msg: dict, message_type: str | None = None) -> None:
         """Send a message to every client subscribed to `topic`."""
         topic = normalise(topic)
+        if message_type is not None:
+            self._published_types.setdefault(normalise(topic), message_type)
         frame = json.dumps({"op": "publish", "topic": topic, "msg": msg})
         with self._lock:
             targets = [c for c, topics in self._clients.items() if topic in topics]

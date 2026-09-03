@@ -9,7 +9,7 @@
 #                 [--robot myagv|so101]  ...with a shared robot in it instead, on the
 #                                        real hardware's interface:
 #                 [--ros-port 9090]      myagv -> cmd_vel in, odom + camera + /scan out
-#                 [--control HOST:PORT]  so101 -> generic observation/action server
+#                 [--task apple_on_plate]  stage a task into the kitchen
 #                 [--headless]           ...with no window (displayless hosts, checks)
 #                 [--render out.png]     ...or just write a PNG and exit
 #   ./run.sh --layout 1 --style 3        shorthand for `view --layout 1 --style 3`

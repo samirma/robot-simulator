@@ -57,6 +57,22 @@ ROBOTS = {
 ROS_SURFACES = {
     "myagv": ("robots.myagv.ros_surface", "serve_ros"),
     "ainex": ("robots.ainex.ros_surface", "serve_ros"),
+    # The arm's surface lives in shared/ directly rather than behind an engine-side
+    # adapter: unlike a mobile base, there is no "how does this engine name a base"
+    # question for it to answer -- it needs the arm and gripper move groups, and every
+    # engine spells those the same way because they come from the shared robot spec.
+    "so101": ("ros_surfaces.so101", "serve_ros"),
+}
+
+# Robots whose ROS surface is an arm contract rather than a mobile-base one: no cmd_vel,
+# no odometry, no lidar, and several cameras instead of one. They take a different
+# serve_ros signature, which is the honest way to say the two contracts are unrelated.
+ARM_ROS_SURFACES = {"so101"}
+
+# name -> (module, staging function, arbiter class). A task brings its own objects and
+# cameras and its own definition of done; see simulator/shared/tasks/.
+TASKS = {
+    "apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate"),
 }
 
 # Per-robot lidar defaults, since the YDLidar X2's mount is meaningless for a robot that
@@ -361,6 +377,47 @@ def place_arm_on_table(scene_path: str, model, data, robot: str, reach, n_spawn:
     return mount, (xy_min, xy_max, top_z, n_spawn)
 
 
+def check_task_contacts(model, namespace: str, task) -> None:
+    """Refuse to serve a task whose objects the gripper cannot physically touch.
+
+    MuJoCo pairs two geoms only if `(contype_a & conaffinity_b) or (contype_b &
+    conaffinity_a)`, and a robot loader that rewrites those bitmasks -- for its own
+    contact filtering -- can leave the jaws and the task's apple on disjoint masks. The
+    failure is perfectly silent: the arm executes every waypoint, the jaw closes to its
+    commanded width straight through the object, and the episode scores zero looking
+    exactly like a policy that missed by a centimetre. This was found the slow way; the
+    check exists so it is found the fast way.
+    """
+    jaw_prefixes = (f"{namespace}fixed_jaw", f"{namespace}moving_jaw")
+    jaw = [g for g in range(model.ngeom)
+           if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(jaw_prefixes)]
+    objects = [g for g in range(model.ngeom)
+               if model.geom_bodyid[g] in task.contact_bodies()
+               and (model.geom_contype[g] or model.geom_conaffinity[g])]
+    if not jaw or not objects:
+        raise SystemExit(f"task contact check: found {len(jaw)} jaw geoms and "
+                         f"{len(objects)} collidable task geoms; expected both non-empty")
+
+    def pairs(a: int, b: int) -> bool:
+        return bool((model.geom_contype[a] & model.geom_conaffinity[b])
+                    or (model.geom_contype[b] & model.geom_conaffinity[a]))
+
+    touchable = sum(1 for j in jaw for o in objects if pairs(j, o))
+    print(
+        f"task contacts: {len(jaw)} jaw geoms x {len(objects)} task geoms, "
+        f"{touchable} pairs collide "
+        f"(jaw contype/conaffinity {sorted({(int(model.geom_contype[j]), int(model.geom_conaffinity[j])) for j in jaw})}, "
+        f"objects {sorted({(int(model.geom_contype[o]), int(model.geom_conaffinity[o])) for o in objects})})",
+        file=sys.stderr,
+    )
+    if touchable == 0:
+        raise SystemExit(
+            "task contact check FAILED: no jaw geom can collide with any task object. "
+            "The jaws would close straight through the apple and the run would score zero "
+            "while looking like a near miss."
+        )
+
+
 def warn_on_penetration(model, data, namespace: str, depth: float = -0.001) -> None:
     """Complain if the robot was bolted down inside something.
 
@@ -388,96 +445,11 @@ def warn_on_penetration(model, data, namespace: str, depth: float = -0.001) -> N
         return
 
 
-def serve_control(
-    host: str, port: int, view, model, camera: str | None, camera_size,
-    jpeg_quality: int, robot_name: str,
-):
-    """Serve the generic robot-control protocol and return a step callback.
-
-    Send an observation, receive a dict of `{move_group: target}`, and write those
-    targets into the move-group controls. The server provides mechanism only; all
-    decisions about what action to return belong to the external client.
-    Calling the returned function with None closes the connection.
-
-    Robot-agnostic: whatever move groups the RobotView exposes are sent and accepted,
-    so this drives an arm ("arm"/"gripper") or a mobile base ("base") equally.
-
-    If `camera` names an MJCF camera, each observation also carries a `camera` frame.
-    Frames are JPEG-encoded rather than sent raw: 640x480x3 raw is ~920 KB, which at
-    20 Hz is 18 MB/s and enough to stall the control loop.
-
-    This is the lightweight path for a robot spawned straight into a scene.
-    """
-    groups = {gid: view.get_move_group(gid) for gid in view.move_group_ids()}
-    from contracts.control_server import ControlServer
-
-    server = ControlServer(
-        host,
-        port,
-        metadata={
-            "model_name": robot_name,
-            "protocol": "molmospaces-control-v1",
-            "move_groups": {gid: len(np.asarray(group.ctrl)) for gid, group in groups.items()},
-        },
-    )
-    server.start()
-    print(f"control server listening on ws://{host}:{port}", file=sys.stderr)
-
-    renderer = None
-    if camera is not None:
-        width, height = camera_size
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        renderer = mujoco.Renderer(model, height, width)
-        print(f"streaming camera {camera!r} at {width}x{height}", file=sys.stderr)
-
-    def encode(frame):
-        try:
-            import cv2
-
-            ok, buf = cv2.imencode(
-                ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality]
-            )
-            if ok:
-                return {"camera_jpeg": np.asarray(buf).reshape(-1)}
-        except Exception:
-            pass
-        # Fall back to the raw array rather than dropping the feed entirely.
-        return {"camera": frame}
-
-    def step(data):
-        if data is None:
-            if renderer is not None:
-                renderer.close()
-            server.stop()
-            return
-
-        obs = {
-            "qpos": {gid: np.asarray(g.joint_pos).tolist() for gid, g in groups.items()},
-            "qvel": {gid: np.asarray(g.joint_vel).tolist() for gid, g in groups.items()},
-            "actions/joint_pos": {
-                gid: np.asarray(g.ctrl).tolist() for gid, g in groups.items()
-            },
-        }
-        if "arm" in groups:
-            obs["tcp_pose"] = groups["arm"].leaf_frame_to_world[:3, 3]
-        if "base" in groups:
-            pose = groups["base"].pose
-            obs["base_pose"] = np.array(
-                [pose[0, 3], pose[1, 3], float(np.arctan2(pose[1, 0], pose[0, 0]))]
-            )
-        if renderer is not None:
-            renderer.update_scene(data, camera=camera)
-            obs.update(encode(renderer.render()))
-
-        action = server.publish(obs)
-        if action is None:
-            return
-        for gid, target in action.items():
-            if gid in groups:
-                groups[gid].ctrl = np.asarray(target, dtype=np.float64)
-
-    return step
+# `serve_control` lived here: a msgpack-numpy binary protocol on its own port, which was
+# how the arm was driven before it moved onto ROS. It is gone rather than deprecated. Two
+# transports for one robot means two things to keep in step and two ways for the engines
+# to drift, and the arm's ROS surface above is what a real ros2_control bringup for this
+# arm presents -- so it is also the one a client can point at hardware.
 
 
 def main() -> int:
@@ -485,6 +457,12 @@ def main() -> int:
     ap.add_argument("robot", help=f"one of: {', '.join(sorted(ROBOTS))}")
     ap.add_argument("--scene", required=True, help="house MJCF")
     ap.add_argument("--render", default=None, help="write a PNG instead of opening the viewer")
+    ap.add_argument(
+        "--render-camera", default=None, dest="render_camera", metavar="NAME",
+        help="with --render: look through this named MJCF camera at its own declared "
+             "resolution, instead of the free camera. How a task camera's framing gets "
+             "checked without starting a server.",
+    )
     ap.add_argument("--pos", type=float, nargs=2, default=None,
                     help="override xy placement; an arm keeps the height of the surface "
                          "it is mounted on")
@@ -508,23 +486,12 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=None, help="auto-close the viewer after N s")
     ap.add_argument(
         "--headless", action="store_true", dest="headless",
-        help="run the simulation and any --ros-port/--control server WITHOUT opening the "
+        help="run the simulation and the --ros-port server WITHOUT opening the "
              "viewer (for automated checks and displayless hosts)",
     )
     ap.add_argument(
-        "--control-port",
-        type=int,
-        default=None,
-        dest="control_port",
-        metavar="PORT",
-        help="serve observations and accept actuator targets from an external client",
-    )
-    ap.add_argument("--control-host", default="0.0.0.0", dest="control_host",
-                    help="interface for --control-port (default: all interfaces)")
-    ap.add_argument(
-        "--control", default=None, dest="control", metavar="HOST:PORT",
-        help="serve the generic control endpoint on HOST:PORT "
-             "(shorthand for --control-host HOST --control-port PORT)",
+        "--host", default="0.0.0.0", dest="control_host",
+        help="interface the --ros-port server binds (default: all interfaces)",
     )
     ap.add_argument(
         "--control-hz", type=float, default=20.0, dest="control_hz", help="control loop rate"
@@ -532,17 +499,29 @@ def main() -> int:
     ap.add_argument(
         "--camera",
         default=None,
-        help="MJCF camera to stream with --control-port; defaults to the robot's front_camera "
-        "if it has one. Use 'none' to disable.",
+        help="MJCF camera to stream on a mobile base's ROS surface; defaults to the "
+        "robot's front_camera if it has one. Use 'none' to disable. Arms ignore this: "
+        "their camera set is part of their contract.",
     )
     ap.add_argument("--camera-size", type=int, nargs=2, default=[640, 480], dest="camera_size",
                     metavar=("W", "H"))
     ap.add_argument("--jpeg-quality", type=int, default=70, dest="jpeg_quality")
     ap.add_argument(
+        "--task", default=None, choices=sorted(TASKS),
+        help="stage a task into the scene: its objects, its cameras and its success "
+             "predicate. Requires --ros-port, which is what publishes the verdict.",
+    )
+    ap.add_argument(
+        "--wrist-camera", action="store_true", dest="wrist_camera",
+        help="also stream the eye-in-hand view. Off by default because every enabled "
+             "camera is rendered inside the physics loop, so the control rate falls as "
+             "cameras are added and the cost lands on every client, not just the one "
+             "that wanted the view.",
+    )
+    ap.add_argument(
         "--ros-port", type=int, default=None, dest="ros_port",
         metavar="PORT",
         help="present the robot on the myagv_ros topics via rosbridge (usually 9090). "
-        "Mutually exclusive with --control-port.",
     )
     ap.add_argument(
         "--watchdog", type=float, default=0.5,
@@ -641,6 +620,19 @@ def main() -> int:
 
     quat = [float(np.cos(yaw / 2)), 0.0, 0.0, float(np.sin(yaw / 2))]
 
+    stage_task = None
+    if args.task:
+        module_name, stage_name, arbiter_name = TASKS[args.task]
+        task_module = importlib.import_module(module_name)
+        stage_task = (getattr(task_module, stage_name), getattr(task_module, arbiter_name))
+        # The riser goes when a task is staged. It exists to read as a mount, but the
+        # task's geometry is measured from the arm's base with the work surface at z = 0
+        # -- which is exactly what the reference rig has, its base_link sitting on the
+        # table. Three centimetres of pedestal would shift every waypoint height in the
+        # scripted plan relative to the surface the objects actually rest on, and the
+        # top-down grasp envelope has nothing like that much slack.
+        config.base_size = None
+
     robot_cls.add_robot_to_scene(
         config,
         spec,
@@ -650,6 +642,12 @@ def main() -> int:
         pos=[0.0, 0.0, 0.0] if holonomic else attach_pos,
         quat=[1.0, 0.0, 0.0, 0.0] if holonomic else quat,
     )
+
+    if stage_task is not None:
+        # The arm's base body lands exactly at attach_pos now that the riser is gone, so
+        # that pose *is* the task's frame origin.
+        stage_task[0](spec, attach_pos, yaw)
+
     model = spec.compile()
     data = mujoco.MjData(model)
 
@@ -684,6 +682,20 @@ def main() -> int:
 
     mujoco.mj_forward(model, data)
     warn_on_penetration(model, data, config.robot_namespace)
+
+    task = None
+    if stage_task is not None:
+        # Built after the rest pose is applied and mj_forward has run, because it
+        # captures this state as the one /reset restores -- an arbiter constructed a few
+        # lines earlier would snapshot an arm that had not been posed yet.
+        task = stage_task[1](model, data)
+        placed, reason = task.instantaneous(data)
+        print(
+            f"task {args.task}: staged; success predicate reads "
+            f"{'TRUE (!)' if placed else reason} at spawn",
+            file=sys.stderr,
+        )
+        check_task_contacts(model, config.robot_namespace, task)
 
     ns = config.robot_namespace
     # Robots on a mocap pedestal have a "mount" body; free-standing and holonomic ones
@@ -724,15 +736,34 @@ def main() -> int:
             name = (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or "").lower()
             if "ceiling" in name:
                 model.geom_rgba[gid, 3] = 0.0
-        cam = mujoco.MjvCamera()
-        mujoco.mjv_defaultFreeCamera(model, cam)
-        cam.lookat[:] = lookat
-        cam.distance = distance
-        cam.azimuth = azimuth
-        cam.elevation = args.elevation
-        with mujoco.Renderer(model, args.height, args.width) as renderer:
-            renderer.update_scene(data, camera=cam)
-            pixels = renderer.render()
+        if args.render_camera:
+            cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.render_camera)
+            if cam_id < 0:
+                declared = [model.camera(i).name for i in range(model.ncam)]
+                raise SystemExit(f"--render-camera {args.render_camera!r}: not in model; "
+                                 f"declared cameras: {declared}")
+            width, height = (int(v) for v in model.cam_resolution[cam_id])
+            if width <= 1 or height <= 1:
+                # A camera with no `resolution` attribute compiles to 1x1 and renders
+                # nothing useful; fall back to the requested size but say so.
+                print(f"camera {args.render_camera!r} declares no resolution; using "
+                      f"{args.width}x{args.height}", file=sys.stderr)
+                width, height = args.width, args.height
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+            model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+            with mujoco.Renderer(model, height, width) as renderer:
+                renderer.update_scene(data, camera=args.render_camera)
+                pixels = renderer.render()
+        else:
+            cam = mujoco.MjvCamera()
+            mujoco.mjv_defaultFreeCamera(model, cam)
+            cam.lookat[:] = lookat
+            cam.distance = distance
+            cam.azimuth = azimuth
+            cam.elevation = args.elevation
+            with mujoco.Renderer(model, args.height, args.width) as renderer:
+                renderer.update_scene(data, camera=cam)
+                pixels = renderer.render()
         from PIL import Image
 
         Image.fromarray(pixels).save(args.render)
@@ -755,25 +786,11 @@ def main() -> int:
     elif camera.lower() == "none":
         camera = None
 
-    # `--control HOST:PORT` is the hardware-style shorthand; a bare `:PORT` or `PORT`
-    # keeps the default interface. It sets the same fields as --control-host/--control-port.
-    if args.control is not None:
-        if args.control_port is not None:
-            raise SystemExit("use either --control or --control-port, not both")
-        spec = args.control
-        if ":" in spec:
-            host, _, port = spec.rpartition(":")
-            if host:
-                args.control_host = host
-        else:
-            port = spec
-        try:
-            args.control_port = int(port)
-        except ValueError:
-            raise SystemExit(f"--control: expected HOST:PORT or PORT, got {args.control!r}")
-
-    if args.ros_port and args.control_port:
-        raise SystemExit("use either --ros-port or --control-port, not both")
+    if args.task and not args.ros_port and not args.render:
+        raise SystemExit(
+            "--task needs --ros-port: the task's verdict goes out on /task_success, and "
+            "staging one with nothing to publish it would silently score nothing."
+        )
 
     if args.ros_port:
         if args.robot not in ROS_SURFACES:
@@ -784,6 +801,22 @@ def main() -> int:
         module_name, func_name = ROS_SURFACES[args.robot]
         serve_ros = getattr(importlib.import_module(module_name), func_name)
 
+    if args.ros_port and args.robot in ARM_ROS_SURFACES:
+        from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
+
+        cameras = dict(DEFAULT_CAMERAS)
+        if args.wrist_camera:
+            # The scene cameras sit on the worldbody under their own names; the wrist
+            # camera rides the gripper and so carries the robot's namespace prefix.
+            cameras.update({t: (f"{ns}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()})
+        controller = serve_ros(
+            args.ros_port, view, model, task,
+            cameras=cameras,
+            jpeg_quality=args.jpeg_quality,
+            control_hz=args.control_hz,
+            host=args.control_host,
+        )
+    elif args.ros_port:
         scan_cfg = None
         if not args.no_scan:
             defaults = SCAN_DEFAULTS.get(args.robot, SCAN_DEFAULTS["myagv"])
@@ -819,11 +852,6 @@ def main() -> int:
             args.control_hz, args.watchdog, scan=scan_cfg, depth=depth_cfg,
             extra={"action_dir": args.action_dir},
         )
-    elif args.control_port:
-        controller = serve_control(
-            args.control_host, args.control_port, view, model, camera,
-            args.camera_size, args.jpeg_quality, args.robot,
-        )
     else:
         controller = None
     control_period = 1.0 / args.control_hz
@@ -832,22 +860,52 @@ def main() -> int:
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
     if args.headless:
-        # Same step + control loop as the viewer path, but no window: this is what an
-        # automated console-connectivity check and a displayless host run, and it keeps
-        # the ROS/control servers behaving identically to the interactive path.
+        # Same control loop as the viewer path, but no window: this is what an automated
+        # console-connectivity check and a displayless host run, and it keeps the ROS
+        # server behaving identically to the interactive path.
+        #
+        # The physics is pinned to the wall clock: each pass steps the model until
+        # `data.time` has caught up with elapsed real time, so rendering cost lands on
+        # the *camera* rate, never on the simulated seconds per real second. The
+        # previous one-step-then-sleep loop let three cameras drag the simulation to
+        # 0.66x real time, and a policy that moves a fixed angle per wall-clock tick
+        # then moves 50 % faster in simulated time than it was tuned for -- which for a
+        # grasp tuned to 0.06 rad/step against a measured failure above 0.08 is the
+        # difference between lifting the apple and leaving it on the table. A machine
+        # that cannot keep up at all is reported rather than quietly slowed down.
+        wall_start = time.monotonic()
+        sim_start = float(data.time)
+        max_catchup = int(0.25 / model.opt.timestep)  # cap a stall at a quarter second
+        behind_since = None
         try:
             while True:
-                step_start = time.time()
                 now = time.monotonic()
                 if controller is not None and now >= next_control:
                     controller(data)
                     next_control = now + control_period
-                mujoco.mj_step(model, data)
+                target_time = sim_start + (time.monotonic() - wall_start)
+                steps = 0
+                while data.time < target_time and steps < max_catchup:
+                    mujoco.mj_step(model, data)
+                    steps += 1
+                if steps >= max_catchup:
+                    # Fell more than the cap behind: rebase rather than chase forever.
+                    if behind_since is None:
+                        behind_since = now
+                    elif now - behind_since > 5.0:
+                        print("headless loop cannot keep real time on this machine "
+                              "(physics + cameras take longer than the wall clock); "
+                              "reduce cameras or --control-hz", file=sys.stderr)
+                        behind_since = now
+                    wall_start = time.monotonic()
+                    sim_start = float(data.time)
+                else:
+                    behind_since = None
                 if deadline is not None and time.monotonic() > deadline:
                     break
-                slack = model.opt.timestep - (time.time() - step_start)
+                slack = (target_time + model.opt.timestep) - (sim_start + (time.monotonic() - wall_start))
                 if slack > 0:
-                    time.sleep(slack)
+                    time.sleep(min(slack, control_period / 4))
         except KeyboardInterrupt:
             pass
         finally:

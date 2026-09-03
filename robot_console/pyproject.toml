@@ -26,27 +26,36 @@ dev = [
     "websockets",
     "msgpack-numpy",
 ]
+# The SO-101 arm over rosbridge. `inspect-robots-ros` is the transport: it speaks
+# rosbridge v2 JSON over a websocket and needs no ROS installation on this side,
+# which is what keeps the "installable on a laptop that has never seen MuJoCo"
+# constraint intact. `websockets` comes in through it; nothing here needs
+# msgpack-numpy any more -- the `molmospaces-control-v1` binary protocol was
+# retired when the arm moved onto ROS.
 arm = [
-    "msgpack-numpy",
-    "websockets",
+    "inspect-robots",
+    "inspect-robots-ros",
 ]
+# The LLM-agent policy, for driving the same arm from a chat VLM instead of a VLA.
 inspect = [
     "inspect-robots",
+    "inspect-robots-ros",
     "inspect-robots-agent",
-    "inspect-robots-so101",
-    "msgpack-numpy",
-    "websockets",
 ]
-# The MolmoAct2 VLA controller (bin/arm_task.sh). Installed into its own venv
-# (.venv-vla) by that launcher, never into .venv: torch is a multi-gigabyte
-# dependency and the offline test suite must stay fast and torch-free.
+# The MolmoAct2 VLA policy. Installed into its own venv (.venv-vla) by
+# bin/arm_task.sh, never into .venv: torch is a multi-gigabyte dependency and the
+# offline test suite must stay fast and torch-free. The `molmoact2` entry point is
+# declared unconditionally below and still imports without this extra -- torch and
+# transformers are reached from inside `MolmoAct2Policy._load()`, not at module
+# scope -- so `inspect-robot list policies` works in a torch-free venv and only
+# actually constructing the policy needs these.
 # transformers is pinned because the checkpoint's trust_remote_code modules are
 # written against a specific API generation and break across majors: the
 # MolmoAct2-SO100_101 config says transformers_version 5.3.0, and 4.x chokes on
 # its list-shaped extra_special_tokens.
 vla = [
-    "msgpack-numpy",
-    "websockets",
+    "inspect-robots",
+    "inspect-robots-ros",
     "torch",
     "torchvision",
     "transformers>=5.3,<6",
@@ -58,15 +67,45 @@ vla = [
     # loader, which needs both of these even though tokenizer.json is present.
     "protobuf",
     "sentencepiece",
+    # Reached from inside the checkpoint's own trust_remote_code modules, so nothing
+    # imports it at module scope and a missing `requests` surfaces only once a policy is
+    # actually constructed -- as `PolicyError: No module named 'requests'` several
+    # seconds into an episode.
+    "requests",
 ]
 [project.scripts]
 robot-console-teleop = "robot_console.cli:main"
 robot-console-explore = "robot_console.explore:main"
 robot-console-mapping = "robot_console.mapping:main"
 robot-console-navigate = "robot_console.navigate:main"
-robot-console-arm = "robot_console.arm_client:main"
-robot-console-inspect-so101 = "robot_console.inspect_so101:main"
-robot-console-arm-task = "robot_console.arm_task:main"
+
+# The arm is driven by the `inspect-robot` CLI, which ships with the
+# `inspect-robots` framework; this project only has to *register* its pieces, which
+# the framework discovers through these entry-point groups. That is the whole
+# reason `inspect-robot run --task apple_on_plate --policy molmoact2 --embodiment
+# so101_ros` works without a console script of our own -- and why, before these
+# groups existed, `inspect-robot list tasks` came back empty.
+[project.entry-points."inspect_robots.tasks"]
+apple_on_plate = "robot_console.arm.task:apple_on_plate"
+
+[project.entry-points."inspect_robots.policies"]
+# so101_waypoint is the scripted baseline and the thing to run first when a run
+# fails: it is closed-loop on proprioception and has never missed at 400 steps, so
+# a failure from it is a scene/transport fault, not a policy one.
+so101_waypoint = "robot_console.arm.policy:so101_waypoint"
+molmoact2 = "robot_console.arm.molmoact:molmoact2"
+
+[project.entry-points."inspect_robots.embodiments"]
+so101_ros = "robot_console.arm.embodiment:so101_ros"
+
+# Three scorers, computed independently on purpose: the simulator's own verdict,
+# the live geometric one, and an offline re-derivation from the recorded log.
+# Disagreement between them is the signal that something is wrong -- never make one
+# read back another's answer.
+[project.entry-points."inspect_robots.scorers"]
+apple_on_plate_success = "robot_console.arm.scorer:apple_on_plate_success"
+sim_task_success = "robot_console.arm.scorer:sim_task_success"
+apple_plate_distance = "robot_console.arm.scorer:apple_plate_distance"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/robot_console"]

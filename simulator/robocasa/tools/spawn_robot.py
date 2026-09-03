@@ -3,7 +3,7 @@
 
     mjpython tools/spawn_robot.py myagv --layout 1 --style 1 --ros-port 9090
     python   tools/spawn_robot.py myagv --headless --ros-port 9090
-    python   tools/spawn_robot.py so101 --control 127.0.0.1:8000
+    python   tools/spawn_robot.py so101 --ros-port 9091 --task apple_on_plate
     python   tools/spawn_robot.py myagv --render /tmp/kitchen.png
 
 This is the RoboCasa half of the multi-engine split, and it mirrors
@@ -19,7 +19,7 @@ in a robosuite robot (its own controller stack, action space and observation dic
 would then have to be surgically removed from the compiled model, and it would put a
 Panda in the middle of every map. The robots here are not robosuite robots and are not
 pretending to be: the myAGV is a vendor ROS device and the SO-101 speaks the
-molmospaces-control-v1 protocol, and both of those are the *hardware's* interface.
+ros2_control topic set, and both of those are the *hardware's* interface.
 
 The RoboCasa-specific traps, which is most of what this file knows that its MolmoSpaces
 counterpart does not:
@@ -64,7 +64,19 @@ ROBOTS = ("myagv", "so101")
 
 # name -> (module, function) presenting that robot's own vendor ROS topics. Only mobile
 # bases have one; an arm is served over the control protocol instead.
-ROS_SURFACES = {"myagv": ("ros_surfaces.myagv", "serve_ros")}
+ROS_SURFACES = {
+    "myagv": ("ros_surfaces.myagv", "serve_ros"),
+    # The same shared surface the other engine uses. That is the point: the arm's topic
+    # set belongs to the arm, so a client cannot tell which engine is hosting it.
+    "so101": ("ros_surfaces.so101", "serve_ros"),
+}
+
+# Robots whose ROS surface is an arm contract rather than a mobile-base one: no cmd_vel,
+# no odometry, no lidar, and several cameras instead of one.
+ARM_ROS_SURFACES = {"so101"}
+
+# Tasks an engine can stage into its scene; see simulator/shared/tasks/.
+TASKS = {"apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate")}
 
 # Transcribed from ydlidar_ros_driver/launch/X2.launch and the base_footprint ->
 # laser_frame transform in myagv_active.launch. Same numbers as the MolmoSpaces engine;
@@ -415,7 +427,7 @@ class JointGroup:
     """One move group of an arm, straight off a raw MuJoCo model.
 
     The control protocol is defined by what it puts on the wire, not by MolmoSpaces'
-    `RobotView`, so this exposes exactly the four things `serve_control` reads. Keeping
+    `RobotView`, so this exposes exactly what the shared arm ROS surface reads. Keeping
     it here rather than importing an engine's robot classes is the whole point of the
     split.
     """
@@ -477,83 +489,10 @@ class JointGroup:
         return self._data.xpos[self._leaf].copy() if self._leaf >= 0 else np.zeros(3)
 
 
-def serve_control(host: str, port: int, groups, model, camera, camera_size,
-                  jpeg_quality: int, robot_name: str, scene_option=None):
-    """Serve `molmospaces-control-v1` for an arm and return a per-step callback.
-
-    Byte-for-byte the same protocol the MolmoSpaces engine serves -- same metadata, same
-    observation keys -- because `robot_console.arm_client` is the client for both and must
-    not be able to tell them apart. Mechanism only: every decision about what action to
-    return belongs to the client.
-    """
-    from contracts.control_server import ControlServer
-
-    server = ControlServer(
-        host,
-        port,
-        metadata={
-            "model_name": robot_name,
-            "protocol": "molmospaces-control-v1",
-            "move_groups": {gid: len(g.ctrl) for gid, g in groups.items()},
-        },
-    )
-    server.start()
-    print(f"control server listening on ws://{host}:{port}", file=sys.stderr)
-
-    renderer = None
-    if camera is not None:
-        width, height = camera_size
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        renderer = mujoco.Renderer(model, height, width)
-        print(f"streaming camera {camera!r} at {width}x{height}", file=sys.stderr)
-
-    def encode(frame):
-        try:
-            import cv2
-
-            ok, buf = cv2.imencode(
-                ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR),
-                [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
-            )
-            if ok:
-                return {"camera_jpeg": np.asarray(buf).reshape(-1)}
-        except Exception:
-            pass
-        # Fall back to the raw array rather than dropping the feed entirely.
-        return {"camera": frame}
-
-    def step(data):
-        if data is None:
-            if renderer is not None:
-                renderer.close()
-            server.stop()
-            return
-
-        obs = {
-            "qpos": {gid: g.joint_pos.tolist() for gid, g in groups.items()},
-            "qvel": {gid: g.joint_vel.tolist() for gid, g in groups.items()},
-            "actions/joint_pos": {gid: g.ctrl.tolist() for gid, g in groups.items()},
-        }
-        if "arm" in groups:
-            obs["tcp_pose"] = groups["arm"].tcp_pos
-        if "base" in groups:
-            pose = groups["base"].pose
-            obs["base_pose"] = np.array(
-                [pose[0, 3], pose[1, 3], float(np.arctan2(pose[1, 0], pose[0, 0]))]
-            )
-        if renderer is not None:
-            renderer.update_scene(data, camera=camera, scene_option=scene_option)
-            obs.update(encode(renderer.render()))
-
-        action = server.publish(obs)
-        if action is None:
-            return
-        for gid, target in action.items():
-            if gid in groups:
-                groups[gid].ctrl = np.asarray(target, dtype=np.float64)
-
-    return step
+# `serve_control` lived here: a msgpack-numpy binary protocol on its own port, which was
+# how the arm was driven before it moved onto ROS. Gone rather than deprecated -- two
+# transports for one robot is two things to keep in step, and two ways for the engines to
+# drift apart. See ../../shared/ros_surfaces/so101.py.
 
 
 def warn_on_penetration(model, data, prefix: str, depth: float = -0.001) -> None:
@@ -583,25 +522,6 @@ def warn_on_penetration(model, data, prefix: str, depth: float = -0.001) -> None
         return
 
 
-def parse_control(args) -> None:
-    """`--control HOST:PORT` is the hardware-style shorthand for --control-host/-port."""
-    if args.control is None:
-        return
-    if args.control_port is not None:
-        raise SystemExit("use either --control or --control-port, not both")
-    spec = args.control
-    if ":" in spec:
-        host, _, port = spec.rpartition(":")
-        if host:
-            args.control_host = host
-    else:
-        port = spec
-    try:
-        args.control_port = int(port)
-    except ValueError:
-        raise SystemExit(f"--control: expected HOST:PORT or PORT, got {args.control!r}")
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("robot", choices=ROBOTS)
@@ -629,11 +549,17 @@ def main() -> int:
 
     ap.add_argument("--ros-port", type=int, default=None, dest="ros_port",
                     help="serve this robot's vendor ROS topics on PORT (mobile bases)")
-    ap.add_argument("--control", default=None, metavar="HOST:PORT",
-                    help="serve the generic observation/action protocol")
     ap.add_argument("--control-host", default="0.0.0.0", dest="control_host")
-    ap.add_argument("--control-port", type=int, default=None, dest="control_port")
-    ap.add_argument("--control-hz", type=float, default=20.0, dest="control_hz")
+    ap.add_argument(
+        "--task", default=None, choices=sorted(TASKS),
+        help="stage a task into the kitchen: its objects, its cameras and its success "
+             "predicate. Requires --ros-port, which is what publishes the verdict.",
+    )
+    ap.add_argument(
+        "--wrist-camera", action="store_true", dest="wrist_camera",
+        help="also stream the eye-in-hand view (every camera costs control rate, so it "
+             "is off unless asked for)",
+    )
     ap.add_argument("--watchdog", type=float, default=0.5,
                     help="stop the base if no command arrives for this long")
     ap.add_argument("--camera", default=None, help="MJCF camera to stream, or 'none'")
@@ -651,9 +577,12 @@ def main() -> int:
     ap.add_argument("--no-depth", action="store_true", dest="no_depth")
     args = ap.parse_args()
 
-    parse_control(args)
-    if args.ros_port and args.control_port:
-        raise SystemExit("use either --ros-port or --control-port, not both")
+    if args.task and not args.ros_port:
+        raise SystemExit(
+            "--task needs --ros-port: the task's verdict goes out on /task_success, and "
+            "staging one with nothing to publish it would silently score nothing."
+        )
+
 
     prefix = "robot_0/"
     arena, compile_spec = build_kitchen_arena(args.layout, args.style, args.seed)
@@ -718,6 +647,18 @@ def main() -> int:
         quat=[1.0, 0.0, 0.0, 0.0] if holonomic else quat,
     )
 
+    stage_task = None
+    if args.task:
+        import importlib
+
+        module_name, stage_name, arbiter_name = TASKS[args.task]
+        task_module = importlib.import_module(module_name)
+        stage_task = (getattr(task_module, stage_name), getattr(task_module, arbiter_name))
+        # The arm's base body sits exactly at the worktop here -- this engine bolts it
+        # straight into the worldbody with no riser -- so that pose is the task's frame
+        # origin, with the work surface at z = 0 just as the geometry assumes.
+        stage_task[0](spec, [float(xy[0]), float(xy[1]), mount_z], float(yaw))
+
     model = spec.compile()
     data = mujoco.MjData(model)
 
@@ -759,6 +700,15 @@ def main() -> int:
 
     mujoco.mj_forward(model, data)
     warn_on_penetration(model, data, prefix)
+
+    task = None
+    if stage_task is not None:
+        # After the rest pose is applied: the arbiter snapshots this state as the one
+        # /reset restores.
+        task = stage_task[1](model, data)
+        placed, reason = task.instantaneous(data)
+        print(f"task {args.task}: staged; success predicate reads "
+              f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
     print(
         f"{args.robot} in kitchen: {model.nbody} bodies, {model.ngeom} geoms, "
         f"{model.nu} actuators",
@@ -806,7 +756,25 @@ def main() -> int:
         return 0
 
     controller = None
-    if args.ros_port:
+    if args.ros_port and args.robot in ARM_ROS_SURFACES:
+        import importlib
+
+        from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
+
+        module_name, func_name = ROS_SURFACES[args.robot]
+        serve_ros = getattr(importlib.import_module(module_name), func_name)
+        cameras = dict(DEFAULT_CAMERAS)
+        if args.wrist_camera:
+            cameras.update({t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()})
+        controller = serve_ros(
+            args.ros_port, groups, model, task,
+            cameras=cameras,
+            jpeg_quality=args.jpeg_quality,
+            control_hz=args.control_hz,
+            scene_option=scene_option,
+            host=args.control_host,
+        )
+    elif args.ros_port:
         if args.robot not in ROS_SURFACES:
             raise SystemExit(
                 f"--ros-port: no ROS surface for {args.robot!r}; "
@@ -854,16 +822,6 @@ def main() -> int:
             args.control_hz, args.watchdog, scan=scan_cfg, depth=depth_cfg,
             scene_option=scene_option,
         )
-    elif args.control_port:
-        if not groups:
-            raise SystemExit(
-                f"--control: {args.robot} has no arm to drive; use --ros-port for a base"
-            )
-        controller = serve_control(
-            args.control_host, args.control_port, groups, model, camera,
-            args.camera_size, args.jpeg_quality, args.robot, scene_option,
-        )
-
     control_period = 1.0 / args.control_hz
     next_control = 0.0
     deadline = None if args.timeout is None else time.monotonic() + args.timeout

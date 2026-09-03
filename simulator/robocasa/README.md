@@ -14,7 +14,7 @@ the shared architecture (engines feed the one wire bridge in
 
 # A shared robot in the kitchen, on the real hardware's interface:
 ./run.sh view --robot myagv --ros-port 9090          # myAGV vendor ROS topics
-./run.sh view --robot so101 --control 127.0.0.1:8000 # SO-101 control protocol
+./run.sh view --robot so101 --ros-port 9091          # SO-101 on its ROS topics
 ./run.sh view --robot so101 --objects bowl,apple     # ...with objects in its reach
 ./run.sh view --robot myagv --headless --ros-port 9090   # no window
 ./run.sh view --robot myagv --render /tmp/kitchen.png    # just a PNG
@@ -51,7 +51,11 @@ client and the same flags it uses against engine #1.
 
 - `--robot myagv --ros-port 9090` — the vendor `myagv_ros` topics (`/cmd_vel` in;
   `/odom`, camera, `/scan`, depth out), served by `../shared/ros_surfaces/myagv.py`.
-- `--robot so101 --control HOST:PORT` — the `molmospaces-control-v1` protocol.
+- `--robot so101 --ros-port PORT` — the ros2_control topic set a real SO-101 bringup
+  presents, served from `../shared/ros_surfaces/so101.py`. The *same* file the other
+  engine uses: the topic set belongs to the arm, so a client cannot tell which engine
+  is hosting it. Add `--task apple_on_plate` to stage the task's objects, cameras and
+  success predicate into the kitchen.
 - `--objects bowl,apple` — RoboCasa objects spawned inside the arm's working
   annulus. A RoboCasa kitchen is *fixtures*; it ships with no loose objects at
   all, so an arm gets nothing to reach for until this puts something there.

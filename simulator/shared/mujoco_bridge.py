@@ -395,3 +395,105 @@ class PlanarJointBase:
         for i, value in zip(self._qpos, (x, y, yaw)):
             self._data.qpos[i] = value
         self.ctrl = (x, y, yaw)
+
+
+class CameraStreams:
+    """Several named MJCF cameras, JPEG-encoded onto a rosbridge server.
+
+    `SensorStreams` above is the mobile-base shape: one camera, plus depth and a lidar.
+    An arm needs the opposite -- no scan, no depth, and *more than one* colour view,
+    because a VLA policy consumes views positionally and a single frame gives it nothing
+    to triangulate with. Rather than grow `SensorStreams` a list-shaped camera argument
+    that only one caller would pass, this is its sibling, and both stay easy to read.
+
+    One `mujoco.Renderer` per distinct frame size, shared by every camera at that size:
+    a Renderer is bound to a width and height at construction, but not to a camera, so
+    three 640x480 views cost one renderer and one offscreen buffer, not three.
+
+    **Render cost lands on the physics loop, not on the client.** Every enabled camera
+    is rendered inside the step callback, so the achievable control rate falls as
+    cameras are added -- measured on the equivalent rig at 4.1 Hz with two and ~2.1 Hz
+    with four, against a 10 Hz control loop. That is why the caller passes an explicit
+    list instead of the surface enabling everything the model declares, and why the
+    wrist view is opt-in.
+    """
+
+    def __init__(self, model, cameras, jpeg_quality: int = 70, scene_option=None) -> None:
+        """`cameras` is an ordered mapping of topic -> (mjcf camera name, width, height)."""
+        self._model = model
+        self._jpeg_quality = jpeg_quality
+        self._scene_option = scene_option
+        self._cameras: list[tuple[str, str, int, int]] = []
+        self._renderers: dict[tuple[int, int], "mujoco.Renderer"] = {}
+
+        for topic, (name, width, height) in dict(cameras).items():
+            if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name) < 0:
+                declared = [model.camera(i).name for i in range(model.ncam)]
+                raise SystemExit(
+                    f"camera {name!r} is not in this model; it declares {declared}. "
+                    "A camera that is missing here would otherwise become a topic that "
+                    "advertises fine and never publishes, and the client would find out "
+                    "as a reset timeout minutes later."
+                )
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+            model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+            self._cameras.append((topic, name, width, height))
+
+        for _topic, _name, width, height in self._cameras:
+            self._renderers.setdefault((width, height), None)
+        for size in list(self._renderers):
+            width, height = size
+            self._renderers[size] = mujoco.Renderer(model, height, width)
+
+    @property
+    def published(self) -> list[str]:
+        return [topic for topic, _name, _w, _h in self._cameras]
+
+    def publish(self, server, data, seq: int, stamp_s: float) -> None:
+        from contracts.rosbridge_server import TYPE_COMPRESSED_IMAGE_ROS2, compressed_image_ros2
+
+        for topic, name, width, height in self._cameras:
+            renderer = self._renderers[(width, height)]
+            if self._scene_option is not None:
+                renderer.update_scene(data, camera=name, scene_option=self._scene_option)
+            else:
+                renderer.update_scene(data, camera=name)
+            frame = renderer.render()
+            server.publish(
+                topic,
+                compressed_image_ros2(seq, _encode_jpeg(frame, self._jpeg_quality), stamp_s,
+                                      frame_id=name),
+                TYPE_COMPRESSED_IMAGE_ROS2,
+            )
+
+    def close(self) -> None:
+        for renderer in self._renderers.values():
+            if renderer is not None:
+                renderer.close()
+        self._renderers.clear()
+
+
+def _encode_jpeg(frame, quality: int) -> bytes:
+    """RGB uint8 array -> JPEG bytes.
+
+    cv2 when it is available (it is, in every engine venv, via the console's own
+    dependency set) and Pillow otherwise, so a headless box without OpenCV still
+    streams rather than failing at the first frame.
+    """
+    try:
+        import cv2
+
+        ok, buf = cv2.imencode(
+            ".jpg", cv2.cvtColor(frame, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_JPEG_QUALITY, quality]
+        )
+        if not ok:
+            raise RuntimeError("cv2.imencode failed")
+        return bytes(buf)
+    except ImportError:
+        import io
+
+        from PIL import Image
+
+        out = io.BytesIO()
+        Image.fromarray(frame).save(out, format="JPEG", quality=quality)
+        return out.getvalue()
