@@ -921,83 +921,27 @@ def main() -> int:
 
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
-    if args.headless:
-        # Same control loop as the viewer path, but no window: this is what an automated
-        # console-connectivity check and a displayless host run, and it keeps the ROS
-        # server behaving identically to the interactive path.
-        #
-        # The physics is pinned to the wall clock: each pass steps the model until
-        # `data.time` has caught up with elapsed real time, so rendering cost lands on
-        # the *camera* rate, never on the simulated seconds per real second. The
-        # previous one-step-then-sleep loop let three cameras drag the simulation to
-        # 0.66x real time, and a policy that moves a fixed angle per wall-clock tick
-        # then moves 50 % faster in simulated time than it was tuned for -- which for a
-        # grasp tuned to 0.06 rad/step against a measured failure above 0.08 is the
-        # difference between lifting the apple and leaving it on the table. A machine
-        # that cannot keep up at all is reported rather than quietly slowed down.
-        wall_start = time.monotonic()
-        sim_start = float(data.time)
-        max_catchup = int(0.25 / model.opt.timestep)  # cap a stall at a quarter second
-        behind_since = None
-        try:
-            while True:
-                now = time.monotonic()
-                if controller is not None and now >= next_control:
-                    controller(data)
-                    next_control = now + control_period
-                target_time = sim_start + (time.monotonic() - wall_start)
-                steps = 0
-                while data.time < target_time and steps < max_catchup:
-                    mujoco.mj_step(model, data)
-                    steps += 1
-                if steps >= max_catchup:
-                    # Fell more than the cap behind: rebase rather than chase forever.
-                    if behind_since is None:
-                        behind_since = now
-                    elif now - behind_since > 5.0:
-                        print("headless loop cannot keep real time on this machine "
-                              "(physics + cameras take longer than the wall clock); "
-                              "reduce cameras or --control-hz", file=sys.stderr)
-                        behind_since = now
-                    wall_start = time.monotonic()
-                    sim_start = float(data.time)
-                else:
-                    behind_since = None
-                if deadline is not None and time.monotonic() > deadline:
-                    break
-                slack = (target_time + model.opt.timestep) - (sim_start + (time.monotonic() - wall_start))
-                if slack > 0:
-                    time.sleep(min(slack, control_period / 4))
-        except KeyboardInterrupt:
-            pass
-        finally:
-            if controller is not None:
-                controller(None)  # close
-        return 0
-
-    # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
-    # function-local and shadow the module-level import above.
-    from mujoco import viewer as mj_viewer
+    from mujoco_bridge import run_sim_loop
 
     try:
-        with mj_viewer.launch_passive(model, data) as viewer:
-            viewer.cam.lookat[:] = lookat
-            viewer.cam.distance = distance
-            viewer.cam.azimuth = azimuth
-            viewer.cam.elevation = args.elevation
-            while viewer.is_running():
-                step_start = time.time()
-                now = time.monotonic()
-                if controller is not None and now >= next_control:
-                    controller(data)
-                    next_control = now + control_period
-                mujoco.mj_step(model, data)
-                viewer.sync()
-                if deadline is not None and time.monotonic() > deadline:
-                    break
-                slack = model.opt.timestep - (time.time() - step_start)
-                if slack > 0:
-                    time.sleep(slack)
+        if args.headless:
+            # No window: what an automated console-connectivity check and a displayless
+            # host run. Same loop as the viewer path, which is the point -- the ROS
+            # server behaves identically either way.
+            run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                         deadline=deadline, label="headless loop")
+        else:
+            # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
+            # function-local and shadow the module-level import above.
+            from mujoco import viewer as mj_viewer
+
+            with mj_viewer.launch_passive(model, data) as viewer:
+                viewer.cam.lookat[:] = lookat
+                viewer.cam.distance = distance
+                viewer.cam.azimuth = azimuth
+                viewer.cam.elevation = args.elevation
+                run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                             deadline=deadline, viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:
             controller(None)  # close

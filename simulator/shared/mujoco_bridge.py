@@ -625,3 +625,81 @@ def _slab_corners_world(model, data, slab: int):
         for sx in (-1.0, 1.0)
         for sy in (-1.0, 1.0)
     ]
+
+
+def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
+                 viewer=None, sync_hz: float = 60.0, label: str = "sim loop") -> None:
+    """Step `model` pinned to the wall clock, feeding `controller` at `control_hz`.
+
+    One loop for every way an engine can be run -- headless or with a window, either
+    engine -- because there used to be three of these and two were wrong in the same way.
+
+    **The physics is pinned to the wall clock**: each pass steps until `data.time` has
+    caught up with elapsed real time, so rendering cost lands on the *camera* rate and
+    never on simulated seconds per real second. The naive one-step-then-sleep loop let
+    three cameras drag the simulation to 0.66x real time, and a policy that moves a fixed
+    angle per wall-clock tick then moves 50 % faster in simulated time than it was tuned
+    for -- which for a grasp tuned to 0.06 rad/step against a measured failure above 0.08
+    is the difference between lifting the apple and leaving it on the table. A machine
+    that genuinely cannot keep up is told so, rather than quietly slowed down.
+
+    **`viewer.sync()` runs at `sync_hz`, not once per physics step.** At a 2 ms timestep
+    that would be 500 syncs a second against a 60 Hz display, and the surplus was half of
+    what made the windowed path slower than the headless one.
+
+    `controller`, `mj_step` and `sync()` all run on **this one thread**, which is what
+    both the thread-safe `/reset` handoff in `ros_surfaces/so101.py` and `launch_passive`
+    require. Do not move any of them onto another.
+    """
+    control_period = 1.0 / control_hz
+    sync_period = 1.0 / sync_hz if sync_hz > 0 else None
+    next_control = 0.0
+    next_sync = 0.0
+    wall_start = time.monotonic()
+    sim_start = float(data.time)
+    max_catchup = int(0.25 / model.opt.timestep)  # cap a stall at a quarter second
+    behind_since = None
+
+    try:
+        while viewer is None or viewer.is_running():
+            now = time.monotonic()
+            if controller is not None and now >= next_control:
+                controller(data)
+                next_control = now + control_period
+
+            target_time = sim_start + (time.monotonic() - wall_start)
+            steps = 0
+            while data.time < target_time and steps < max_catchup:
+                mujoco.mj_step(model, data)
+                steps += 1
+
+            if steps >= max_catchup:
+                # Fell more than the cap behind: rebase rather than chase forever.
+                if behind_since is None:
+                    behind_since = now
+                elif now - behind_since > 5.0:
+                    print(f"{label} cannot keep real time on this machine (physics + "
+                          "cameras take longer than the wall clock); reduce cameras or "
+                          "--control-hz", file=sys.stderr)
+                    behind_since = now
+                wall_start = time.monotonic()
+                sim_start = float(data.time)
+            else:
+                behind_since = None
+
+            if viewer is not None and sync_period is not None:
+                now = time.monotonic()
+                if now >= next_sync:
+                    viewer.sync()
+                    next_sync = now + sync_period
+
+            if deadline is not None and time.monotonic() > deadline:
+                break
+
+            slack = (target_time + model.opt.timestep) - (
+                sim_start + (time.monotonic() - wall_start)
+            )
+            if slack > 0:
+                time.sleep(min(slack, control_period / 4))
+    except KeyboardInterrupt:
+        pass

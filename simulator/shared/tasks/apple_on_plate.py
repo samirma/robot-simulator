@@ -18,8 +18,7 @@ what they cost to find:
   a flat disc, and apples delivered to within a millimetre of its centre rolled straight
   off -- so the "at rest" clause of the success predicate never fired and a placement
   that looked perfect scored zero.
-* **For the apple and the plate, visual meshes are not the collision geometry, and carry
-  `density="0"`.** A textured
+* **Visual meshes are not the collision geometry, and carry `density="0"`.** A textured
   mesh for looks, a primitive for physics. Swapping the primitives for mesh hulls would
   discard the grasp tuning, and a visual geom without `density="0"` silently adds mass:
   the apple weighs 0.081 kg instead of 0.020 kg, which is most of the way to unliftable.
@@ -340,7 +339,7 @@ def stage(
             pos=[0.0, 0.0, TABLE_GEOM_Z],
             material="task_wood_mat",
             friction=list(TABLE_FRICTION),
-            group=2,
+            group=2,  # static, so it needs no inertia; visible under both masks
         )
 
     # ---- apple ------------------------------------------------------------------
@@ -359,15 +358,24 @@ def stage(
         contype=0,
         conaffinity=0,
         density=0.0,
-        # Group 2, not 0. RoboCasa's geom groups are inverted (its collision hulls are
-        # group 0, painted in random translucent colours), so every render there goes
-        # through a mask that shows groups 1 and 2 only -- and a visual mesh in group 0
-        # simply does not appear in any camera frame or in the viewer. The wire stays
-        # healthy, the free-joint poses and /task_success are right, the scripted policy
-        # still passes because it never looks, and a VLA sees an empty worktop on every
-        # step. Group 2 is visible under MuJoCo's default option (0/1/2 on) *and* under
-        # that mask, and it is the shared robot's own visual group, so it is neutral
-        # across engines.
+        # Visual geoms group 2, collision geoms group 0 -- and BOTH halves of that are
+        # forced, by different engines, in opposite directions:
+        #
+        #   RoboCasa renders through `visual_only()`, a mask showing groups 1 and 2 only,
+        #   because its own collision hulls are group 0. A visual mesh in group 0 is
+        #   therefore invisible in every camera frame there -- silently: the wire stays
+        #   healthy, the poses are right, and a scripted policy still passes because it
+        #   never looks, while a VLA sees an empty worktop.
+        #
+        #   RoboCasa also sets `inertiagrouprange = [0, 0]`, so **only group-0 geoms
+        #   contribute inertia**. A collision geom outside group 0 leaves its body with
+        #   no mass at all, and the kitchen refuses to compile with "mass and inertia of
+        #   moving bodies must be larger than mjMINVAL" -- an error naming no body, three
+        #   bisections away from its cause.
+        #
+        # Group 2 visual + group 0 collision satisfies both, and is RoboCasa's own
+        # convention. On MolmoSpaces (inertiagrouprange 0-5, default option showing
+        # groups 0-2) it changes nothing: the colliders carry alpha 0 either way.
         group=2,
     )
     apple.add_geom(
@@ -391,7 +399,7 @@ def stage(
         # reference rig's soft apple was tuned against a jaw with no contact tuning of
         # its own; here the jaw already has some, and it is the better half.
         rgba=[1.0, 0.0, 0.0, 0.0],
-        group=3,
+        group=0,  # collision; must be group 0 to carry inertia -- see above
     )
 
     # ---- plate ------------------------------------------------------------------
@@ -407,7 +415,7 @@ def stage(
         contype=0,
         conaffinity=0,
         density=0.0,
-        group=2,  # see the apple's visual geom
+        group=2,  # visual; see the apple's visual geom
     )
     plate.add_geom(
         name=f"{PLATE_BODY}_geom",
@@ -417,7 +425,7 @@ def stage(
         condim=4,
         friction=[1.5, 0.05, 0.001],
         rgba=[1.0, 1.0, 1.0, 0.0],
-        group=3,
+        group=0,  # collision
     )
     for name, pos, quat, size in _rim_geoms():
         plate.add_geom(
@@ -429,15 +437,15 @@ def stage(
             condim=4,
             friction=[1.5, 0.05, 0.001],
             rgba=[1.0, 1.0, 1.0, 0.0],
-            group=3,
+            group=0,  # collision
         )
 
     # ---- dressing ---------------------------------------------------------------
-    # Unlike the apple and the plate these have NO separate collision primitive. The
-    # textured mesh *is* the collider (MuJoCo convex-hulls it), the mass sits on that
-    # geom, and there is deliberately no density="0" -- which for the two task objects
-    # above would be a bug and here is the design: nothing has to be grasped, so nothing
-    # needs the tuned contact split.
+    # Same visual/collision split as the apple and the plate, for the same reason: a
+    # geom cannot be both visible under RoboCasa's render mask (groups 1-2) and
+    # inertia-bearing under its `inertiagrouprange` of [0, 0]. Both geoms use the one
+    # mesh asset, so this costs a convex hull and no extra file. The reference gets away
+    # with a single mesh geom because its scene constrains neither.
     if dressing:
         for name, pos, obj_yaw, mass, scale in DRESSING:
             body = spec.worldbody.add_body(
@@ -447,14 +455,24 @@ def stage(
             )
             body.add_freejoint(name=f"task_{name}_joint")
             body.add_geom(
-                name=f"task_{name}_geom",
+                name=f"task_{name}_visual",
                 type=mujoco.mjtGeom.mjGEOM_MESH,
                 meshname=f"task_{name}_vis",
                 material=f"task_{name}_mat",
+                contype=0,
+                conaffinity=0,
+                density=0.0,
+                group=2,
+            )
+            body.add_geom(
+                name=f"task_{name}_geom",
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=f"task_{name}_vis",
                 mass=mass,
                 condim=DRESSING_CONDIM,
                 friction=list(DRESSING_FRICTION),
-                group=2,
+                rgba=[1.0, 1.0, 1.0, 0.0],
+                group=0,
             )
 
     # ---- lights -----------------------------------------------------------------

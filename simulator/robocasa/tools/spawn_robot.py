@@ -549,7 +549,36 @@ def main() -> int:
 
     ap.add_argument("--ros-port", type=int, default=None, dest="ros_port",
                     help="serve this robot's vendor ROS topics on PORT (mobile bases)")
-    ap.add_argument("--control-host", default="0.0.0.0", dest="control_host")
+    ap.add_argument(
+        "--no-reference-table", action="store_false", dest="reference_table",
+        help="stage the task's objects on the kitchen's own worktop instead of on the "
+             "reference work surface.",
+    )
+    ap.add_argument("--no-dressing", action="store_false", dest="dressing",
+                    help="stage only the apple and the plate, without the distractors.")
+    ap.add_argument("--no-reference-lighting", action="store_false", dest="reference_lighting",
+                    help="leave the scene's own lighting alone.")
+    ap.add_argument("--extra-lights", action="store_true", dest="extra_lights",
+                    help="also add the reference's two directional lamps (they blow out "
+                         "a normally-lit kitchen; for a scene that renders too dark).")
+    ap.add_argument(
+        "--render-camera", default=None, dest="render_camera", metavar="NAME",
+        help="with --render: look through this named MJCF camera at its own declared "
+             "resolution, instead of the free camera.",
+    )
+    ap.add_argument(
+        "--render-framing", action="store_true", dest="render_framing",
+        help="with --render: report where the staged work surface's corners land in the "
+             "frame, and what fraction of the frame is clipped to white.",
+    )
+    ap.add_argument("--control-host", "--host", default="0.0.0.0", dest="control_host",
+                    help="interface the --ros-port server binds (default: all)")
+    ap.add_argument(
+        "--control-hz", type=float, default=20.0, dest="control_hz",
+        help="control loop rate. Removed by accident with the --control* flags it was "
+             "named after, which left three uses behind and made this engine exit in "
+             "argparse before it ever built a kitchen.",
+    )
     ap.add_argument(
         "--task", default=None, choices=sorted(TASKS),
         help="stage a task into the kitchen: its objects, its cameras and its success "
@@ -577,7 +606,7 @@ def main() -> int:
     ap.add_argument("--no-depth", action="store_true", dest="no_depth")
     args = ap.parse_args()
 
-    if args.task and not args.ros_port:
+    if args.task and not args.ros_port and not args.render:
         raise SystemExit(
             "--task needs --ros-port: the task's verdict goes out on /task_success, and "
             "staging one with nothing to publish it would silently score nothing."
@@ -612,6 +641,13 @@ def main() -> int:
 
     # Objects go in before the compile, and their poses are written after it: a free body
     # is placed by its joint, which does not exist until the model is built.
+    if args.objects and args.task:
+        raise SystemExit(
+            "--objects and --task are mutually exclusive. A task stages its own objects at "
+            "measured positions; --objects samples RoboCasa's registry and drops them on an "
+            "arc through the arm's reach, which for apple_on_plate means a second apple the "
+            "jaw cannot close on and a bowl inside the plate's footprint."
+        )
     categories = [c.strip() for c in (args.objects or "").split(",") if c.strip()]
     objects = make_kitchen_objects(categories, args.seed, args.object_scale) if categories else []
     if objects:
@@ -629,12 +665,19 @@ def main() -> int:
         # not even monotonic -- an LLM agent "verified" the joint-0 image direction
         # early, was right, and was then betrayed by the same rule at a larger angle.
         # Looking down turns lateral alignment into something directly visible.
+        # Skipped under --task: the task stages `overhead` and `side` at the poses a
+        # policy was calibrated against, and they are what the ROS surface publishes.
+        # A third camera here would only make the two engines' compiled models differ.
         centre = xy + out * 0.25
-        add_task_camera(
-            spec,
-            eye=[float(centre[0] + out[0] * 0.22), float(centre[1] + out[1] * 0.22), mount_z + 0.85],
-            target=[float(centre[0]), float(centre[1]), mount_z],
-        )
+        if args.task:
+            pass
+        else:
+            add_task_camera(
+                spec,
+                eye=[float(centre[0] + out[0] * 0.22),
+                     float(centre[1] + out[1] * 0.22), mount_z + 0.85],
+                target=[float(centre[0]), float(centre[1]), mount_z],
+            )
 
     quat = [float(np.cos(yaw / 2)), 0.0, 0.0, float(np.sin(yaw / 2))]
     attach_robot(
@@ -657,7 +700,19 @@ def main() -> int:
         # The arm's base body sits exactly at the worktop here -- this engine bolts it
         # straight into the worldbody with no riser -- so that pose is the task's frame
         # origin, with the work surface at z = 0 just as the geometry assumes.
-        stage_task[0](spec, [float(xy[0]), float(xy[1]), mount_z], float(yaw))
+        # `mount_z` carries SO101_BASE_LIFT so the base plate's meshes clear the
+        # counter; the task's frame origin is the *work surface*, so take it back off.
+        # Left in, the plate and apple spawn 4 mm in the air and /reset restores a
+        # floating apple -- inside tolerance, and still not what the geometry says.
+        stage_task[0](
+            spec,
+            [float(xy[0]), float(xy[1]), mount_z - SO101_BASE_LIFT],
+            float(yaw),
+            reference_table=args.reference_table,
+            dressing=args.dressing,
+            lighting=args.reference_lighting,
+            extra_lights=args.extra_lights,
+        )
 
     model = spec.compile()
     data = mujoco.MjData(model)
@@ -746,9 +801,57 @@ def main() -> int:
         cam.distance = args.distance if args.distance is not None else 4.0
         cam.azimuth = args.azimuth if args.azimuth is not None else np.degrees(yaw) + 180.0
         cam.elevation = args.elevation
-        with mujoco.Renderer(model, args.height, args.width) as renderer:
-            renderer.update_scene(data, camera=cam, scene_option=scene_option)
-            pixels = renderer.render()
+        if args.render_camera:
+            cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.render_camera)
+            if cam_id < 0:
+                declared = [model.camera(i).name for i in range(model.ncam)]
+                raise SystemExit(f"--render-camera {args.render_camera!r}: not in model; "
+                                 f"declared cameras: {declared}")
+            width, height = (int(v) for v in model.cam_resolution[cam_id])
+            if width <= 1 or height <= 1:
+                # A camera with no `resolution` attribute compiles to 1x1 and renders
+                # nothing useful; fall back to the requested size but say so.
+                print(f"camera {args.render_camera!r} declares no resolution; using "
+                      f"{args.width}x{args.height}", file=sys.stderr)
+                width, height = args.width, args.height
+            model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+            model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+            with mujoco.Renderer(model, height, width) as renderer:
+                renderer.update_scene(data, camera=args.render_camera, scene_option=scene_option)
+                pixels = renderer.render()
+        else:
+            cam = mujoco.MjvCamera()
+            mujoco.mjv_defaultFreeCamera(model, cam)
+            cam.lookat[:] = [xy[0], xy[1], mount_z + 0.4]
+            cam.distance = args.distance if args.distance is not None else 4.0
+            cam.azimuth = args.azimuth if args.azimuth is not None else np.degrees(yaw) + 180.0
+            cam.elevation = args.elevation
+            with mujoco.Renderer(model, args.height, args.width) as renderer:
+                renderer.update_scene(data, camera=cam, scene_option=scene_option)
+                pixels = renderer.render()
+
+        if args.render_framing:
+            from mujoco_bridge import camera_framing, clipped_fraction, report_slab_fit
+
+            report_slab_fit(model, data)
+            clipped = clipped_fraction(pixels)
+            if args.render_camera and mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, "task_table"
+            ) >= 0:
+                from mujoco_bridge import _slab_corners_world
+
+                slab = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "task_table")
+                uv = camera_framing(model, data, args.render_camera,
+                                    _slab_corners_world(model, data, slab))
+                worst = max(max(abs(u), abs(v)) for u, v in uv)
+                inside = sum(1 for u, v in uv if abs(u) <= 1.0 and abs(v) <= 1.0)
+                corners = "  ".join(f"({u:+.3f},{v:+.3f})" for u, v in uv)
+                print(f"framing {args.render_camera}: {inside}/4 table corners in frame, "
+                      f"worst |normalised| {worst:.3f} (reference 0.930)", file=sys.stderr)
+                print(f"  corners {corners}", file=sys.stderr)
+            print(f"exposure: {clipped * 100:.1f}% of pixels clipped to white "
+                  f"(reference 3.0%, and 41.6% before it was fixed)", file=sys.stderr)
+
         from PIL import Image
 
         Image.fromarray(pixels).save(args.render)
@@ -826,56 +929,33 @@ def main() -> int:
     next_control = 0.0
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
-    def run_step() -> None:
-        nonlocal next_control
-        now = time.monotonic()
-        if controller is not None and now >= next_control:
-            controller(data)
-            next_control = now + control_period
-        mujoco.mj_step(model, data)
-
-    if args.headless:
-        # Same loop as the viewer path with no window: what a displayless host and an
-        # automated console check run, and it keeps the servers behaving identically.
-        try:
-            while True:
-                step_start = time.time()
-                run_step()
-                if deadline is not None and time.monotonic() > deadline:
-                    break
-                slack = model.opt.timestep - (time.time() - step_start)
-                if slack > 0:
-                    time.sleep(slack)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            if controller is not None:
-                controller(None)
-        return 0
-
-    # Bound as a separate name: `import mujoco.viewer` here would shadow the module-level
-    # `mujoco` with a function-local.
-    from mujoco import viewer as mj_viewer
+    from mujoco_bridge import run_sim_loop
 
     try:
-        with mj_viewer.launch_passive(model, data) as viewer:
-            viewer.opt.geomgroup[:] = scene_option.geomgroup
-            viewer.cam.lookat[:] = [xy[0], xy[1], mount_z + 0.4]
-            viewer.cam.distance = args.distance if args.distance is not None else 4.0
-            viewer.cam.azimuth = args.azimuth if args.azimuth is not None else np.degrees(yaw) + 180.0
-            viewer.cam.elevation = args.elevation
-            while viewer.is_running():
-                step_start = time.time()
-                run_step()
-                viewer.sync()
-                if deadline is not None and time.monotonic() > deadline:
-                    break
-                slack = model.opt.timestep - (time.time() - step_start)
-                if slack > 0:
-                    time.sleep(slack)
+        if args.headless:
+            # No window: what a displayless host and an automated check run.
+            run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                         deadline=deadline, label="headless loop")
+        else:
+            # Bound as a separate name: `import mujoco.viewer` here would shadow the
+            # module-level `mujoco` with a function-local.
+            from mujoco import viewer as mj_viewer
+
+            with mj_viewer.launch_passive(model, data) as viewer:
+                # Without this the window is a kitchen full of RoboCasa's translucent
+                # collision hulls: its geom groups are inverted, see `visual_only()`.
+                viewer.opt.geomgroup[:] = scene_option.geomgroup
+                viewer.cam.lookat[:] = [xy[0], xy[1], mount_z + 0.4]
+                viewer.cam.distance = args.distance if args.distance is not None else 4.0
+                viewer.cam.azimuth = (
+                    args.azimuth if args.azimuth is not None else np.degrees(yaw) + 180.0
+                )
+                viewer.cam.elevation = args.elevation
+                run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                             deadline=deadline, viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:
-            controller(None)
+            controller(None)  # close
     return 0
 
 
