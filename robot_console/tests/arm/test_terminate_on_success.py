@@ -25,7 +25,19 @@ from robot_console.arm.embodiment import SO101RosEmbodiment
 from robot_console.arm.ros_settings import OVERHEAD_CAMERA_NAME, RosSettings
 from robot_console.arm.scorer import apple_on_plate_success
 from robot_console.arm.success import GEOMETRIC_SUCCESS_KEY, HELD_KEY
-from robot_console.arm.vision_success import GroundProjector, PLATE_RADIUS_M
+from robot_console.arm.vision_success import (
+    APPLE_RADIUS_M,
+    GroundProjector,
+    PLATE_RADIUS_M,
+    RESTING_CENTRE_Z,
+)
+
+#: The red mask stops short of the apple's shaded limb, so the detected blob is reliably
+#: smaller than the geometric silhouette -- 0.90 of it, measured over 4882 real frames.
+#: The renderer below reproduces that, because the airborne test is calibrated against it:
+#: a synthetic apple drawn at its full silhouette would read as 1.0 and be judged airborne
+#: while sitting on the plate.
+_MASK_SHORTFALL = 0.90
 
 RESTING = (0.226, -0.226, 0.0404)
 SPAWN = (0.30, 0.10, 0.020)
@@ -55,7 +67,11 @@ def _render_overhead(apple_xyz: tuple[float, float, float]) -> np.ndarray:
     ]
     cv2.fillPoly(img, [np.array(rim, np.int32)], (245, 245, 245))
     u, v = _PROJ.project(*apple_xyz)
-    cv2.circle(img, (int(round(u)), int(round(v))), 9, (30, 30, 210), -1)
+    # Drawn at the size the camera would actually see it, so height is encoded in the
+    # image the way the detector reads it: an apple held above the plate images bigger.
+    radius = _PROJ.expected_radius_px(*apple_xyz, APPLE_RADIUS_M) * _MASK_SHORTFALL
+    cv2.circle(img, (int(round(u)), int(round(v))), max(int(round(radius)), 2),
+               (30, 30, 210), -1)
     return img[:, :, ::-1].copy()               # the embodiment is handed RGB
 
 
@@ -124,12 +140,12 @@ def embodiment(monkeypatch: pytest.MonkeyPatch) -> SO101RosEmbodiment:
     )
     subject = SO101RosEmbodiment(RosSettings(control_hz=10.0))
     subject._client = _ScriptedClient()  # type: ignore[assignment]
-    # One frame with the apple at its spawn point, discarded. Clause 5 asks how far the
-    # apple has travelled, and the camera can only answer that against somewhere it has
-    # actually seen it -- so an episode that opens with the apple already on the plate
-    # has, correctly, no evidence any placement happened. Every real episode starts at
-    # spawn; these tests have to as well, or they test a case that cannot occur.
-    subject.step(Action(data=np.zeros(6)))
+    # A few steps with the apple at its spawn point. Every real episode begins this way,
+    # and the camera needs it twice over: clause 5 measures travel against somewhere it has
+    # actually seen the apple, and the airborne test needs the apple's own apparent size
+    # while it is definitely resting. Without them these tests would exercise a case that
+    # cannot occur -- an episode whose first frame already shows the apple placed.
+    subject._spawn_steps = [subject.step(Action(data=np.zeros(6))) for _ in range(3)]
     return subject
 
 
@@ -196,8 +212,9 @@ class _Record:
     steps: list[_Step]
 
 
-def _record(results: list[StepResult]) -> _Record:
-    return _Record(steps=[_Step(result=r) for r in results])
+def _record(subject: SO101RosEmbodiment, results: list[StepResult]) -> _Record:
+    """The trajectory a rollout would have saved: the spawn steps are part of it."""
+    return _Record(steps=[_Step(result=r) for r in [*subject._spawn_steps, *results]])
 
 
 def test_the_recorded_trajectory_scores_as_a_success(
@@ -205,7 +222,7 @@ def test_the_recorded_trajectory_scores_as_a_success(
 ) -> None:
     embodiment._client.position = RESTING  # type: ignore[attr-defined]
     results = _run(embodiment, steps=40)
-    score = apple_on_plate_success()(_record(results), None)
+    score = apple_on_plate_success()(_record(embodiment, results), None)
     assert score.value is True
     assert score.metadata["hold_seconds"] == pytest.approx(1.0)
 
@@ -219,7 +236,45 @@ def test_the_old_terminate_at_first_contact_trajectory_scores_as_a_failure(
     client.position = RESTING
     results.append(embodiment.step(Action(data=np.zeros(6))))
     assert bool(results[-1].info[GEOMETRIC_SUCCESS_KEY]) is True
-    score = apple_on_plate_success()(_record(results), None)
+    score = apple_on_plate_success()(_record(embodiment, results), None)
     assert score.value is False
     assert "ever_placed=True" in score.explanation
+
+
+
+def test_an_apple_held_above_the_plate_scores_and_this_is_known(
+    embodiment: SO101RosEmbodiment,
+) -> None:
+    """A known, accepted gap, pinned here so it cannot be mistaken for an accident.
+
+    Clause 2 -- the apple's height -- is not enforced from the camera. A single overhead
+    view cannot separate an apple resting on the plate from one a stationary gripper is
+    holding above it: it is inside the gate, it has travelled, and being held by an arm
+    that has stopped it is *more* still than a real placement. Apparent size was measured
+    as a discriminator and the two populations overlap; see `vision_success`.
+
+    So this passes, deliberately. MolmoAct2 does exactly this in about half its episodes,
+    which is the difference between it reading 3/6 and 1/6. The `reference_success` scorer
+    sees the pose and does check height, and is what distinguishes the two.
+
+    If a future change makes this test fail, height has started being enforced somewhere.
+    That is good news, and this test should be inverted rather than deleted.
+    """
+    client = embodiment._client  # type: ignore[attr-defined]
+    # Directly over the plate, but 40 mm above where a resting apple's centre sits.
+    client.position = (RESTING[0], RESTING[1], RESTING_CENTRE_Z + 0.040)
+    results = _run(embodiment, steps=40)
+    assert results[-1].terminated
+    assert results[-1].info[HELD_KEY] is True
+
+
+def test_an_apple_resting_on_the_plate_scores(embodiment: SO101RosEmbodiment) -> None:
+    """The case the verdict is actually for, lowered into place rather than parked."""
+    client = embodiment._client  # type: ignore[attr-defined]
+    client.position = (RESTING[0], RESTING[1], RESTING_CENTRE_Z + 0.040)
+    _run(embodiment, steps=6)
+    client.position = RESTING
+    results = _run(embodiment, steps=40)
+    assert results[-1].terminated
+    assert results[-1].info[HELD_KEY] is True
 

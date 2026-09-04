@@ -559,22 +559,28 @@ Two things about that module are load-bearing and were measured, not assumed:
   ellipse — the obvious shortcut — reads 24 mm too far at the plate and 43 mm too far at
   the spawn point, which silently turns the 80 mm gate into a 56 mm one and fails genuine
   placements. Back-projecting through the camera pose reproduces the poses to 3.0 mm.
-- **The height clause survives, indirectly.** A single overhead view cannot measure height:
-  apparent size is dominated by shading, and the side camera — which at 5.6° really is
-  almost a height sensor — has the arm across the apple too often to rely on. But because
-  frames are projected onto the plane a *resting* apple occupies, an apple held above it
-  lands short, and a gripper lowering one drags its projected position ~30 mm across the
-  plane while a settled apple jitters 5.1 mm. `REST_RADIUS_M` is set from that gap. At a
-  looser 20 mm the verdict fired with the apple still 80 mm up and moving at 40 mm/s, four
-  seconds before the placement; at 8 mm every placement fires inside the contract's height
-  band.
+- **The height clause is NOT enforced, by decision, and this bounds what a pass means.**
+  A verdict means the apple came to rest inside the plate's outline and stayed there. It
+  does not mean the apple was on the plate rather than above it. Projection onto the
+  resting plane plus `REST_RADIUS_M` rejects an apple being *lowered* — a descent sweeps
+  the projected position ~30 mm against 5.1 mm of settled jitter — but nothing rejects one
+  held perfectly still, and MolmoAct2 parks the apple over the plate without opening the
+  jaw in about half its episodes. Apparent size was measured as a discriminator and the
+  resting and held populations interleave (0.949–1.013 against 1.007–1.056), so there is
+  no threshold to find; the side camera would settle it by triangulation but the arm
+  occludes the apple there too often. **Any rate this produces is an upper bound for a
+  policy that might not let go** — measured, the difference between MolmoAct2 reading 3/6
+  and 1/6 — and `reference_success`, which sees the pose and does check height, is what
+  tells the two apart.
 
 **The free-joint poses stay, and the same predicate is still computed from them** as the
-`reference_success` scorer — recorded every step, grading nothing. It is the one column
-that separates "the policy failed" from "the detector stopped seeing", because a drifted
-detector produces exactly the run of failures a broken policy does. `kitchen.sh` prints a
-warning only when the two disagree, and validating the detector against it over 990
-labelled frames is what caught both problems above before the topic was removed.
+`reference_success` scorer — recorded every step, grading nothing. It earns its keep twice
+over: it separates "the policy failed" from "the detector stopped seeing", since a drifted
+detector produces exactly the run of failures a broken policy does, and it is the only
+thing that checks the height clause the camera gives up on. `kitchen.sh` prints a warning
+when the two disagree, and that warning is expected on an episode where the apple was never
+released. Every serious defect in the camera verdict was found by measuring against this
+column over labelled frames — never by reading the code.
 
 Constants that look arbitrary and are not. Each was measured, and each was wrong first:
 

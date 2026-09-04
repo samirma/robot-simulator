@@ -47,6 +47,10 @@ GEOMETRIC_SUCCESS_KEY = "apple_on_plate"
 REFERENCE_SUCCESS_KEY = "reference_apple_on_plate"
 #: Pose-derived apple-to-plate distance, metres, beside the camera's own.
 REFERENCE_DISTANCE_KEY = "reference_distance"
+#: The apple's apparent radius over the radius it would have resting where it appears.
+#: Recorded per step so the offline hold can apply the same airborne test the live one
+#: does; see `vision_success.RESTING_RADIUS_RATIO`.
+RADIUS_RATIO_KEY = "apple_radius_ratio"
 #: Clause 4 satisfied as well — the full contract predicate (bool).
 HELD_KEY = "apple_on_plate_held"
 #: How long the instantaneous verdict has been continuously true, seconds.
@@ -221,6 +225,7 @@ def success_info(
     distance: float | None = None,
     apple_speed: float | None = None,
     stamp: float | None = None,
+    radius_ratio: float | None = None,
 ) -> dict[str, Any]:
     """Build the per-step ``StepResult.info`` payload both embodiments publish.
 
@@ -243,6 +248,7 @@ def success_info(
             None if apple_xyz is None else float(goal.horizontal_distance(apple_xyz))
         ),
         STAMP_KEY: None if stamp is None else float(stamp),
+        RADIUS_RATIO_KEY: None if radius_ratio is None else float(radius_ratio),
     }
 
 
@@ -280,6 +286,10 @@ def final_hold(infos: Sequence[Mapping[str, Any]]) -> HoldSpan:
     if not run:
         return HoldSpan(steps=0, seconds=None)
     run.reverse()
+    # No height test here, matching the live verdict: clause 2 is not enforced from the
+    # camera. `RADIUS_RATIO_KEY` is recorded on every step so an airborne placement can be
+    # recognised after the fact, but it does not decide anything -- the two populations
+    # overlap, and `vision_success.APPLE_RADIUS_M` carries the measurements that show it.
     first, last = run[0].get(STAMP_KEY), run[-1].get(STAMP_KEY)
     if first is None or last is None:
         return HoldSpan(steps=len(run), seconds=None)

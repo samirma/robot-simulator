@@ -27,15 +27,31 @@ that number far more than 20 mm of height does. The side camera looks like the a
 the apple there routinely, and in one recorded success no apple blob is separable in the
 side frame at all.
 
-What does work is the projection itself. `read_frame` back-projects the apple's image
-point onto the plane a *resting* apple would occupy, so an apple that is higher than that
-lands short of its true position, and the error shrinks as it descends. A gripper lowering
-the apple onto the plate therefore drags its projected position across the plane even
-while the apple is barely moving horizontally -- 30 mm of sweep on a measured placement,
-against 5.1 mm of worst-case jitter for an apple that has actually settled. `REST_RADIUS_M`
-is set from that gap, and with it the verdict fires with the apple's true height inside the
-contract's band on every placement tested. The height clause is enforced; it is just
-enforced through the geometry of the camera rather than read off directly.
+**Clause 2 is not enforced, and that is a deliberate, load-bearing limitation.** A verdict
+here can be trusted to mean "the apple came to rest inside the plate's outline and stayed
+there", and specifically cannot be trusted to mean "the apple was on the plate rather than
+above it".
+
+Partial defences exist and are in place, but they do not close it. `read_frame` projects
+onto the plane a resting apple occupies, so an apple higher than that lands short of its
+true position and the error shrinks as it descends -- a gripper lowering the apple sweeps
+its projected position ~30 mm across the plane, against 5.1 mm of jitter for one that has
+settled, and `REST_RADIUS_M` rejects that. So an apple in *motion* is handled. One held
+perfectly still is not, and MolmoAct2 does exactly that: in three of six measured episodes
+it grips the apple, parks it over the plate and never opens the jaw, leaving it motionless
+at z = 0.068 to 0.077 with every remaining clause satisfied.
+
+Apparent size was tried as a direct height measure and does not separate the two -- see
+`APPLE_RADIUS_M` for the numbers, which interleave. What would settle it is the side camera:
+two rays fix the apple in three dimensions exactly. That is not built, because the arm
+occludes the apple in the side view often enough that the verdict would frequently have no
+answer at all.
+
+The practical consequence, stated plainly so nobody has to rediscover it: **a policy that
+holds the apple over the plate without releasing scores here.** On the episodes measured,
+that is the difference between MolmoAct2 reading 3/6 and 1/6. Any rate this module produces
+is an upper bound for a policy that might not let go, and the `reference_success` scorer --
+which does see the pose and does check height -- is what tells you whether it did.
 """
 
 from __future__ import annotations
@@ -139,6 +155,10 @@ class GroundProjector:
         self._fx = self._fy                              # square pixels
         self._cx, self._cy = width / 2.0, height / 2.0
 
+    def expected_radius_px(self, x: float, y: float, z: float, radius_m: float) -> float:
+        """Apparent radius a sphere of ``radius_m`` would have at that arm-frame point."""
+        return self._fy * radius_m / max(math.dist((x, y, z), tuple(self._eye)), 1e-6)
+
     def project(self, x: float, y: float, z: float) -> tuple[float, float] | None:
         """Where an arm-frame point lands in the image, or None if it is behind."""
         cam = self._rot.T @ (np.array([x, y, z], dtype=float) - self._eye)
@@ -213,6 +233,9 @@ class Reading:
     #: Apple-to-plate-centre distance in metres, the quantity clause 1 gates on.
     distance_m: float | None
     inside_gate: bool
+    #: Observed apple radius over the radius it would have resting at the same image
+    #: position. Around 0.90 when it is on the plate, higher when it is above it.
+    radius_ratio: float | None
 
     @property
     def usable(self) -> bool:
@@ -293,13 +316,17 @@ def read_frame(bgr: np.ndarray) -> Reading:
     """
     apple, plate = find_apple(bgr), find_plate(bgr)
     if apple is None or plate is None:
-        return Reading(apple, plate, None, None, None, False)
+        return Reading(apple, plate, None, None, None, False, None)
     proj = _projector()
     apple_xy = proj.to_plane(apple.x, apple.y, RESTING_CENTRE_Z)
     plate_xy = proj.to_plane(plate.cx, plate.cy, RESTING_CENTRE_Z)
     if apple_xy is None or plate_xy is None:
-        return Reading(apple, plate, None, None, None, False)
+        return Reading(apple, plate, None, None, None, False, None)
     d = math.dist(apple_xy, plate_xy)
+    expected = proj.expected_radius_px(
+        apple_xy[0], apple_xy[1], RESTING_CENTRE_Z, APPLE_RADIUS_M
+    )
+    observed = math.sqrt(max(apple.area, 0.0) / math.pi)
     return Reading(
         apple=apple,
         plate=plate,
@@ -307,6 +334,7 @@ def read_frame(bgr: np.ndarray) -> Reading:
         plate_xy=plate_xy,
         distance_m=d,
         inside_gate=d < GATE_M,
+        radius_ratio=observed / expected if expected > 1e-6 else None,
     )
 
 
@@ -341,6 +369,44 @@ def read_frame(bgr: np.ndarray) -> Reading:
 # 0.000 m/s. 6 mm is no better and sits close to the 5.1 mm noise floor, so 8 mm it is:
 # a shade over 1.5x the worst jitter, and well under a quarter of the descent sweep.
 REST_RADIUS_M = 0.008
+
+#: The apple's own radius, and how much bigger than a resting apple it may look before
+#: the verdict calls it airborne.
+#:
+#: The rest radius above rejects an apple being *lowered*. It does nothing about one that
+#: is simply held still, and that gap is not hypothetical: measured over six MolmoAct2
+#: episodes, the policy grips the apple, parks it over the plate and never releases in
+#: three of them -- the arm stops dead at z = 0.068 to 0.077 with the apple's true speed
+#: at 0.000, so there is no descent to sweep the projection and every stability test
+#: passes. The scripted policy always releases and retreats, so no amount of scripted data
+#: would ever have shown this.
+#:
+#: What does separate them is apparent size, which is a range measurement: an apple 30 mm
+#: nearer the camera images bigger. Per frame it is far too coarse to enforce a 15 mm band
+#: -- inverting it for range carries a 110 mm p95 error -- but the verdict does not need a
+#: height, only the answer to "resting, or held above?", and it has a full second of frames
+#: to ask over. Measured across 4882 frames as the observed radius over the radius a
+#: resting apple would have at the same image position: resting 0.9045 +/- 0.0248, held
+#: just above 0.9519 +/- 0.0211, held high 1.0347. Averaged over an eight-frame hold that
+#: gap is 5.4 sigma, so the threshold sits between the two means.
+#:
+#: `radius_ratio` on each `Reading` is the apple's apparent radius over the radius it would
+#: have resting where it appears, measured against the same apple at its own spawn point so
+#: that how it happens to be lit cancels. It is **recorded and not gated on** -- see the
+#: module docstring for why the height clause is not enforced. It stays because it is the
+#: cheapest evidence a reader has that an apple was airborne, and because the numbers below
+#: are the record of an attempt that did not work:
+#:
+#:     genuinely resting   0.949  0.958  0.963  0.974  1.013
+#:     held above plate    1.007  1.014  1.017  1.018  1.036  1.056
+#:
+#: Four resting samples suggested a clean seven-sigma split and a threshold at 0.99. The
+#: fifth landed at 1.013, inside the held range, and the populations interleave. Anyone
+#: minded to revive this needs a cue that separates them, not a better threshold.
+APPLE_RADIUS_M = 0.020
+#: How far the apple must be from where it was first seen before its appearance there stops
+#: counting as the spawn baseline for `radius_ratio`.
+SPAWN_BASELINE_RADIUS_M = 0.020
 
 
 @dataclass(frozen=True)
@@ -383,6 +449,8 @@ class VisionTracker:
         self._hold_since: float | None = None
         self._anchor: tuple[float, float] | None = None
         self._elapsed = 0.0
+        self._ratios: list[float] = []
+        self._spawn_ratios: list[float] = []
 
     @property
     def plate_xy(self) -> tuple[float, float] | None:
@@ -390,6 +458,20 @@ class VisionTracker:
             return None
         arr = np.asarray(self._plates)
         return float(np.median(arr[:, 0])), float(np.median(arr[:, 1]))
+
+    def size_ratio_against_spawn(self) -> float | None:
+        """The hold's mean apparent size over the apple's own size at spawn, or None.
+
+        Diagnostic only -- nothing gates on it. Above about 1.0 the apple is nearer the
+        camera than a resting one would be, which is evidence it is being held above the
+        plate rather than sitting on it. It is not proof: the two populations overlap.
+        """
+        if not self._ratios or not self._spawn_ratios:
+            return None
+        baseline = float(np.median(self._spawn_ratios))
+        if baseline <= 1e-6:
+            return None
+        return (sum(self._ratios) / len(self._ratios)) / baseline
 
     def update(self, bgr: np.ndarray, stamp: float | None) -> Verdict:
         """Fold one frame in and return the verdict as it stands."""
@@ -404,11 +486,16 @@ class VisionTracker:
             # evidence for it either: the hold needs continuity, so it restarts.
             self._hold_since = self._anchor = None
             self._elapsed = 0.0
+            self._ratios.clear()
             return Verdict(reading, False, False, 0.0, None, plate)
 
         if self._spawn is None:
             self._spawn = apple
         displacement = math.dist(apple, self._spawn)
+
+        # The apple photographing itself before anything touches it.
+        if displacement <= SPAWN_BASELINE_RADIUS_M and reading.radius_ratio is not None:
+            self._spawn_ratios.append(reading.radius_ratio)
 
         inside = math.dist(apple, plate) < GATE_M
         travelled = displacement > MIN_DISPLACEMENT_M
@@ -423,11 +510,15 @@ class VisionTracker:
             if self._hold_since is None or stamp is None:
                 self._hold_since = stamp
                 self._anchor = apple
+                self._ratios.clear()
+            if reading.radius_ratio is not None:
+                self._ratios.append(reading.radius_ratio)
             self._elapsed = 0.0 if stamp is None or self._hold_since is None else max(
                 0.0, stamp - self._hold_since)
         else:
             self._hold_since = self._anchor = None
             self._elapsed = 0.0
+            self._ratios.clear()
 
         return Verdict(
             reading=reading,

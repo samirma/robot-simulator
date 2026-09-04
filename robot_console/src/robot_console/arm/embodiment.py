@@ -23,7 +23,7 @@ because they are task knowledge:
    requires the apple to be at rest on the plate for at least 1.0 s of
    simulated time. The episode therefore keeps stepping while the apple merely
    *touches down*, and terminates only once the hold is complete — see
-   [`HoldTracker`][robot_console.arm.success.HoldTracker]. Ending at first contact
+   [`VisionTracker`][robot_console.arm.vision_success.VisionTracker]. Ending at first contact
    would both contradict the contract's physics and, because the recorded
    trajectory would then contain a single true step, make the offline scorer
    read a genuine success back as a failure.
@@ -54,7 +54,6 @@ from robot_console.arm.success import (
     HOLD_ELAPSED_KEY,
     HOLD_SECONDS,
     STAMP_KEY,
-    HoldTracker,
     PlateGoal,
     success_info,
 )
@@ -107,7 +106,6 @@ class SO101RosEmbodiment(RosEmbodiment):
         # No PRIVILEGED_SUCCESS: the verdict is read off the same overhead frame the
         # policy is given, so the grader has no view of the scene the policy lacks.
         self.info = _with_docs(self.info, docs=_DOCS)
-        self._hold = HoldTracker(hold_seconds, control_hz=self.settings.control_hz)
         self._monitors_subscribed = False
         self._vision = VisionTracker(hold_seconds=hold_seconds)
 
@@ -115,7 +113,6 @@ class SO101RosEmbodiment(RosEmbodiment):
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Reset through the base adapter, then clear cached success state."""
         self._vision.reset()
-        self._hold.reset()
         return super().reset(scene, seed=seed)
 
     def step(self, action: Action) -> StepResult:
@@ -127,10 +124,16 @@ class SO101RosEmbodiment(RosEmbodiment):
         enough for the offline scorer to re-derive the same verdict.
         """
         result = super().step(action)
-        info = self._poll_success(result.observation)
-        held = self._hold.update(placed=bool(info[GEOMETRIC_SUCCESS_KEY]), stamp=info[STAMP_KEY])
+        info, verdict = self._poll_success(result.observation)
+        # The hold belongs to the vision tracker and to nothing else. There used to be a
+        # second one here, a `HoldTracker` fed from the instantaneous verdict, and having
+        # two was not merely redundant: the tracker's hold carries the airborne test and
+        # this one did not, so the check that stops a held-but-never-released apple from
+        # scoring was computed and then thrown away, and every live episode terminated on
+        # the ungated copy. One hold, from the object that owns every clause of it.
+        held = bool(verdict.held) if verdict is not None else False
         info[HELD_KEY] = held
-        info[HOLD_ELAPSED_KEY] = round(self._hold.elapsed, 4)
+        info[HOLD_ELAPSED_KEY] = round(verdict.hold_elapsed if verdict else 0.0, 4)
         terminated = held and self.terminate_on_success
         observation = result.observation
         if self.expose_measured:
@@ -149,7 +152,7 @@ class SO101RosEmbodiment(RosEmbodiment):
         )
 
     # -- success polling ---------------------------------------------------
-    def _poll_success(self, observation: Observation) -> dict[str, Any]:
+    def _poll_success(self, observation: Observation) -> tuple[dict[str, Any], Any]:
         """Grade this step from the overhead frame, and record the pose as reference."""
         position, speed, stamp = self._apple_state()
         verdict = self._see(observation, stamp)
@@ -160,7 +163,8 @@ class SO101RosEmbodiment(RosEmbodiment):
             distance=verdict.reading.distance_m if verdict is not None else None,
             apple_speed=speed,
             stamp=stamp,
-        )
+            radius_ratio=verdict.reading.radius_ratio if verdict is not None else None,
+        ), verdict
 
     def _see(self, observation: Observation, stamp: float | None):
         """Fold the overhead frame into the vision verdict, or None if there was none.
