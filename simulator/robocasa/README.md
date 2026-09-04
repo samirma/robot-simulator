@@ -83,4 +83,4 @@ produce results that look like bugs elsewhere:
   a clean 0.22 m clear of anything, so it beats every real worktop on score and
   the arm gets mounted in the sink.
 
-For the SO-101 in both engines side by side, see `../kitchen_arm.sh`.
+For the SO-101 in both engines side by side, see `../kitchen.sh`.

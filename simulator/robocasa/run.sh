@@ -76,6 +76,11 @@ do_setup() {
   # Editable, mirroring the molmospaces engine: out-of-tree robots and engines
   # build on these without forking the upstream clones. Never modify upstream/.
   VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$ROBOSUITE_DIR" -e "$ROBOCASA_DIR"
+  # The rosbridge server this engine hosts is `websockets`-based, and neither robosuite
+  # nor robocasa depends on it. MolmoSpaces gets it transitively, which is exactly why
+  # its absence here only shows up as a ModuleNotFoundError at serve time, after a
+  # minute of kitchen compile.
+  VIRTUAL_ENV="$VENV_DIR" uv pip install websockets
 
   echo ">> setup complete; run './run.sh assets' to fetch the kitchen assets"
 }

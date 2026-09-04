@@ -56,7 +56,7 @@ cd ../../robot_console
     --max-action-delta 0.65
 ```
 
-`../kitchen_arm.sh inspect` does both of those, plus the readiness gate and the
+`../kitchen.sh inspect` does both of those, plus the readiness gate and the
 reset-and-verify step, and reports PASS/FAIL — it is the front door and this is the
 manual version of it.
 

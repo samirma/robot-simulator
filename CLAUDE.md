@@ -42,7 +42,7 @@ simulator/
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
   robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
-  kitchen_arm.sh  the SO-101 in both engines at once, around the same objects
+  kitchen.sh  the SO-101 in both engines at once, around the same objects
 ```
 
 Each engine has its own `run.sh`, `env.sh`, `tools/spawn_robot.py`, and `uv` venv, and each
@@ -61,7 +61,7 @@ mount it is bolted to, zero controls — and a `base_pose` observation, so the R
 engine advertises both too even though it bolts the arm straight into the worldbody. The
 same goes for the depth stream, which nothing consumes: both engines publish it, because
 one that did not could be identified by its topic list. To check, run the same client
-against both (`kitchen_arm.sh serve`) and compare the metadata and the observation keys.
+against both (`kitchen.sh serve`) and compare the metadata and the observation keys.
 
 A **ROS surface** — the topic set one robot's vendor stack presents, plus the loop that
 feeds it — belongs to the robot, not to an engine, and so lives in `shared/ros_surfaces/`.
@@ -176,6 +176,13 @@ Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `
 
 ### macOS constraints (these explain otherwise-baffling code)
 
+- **The MuJoCo viewer and offscreen camera rendering do coexist in one process**, which
+  is what `kitchen.sh serve --viewer` relies on and was not safe to assume. Under
+  `MUJOCO_GL=glfw` each `mujoco.Renderer` opens a *hidden* GLFW window -- a real
+  `NSWindow` -- while under `mjpython` the script runs off the Cocoa main thread, and
+  GLFW documents window creation as main-thread-only there. Verified working before the
+  flag was added; if it ever regresses, both `env.sh` files name `MUJOCO_GL=cgl` (no
+  window, thread-agnostic contexts) as the escape hatch.
 - The venv **must** be a Homebrew framework Python 3.11, not uv's standalone CPython:
   `mjpython` needs a shared `libpython3.11.dylib`. The MuJoCo passive viewer must own
   the main thread, which is what `mjpython` provides — `run.sh` routes viewer commands
@@ -231,7 +238,7 @@ has nothing to reach for until `--objects` spawns some from RoboCasa's own regis
 is the one real asymmetry with MolmoSpaces, where iTHOR houses come with graspables and
 their metadata, and it is why **arm-with-objects work belongs in MolmoSpaces**:
 `tools/scene_placement.py` there finds a surface that already has graspable objects on it
-and mounts the arm so they land in its working annulus. `simulator/kitchen_arm.sh` sets
+and mounts the arm so they land in its working annulus. `simulator/kitchen.sh` sets
 both engines up around the same object pair for comparison.
 
 ---
@@ -241,11 +248,12 @@ both engines up around the same object pair for comparison.
 The arm task, from `simulator/`:
 
 ```bash
-./kitchen_arm.sh inspect                       # sim + inspect-robot, reports PASS/FAIL
-./kitchen_arm.sh inspect --policy molmoact2    # the VLA instead of the scripted plan
-./kitchen_arm.sh inspect --episodes 8          # a pass count, which is the only useful unit
-./kitchen_arm.sh serve                         # both engines on rosbridge, drive them yourself
-./kitchen_arm.sh cameras                       # the live camera page against a running serve
+./kitchen.sh inspect                       # sim + inspect-robot, reports PASS/FAIL
+./kitchen.sh inspect --policy molmoact2    # the VLA instead of the scripted plan
+./kitchen.sh inspect --episodes 8          # a pass count, which is the only useful unit
+./kitchen.sh inspect --engine robocasa     # the other engine; --engine both for a pair
+./kitchen.sh serve --viewer                # rosbridge + the engine's own MuJoCo window
+./kitchen.sh cameras                       # the live camera page against a running serve
 ```
 
 `inspect` is the front door and it does four things in order: stage the task into the
@@ -300,7 +308,7 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
   `waypoints.py`/`policy.py` (the scripted plan), `molmoact.py` (the MolmoAct2-SO100_101
   VLA), `task.py`/`success.py`/`scorer.py`, `embodiment.py`, and `preflight.py`
   (reset-and-verify). Torch lives behind a function-local import so the offline suite
-  stays torch-free; `bin/` has no arm launcher any more because `kitchen_arm.sh inspect`
+  stays torch-free; `bin/` has no arm launcher any more because `kitchen.sh inspect`
   is the front door.
 
 - `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
@@ -468,6 +476,43 @@ whether the arm is bolted to a kitchen island or standing on a bare table.
 
 ## The arm task, and what is actually known about it
 
+`shared/tasks/apple_on_plate.py` stages the reference rig's whole table into whichever
+kitchen an engine compiled: a 0.92 m wood work surface, the apple and plate, and the
+bowl, mug, banana and lemon it keeps as scenery. **Bringing a table into a kitchen is
+not redundant** -- a camera's framing is a property of the surface under it, and with
+the slab staged all four of its corners land in the overhead frame at a worst normalised
+radius of 0.930, the reference's own figure, where a bare counter gave a diagonal worktop
+with a third of the frame floor. `--render-framing` prints that number, the exposure, and
+how the slab sits on the counter, so none of it has to be judged by eye.
+
+Two engine traps that the same geom cannot satisfy at once, which is why every task
+object splits a visual geom from a collider:
+
+- RoboCasa renders through a mask showing **groups 1-2** (its own collision hulls are
+  group 0), so a visual mesh in group 0 is invisible in every frame there -- silently.
+- RoboCasa also sets **`inertiagrouprange = [0, 0]`**, so only group-0 geoms carry
+  inertia. A collider outside group 0 leaves its body massless and the kitchen refuses
+  to compile, with an error that names no body.
+
+So: visual geoms group 2, colliders group 0. On MolmoSpaces neither constraint applies
+and the split costs nothing.
+
+A third disagreement, and the one that actually decided whether the task passed: an
+iTHOR house ships `noslip_iterations = 4` and a RoboCasa kitchen ships **0**. MuJoCo's
+no-slip solver is what stops a held object creeping out from between the fingers, so it
+is a requirement of *grasping* and not a scene preference -- the task now asserts it
+alongside the friction cone and `impratio`. Without it, RoboCasa executed all 37
+waypoints, closed the jaw on the apple, stalled at the apple-between-the-fingers width,
+and finished with the apple back at its spawn point having never travelled: a slip, not
+a miss, and indistinguishable from a policy failure from the outside. With it, 2/2.
+
+Lighting does **not** transfer wholesale, and this was measured rather than assumed. On
+an iTHOR kitchen's overhead frame: the kitchen's own lighting clips 5.7 % of pixels to
+white, adding the reference's headlight and shadowclip gives 3.1 % (its own scene
+measures 3.0 %), and adding its two directional lamps as well gives 75.2 %. The exposure
+block is on by default; the lamps are `--extra-lights`, for a scene that renders dark.
+
+
 `shared/tasks/apple_on_plate.py` is grafted onto whichever kitchen an engine compiled: it
 brings a 20 mm apple, a white plate, two scene cameras and its own arbiter, all placed
 relative to wherever the arm got mounted. The engines still supply the room — a task that
@@ -476,7 +521,7 @@ replaced the scene would make them bystanders.
 **Success is computed three independent ways and disagreement is the signal.** The
 simulator's own `/task_success`, a live geometric verdict in `arm/success.py`, and an
 offline re-derivation from the recorded log in `arm/scorer.py`. Never make one read
-another's answer; `kitchen_arm.sh` prints a warning when the first two disagree, which
+another's answer; `kitchen.sh` prints a warning when the first two disagree, which
 they legitimately can at the margin — the episode terminates the instant its own hold
 passes 1.0 s and the simulator's hold starts a beat later.
 

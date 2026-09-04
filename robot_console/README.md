@@ -73,8 +73,8 @@ The usual way to run it is from the simulator, which starts the world and the cl
 together and reports PASS/FAIL:
 
 ```bash
-cd ../simulator && ./kitchen_arm.sh inspect                    # scripted baseline
-cd ../simulator && ./kitchen_arm.sh inspect --policy molmoact2 --episodes 8
+cd ../simulator && ./kitchen.sh inspect                    # scripted baseline
+cd ../simulator && ./kitchen.sh inspect --policy molmoact2 --episodes 8
 ```
 
 Manually, against a simulator someone else started:
@@ -110,7 +110,7 @@ none of it. So the VLA extra installs into a **separate** venv:
 uv venv --python 3.12 .venv-vla && VIRTUAL_ENV=.venv-vla uv pip install -e '.[vla]'
 ```
 
-`kitchen_arm.sh inspect` picks the venv from `--policy`, so this is only worth knowing
+`kitchen.sh inspect` picks the venv from `--policy`, so this is only worth knowing
 when running the client by hand. `arm/molmoact.py` imports torch inside `_load()` rather
 than at module scope, which is what lets `inspect-robot list policies` work — and the
 offline test suite run — in the torch-free venv.

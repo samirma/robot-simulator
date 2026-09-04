@@ -495,6 +495,47 @@ class JointGroup:
 # drift apart. See ../../shared/ros_surfaces/so101.py.
 
 
+def check_task_contacts(model, namespace: str, task) -> None:
+    """Refuse to serve a task whose objects the gripper cannot physically touch.
+
+    MuJoCo pairs two geoms only if `(contype_a & conaffinity_b) or (contype_b &
+    conaffinity_a)`, and a robot loader that rewrites those bitmasks -- for its own
+    contact filtering -- can leave the jaws and the task's apple on disjoint masks. The
+    failure is perfectly silent: the arm executes every waypoint, the jaw closes to its
+    commanded width straight through the object, and the episode scores zero looking
+    exactly like a policy that missed by a centimetre. This was found the slow way; the
+    check exists so it is found the fast way.
+    """
+    jaw_prefixes = (f"{namespace}fixed_jaw", f"{namespace}moving_jaw")
+    jaw = [g for g in range(model.ngeom)
+           if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(jaw_prefixes)]
+    objects = [g for g in range(model.ngeom)
+               if model.geom_bodyid[g] in task.contact_bodies()
+               and (model.geom_contype[g] or model.geom_conaffinity[g])]
+    if not jaw or not objects:
+        raise SystemExit(f"task contact check: found {len(jaw)} jaw geoms and "
+                         f"{len(objects)} collidable task geoms; expected both non-empty")
+
+    def pairs(a: int, b: int) -> bool:
+        return bool((model.geom_contype[a] & model.geom_conaffinity[b])
+                    or (model.geom_contype[b] & model.geom_conaffinity[a]))
+
+    touchable = sum(1 for j in jaw for o in objects if pairs(j, o))
+    print(
+        f"task contacts: {len(jaw)} jaw geoms x {len(objects)} task geoms, "
+        f"{touchable} pairs collide "
+        f"(jaw contype/conaffinity {sorted({(int(model.geom_contype[j]), int(model.geom_conaffinity[j])) for j in jaw})}, "
+        f"objects {sorted({(int(model.geom_contype[o]), int(model.geom_conaffinity[o])) for o in objects})})",
+        file=sys.stderr,
+    )
+    if touchable == 0:
+        raise SystemExit(
+            "task contact check FAILED: no jaw geom can collide with any task object. "
+            "The jaws would close straight through the apple and the run would score zero "
+            "while looking like a near miss."
+        )
+
+
 def warn_on_penetration(model, data, prefix: str, depth: float = -0.001) -> None:
     """Complain if the robot was placed inside a cabinet.
 
@@ -700,13 +741,17 @@ def main() -> int:
         # The arm's base body sits exactly at the worktop here -- this engine bolts it
         # straight into the worldbody with no riser -- so that pose is the task's frame
         # origin, with the work surface at z = 0 just as the geometry assumes.
-        # `mount_z` carries SO101_BASE_LIFT so the base plate's meshes clear the
-        # counter; the task's frame origin is the *work surface*, so take it back off.
-        # Left in, the plate and apple spawn 4 mm in the air and /reset restores a
-        # floating apple -- inside tolerance, and still not what the geometry says.
+        # The task's frame origin is the **arm base**, not the worktop -- that is the
+        # frame the arbiter reports poses in (it finds the `base` body) and the frame the
+        # console does its kinematics in. The work surface is at z = 0 of that frame
+        # because the task *stages* it there, so handing this the worktop instead puts
+        # the two 4 mm apart: measured, a resting apple read 0.0158 here against
+        # MolmoSpaces' 0.0204, which is a silent shift of the success gate between
+        # engines. The slab then sinks SO101_BASE_LIFT deeper into the counter, which
+        # costs nothing -- it is static.
         stage_task[0](
             spec,
-            [float(xy[0]), float(xy[1]), mount_z - SO101_BASE_LIFT],
+            [float(xy[0]), float(xy[1]), mount_z],
             float(yaw),
             reference_table=args.reference_table,
             dressing=args.dressing,
@@ -764,6 +809,9 @@ def main() -> int:
         placed, reason = task.instantaneous(data)
         print(f"task {args.task}: staged; success predicate reads "
               f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
+        check_task_contacts(model, prefix, task)
+        from mujoco_bridge import report_slab_fit
+        report_slab_fit(model, data)
     print(
         f"{args.robot} in kitchen: {model.nbody} bodies, {model.ngeom} geoms, "
         f"{model.nu} actuators",

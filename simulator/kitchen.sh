@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # The SO-101 on a kitchen work surface, in *both* engines, around the same two objects.
 #
-#   ./kitchen_arm.sh                 render a screenshot from each engine into shots/
-#   ./kitchen_arm.sh view            open both engines in the MuJoCo viewer
-#   ./kitchen_arm.sh serve           run headless on rosbridge (see --engine)
-#   ./kitchen_arm.sh inspect         stage the task, run inspect-robot against it, PASS/FAIL
-#   ./kitchen_arm.sh cameras         open the live camera page on a running `serve`/`inspect`
-#   ./kitchen_arm.sh help
+#   ./kitchen.sh                 render a screenshot from each engine into shots/
+#   ./kitchen.sh view            open both engines in the MuJoCo viewer
+#   ./kitchen.sh serve           run on rosbridge (see --engine); add --viewer for a window
+#   ./kitchen.sh inspect         stage the task, run inspect-robot against it, PASS/FAIL
+#   ./kitchen.sh cameras         open the live camera page on a running `serve`/`inspect`
+#   ./kitchen.sh help
 #
 #   --objects bowl,apple   the pair to stage the scene around (default: bowl,apple)
 #   --scene ithor:1        MolmoSpaces scene    (default: ithor:1, a kitchen)
@@ -22,29 +22,35 @@
 #   --steps N              episode budget (default 400)
 #   --episodes N           run N episodes and report the pass count (default 1)
 #   --wrist                also stream the eye-in-hand camera
+#   --viewer               open the engine's own MuJoCo window while it serves. One
+#                          process, so the window shows exactly the state on the wire.
+#   --no-reference-table   put the task's objects on the engine's own worktop instead
+#                          of on the reference work surface
+#   --no-dressing          apple and plate only, without the bowl/mug/banana/lemon
+#   --extra-lights         add the reference's two lamps (they blow out a lit kitchen)
+#   --http-port 8791       port the `cameras` page is served on
 #   --log-dir DIR          where run logs go (default: runs/kitchen-arm)
 #   --                     everything after this goes to inspect-robot
 #
-# Why bowl + apple. The two engines share no assets, so "the same objects" can only mean
-# the same *categories* present in both, and they should be a pair that can actually be
-# made to interact. iTHOR FloorPlan1's island carries a Bowl, an Apple, Bread, a
-# ButterKnife and a Tomato; RoboCasa's objaverse registry has bowl, apple, bread, knife,
-# plate, spoon, mug and ~70 more. Bowl and apple are the pair that is on a *reachable*
-# surface in both: MolmoSpaces is told which of the island's objects to build the mount
-# around (--target), and RoboCasa is told which to spawn on the worktop (--objects),
-# because RoboCasa kitchens are fixtures and ship with no loose objects at all until
-# something adds them.
+# What the task brings, and what the engines bring. `serve` and `inspect` stage
+# shared/tasks/apple_on_plate.py into whichever kitchen an engine compiled: the reference
+# rig's work surface and everything on it -- a 20 mm apple, a white plate, and the bowl,
+# mug, banana and lemon it keeps as scenery -- at the poses and contact parameters that
+# were measured there. The engine still supplies the room and still mounts the arm on its
+# counter; the task supplies the geometry, because that is the part a procedurally chosen
+# object cannot.
 #
-# The two engines are otherwise driven identically, and that is the point: the same robot
-# spec out of shared/robots/so101/, the same ROS topic set on the wire, and one
-# `inspect-robot` that cannot tell which of them it is connected to.
+# Bringing a table into a kitchen sounds redundant and is not. A camera's framing is a
+# property of the surface under it: with the reference slab staged, all four of its
+# corners land in the overhead frame at a worst normalised radius of 0.930, which is the
+# reference rig's own figure -- against a bare counter running diagonally across the frame
+# with a third of it floor. `--no-reference-table` is the other arrangement, and the
+# scripted policy is verified both ways.
 #
-# What `inspect` adds on top of `serve` is the task: shared/tasks/apple_on_plate.py
-# stages a 20 mm apple and a white plate at contract coordinates in front of the arm,
-# with the two scene cameras, and publishes its own verdict on /task_success. The
-# engines' own kitchen is still the room -- the task brings the geometry and the contact
-# physics, which are the parts that were measured and the parts a procedurally chosen
-# object cannot supply.
+# `--objects`/`--target` still choose what the *engines* put on their worktops, which is
+# what `shot` and `view` compare. They are not passed to `serve`/`inspect`: a task that
+# stages its own apple does not want a second one the jaw cannot close on.
+#
 set -euo pipefail
 
 # Job control, so every backgrounded engine becomes its own process group and can be
@@ -81,7 +87,13 @@ ENGINE="molmospaces"
 STEPS=400
 EPISODES=1
 WRIST=0
+VIEWER=0
+HTTP_PORT=8791
 LOG_DIR=""
+declare -a STAGE_FLAGS=()
+# Set by the commands that stage a task, so the engine wrappers know not to also ask the
+# engine for loose objects of its own.
+STAGING_TASK=0
 declare -a PASSTHRU=()
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -108,8 +120,13 @@ while [ $# -gt 0 ]; do
     --episodes) EPISODES="$2"; shift 2 ;;
     --log-dir)  LOG_DIR="$2"; shift 2 ;;
     --wrist)    WRIST=1;      shift ;;
+    --viewer)   VIEWER=1;     shift ;;
+    --http-port) HTTP_PORT="$2"; shift 2 ;;
+    --no-reference-table) STAGE_FLAGS+=(--no-reference-table); shift ;;
+    --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
+    --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
     --)         shift; PASSTHRU=("$@"); break ;;
-    *) die "unknown flag '$1' (try: ./kitchen_arm.sh help)" ;;
+    *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
   esac
 done
 
@@ -169,14 +186,32 @@ robocasa() {
   (
     # shellcheck source=/dev/null
     source "$ROBOCASA/env.sh"
+    # `--objects` only for the comparison commands. `serve`/`inspect` stage a task,
+    # which brings its own objects at measured positions -- and RoboCasa's sampler would
+    # add a second apple the jaw cannot close on plus a bowl inside the plate's
+    # footprint. spawn_robot.py refuses the combination outright; this is what keeps it
+    # from ever being asked for.
+    local objects=()
+    [ "$STAGING_TASK" -eq 1 ] || objects=(--objects "$OBJECTS")
     exec "$1" "$ROBOCASA/tools/spawn_robot.py" so101 --layout "$LAYOUT" --style "$STYLE" \
-      --objects "$OBJECTS" "${@:2}"
+      ${objects[@]+"${objects[@]}"} "${@:2}"
   )
 }
 
 # The MuJoCo passive viewer must own the main thread on macOS, which is what mjpython
 # provides; anything windowless runs under plain python. Same rule as both run.sh files.
 py()     { echo "$1/.venv/bin/python"; }
+# --viewer needs mjpython on macOS (the passive viewer must own the Cocoa main thread)
+# and drops --headless. The offscreen camera renderers and the on-screen window then
+# coexist in one process, which was not obviously safe beforehand -- under mjpython the
+# script runs off the main thread and each renderer opens a hidden GLFW window -- and was
+# verified before this flag was added. If it ever stops working, both env.sh files name
+# MUJOCO_GL=cgl as the escape hatch.
+engine_python() {
+  local root; root="$(engine_root "$1")"
+  if [ "$VIEWER" -eq 1 ]; then viewer "$root"; else py "$root"; fi
+}
+headless_arg() { [ "$VIEWER" -eq 1 ] || echo "--headless"; }
 viewer() {
   if [ "$(uname -s)" = "Darwin" ]; then echo "$1/.venv/bin/mjpython"; else echo "$1/.venv/bin/python"; fi
 }
@@ -267,6 +302,7 @@ case "$cmd" in
     ;;
 
   serve)
+    STAGING_TASK=1
     wrist_arg=(); [ "$WRIST" -eq 1 ] && wrist_arg=(--wrist-camera)
     pids=()
     # EXIT as well as INT/TERM: without it a `die` anywhere below leaves an engine
@@ -278,9 +314,10 @@ case "$cmd" in
       # Checked up front, because the failure otherwise arrives as a websockets
       # traceback from an engine that has already spent a minute compiling a kitchen.
       port_free "$port"
-      echo ">> $name so101 on ws://127.0.0.1:$port"
-      "$name" "$(py "$(engine_root "$name")")" --headless --ros-port "$port" \
-        --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
+      echo ">> $name so101 on ws://127.0.0.1:$port$([ "$VIEWER" -eq 1 ] && echo ' (with a window)')"
+      "$name" "$(engine_python "$name")" $(headless_arg) --ros-port "$port" \
+        --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" \
+        ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
       pids+=("$!"); serve_ports+=("$port")
     done
     echo
@@ -288,23 +325,34 @@ case "$cmd" in
     echo "  inspect-robot run --task apple_on_plate --policy so101_waypoint \\"
     echo "      --embodiment so101_ros -E url=ws://127.0.0.1:${serve_ports[0]} \\"
     echo "      -E fresh_obs_timeout_s=2.0 -T max_steps=$STEPS --max-action-delta 0.65"
-    echo "  ./kitchen_arm.sh cameras --ports ${serve_ports[0]},$ROBOCASA_PORT"
+    echo "  ./kitchen.sh cameras --ports ${serve_ports[0]},$ROBOCASA_PORT"
     wait
     ;;
 
   cameras)
     page="$ROOT/live_cameras.html"
     [ -f "$page" ] || die "missing $page"
-    url="ws://127.0.0.1:$MOLMO_PORT"
-    nc -z 127.0.0.1 "$MOLMO_PORT" 2>/dev/null \
-      || die "nothing is serving on $url - start one with ./kitchen_arm.sh serve"
-    say "camera page: $page?url=$url"
-    # Browsers block ws:// from file:// in some configurations; the page says so and the
-    # static server below is the way out of it.
-    if command -v open >/dev/null; then open "$page?url=$url"; fi
-    echo "if the page cannot connect from file://, serve it instead:"
-    echo "  (cd $ROOT && python3 -m http.server 8791)"
-    echo "  http://127.0.0.1:8791/live_cameras.html?url=$url"
+    # Follows --engine, so `cameras --engine robocasa` does not silently point at the
+    # other engine's port.
+    spec="$(engine_list)"; spec="${spec%% *}"
+    port="${spec##*:}"; url="ws://127.0.0.1:$port"
+    nc -z 127.0.0.1 "$port" 2>/dev/null \
+      || die "nothing is serving on $url - start one with ./kitchen.sh serve"
+
+    # Served over HTTP rather than opened from file://, because browsers refuse a ws://
+    # connection from a file:// origin and the page then sits there discovering nothing.
+    port_free "$HTTP_PORT"
+    python3 -m http.server "$HTTP_PORT" --directory "$ROOT" --bind 127.0.0.1 \
+      >/dev/null 2>&1 &
+    http_pid=$!
+    trap 'kill "$http_pid" 2>/dev/null || true' INT TERM EXIT
+    page_url="http://127.0.0.1:$HTTP_PORT/live_cameras.html?url=$url"
+    say "camera page: $page_url"
+    echo "  cameras are discovered from the wire, so --wrist shows up without a reload"
+    echo "  the sliders drive the arm once you tick 'Enable control'"
+    echo "  Ctrl-C stops serving the page; the simulator keeps running"
+    command -v open >/dev/null && open "$page_url"
+    wait "$http_pid"
     ;;
 
   inspect)
@@ -319,6 +367,7 @@ case "$cmd" in
     cd $CONSOLE && uv venv --python 3.12 $(basename "$RUN_VENV") \
         && VIRTUAL_ENV=$(basename "$RUN_VENV") uv pip install -e '.[$extra]'"
 
+    STAGING_TASK=1
     overall=0
     for spec in $(engine_list); do
       name="${spec%%:*}"; port="${spec##*:}"; url="ws://127.0.0.1:$port"
@@ -326,8 +375,9 @@ case "$cmd" in
       wrist_arg=(); [ "$WRIST" -eq 1 ] && wrist_arg=(--wrist-camera)
 
       say "== $name: staging apple_on_plate on $url"
-      "$name" "$(py "$(engine_root "$name")")" \
-        --headless --ros-port "$port" --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" &
+      "$name" "$(engine_python "$name")" $(headless_arg) \
+        --ros-port "$port" --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" \
+        ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
       sim_pid=$!
       trap 'stop_engine "$sim_pid" "$port"' INT TERM EXIT
 

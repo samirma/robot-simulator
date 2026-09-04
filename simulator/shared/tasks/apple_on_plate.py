@@ -318,6 +318,14 @@ def stage(
     # 4.4-7.8 s of hold to 14.8 s, with half the cases never losing the apple.
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = max(float(spec.option.impratio), 50.0)
+    # The no-slip solver is what stops a held object creeping out from between the
+    # fingers, so it is a requirement of *grasping*, not a scene preference -- and the
+    # two engines disagree about it: an iTHOR house ships `noslip_iterations=4` and a
+    # RoboCasa kitchen ships 0. That difference alone reproduced as a clean failure
+    # mode on RoboCasa: the arm executed all 37 waypoints, the jaw closed on the apple
+    # and stalled at the apple-between-the-fingers width, and the apple was back at its
+    # spawn point by the end of the lift, having never travelled.
+    spec.option.noslip_iterations = max(int(spec.option.noslip_iterations), 4)
 
     if lighting:
         _apply_visual(spec)
