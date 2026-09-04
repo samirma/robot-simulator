@@ -515,11 +515,26 @@ waypoints, closed the jaw on the apple, stalled at the apple-between-the-fingers
 and finished with the apple back at its spawn point having never travelled: a slip, not
 a miss, and indistinguishable from a policy failure from the outside. With it, 2/2.
 
-Lighting does **not** transfer wholesale, and this was measured rather than assumed. On
-an iTHOR kitchen's overhead frame: the kitchen's own lighting clips 5.7 % of pixels to
-white, adding the reference's headlight and shadowclip gives 3.1 % (its own scene
-measures 3.0 %), and adding its two directional lamps as well gives 75.2 %. The exposure
-block is on by default; the lamps are `--extra-lights`, for a scene that renders dark.
+Lighting does **not** transfer wholesale, and the way that turned out is the most
+useful thing in this file. On an iTHOR kitchen's overhead frame: the kitchen's own
+lighting clips 5.7 % of pixels to white, adding the reference's headlight and shadowclip
+gives 3.1 % against the reference scene's own 3.0 %, and adding its two directional lamps
+as well gives 75.2 %. So the exposure block is a near-perfect photometric match to the rig
+MolmoAct2 was tuned on -- and it was on by default, and it cost the policy the task.
+
+Seven six-episode runs, varying the slab, the distractors and the exposure block
+independently: **0/24 episodes passed with the block on, 6/18 with it off**, Fisher
+one-tailed p ~ 0.004. The approach distances separate more cleanly than the pass counts do
+-- with it off the policy's best episodes put the apple 3, 8, 12 and 50 mm from the plate
+centre, while 24 episodes with it on never once got inside 150 mm. Neither the slab nor
+the distractors moved the result; only the lighting did.
+
+The lesson is not about lighting. Clipped-pixel fraction was a proxy for "the policy can
+see this", it was optimised until it matched the reference to 0.1 %, and the thing it
+stood in for got worse the whole time. A scene statistic agreeing with the reference rig
+is not evidence a policy can act in it, and nothing here should be tuned on one again
+without an episode count beside it. `--reference-lighting` still stages the block, for
+comparing exposure; `--extra-lights` still adds the lamps. Both are off.
 
 
 `shared/tasks/apple_on_plate.py` is grafted onto whichever kitchen an engine compiled: it
@@ -562,14 +577,17 @@ a VLA on this task is a coin toss even on the rig it was tuned for, and one epis
 
 ### Where MolmoAct2 stands here, and what moved the needle
 
-`so101_waypoint` passes every attempt. `molmoact2` passes **1 in 6**, and the pass count
-is the least interesting number in this section — what changed under it matters more:
+`so101_waypoint` passes every attempt. `molmoact2` passes **3 in 6**, and the pass
+count is the least interesting number in this section — what changed under it matters
+more. (It briefly passed **0 in 24**, because the reference exposure block was on by
+default; see the lighting section above, which is the single largest effect anything in
+this repo has had on this policy.)
 
 | | before | after |
 |---|---|---|
 | episodes where the apple never left spawn (~0.33 m) | 3 of 4 | 1 of 6 |
 | episodes that engaged the task at all | 1 of 4 | 5 of 6 |
-| passes | 1/4 | 1/6 |
+| passes | 1/4 | 3/6 |
 
 So the policy went from mostly *not attempting* the task to mostly attempting it and
 missing. The pass counts are not distinguishable at this sample size and should not be
@@ -601,11 +619,19 @@ grew 0.057 -> 0.087 -> 0.118 rad across the last three sub-waypoints with each r
 full step budget. They are set independently: the start pose is the task's, the plan's
 branch is `PickPlaceConfig.wrist_roll_preference`.
 
-What is still untested: the plate is white and this worktop is white marble, where the
-rig these numbers came from puts the same white plate on brown wood. If the remaining
-misses are a perception problem, that is the next thing to look at -- render the overhead
-view and judge the plate's contrast, or stage on a darker worktop (`--scene` picks another
-kitchen, `--layout`/`--style` for RoboCasa). Note `apple_plate_distance` is the **closest**
+That white-plate-on-white-marble worry is now answered, and the answer was no. Staging
+the reference's brown wood slab under the plate -- the fix that worry implied -- moves the
+pass count not at all: 1/6 with the slab and the distractors, 2/6 with a bare counter, the
+same distances either way. What did move it was the exposure block above. The contrast
+hypothesis was reasonable and wrong, and it was wrong in a way that a rendered frame would
+never have shown, because the frame with the slab looks *better*.
+
+One real defect did come out of looking: the slab was sunk so its top face landed exactly
+at z = 0, which is exactly where the counter the arm is bolted to already is. Two coplanar
+faces have no depth-test winner, and the counter's marble tore through the wood in
+hard-edged patches, one across the corner of the plate. It reads as a broken texture
+rather than as geometry, which is how it survived being looked at. `TABLE_TOP_LIFT` stands
+the slab a millimetre proud, far below every tolerance that reads that plane. Note `apple_plate_distance` is the **closest**
 approach across an episode, not where the apple ended; its explanation string carries the
 final distance, and reading the first as the second makes a fly-past look like a near-miss.
 

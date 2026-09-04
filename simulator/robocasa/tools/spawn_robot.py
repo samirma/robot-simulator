@@ -597,8 +597,10 @@ def main() -> int:
     )
     ap.add_argument("--no-dressing", action="store_false", dest="dressing",
                     help="stage only the apple and the plate, without the distractors.")
-    ap.add_argument("--no-reference-lighting", action="store_false", dest="reference_lighting",
-                    help="leave the scene's own lighting alone.")
+    ap.add_argument("--reference-lighting", action="store_true", dest="reference_lighting",
+                    help="impose the reference scene's exposure on the kitchen. Off by "
+                         "default: it matches the reference's photometry and costs the "
+                         "VLA the task. See the MolmoSpaces engine's copy of this flag.")
     ap.add_argument("--extra-lights", action="store_true", dest="extra_lights",
                     help="also add the reference's two directional lamps (they blow out "
                          "a normally-lit kitchen; for a scene that renders too dark).")

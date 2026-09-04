@@ -469,12 +469,14 @@ def main() -> int:
              "reference keeps on its table as distractors.",
     )
     ap.add_argument(
-        "--no-reference-lighting", action="store_false", dest="reference_lighting",
-        help="leave the scene's own lighting alone. On by default because it measures "
-             "better: on an iTHOR kitchen's overhead frame, untouched is 5.7%% of pixels "
-             "clipped to white and this block is 3.1%%, against the reference scene's "
-             "3.0%%. Its two extra lamps are a separate thing and are off by default -- "
-             "they took the same frame to 75.2%%.",
+        "--reference-lighting", action="store_true", dest="reference_lighting",
+        help="impose the reference scene's exposure on the kitchen. OFF by default, "
+             "which is not what the photometry would suggest: this block takes an iTHOR "
+             "kitchen's overhead frame from 5.7%% of pixels clipped to white to 3.1%%, "
+             "against the reference scene's own 3.0%%. It also costs the VLA the task -- "
+             "0/24 episodes with it against 6/18 without. Use it to compare exposure "
+             "against the reference rig, not to run a policy. Its two extra lamps are a "
+             "separate thing and are also off -- they took the same frame to 75.2%%.",
     )
     ap.add_argument(
         "--extra-lights", action="store_true", dest="extra_lights",

@@ -94,7 +94,17 @@ DRESSING_FRICTION = (1.0, 0.1, 0.02)
 #: static, which is what makes overhang past a counter edge harmless.
 TABLE_CENTRE = (0.20, 0.0, 0.0)
 TABLE_HALF = (0.46, 0.46, 0.02)
-TABLE_GEOM_Z = -0.02
+#: The slab's top face stands this far proud of z = 0 instead of sitting exactly on it.
+#: Sinking the slab so its top landed *exactly* at z = 0 made it exactly coplanar with the
+#: counter the arm is bolted to, and two coplanar faces have no depth-test winner: the
+#: overhead frame showed the counter's marble tearing through the wood in hard-edged
+#: patches, one of them across the corner of the plate. It renders as damage to the
+#: texture rather than as a geometry bug, which is how it survived a visual check. A
+#: millimetre is far below every tolerance that reads this plane -- the success gate
+#: allows 15 mm of z, `RESTING_Z` is 40 mm -- and it is decisively more than the depth
+#: buffer's precision at this range.
+TABLE_TOP_LIFT = 0.001
+TABLE_GEOM_Z = -0.02 + TABLE_TOP_LIFT
 TABLE_FRICTION = (1.0, 0.005, 0.0001)
 TABLE_TEXREPEAT = (3.0, 3.0)
 
@@ -118,6 +128,21 @@ TEXTURES = Path(__file__).resolve().parent / "assets" / "textures"
 #: otherwise empty room; a furnished kitchen already has its own, and adding a 0.45 and a
 #: 0.35 directional on top of them is what takes the frame from correctly exposed to
 #: three-quarters white. Turn them on for a scene that renders too dark, not by default.
+# The reference rig's exposure. Staged only on request (`stage(lighting=True)`), which is
+# the opposite of what measuring the image would tell you to do, and the reason is worth
+# keeping: on an iTHOR kitchen's overhead frame the untouched scene clips 5.7 % of pixels
+# to white, this block gets that to 3.1 %, and the reference scene's own figure is 3.0 %.
+# It is a near-perfect photometric match to the rig MolmoAct2 was tuned on -- and it costs
+# the policy the task. Across seven six-episode runs it scored 0/24 with this block on and
+# 6/18 with it off (Fisher one-tailed p ~ 0.004), and the separation is clearer in the
+# approach distances than in the pass counts: with it off the policy put the apple 3 mm,
+# 8 mm, 12 mm and 50 mm from the plate centre on its best episodes, while 24 episodes with
+# it on never once got inside 150 mm.
+#
+# So this is a proxy that was optimised at the expense of the thing it stood in for.
+# Clipped-pixel fraction is a good check that a frame is not blown out; it is not evidence
+# that a policy can see, and it should not be trusted as such again. Keep the block for
+# comparing exposure against the reference, not for running anything.
 SHADOW_CLIP = 0.15
 HEADLIGHT = {"diffuse": 0.35, "ambient": 0.28, "specular": 0.08}
 #: (name, pos, dir, diffuse, castshadow) in the arm base frame.
@@ -288,7 +313,7 @@ def stage(
     clear_radius: float = CLEAR_RADIUS,
     reference_table: bool = True,
     dressing: bool = True,
-    lighting: bool = True,
+    lighting: bool = False,
     extra_lights: bool = False,
 ) -> list[str]:
     """Add the reference table -- slab, apple, plate, dressing, lights, cameras -- to a spec.
@@ -520,6 +545,7 @@ def table_corners(transform: np.ndarray) -> list[list[float]]:
     """
     cx, cy, cz = TABLE_CENTRE
     hx, hy, _ = TABLE_HALF
+    cz += TABLE_TOP_LIFT   # the face itself, not the plane it was nominally sunk to
     return [
         _apply(transform, (cx + sx * hx, cy + sy * hy, cz))
         for sx in (-1.0, 1.0)

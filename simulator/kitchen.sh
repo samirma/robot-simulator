@@ -30,6 +30,11 @@
 #   --no-reference-table   put the task's objects on the engine's own worktop instead
 #                          of on the reference work surface
 #   --no-dressing          apple and plate only, without the bowl/mug/banana/lemon
+#   --reference-lighting   impose the reference rig's exposure on the kitchen. Off by
+#                          default, against what the photometry says: it matches the
+#                          reference's clipped-pixel fraction almost exactly and costs
+#                          MolmoAct2 the task outright (0/24 episodes with it, 6/18
+#                          without). For comparing exposure, not for running a policy.
 #   --extra-lights         add the reference's two lamps (they blow out a lit kitchen)
 #   --http-port 8791       port the `cameras` page is served on
 #   --log-dir DIR          where run logs go (default: runs/kitchen-arm)
@@ -127,6 +132,7 @@ while [ $# -gt 0 ]; do
     --http-port) HTTP_PORT="$2"; shift 2 ;;
     --no-reference-table) STAGE_FLAGS+=(--no-reference-table); shift ;;
     --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
+    --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
     --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
     --)         shift; PASSTHRU=("$@"); break ;;
     *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
