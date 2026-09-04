@@ -497,3 +497,131 @@ def _encode_jpeg(frame, quality: int) -> bytes:
         out = io.BytesIO()
         Image.fromarray(frame).save(out, format="JPEG", quality=quality)
         return out.getvalue()
+
+
+def camera_framing(model, data, camera: str, points) -> list[tuple[float, float]]:
+    """Normalised image coordinates of world points through a named MJCF camera.
+
+    `(0, 0)` is the frame centre and `|u|, |v| <= 1` is in frame, so one number -- the
+    worst `|normalised|` over a set of points -- says whether a view actually contains
+    what it is supposed to. That matters because a camera can be at exactly the right
+    pose and still frame the wrong thing: framing is a property of the *surface* under
+    the camera as much as of the camera, and the reference rig's overhead view scores
+    0.930 on its table's four corners where a plausible-looking predecessor scored 3.135
+    with all four corners outside the frame.
+
+    Call after `mj_forward`. MuJoCo cameras look down their own **-z** with +x right and
+    +y up, which is why the depth term is negated.
+    """
+    cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
+    if cam < 0:
+        raise ValueError(f"no camera {camera!r} in this model")
+    eye = np.asarray(data.cam_xpos[cam], dtype=np.float64)
+    rot = np.asarray(data.cam_xmat[cam], dtype=np.float64).reshape(3, 3)
+    half = np.tan(np.radians(float(model.cam_fovy[cam])) / 2.0)
+    width, height = (int(v) for v in model.cam_resolution[cam])
+    aspect = (width / height) if height > 0 else 1.0
+
+    out = []
+    for point in points:
+        local = rot.T @ (np.asarray(point, dtype=np.float64) - eye)
+        depth = -local[2]
+        if depth <= 1e-9:  # behind the camera; no meaningful projection
+            out.append((float("inf"), float("inf")))
+            continue
+        out.append((float(local[0] / depth / (half * aspect)), float(local[1] / depth / half)))
+    return out
+
+
+def clipped_fraction(pixels, threshold: int = 255) -> float:
+    """Share of pixels at full brightness -- the exposure number, not an impression.
+
+    A scene lit for one room and then dropped into another is the common way a camera
+    stops showing what a policy was trained on, and it is not obvious by eye until it is
+    extreme. The reference rig tuned its headlight against exactly this measure: 41.6 %
+    of pixels clipped before, 3.0 % after.
+    """
+    array = np.asarray(pixels)
+    if array.size == 0:
+        return 0.0
+    return float((array >= threshold).sum()) / float(array.size)
+
+
+def report_slab_fit(model, data, body: str = "task_table", ignore_prefixes=("task_", "robot_")) -> None:
+    """Say where a staged work surface lands inside a scene that knows nothing about it.
+
+    Two measurements, because a slab fits badly in two unrelated ways and each is
+    invisible to the other's test. **Contacts** catch a corner driven into a movable
+    obstacle. **Rays** catch a corner hanging over the edge of a counter with air beneath
+    it, which produces no contact at all and is equally worth knowing about before an
+    object is placed near it.
+
+    Known limit of the contact half: MuJoCo generates no contacts between two static
+    geoms, and both this slab and a kitchen's fixtures are static -- so a slab
+    intersecting a wall reads as 0 mm here. The ray drops are what actually carry the
+    report; the contact scan only catches the movable case. Fixing that properly means
+    an explicit box-vs-geom sweep, which is more machinery than a placement hint needs.
+
+    Reports; never raises. A static slab overhanging a worktop is harmless -- the objects
+    sit on top of it either way -- and turning an unlucky kitchen layout into a hard
+    failure would make it look like a broken build. The summary line is printed
+    unconditionally, so "no warning" is distinguishable from "the check did not run".
+    """
+    slab = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body)
+    if slab < 0:
+        return
+    slab_geoms = {g for g in range(model.ngeom) if model.geom_bodyid[g] == slab}
+
+    def ours(geom: int) -> bool:
+        """Is this geom the task's or the robot's, rather than the scene's?"""
+        names = (
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom) or "",
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[geom]) or "",
+        )
+        return any(n.startswith(ignore_prefixes) for n in names)
+
+    worst, culprit = 0.0, ""
+    for i in range(data.ncon):
+        pair = (data.contact[i].geom1, data.contact[i].geom2)
+        hit = set(pair) & slab_geoms
+        if not hit:
+            continue
+        other = pair[0] if pair[1] in slab_geoms else pair[1]
+        if other in slab_geoms or ours(other):
+            continue
+        depth = -data.contact[i].dist
+        if depth > worst:
+            worst, culprit = depth, mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, other) or "?"
+
+    # `mj_ray`'s geomgroup mask takes 1 = consider; excluding our own geoms would need a
+    # bodyexclude, so cast from just above each corner and ignore hits on the slab itself.
+    drops: list[float] = []
+    geomid = np.zeros(1, dtype=np.int32)
+    down = np.array([0.0, 0.0, -1.0])
+    for corner in _slab_corners_world(model, data, slab):
+        start = np.asarray(corner, dtype=np.float64) + np.array([0.0, 0.0, 0.01])
+        dist = mujoco.mj_ray(model, data, start, down, None, 1, slab, geomid)
+        drops.append(float(dist) if dist >= 0 else float("inf"))
+
+    supported = sum(1 for d in drops if d < 0.05)
+    worst_drop = max(drops)
+    drop_text = "unsupported (no surface below)" if not np.isfinite(worst_drop) else f"{worst_drop:.2f} m"
+    print(
+        f"table fit: {supported}/4 corners resting on something, worst gap {drop_text}; "
+        f"penetration {worst * 1000:.0f} mm" + (f" into {culprit}" if culprit else ""),
+        file=sys.stderr,
+    )
+
+
+def _slab_corners_world(model, data, slab: int):
+    """The slab's four top-face corners in world coordinates, from its compiled pose."""
+    from tasks.apple_on_plate import TABLE_HALF  # noqa: PLC0415 -- engine-side import
+
+    rot = np.asarray(data.xmat[slab], dtype=np.float64).reshape(3, 3)
+    origin = np.asarray(data.xpos[slab], dtype=np.float64)
+    hx, hy, _ = TABLE_HALF
+    return [
+        origin + rot @ np.array([sx * hx, sy * hy, 0.0])
+        for sx in (-1.0, 1.0)
+        for sy in (-1.0, 1.0)
+    ]

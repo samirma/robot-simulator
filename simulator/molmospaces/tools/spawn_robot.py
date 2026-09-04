@@ -458,6 +458,37 @@ def main() -> int:
     ap.add_argument("--scene", required=True, help="house MJCF")
     ap.add_argument("--render", default=None, help="write a PNG instead of opening the viewer")
     ap.add_argument(
+        "--no-reference-table", action="store_false", dest="reference_table",
+        help="stage the task's objects on the engine's own worktop instead of on the "
+             "reference work surface. The scripted policy is verified both ways, so this "
+             "is a supported experiment rather than a fallback.",
+    )
+    ap.add_argument(
+        "--no-dressing", action="store_false", dest="dressing",
+        help="stage only the apple and the plate, without the bowl/mug/banana/lemon the "
+             "reference keeps on its table as distractors.",
+    )
+    ap.add_argument(
+        "--no-reference-lighting", action="store_false", dest="reference_lighting",
+        help="leave the scene's own lighting alone. On by default because it measures "
+             "better: on an iTHOR kitchen's overhead frame, untouched is 5.7%% of pixels "
+             "clipped to white and this block is 3.1%%, against the reference scene's "
+             "3.0%%. Its two extra lamps are a separate thing and are off by default -- "
+             "they took the same frame to 75.2%%.",
+    )
+    ap.add_argument(
+        "--extra-lights", action="store_true", dest="extra_lights",
+        help="also add the reference's two directional lamps. For a scene that renders "
+             "too dark; on a normally-lit kitchen they blow the frame out.",
+    )
+    ap.add_argument(
+        "--render-framing", action="store_true", dest="render_framing",
+        help="with --render: report where the staged work surface's corners land in the "
+             "frame, and what fraction of the frame is clipped to white. Framing is a "
+             "property of the surface under a camera as much as of the camera, so this "
+             "is how 'the cameras are in the right place' stops being an impression.",
+    )
+    ap.add_argument(
         "--render-camera", default=None, dest="render_camera", metavar="NAME",
         help="with --render: look through this named MJCF camera at its own declared "
              "resolution, instead of the free camera. How a task camera's framing gets "
@@ -646,7 +677,13 @@ def main() -> int:
     if stage_task is not None:
         # The arm's base body lands exactly at attach_pos now that the riser is gone, so
         # that pose *is* the task's frame origin.
-        cleared = stage_task[0](spec, attach_pos, yaw)
+        cleared = stage_task[0](
+            spec, attach_pos, yaw,
+            reference_table=args.reference_table,
+            dressing=args.dressing,
+            lighting=args.reference_lighting,
+            extra_lights=args.extra_lights,
+        )
         if cleared:
             print(f"task {args.task}: cleared {len(cleared)} scene object(s) from the "
                   f"working area: {', '.join(n.split('_')[0] for n in cleared)}", file=sys.stderr)
@@ -767,6 +804,28 @@ def main() -> int:
             with mujoco.Renderer(model, args.height, args.width) as renderer:
                 renderer.update_scene(data, camera=cam)
                 pixels = renderer.render()
+        if args.render_framing:
+            from mujoco_bridge import camera_framing, clipped_fraction, report_slab_fit
+
+            report_slab_fit(model, data)
+            clipped = clipped_fraction(pixels)
+            if args.render_camera and mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_BODY, "task_table"
+            ) >= 0:
+                from mujoco_bridge import _slab_corners_world
+
+                slab = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "task_table")
+                uv = camera_framing(model, data, args.render_camera,
+                                    _slab_corners_world(model, data, slab))
+                worst = max(max(abs(u), abs(v)) for u, v in uv)
+                inside = sum(1 for u, v in uv if abs(u) <= 1.0 and abs(v) <= 1.0)
+                corners = "  ".join(f"({u:+.3f},{v:+.3f})" for u, v in uv)
+                print(f"framing {args.render_camera}: {inside}/4 table corners in frame, "
+                      f"worst |normalised| {worst:.3f} (reference 0.930)", file=sys.stderr)
+                print(f"  corners {corners}", file=sys.stderr)
+            print(f"exposure: {clipped * 100:.1f}% of pixels clipped to white "
+                  f"(reference 3.0%, and 41.6% before it was fixed)", file=sys.stderr)
+
         from PIL import Image
 
         Image.fromarray(pixels).save(args.render)

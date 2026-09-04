@@ -18,7 +18,8 @@ what they cost to find:
   a flat disc, and apples delivered to within a millimetre of its centre rolled straight
   off -- so the "at rest" clause of the success predicate never fired and a placement
   that looked perfect scored zero.
-* **Visual meshes are not the collision geometry, and carry `density="0"`.** A textured
+* **For the apple and the plate, visual meshes are not the collision geometry, and carry
+  `density="0"`.** A textured
   mesh for looks, a primitive for physics. Swapping the primitives for mesh hulls would
   discard the grasp tuning, and a visual geom without `density="0"` silently adds mass:
   the apple weighs 0.081 kg instead of 0.020 kg, which is most of the way to unliftable.
@@ -50,6 +51,81 @@ PLATE_MESH_SCALE = 0.77
 #: The scanned plate's underside is slightly domed; lifting the visual by this much sits
 #: it on the collision cylinder's top face rather than clipping through it.
 PLATE_MESH_Z = 0.0092
+
+#: The dressing: everything else the reference scene keeps on its table, as
+#: (name, position, yaw, mass, mesh scale). Arm base frame, metres, radians, kilograms.
+#:
+#: They are inside the arm's 0.330 m top-down grasp envelope *on purpose* -- mug at +79.5
+#: degrees, banana at +45.0, lemon at -74.9, bearings the pick-and-place never sweeps --
+#: so the policy sees the distractors its training data had rather than a bare slab.
+#: The bowl sits at r = 0.42 and stays out of reach. The banana's yaw is a contract term,
+#: not decoration: it is 0.19 m long and the closest object to the arm's path.
+#:
+#: The z values are **settled equilibria**, not derived from the meshes. Two mesh-derived
+#: attempts on the reference rig failed in opposite directions: one put the objects
+#: 8-85 mm inside the slab, and the solver's separation impulse launched the lemon
+#: across the room; the next left all four hanging 7-54 mm in the air, visibly dropping
+#: at every startup. These four are where MuJoCo puts each body after six seconds of
+#: stepping.
+DRESSING: tuple[tuple[str, tuple[float, float, float], float, float, float], ...] = (
+    ("bowl", (0.14, -0.40, 0.0271), 0.0, 0.147, 1.0),
+    ("mug", (0.05, 0.27, 0.0272), 0.0, 0.118, 1.0),
+    ("banana", (0.156, 0.156, 0.0172), 0.785, 0.066, 1.0),
+    ("lemon", (0.07, -0.26, 0.0294), 0.0, 0.029, 1.0),
+)
+#: Contact parameters shared by the dressing. `condim 6` is the whole point: rolling
+#: friction is the third `friction` entry and does not exist below condim 6, and these
+#: are round scanned meshes. Measured on the reference rig, raising the *table's*
+#: friction changed their residual velocities by nothing to five decimal places until
+#: condim was raised; at 6 the residual speeds fell by about two orders of magnitude.
+DRESSING_CONDIM = 6
+DRESSING_FRICTION = (1.0, 0.1, 0.02)
+
+#: The reference work surface: a 0.92 x 0.92 m wood slab whose top face is exactly z = 0,
+#: centred 0.20 m ahead of the arm. Body `table`, geom `table_top` in the reference MJCF.
+#:
+#: Why bring a table into a kitchen that already has a counter: the overhead camera's
+#: framing is a property of the surface under it, not of the camera. On the reference rig
+#: that view is this slab filling the frame, all four corners inside it with 16.8 px to
+#: spare; on a marble island it was a diagonal counter with a third of the frame floor,
+#: and the policy had never seen anything like it. The slab's 4 cm of thickness sinks
+#: *below* z = 0 into the engine's counter, because the arm base already sits at counter
+#: height and every contract height (`RESTING_Z`, the waypoint heights, the success gate)
+#: is measured from that plane. Aprons and legs are left out -- there is a worktop. It is
+#: static, which is what makes overhang past a counter edge harmless.
+TABLE_CENTRE = (0.20, 0.0, 0.0)
+TABLE_HALF = (0.46, 0.46, 0.02)
+TABLE_GEOM_Z = -0.02
+TABLE_FRICTION = (1.0, 0.005, 0.0001)
+TABLE_TEXREPEAT = (3.0, 3.0)
+
+#: Where the wood texture lives; `ASSETS` is the YCB tree beside it.
+TEXTURES = Path(__file__).resolve().parent / "assets" / "textures"
+
+#: Lighting and exposure, from the reference scene, applied on the host spec -- scene-global
+#: like `impratio`. `shadowclip 0.15` because 0.3 gave visible shadow acne on this arm; the
+#: headlight at 0.35/0.28/0.08 because the reference's previous 0.55/0.35 clipped 41.6 % of
+#: rendered pixels to white and this brought it to 3.0 %.
+#:
+#: **Measured here, on the overhead frame of an iTHOR kitchen** (`--render-framing` reports
+#: this number, so it is one command to re-check on another scene):
+#:
+#:     kitchen's own lighting, untouched          5.7 % clipped
+#:     + this exposure block                      3.1 %   <- shipped
+#:     + this block and the two lamps below      75.2 %
+#:
+#: So the exposure block carries over and **the lamps do not**, which is why they are
+#: `extra_lights`, off by default. They exist in the reference to light a bare table in an
+#: otherwise empty room; a furnished kitchen already has its own, and adding a 0.45 and a
+#: 0.35 directional on top of them is what takes the frame from correctly exposed to
+#: three-quarters white. Turn them on for a scene that renders too dark, not by default.
+SHADOW_CLIP = 0.15
+HEADLIGHT = {"diffuse": 0.35, "ambient": 0.28, "specular": 0.08}
+#: (name, pos, dir, diffuse, castshadow) in the arm base frame.
+LIGHTS = (
+    ("task_key_light", (0.0, 0.0, 1.5), (0.0, 0.0, -1.0), 0.45, True),
+    ("task_fill_light", (0.9, -0.6, 0.7), (-0.6, 0.45, -0.65), 0.35, False),
+)
 
 # ------------------------------------------------------------------ scene geometry
 
@@ -205,8 +281,21 @@ CLEAR_Z_BAND = (-0.15, 0.45)
 SUNK_DEPTH = 50.0
 
 
-def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) -> list[str]:
-    """Add the apple, the plate and the two scene cameras to an engine's spec.
+def stage(
+    spec,
+    mount_pos,
+    yaw: float,
+    *,
+    clear_radius: float = CLEAR_RADIUS,
+    reference_table: bool = True,
+    dressing: bool = True,
+    lighting: bool = True,
+    extra_lights: bool = False,
+) -> list[str]:
+    """Add the reference table -- slab, apple, plate, dressing, lights, cameras -- to a spec.
+
+    `reference_table`, `dressing` and `lighting` are the three things a later experiment
+    might want to take away one at a time; each is verified off as well as on.
 
     `mount_pos`/`yaw` locate the arm's base body in the engine's world, and everything
     below is placed relative to it, so the contract geometry survives being dropped into
@@ -231,9 +320,28 @@ def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) ->
     spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
     spec.option.impratio = max(float(spec.option.impratio), 50.0)
 
+    if lighting:
+        _apply_visual(spec)
+
     cleared = _clear_workspace(spec, transform, clear_radius)
 
     _add_assets(spec)
+
+    # ---- the slab ---------------------------------------------------------------
+    # Before the objects, so a reader sees the surface built before what rests on it.
+    if reference_table:
+        table = spec.worldbody.add_body(
+            name="task_table", pos=_apply(transform, TABLE_CENTRE), quat=base_quat
+        )
+        table.add_geom(
+            name="task_table_top",
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=list(TABLE_HALF),
+            pos=[0.0, 0.0, TABLE_GEOM_Z],
+            material="task_wood_mat",
+            friction=list(TABLE_FRICTION),
+            group=2,
+        )
 
     # ---- apple ------------------------------------------------------------------
     # Top-level body: MuJoCo refuses a free joint on a nested one.
@@ -251,7 +359,16 @@ def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) ->
         contype=0,
         conaffinity=0,
         density=0.0,
-        group=0,
+        # Group 2, not 0. RoboCasa's geom groups are inverted (its collision hulls are
+        # group 0, painted in random translucent colours), so every render there goes
+        # through a mask that shows groups 1 and 2 only -- and a visual mesh in group 0
+        # simply does not appear in any camera frame or in the viewer. The wire stays
+        # healthy, the free-joint poses and /task_success are right, the scripted policy
+        # still passes because it never looks, and a VLA sees an empty worktop on every
+        # step. Group 2 is visible under MuJoCo's default option (0/1/2 on) *and* under
+        # that mask, and it is the shared robot's own visual group, so it is neutral
+        # across engines.
+        group=2,
     )
     apple.add_geom(
         name=f"{APPLE_BODY}_geom",
@@ -290,7 +407,7 @@ def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) ->
         contype=0,
         conaffinity=0,
         density=0.0,
-        group=0,
+        group=2,  # see the apple's visual geom
     )
     plate.add_geom(
         name=f"{PLATE_BODY}_geom",
@@ -315,6 +432,44 @@ def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) ->
             group=3,
         )
 
+    # ---- dressing ---------------------------------------------------------------
+    # Unlike the apple and the plate these have NO separate collision primitive. The
+    # textured mesh *is* the collider (MuJoCo convex-hulls it), the mass sits on that
+    # geom, and there is deliberately no density="0" -- which for the two task objects
+    # above would be a bug and here is the design: nothing has to be grasped, so nothing
+    # needs the tuned contact split.
+    if dressing:
+        for name, pos, obj_yaw, mass, scale in DRESSING:
+            body = spec.worldbody.add_body(
+                name=f"task_{name}",
+                pos=_apply(transform, pos),
+                quat=_quat_mul(base_quat, _yaw_quat(obj_yaw)),
+            )
+            body.add_freejoint(name=f"task_{name}_joint")
+            body.add_geom(
+                name=f"task_{name}_geom",
+                type=mujoco.mjtGeom.mjGEOM_MESH,
+                meshname=f"task_{name}_vis",
+                material=f"task_{name}_mat",
+                mass=mass,
+                condim=DRESSING_CONDIM,
+                friction=list(DRESSING_FRICTION),
+                group=2,
+            )
+
+    # ---- lights -----------------------------------------------------------------
+    # Positions go through the transform like everything else; directions only rotate,
+    # the same split the camera loop below makes for its axes.
+    if extra_lights:
+        rot = transform[:3, :3]
+        for name, pos, direction, diffuse, castshadow in LIGHTS:
+            light = spec.worldbody.add_light(name=name)
+            light.type = mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
+            light.pos = _apply(transform, pos)
+            light.dir = [float(v) for v in rot @ np.asarray(direction, dtype=np.float64)]
+            light.diffuse = [diffuse] * 3
+            light.castshadow = castshadow
+
     # ---- cameras ----------------------------------------------------------------
     for name, pos, xyaxes, fovy, resolution in SCENE_CAMERAS:
         right = np.asarray(xyaxes[:3], dtype=np.float64)
@@ -332,10 +487,59 @@ def stage(spec, mount_pos, yaw: float, *, clear_radius: float = CLEAR_RADIUS) ->
     return cleared
 
 
+def table_corners(transform: np.ndarray) -> list[list[float]]:
+    """The slab's four top-face corners in the engine's world, for fit and framing checks.
+
+    One definition, used by both checks, so they can never disagree about where it is.
+    """
+    cx, cy, cz = TABLE_CENTRE
+    hx, hy, _ = TABLE_HALF
+    return [
+        _apply(transform, (cx + sx * hx, cy + sy * hy, cz))
+        for sx in (-1.0, 1.0)
+        for sy in (-1.0, 1.0)
+    ]
+
+
+def _apply_visual(spec) -> None:
+    """The reference scene's exposure, on the host spec. See `SHADOW_CLIP`/`HEADLIGHT`.
+
+    Not copied: `shadowsize 4096` (a 44-fixture kitchen would pay for it on every frame,
+    where a bare table did not) and `offwidth/offheight` (`CameraStreams` already raises
+    those per camera to exactly what it renders).
+    """
+    spec.visual.map.shadowclip = SHADOW_CLIP
+    spec.visual.headlight.diffuse = [HEADLIGHT["diffuse"]] * 3
+    spec.visual.headlight.ambient = [HEADLIGHT["ambient"]] * 3
+    spec.visual.headlight.specular = [HEADLIGHT["specular"]] * 3
+
+
 def _add_assets(spec) -> None:
-    """Meshes, the apple's texture, and the two materials -- once per spec."""
+    """Meshes, textures and materials for everything staged -- once per spec."""
     if any(m.name == "task_apple_vis" for m in spec.meshes):
         return
+
+    # The dressing and the wood: a mesh, its scan's texture and a plain material each.
+    # No specular/shininess on the dressing -- the reference sets none, and the apple's
+    # 0.35/0.5 were tuned for a sphere, not scanned crockery.
+    for name, _pos, _yaw, _mass, scale in DRESSING:
+        mesh = spec.add_mesh(name=f"task_{name}_vis")
+        mesh.file = str(ASSETS / name / "textured.obj")
+        mesh.scale = [scale] * 3
+        texture = spec.add_texture(name=f"task_{name}_tex")
+        texture.type = mujoco.mjtTexture.mjTEXTURE_2D
+        texture.file = str(ASSETS / name / "texture_map.png")
+        material = spec.add_material(name=f"task_{name}_mat")
+        material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = f"task_{name}_tex"
+
+    wood = spec.add_texture(name="task_wood_tex")
+    wood.type = mujoco.mjtTexture.mjTEXTURE_2D
+    wood.file = str(TEXTURES / "light-wood.png")
+    wood_mat = spec.add_material(name="task_wood_mat")
+    wood_mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = "task_wood_tex"
+    wood_mat.texrepeat = list(TABLE_TEXREPEAT)
+    wood_mat.specular = 0.25
+    wood_mat.shininess = 0.35
     apple_mesh = spec.add_mesh(name="task_apple_vis")
     apple_mesh.file = str(ASSETS / "apple" / "textured.obj")
     apple_mesh.scale = [APPLE_MESH_SCALE] * 3
@@ -475,6 +679,20 @@ class AppleOnPlate:
         self._qpos_adr = model.jnt_qposadr[model.body(APPLE_BODY).jntadr[0]]
         self._qvel_adr = model.jnt_dofadr[model.body(APPLE_BODY).jntadr[0]]
 
+        # Everything whose pose goes out on the free-joint topic, discovered rather than
+        # asserted: `stage()` can be asked for no dressing and no slab, and an arbiter
+        # that insisted on six bodies would turn a supported flag into a crash. A body
+        # with no free joint (the plate) publishes zero velocity, which is what the
+        # reference does for it too.
+        self._published: list[tuple[str, int, int | None]] = []
+        for name in ("apple", "plate", *(d[0] for d in DRESSING)):
+            body_id = _find_body(model, f"task_{name}")
+            if body_id is None:
+                continue
+            jntadr = int(model.body(body_id).jntadr[0])
+            dof = int(model.jnt_dofadr[jntadr]) if jntadr >= 0 else None
+            self._published.append((name, body_id, dof))
+
         # The arm base frame, captured at spawn: the console works in contract
         # coordinates, so poses go out transformed into this frame rather than the
         # engine's world. On the reference rig the two are the same thing, which is
@@ -557,17 +775,17 @@ class AppleOnPlate:
         """The bodies whose poses go out on the free-joint topic, in the base frame."""
         rot = self._base_from_world[:3, :3]
         origin = self._world_from_base[:3, 3]
-        for name, body_id in ((APPLE_BODY, self._apple), (PLATE_BODY, self._plate)):
+        for name, body_id, dof in self._published:
             pos = rot @ (np.asarray(data.xpos[body_id], dtype=np.float64) - origin)
             quat = np.asarray(data.xquat[body_id], dtype=np.float64)
-            if body_id == self._apple:
-                lin = rot @ np.asarray(data.qvel[self._qvel_adr : self._qvel_adr + 3])
-                ang = rot @ np.asarray(data.qvel[self._qvel_adr + 3 : self._qvel_adr + 6])
-            else:
+            if dof is None:
                 lin = ang = np.zeros(3)
-            # `apple` and `plate`, not the MJCF body names: the console selects by the
-            # contract's names and must not have to know how a scene spells them.
-            yield name.removeprefix("task_"), pos, quat, lin, ang
+            else:
+                lin = rot @ np.asarray(data.qvel[dof : dof + 3])
+                ang = rot @ np.asarray(data.qvel[dof + 3 : dof + 6])
+            # `apple` and `bowl`, not `task_apple`: the console selects by the contract's
+            # names and must not have to know how a scene spells them.
+            yield name, pos, quat, lin, ang
 
     def instantaneous(self, data) -> tuple[bool, str]:
         """Clauses 1, 2, 3 and 5, with the reason the first failing one gives."""
@@ -606,6 +824,9 @@ class AppleOnPlate:
         """
         if data is None:
             return
+        # The snapshot is the whole qpos/qvel/ctrl, so the dressing comes back with
+        # everything else -- there is nothing per-object to restore here, and a reader
+        # looking for it should find this line instead.
         data.qpos[:] = self._spawn_qpos
         data.qvel[:] = self._spawn_qvel
         data.ctrl[:] = self._spawn_ctrl

@@ -167,3 +167,23 @@ def test_resolve_instruction_prefers_explicit_text_then_falls_back(tmp_path) -> 
     assert resolve_instruction(None, str(path)) == "from a file"
     with pytest.raises(ValueError):
         resolve_instruction("both", str(path))
+
+
+def test_the_docs_describe_the_cameras_the_simulator_actually_stages() -> None:
+    """The text a policy is told about the cameras must be the truth the simulator stages.
+
+    Two assertions on purpose. The pose table can be right while the prose still carries
+    a stale literal -- that is exactly how the overhead camera's old position survived in
+    `_DOCS` for weeks after the simulator moved it -- so the formatted numbers are checked
+    in the string itself, not only in the table it is built from.
+    """
+    from robot_console.arm.embodiment import _DOCS
+    from robot_console.arm.ros_settings import SCENE_CAMERA_POSES
+
+    task = _shared_task_module()
+    if task is None:
+        pytest.skip("sibling simulator checkout not present")
+    staged = {name: tuple(pos) for name, pos, *_ in task.SCENE_CAMERAS}
+    assert SCENE_CAMERA_POSES == staged
+    for name, (x, y, z) in staged.items():
+        assert f"'{name}' at ({x:.3f}, {y:.3f}, {z:.3f})" in _DOCS

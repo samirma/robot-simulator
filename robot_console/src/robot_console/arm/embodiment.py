@@ -39,6 +39,8 @@ from inspect_robots_ros.embodiment import RosEmbodiment
 
 from robot_console.arm.ros_client import HeaderStampingClient
 from robot_console.arm.ros_settings import (
+    SCENE_CAMERA_POSES,
+    SCENE_CAMERA_TILT_DEG,
     FREE_JOINT_STATES_TYPE,
     TASK_SUCCESS_TYPE,
     RosSettings,
@@ -339,16 +341,26 @@ def apple_state_from(
     return None, None, stamp
 
 
+def _camera_clause(name: str) -> str:
+    x, y, z = SCENE_CAMERA_POSES[name]
+    tilt = SCENE_CAMERA_TILT_DEG[name]
+    where = "above the table looking down" if tilt > 30 else "low and near-horizontal"
+    return f"'{name}' at ({x:.3f}, {y:.3f}, {z:.3f}), {where} at {tilt:g} degrees below horizontal"
+
+
+# Built from `ros_settings.SCENE_CAMERA_POSES` rather than typed, because the typed version
+# went stale: it kept the overhead camera's previous pose for weeks after the simulator
+# moved it. A test pins the table to what the simulator actually stages.
 _DOCS = (
     "Simulated SO-101 behind rosbridge. Six absolute joint-position commands in "
     "the order shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll, "
     "gripper. Arm joints are radians with MJCF limits; the gripper is the jaw "
     "hinge in radians, 0 fully closed and 1 fully open (measured aperture 1.5 mm "
     "to 43 mm). The arm base is the world origin, +x points across the table, and "
-    "the table top is the z=0 plane. Two fixed 640x480 cameras watch the "
-    "workspace: 'overhead' at (0.500, 0.051, 0.614), above the table looking "
-    "down at 62 degrees below horizontal, and 'side' at (0.28, 0.80, 0.13), low "
-    "and near-horizontal at 5.6 degrees below horizontal."
+    "the table top is the z=0 plane: a wood work surface carrying, besides the red "
+    "apple and the white plate, a bowl, a mug, a banana and a lemon that are scenery "
+    "and not part of the task. Two fixed 640x480 cameras watch the workspace: "
+    + _camera_clause("overhead") + ", and " + _camera_clause("side") + "."
 )
 
 

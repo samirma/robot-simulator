@@ -78,6 +78,19 @@ APPLE_BODY = "apple"
 #: ``sensor_msgs/msg/Image`` on ``/camera_publisher/overhead/color``; an
 #: ``image_transport republish`` node compresses it and its output is remapped
 #: to the contract name below. 5 Hz, 1280x720, JPEG payload.
+#: Where the two scene cameras are, in the arm base frame, metres. This is what a policy
+#: is *told* about the cameras (see `embodiment._DOCS`), so it has to be the truth the
+#: simulator stages: `tests/arm/test_scene_geometry.py` holds it equal to the task module's
+#: `SCENE_CAMERAS`. It went stale once already -- the overhead camera was re-posed from
+#: (0.500, 0.051, 0.614) to (0.795, 0.000, 1.110) and the prose kept the old number for
+#: weeks, which is 0.5 m of height for anything unprojecting pixels from that text.
+SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
+    "overhead": (0.795, 0.000, 1.110),
+    "side": (0.28, 0.80, 0.13),
+}
+#: Down-tilt of each scene camera, degrees below horizontal, for the same text.
+SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
+
 OVERHEAD_CAMERA_NAME = "overhead"
 OVERHEAD_CAMERA_TOPIC = "/overhead/color/compressed"
 OVERHEAD_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
