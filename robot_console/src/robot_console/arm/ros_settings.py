@@ -16,7 +16,7 @@ Sources, per item:
   in exactly the way that matters here — the shipped file makes
   ``gripper_controller`` a ``forward_command_controller/ForwardCommandController``
   rather than an action controller.
-* ``/task_success`` and ``/reset`` — ``so_arm_mujoco/so_arm_mujoco/task_manager.py``
+* ``/reset`` — ``so_arm_mujoco/so_arm_mujoco/task_manager.py``
 * ``/free_joint_publisher/free_joint_states`` and ``/mujoco_ros2_control_node/*``
   — ``mujoco_ros2_control_plugins`` and ``mujoco_ros2_control_msgs``, with the
   names as they actually resolve at runtime (see the namespacing note below)
@@ -61,8 +61,6 @@ GRIPPER_COMMAND_TOPIC = "/gripper_controller/commands"
 GRIPPER_COMMAND_TYPE = "std_msgs/msg/Float64MultiArray"
 
 #: ``task_manager`` publishes its verdict here on every free-joint message.
-TASK_SUCCESS_TOPIC = "/task_success"
-TASK_SUCCESS_TYPE = "std_msgs/msg/Bool"
 
 #: ``FreeJointStatePublisherPlugin`` publishes the pose and twist of every body
 #: in its ``body_names`` -- the apple and, since 02 Sep 2026, the four dressing
@@ -90,6 +88,20 @@ SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
 }
 #: Down-tilt of each scene camera, degrees below horizontal, for the same text.
 SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
+
+#: Each scene camera's orientation as MuJoCo `xyaxes` -- image-right and image-up as
+#: vectors in the arm base frame -- alongside its vertical field of view in degrees.
+#: This is rig calibration, not privileged state: it says where the cameras are bolted,
+#: which any deployment knows about its own hardware and which no episode can change.
+#: `vision_success` needs it to undo perspective, because a verdict read off raw pixels
+#: is measurably wrong -- normalising against the plate's own ellipse instead put the
+#: apple 24 mm too far out at the plate and 43 mm too far out at the spawn point, which
+#: on an 80 mm gate is the difference between grading a placement and failing it.
+SCENE_CAMERA_XYAXES: dict[str, tuple[float, ...]] = {
+    "overhead": (0.00000, 1.00000, 0.00000, -0.88295, 0.00000, 0.46947),
+    "side": (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
+}
+SCENE_CAMERA_FOVY_DEG: dict[str, float] = {"overhead": 45.0, "side": 45.0}
 
 OVERHEAD_CAMERA_NAME = "overhead"
 OVERHEAD_CAMERA_TOPIC = "/overhead/color/compressed"
@@ -176,7 +188,7 @@ CAMERA_SPECS: dict[str, tuple[str, int, int]] = {
 #: clears ``task_manager``'s own hold timer. It does **not** teleport the apple:
 #: ``task_manager`` has no ``set_free_joint_state`` client at all, which
 #: ``CONTRACT.md`` section 6 forbids anyway. Either service is a valid
-#: ``reset_service``; ``/reset`` is the one that also resets ``/task_success``.
+#: ``reset_service``; ``/reset`` is the one that also clears the task's own state.
 RESET_WORLD_SERVICE = "/mujoco_ros2_control_node/reset_world"
 TASK_MANAGER_RESET_SERVICE = "/reset"
 
@@ -194,7 +206,6 @@ class RosSettings:
     gripper_joint: str = GRIPPER_JOINT
     gripper_mode: str = "topic"
     gripper_topic: str = GRIPPER_COMMAND_TOPIC
-    success_topic: str = TASK_SUCCESS_TOPIC
     object_state_topic: str = FREE_JOINT_STATES_TOPIC
     object_body: str = APPLE_BODY
     camera_name: str = OVERHEAD_CAMERA_NAME
@@ -222,7 +233,7 @@ class RosSettings:
         ),
     )
     #: ``/reset`` rather than ``reset_world``: it forwards to the same service
-    #: **and** clears ``task_manager``'s own hold timer, so ``/task_success``
+    #: **and** clears ``task_manager``'s own hold timer, so the task's state
     #: starts each episode from a known state instead of relying on the apple's
     #: return to spawn to break a stale hold.
     reset_service: str | None = TASK_MANAGER_RESET_SERVICE

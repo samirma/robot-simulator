@@ -27,7 +27,6 @@ from robot_console.arm.ros_settings import (
     OVERHEAD_CAMERA_TOPIC,
     SIDE_CAMERA_TOPIC,
     TASK_MANAGER_RESET_SERVICE,
-    TASK_SUCCESS_TOPIC,
     WRIST_CAMERA_TOPIC,
 )
 
@@ -52,8 +51,18 @@ def test_every_topic_name_matches_the_simulators() -> None:
     assert s.TOPIC_GRIPPER_COMMAND == GRIPPER_COMMAND_TOPIC
     assert s.TOPIC_JOINT_STATES == JOINT_STATES_TOPIC
     assert s.TOPIC_FREE_JOINT_STATES == FREE_JOINT_STATES_TOPIC
-    assert s.TOPIC_TASK_SUCCESS == TASK_SUCCESS_TOPIC
     assert s.SERVICE_RESET == TASK_MANAGER_RESET_SERVICE
+
+
+def test_the_simulators_publish_no_success_topic() -> None:
+    """Both engines' shared surface must not offer a task verdict on the wire.
+
+    The verdict is inferred from the overhead camera by `arm.vision_success`. Publishing
+    it as well would hand the grader a channel the policy cannot see, and the two would
+    then be free to drift apart without anything noticing.
+    """
+    s = _surface()
+    assert not hasattr(s, "TOPIC_TASK_SUCCESS")
 
 
 def test_the_camera_topics_and_sizes_match() -> None:

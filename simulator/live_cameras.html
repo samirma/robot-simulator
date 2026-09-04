@@ -107,8 +107,8 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
       <div class="n">gate &lt; 0.010 m/s</div></div>
     <div class="card"><div class="k">Distance to plate</div><div class="v" id="dist">—</div>
       <div class="n">gate &lt; 0.080 m</div></div>
-    <div class="card"><div class="k">/task_success</div><div class="v" id="succ">—</div>
-      <div class="n">the simulator's own verdict</div></div>
+    <div class="card"><div class="k">On the plate</div><div class="v" id="succ">—</div>
+      <div class="n">read from the overhead frame, as the grader does</div></div>
   </div>
 
   <!-- The wire carries six free bodies, not one. The other five get a strip rather than
@@ -138,8 +138,8 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
   — found by asking <code>rosapi/topics_for_type</code> for everything publishing
   <code>CompressedImage</code>, rechecked every few seconds, so a simulator restarted with
   <code>--wrist</code> appears here without a reload. Also subscribed to
-  <code>/free_joint_publisher/free_joint_states</code>, <code>/joint_states</code> and
-  <code>/task_success</code>. Camera rate is the simulator's, not this page's, and it falls as
+  <code>/free_joint_publisher/free_joint_states</code> and
+  <code>/joint_states</code>. Camera rate is the simulator's, not this page's, and it falls as
   more cameras are enabled: measured on MolmoSpaces, ~9.7 Hz with two and ~7.6 Hz with three,
   roughly halving again when both engines share one GPU. While disarmed the sliders
   follow the measured pose, so enabling control never jumps the arm.</footer>
@@ -239,7 +239,13 @@ function addCamera(topic) {
 }
 
 const APPLE = '/free_joint_publisher/free_joint_states';
-const SUCCESS = '/task_success';
+// There is no success topic any more: the simulator stopped answering its own question
+// so that nothing could be graded on state a camera cannot see. This page therefore does
+// what the grader does -- decides from the geometry it can measure. It has the plate's
+// staged position and the apple's pose on the wire, so it applies the contract's own gate
+// rather than pretending to re-run the detector in JavaScript; `arm/vision_success.py` is
+// the authority, and this gauge is a convenience beside the live views.
+const GATE_M = 0.080;
 const JOINTS = '/joint_states';
 const ARM_CMD = '/joint_trajectory_controller/joint_trajectory';
 const GRIP_CMD = '/gripper_controller/commands';
@@ -295,7 +301,6 @@ function connect() {
     setStatus('live — ' + URL, 'up');
     const subs = [
       [APPLE, 'mujoco_ros2_control_msgs/msg/FreeJointStateArray'],
-      [SUCCESS, 'std_msgs/msg/Bool'],
       [JOINTS, 'sensor_msgs/msg/JointState'],
     ];
     // queue_length 1 keeps the newest frame rather than a backlog: on a live
@@ -362,13 +367,11 @@ function connect() {
       }
       const d = Math.hypot(p.x - PLATE[0], p.y - PLATE[1]);
       el('dist').textContent = d.toFixed(4);
-      el('dist').className = 'v ' + (d < 0.08 ? 'ok' : '');
-      return;
-    }
-
-    if (m.topic === SUCCESS) {
-      const on = !!m.msg.data;
-      el('succ').textContent = on ? 'TRUE' : 'FALSE';
+      el('dist').className = 'v ' + (d < GATE_M ? 'ok' : '');
+      // The gate the grader applies, minus the hold: this reads instantaneously, while a
+      // scored episode also needs the apple to stay put for a second of simulated time.
+      const on = d < GATE_M && Math.hypot(v ? v.x : 0, v ? v.y : 0, v ? v.z : 0) < 0.01;
+      el('succ').textContent = on ? 'YES' : 'NO';
       el('succ').className = 'v ' + (on ? 'ok' : 'bad');
       return;
     }

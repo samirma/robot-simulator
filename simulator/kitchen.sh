@@ -455,11 +455,11 @@ if log.get("status") != "success" or sample.get("error"):
     raise SystemExit
 scores = sample["epochs"][0]
 scored = "PASS" if float(scores.get("apple_on_plate", 0)) >= 1.0 else "FAIL"
-sim = "PASS" if float(scores.get("sim_task_success", 0)) >= 1.0 else "FAIL"
-print(f"{scored} {sim} {scores.get('apple_plate_distance', float('nan')):.4f} m from plate centre")
+ref = "PASS" if float(scores.get("reference_success", 0)) >= 1.0 else "FAIL"
+print(f"{scored} {ref} {scores.get('apple_plate_distance', float('nan')):.4f} m from plate centre")
 PY
 )"
-        read -r scored sim_said detail <<<"$verdict"
+        read -r scored ref_said detail <<<"$verdict"
         if [ "$scored" = "PASS" ] && [ "$status" -eq 0 ]; then
           passes=$((passes + 1))
           printf '  episode %s/%s: \033[32mPASS\033[0m  apple %s' \
@@ -470,13 +470,14 @@ PY
           printf '  episode %s/%s: \033[31mFAIL\033[0m  apple %s (gate 0.080)' \
             "$episode" "$EPISODES" "$detail"
         fi
-        # The simulator's own verdict and the offline scorer are computed independently
-        # and are reported separately on purpose. They can legitimately disagree at the
-        # margin -- the episode terminates the instant its own hold passes 1.0 s, and the
-        # simulator's hold starts a beat later -- and a disagreement is information, not
-        # something to paper over by having one read the other.
-        [ "$sim_said" = "$scored" ] \
-          || printf '  \033[33m[disagreement: /task_success said %s]\033[0m' "$sim_said"
+        # The graded verdict is the camera's. `reference_success` recomputes the same
+        # predicate from the free-joint poses and grades nothing; it is printed only when
+        # the two disagree, which is the one signal that separates "the policy failed"
+        # from "the detector stopped seeing". A run where this fires repeatedly is a
+        # reason to look at the overhead frames, not at the policy.
+        [ "$ref_said" = "$scored" ] \
+          || printf '  \033[33m[camera says %s, pose reference says %s]\033[0m' \
+               "$scored" "$ref_said"
         echo "   log: $run_dir"
       done
 

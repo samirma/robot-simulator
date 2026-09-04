@@ -2,7 +2,7 @@
 
 All three are pure readers of the recorded trajectory, per the framework's rule
 that scoring must be reproducible from a saved log: the live polling of
-``/task_success`` and of the apple's pose happens in the embodiment's ``step``,
+the overhead frame and of the apple's pose happens in the embodiment's ``step``,
 which writes its measurements into
 [`StepResult`][inspect_robots.types.StepResult] ``info``.
 
@@ -28,7 +28,7 @@ from robot_console.arm.success import (
     DISTANCE_KEY,
     GEOMETRIC_SUCCESS_KEY,
     HOLD_SECONDS,
-    SIM_SUCCESS_KEY,
+    REFERENCE_SUCCESS_KEY,
     final_hold,
 )
 
@@ -66,8 +66,8 @@ class _AppleOnPlate:
         span = final_hold(infos)
         held = span.satisfied(hold_seconds=self.hold_seconds, fallback_steps=self.hold_steps)
         ever = any(bool(info.get(GEOMETRIC_SUCCESS_KEY)) for info in infos)
-        sim_ever = any(bool(info.get(SIM_SUCCESS_KEY)) for info in infos)
-        sim_seen = any(info.get(SIM_SUCCESS_KEY) is not None for info in infos)
+        ref_ever = any(bool(info.get(REFERENCE_SUCCESS_KEY)) for info in infos)
+        ref_seen = any(info.get(REFERENCE_SUCCESS_KEY) is not None for info in infos)
         final = infos[-1]
         timing = (
             f"{span.seconds:.3f} s of simulated time"
@@ -83,9 +83,9 @@ class _AppleOnPlate:
             f"needed >= {self.hold_seconds:g} s; "
             f"placed_and_held={held} ever_placed={ever}; "
             + (
-                f"simulator /task_success ever_true={sim_ever}"
-                if sim_seen
-                else "simulator /task_success never observed"
+                f"pose reference ever_placed={ref_ever}"
+                if ref_seen
+                else "pose reference never observed"
             )
         )
         return Score(
@@ -95,7 +95,7 @@ class _AppleOnPlate:
                 "ever_placed": ever,
                 "hold_steps": span.steps,
                 "hold_seconds": span.seconds,
-                "sim_task_success_ever": sim_ever if sim_seen else None,
+                "reference_ever_placed": ref_ever if ref_seen else None,
                 "final_distance_m": final.get(DISTANCE_KEY),
                 "final_speed_mps": final.get(APPLE_SPEED_KEY),
                 "final_displacement_m": final.get(DISPLACEMENT_KEY),
@@ -105,22 +105,33 @@ class _AppleOnPlate:
 
 
 @dataclass(frozen=True)
-class _SimTaskSuccess:
-    """Success as the simulator's own ``/task_success`` topic reports it."""
+class _ReferenceSuccess:
+    """The same predicate on the free-joint poses, for auditing the camera.
 
-    name: str = "sim_task_success"
+    This does not grade the episode -- `apple_on_plate_success` does, from the overhead
+    frame. This is the column you compare it against. A vision detector that has drifted
+    (a re-styled kitchen, a differently lit scene, a plate that is no longer white)
+    produces exactly the same run of failures as a policy that stopped working, and
+    without a verdict computed a different way there is nothing to tell them apart.
+    Disagreement here is a reason to look at the detector, not to trust this number over
+    the camera's.
+    """
+
+    name: str = "reference_success"
 
     def __call__(self, record: TrialRecord, target: Target | None) -> Score:
         infos = _infos(record)
-        seen = [info for info in infos if info.get(SIM_SUCCESS_KEY) is not None]
+        seen = [info for info in infos if info.get(REFERENCE_SUCCESS_KEY) is not None]
         if not seen:
-            return Score(value=False, explanation="/task_success was never observed")
-        succeeded = any(bool(info.get(SIM_SUCCESS_KEY)) for info in seen)
+            return Score(value=False, explanation="no free-joint poses were observed")
+        succeeded = any(bool(info.get(REFERENCE_SUCCESS_KEY)) for info in seen)
+        graded = any(bool(info.get(GEOMETRIC_SUCCESS_KEY)) for info in infos)
+        note = "" if succeeded == graded else "  *** disagrees with the camera verdict ***"
         return Score(
             value=succeeded,
             explanation=(
-                f"/task_success observed on {len(seen)}/{len(infos)} steps, "
-                f"true on {sum(1 for i in seen if i.get(SIM_SUCCESS_KEY))}"
+                f"poses seen on {len(seen)}/{len(infos)} steps, predicate true on "
+                f"{sum(1 for i in seen if i.get(REFERENCE_SUCCESS_KEY))}{note}"
             ),
         )
 
@@ -151,9 +162,9 @@ def apple_on_plate_success(
     return _AppleOnPlate(hold_seconds=float(hold_seconds), hold_steps=int(hold_steps))
 
 
-def sim_task_success() -> Scorer:
-    """The simulator's own ``/task_success`` verdict, recorded for comparison."""
-    return _SimTaskSuccess()
+def reference_success() -> Scorer:
+    """The pose-derived verdict, recorded so the camera's can be audited against it."""
+    return _ReferenceSuccess()
 
 
 def apple_plate_distance() -> Scorer:

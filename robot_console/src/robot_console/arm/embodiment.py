@@ -12,10 +12,13 @@ already does, so nothing here touches the transport.
 Two things are added on top, both of which the upstream adapter cannot do
 because they are task knowledge:
 
-1. **Success polling.** ``/task_success`` and
-   ``/free_joint_publisher/free_joint_states`` are subscribed alongside the arm
-   topics and folded into every [`StepResult`][inspect_robots.types.StepResult]'s
-   ``info``, which is what the scorers later read back out of the log.
+1. **Grading from the overhead frame.** The verdict is computed by
+   [`vision_success`][robot_console.arm.vision_success] from the image in the
+   observation this step just returned, and folded into the
+   [`StepResult`][inspect_robots.types.StepResult]'s ``info`` that the scorers read
+   back out of the log. ``/free_joint_publisher/free_joint_states`` is subscribed
+   alongside it and recorded as a reference the camera can be audited against; it
+   grades nothing.
 2. **Termination on a *held* success.** ``CONTRACT.md`` section 5 clause 4
    requires the apple to be at rest on the plate for at least 1.0 s of
    simulated time. The episode therefore keeps stepping while the apple merely
@@ -34,17 +37,17 @@ from typing import Any
 
 import numpy as np
 from inspect_robots import Action, Observation, Scene, StepResult
-from inspect_robots.embodiment import PRIVILEGED_SUCCESS
 from inspect_robots_ros.embodiment import RosEmbodiment
 
 from robot_console.arm.ros_client import HeaderStampingClient
 from robot_console.arm.ros_settings import (
+    OVERHEAD_CAMERA_NAME,
     SCENE_CAMERA_POSES,
     SCENE_CAMERA_TILT_DEG,
     FREE_JOINT_STATES_TYPE,
-    TASK_SUCCESS_TYPE,
     RosSettings,
 )
+from robot_console.arm.vision_success import VisionTracker
 from robot_console.arm.success import (
     GEOMETRIC_SUCCESS_KEY,
     HELD_KEY,
@@ -56,7 +59,6 @@ from robot_console.arm.success import (
     success_info,
 )
 
-_SUCCESS_SUBSCRIPTION_ID = "robot-control-task-success"
 _OBJECT_SUBSCRIPTION_ID = "robot-control-free-joint-states"
 
 _CONNECT_HINT = (
@@ -102,15 +104,17 @@ class SO101RosEmbodiment(RosEmbodiment):
             clock=self._clock,
             sleep=self._sleep,
         )
-        self.info = _with_capability(self.info, PRIVILEGED_SUCCESS, docs=_DOCS)
+        # No PRIVILEGED_SUCCESS: the verdict is read off the same overhead frame the
+        # policy is given, so the grader has no view of the scene the policy lacks.
+        self.info = _with_docs(self.info, docs=_DOCS)
         self._hold = HoldTracker(hold_seconds, control_hz=self.settings.control_hz)
         self._monitors_subscribed = False
-        self._last_sim_success: bool | None = None
+        self._vision = VisionTracker(hold_seconds=hold_seconds)
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Reset through the base adapter, then clear cached success state."""
-        self._last_sim_success = None
+        self._vision.reset()
         self._hold.reset()
         return super().reset(scene, seed=seed)
 
@@ -123,7 +127,7 @@ class SO101RosEmbodiment(RosEmbodiment):
         enough for the offline scorer to re-derive the same verdict.
         """
         result = super().step(action)
-        info = self._poll_success()
+        info = self._poll_success(result.observation)
         held = self._hold.update(placed=bool(info[GEOMETRIC_SUCCESS_KEY]), stamp=info[STAMP_KEY])
         info[HELD_KEY] = held
         info[HOLD_ELAPSED_KEY] = round(self._hold.elapsed, 4)
@@ -145,30 +149,35 @@ class SO101RosEmbodiment(RosEmbodiment):
         )
 
     # -- success polling ---------------------------------------------------
-    def _poll_success(self) -> dict[str, Any]:
+    def _poll_success(self, observation: Observation) -> dict[str, Any]:
+        """Grade this step from the overhead frame, and record the pose as reference."""
         position, speed, stamp = self._apple_state()
+        verdict = self._see(observation, stamp)
         return success_info(
             position,
             goal=self.goal,
-            sim_success=self._sim_success(),
+            placed=verdict.placed if verdict is not None else False,
+            distance=verdict.reading.distance_m if verdict is not None else None,
             apple_speed=speed,
             stamp=stamp,
         )
 
-    def _sim_success(self) -> bool | None:
-        """Latest ``/task_success`` value, or None if the topic has not arrived.
+    def _see(self, observation: Observation, stamp: float | None):
+        """Fold the overhead frame into the vision verdict, or None if there was none.
 
-        The value is cached because ``task_manager`` publishes one verdict per
-        free-joint message while the rollout steps at ``control_hz``, so a step
-        may see no new message.
+        The frame comes from the observation rather than a private subscription, so the
+        grader is looking at *the* image the policy acted on -- not a second one fetched
+        a beat later, which would let the two disagree about what the world looked like.
+        Images arrive RGB and OpenCV wants BGR; the reversal is the whole conversion.
         """
-        sample = self._client.latest(self.settings.success_topic)
-        if sample is None:
-            return self._last_sim_success
-        value = sample.msg.get("data")
-        if isinstance(value, bool):
-            self._last_sim_success = value
-        return self._last_sim_success
+        images = getattr(observation, "images", None) or {}
+        frame = images.get(OVERHEAD_CAMERA_NAME)
+        if frame is None:
+            return None
+        array = np.asarray(frame)
+        if array.ndim != 3 or array.shape[2] < 3:
+            return None
+        return self._vision.update(np.ascontiguousarray(array[:, :, ::-1]), stamp)
 
     def _apple_state(self) -> tuple[np.ndarray | None, float | None, float | None]:
         """Return the apple's world position, linear speed and simulated stamp.
@@ -189,7 +198,7 @@ class SO101RosEmbodiment(RosEmbodiment):
         return (*super()._all_topics(), *self._monitor_topics())
 
     def _monitor_topics(self) -> tuple[str, ...]:
-        return (self.settings.success_topic, self.settings.object_state_topic)
+        return (self.settings.object_state_topic,)
 
     def _ensure_initialized(self) -> None:
         """Subscribe the monitor topics before the base adapter waits on them."""
@@ -200,13 +209,6 @@ class SO101RosEmbodiment(RosEmbodiment):
                 self._client.connect()
             except Exception as exc:
                 raise ConnectionError(_CONNECT_HINT.format(url=self.url)) from exc
-            self._client.subscribe(
-                self.settings.success_topic,
-                subscription_id=_SUCCESS_SUBSCRIPTION_ID,
-                message_type=TASK_SUCCESS_TYPE,
-                throttle_rate=0,
-                queue_length=1,
-            )
             self._client.subscribe(
                 self.settings.object_state_topic,
                 subscription_id=_OBJECT_SUBSCRIPTION_ID,
@@ -364,12 +366,18 @@ _DOCS = (
 )
 
 
-def _with_capability(info: Any, capability: str, *, docs: str) -> Any:
-    """Return a copy of an ``EmbodimentInfo`` with one extra capability and docs."""
+def _with_docs(info: Any, *, docs: str) -> Any:
+    """Return a copy of an ``EmbodimentInfo`` carrying this embodiment's docs.
+
+    It used to add ``PRIVILEGED_SUCCESS`` as well. That capability was an honest
+    declaration while the verdict came off ``/task_success``: it told the framework the
+    grader could see something the policy could not. The verdict is now read from the
+    same overhead frame the policy is handed, so the declaration would be false.
+    """
     import dataclasses
 
     return dataclasses.replace(
-        info, capabilities=frozenset({*info.capabilities, capability}), docs=docs
+        info, capabilities=frozenset(info.capabilities), docs=docs
     )
 
 

@@ -4,7 +4,6 @@
     console -> robot   /gripper_controller/commands                   std_msgs/msg/Float64MultiArray
     robot -> console   /joint_states                                  sensor_msgs/msg/JointState
     robot -> console   /free_joint_publisher/free_joint_states        mujoco_ros2_control_msgs/msg/FreeJointStateArray
-    robot -> console   /task_success                                  std_msgs/msg/Bool
     robot -> console   /overhead/color/compressed                     sensor_msgs/msg/CompressedImage
     robot -> console   /side/color/compressed                         sensor_msgs/msg/CompressedImage
     robot -> console   /wrist/color/compressed                        sensor_msgs/msg/CompressedImage   (opt-in)
@@ -73,7 +72,16 @@ TOPIC_JOINT_STATES = "/joint_states"
 #: Namespaced by the publishing plugin on the reference rig; the name is part of the
 #: contract, not an accident, so it keeps the namespace here too.
 TOPIC_FREE_JOINT_STATES = "/free_joint_publisher/free_joint_states"
-TOPIC_TASK_SUCCESS = "/task_success"
+# There is deliberately no `/task_success`. The simulator used to answer the task's own
+# question on that topic, and nothing a camera can see corresponds to it: it is the
+# scene's private state, a real SO-101 bringup publishes no such thing, and a policy
+# graded by it is graded on something outside the robot's senses. The verdict is computed
+# from the overhead camera instead -- `robot_console.arm.vision_success`, validated frame
+# by frame against the geometry this topic used to report before it was removed.
+#
+# The free-joint poses stay. They mirror a topic `mujoco_ros2_control` really does
+# publish, nothing grades on them any more, and keeping them is what lets the camera
+# verdict go on being audited against ground truth instead of being taken on trust.
 
 SERVICE_RESET = "/reset"
 SERVICE_RESET_WORLD = "/mujoco_ros2_control_node/reset_world"
@@ -122,7 +130,6 @@ def serve_ros(
     `None` to shut the server down -- the same shape as `ros_surfaces/myagv.py`.
     """
     from contracts.rosbridge_server import (
-        TYPE_BOOL,
         TYPE_FLOAT64_MULTI_ARRAY,
         TYPE_FREE_JOINT_STATE_ARRAY,
         TYPE_JOINT_STATE,
@@ -236,8 +243,7 @@ def serve_ros(
     last_contacts = [-1]
 
     server.start()
-    published = [TOPIC_JOINT_STATES, TOPIC_FREE_JOINT_STATES, TOPIC_TASK_SUCCESS,
-                 *streams.published]
+    published = [TOPIC_JOINT_STATES, TOPIC_FREE_JOINT_STATES, *streams.published]
     print(
         f"ROS topics on ws://{host}:{port} "
         f"(sub {TOPIC_ARM_COMMAND}, {TOPIC_GRIPPER_COMMAND}; pub {', '.join(published)})",
@@ -294,9 +300,6 @@ def serve_ros(
                 TOPIC_FREE_JOINT_STATES,
                 free_joint_state_array(task.free_joint_entries(data), stamp),
                 TYPE_FREE_JOINT_STATE_ARRAY,
-            )
-            server.publish(
-                TOPIC_TASK_SUCCESS, {"data": bool(task.success(data, stamp))}, TYPE_BOOL
             )
 
         streams.publish(server, data, seq, stamp)

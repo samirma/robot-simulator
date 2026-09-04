@@ -19,13 +19,44 @@ import pytest
 from inspect_robots import Action, Observation, StepResult
 from inspect_robots_ros.embodiment import RosEmbodiment
 
+import cv2
+
 from robot_console.arm.embodiment import SO101RosEmbodiment
-from robot_console.arm.ros_settings import RosSettings
+from robot_console.arm.ros_settings import OVERHEAD_CAMERA_NAME, RosSettings
 from robot_console.arm.scorer import apple_on_plate_success
 from robot_console.arm.success import GEOMETRIC_SUCCESS_KEY, HELD_KEY
+from robot_console.arm.vision_success import GroundProjector, PLATE_RADIUS_M
 
 RESTING = (0.226, -0.226, 0.0404)
 SPAWN = (0.30, 0.10, 0.020)
+PLATE_XY = (0.226, -0.226)
+
+_PROJ = GroundProjector()
+
+
+def _render_overhead(apple_xyz: tuple[float, float, float]) -> np.ndarray:
+    """Draw the scene the overhead camera would see, with the apple at ``apple_xyz``.
+
+    The verdict is computed from pixels now, so a test that fed the embodiment a pose
+    would be testing nothing that runs in production. Rendering through the projector's
+    own forward transform means these tests exercise the real detector -- the colour
+    thresholds, the ellipse fit, the back-projection -- and would fail if any of them
+    stopped agreeing with the geometry.
+    """
+    img = np.zeros((480, 640, 3), np.uint8)
+    img[:] = (60, 130, 180)                     # BGR: a wood-toned, clearly non-white ground
+    rim = [
+        _PROJ.project(
+            PLATE_XY[0] + PLATE_RADIUS_M * np.cos(t),
+            PLATE_XY[1] + PLATE_RADIUS_M * np.sin(t),
+            0.020,
+        )
+        for t in np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    ]
+    cv2.fillPoly(img, [np.array(rim, np.int32)], (245, 245, 245))
+    u, v = _PROJ.project(*apple_xyz)
+    cv2.circle(img, (int(round(u)), int(round(v))), 9, (30, 30, 210), -1)
+    return img[:, :, ::-1].copy()               # the embodiment is handed RGB
 
 
 @dataclass
@@ -42,11 +73,8 @@ class _ScriptedClient:
         self.position = SPAWN
         self.speed = 0.0
         self.time = 0.0
-        self.sim_success = False
 
     def latest(self, topic: str) -> _Sample | None:
-        if topic == "/task_success":
-            return _Sample({"data": self.sim_success})
         if topic == "/free_joint_publisher/free_joint_states":
             whole = int(self.time)
             header = {
@@ -87,10 +115,21 @@ def embodiment(monkeypatch: pytest.MonkeyPatch) -> SO101RosEmbodiment:
     monkeypatch.setattr(
         RosEmbodiment,
         "step",
-        lambda self, action: StepResult(observation=Observation(), truncated=False),
+        lambda self, action: StepResult(
+            observation=Observation(
+                images={OVERHEAD_CAMERA_NAME: _render_overhead(self._client.position)}
+            ),
+            truncated=False,
+        ),
     )
     subject = SO101RosEmbodiment(RosSettings(control_hz=10.0))
     subject._client = _ScriptedClient()  # type: ignore[assignment]
+    # One frame with the apple at its spawn point, discarded. Clause 5 asks how far the
+    # apple has travelled, and the camera can only answer that against somewhere it has
+    # actually seen it -- so an episode that opens with the apple already on the plate
+    # has, correctly, no evidence any placement happened. Every real episode starts at
+    # spawn; these tests have to as well, or they test a case that cannot occur.
+    subject.step(Action(data=np.zeros(6)))
     return subject
 
 
@@ -133,7 +172,11 @@ def test_a_bounce_off_the_plate_restarts_the_hold(embodiment: SO101RosEmbodiment
     client = embodiment._client  # type: ignore[attr-defined]
     client.position = RESTING
     _run(embodiment, steps=5)
-    client.speed = 0.5  # knocked, no longer at rest
+    # A knock has to *move* the apple now. Setting a speed field alone was enough when
+    # the verdict read the twist off a topic; the camera only knows the apple moved if
+    # it is somewhere else, which is the honest version of the same test.
+    client.speed = 0.5
+    client.position = (RESTING[0] + 0.05, RESTING[1], RESTING[2])
     result = embodiment.step(Action(data=np.zeros(6)))
     assert result.info[GEOMETRIC_SUCCESS_KEY] is False
     assert result.info["apple_on_plate_hold_s"] == 0.0
@@ -179,3 +222,4 @@ def test_the_old_terminate_at_first_contact_trajectory_scores_as_a_failure(
     score = apple_on_plate_success()(_record(results), None)
     assert score.value is False
     assert "ever_placed=True" in score.explanation
+

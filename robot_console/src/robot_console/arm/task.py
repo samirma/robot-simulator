@@ -86,7 +86,7 @@ def instruction_warning(instruction: str, *, policy_ignores_it: bool = False) ->
         f"  asked for: {instruction}",
         f"  benchmark: {INSTRUCTION}",
         "",
-        "The scorers are unchanged: apple_on_plate_success, sim_task_success and",
+        "The scorers are unchanged: apple_on_plate_success, reference_success and",
         "apple_plate_distance all measure apple-on-plate geometry. A 0 from this run",
         "means the apple did not end up on the plate — it is NOT a measurement of",
         "whether the policy achieved the goal typed above. This probes instruction",
@@ -175,7 +175,7 @@ def apple_on_plate(
     return Task(
         name="apple_on_plate",
         scenes=[apple_on_plate_scene(apple_radius=float(apple_radius), instruction=text)],
-        scorer=["apple_on_plate_success", "sim_task_success", "apple_plate_distance"],
+        scorer=["apple_on_plate_success", "reference_success", "apple_plate_distance"],
         max_steps=int(max_steps),
         epochs=int(epochs),
         metadata={

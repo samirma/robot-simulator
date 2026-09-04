@@ -104,7 +104,7 @@ so101_ros = "robot_console.arm.embodiment:so101_ros"
 # read back another's answer.
 [project.entry-points."inspect_robots.scorers"]
 apple_on_plate_success = "robot_console.arm.scorer:apple_on_plate_success"
-sim_task_success = "robot_console.arm.scorer:sim_task_success"
+reference_success = "robot_console.arm.scorer:reference_success"
 apple_plate_distance = "robot_console.arm.scorer:apple_plate_distance"
 
 [tool.hatch.build.targets.wheel]

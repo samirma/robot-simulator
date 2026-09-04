@@ -21,6 +21,9 @@ AS_BUILT_TOPICS = {
     "/free_joint_publisher/free_joint_states": (
         "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
     ),
+    # The reference container publishes this and we deliberately do not consume it;
+    # see test_the_success_topic_is_deliberately_not_consumed below. It stays in this
+    # map because the map records what the container offers, not what we take.
     "/task_success": "std_msgs/msg/Bool",
     # The only two camera topics the container publishes. The `trainlow`,
     # `trainhigh`, `policylow` and `policyhigh` cameras were deleted from the
@@ -42,13 +45,24 @@ def test_every_configured_topic_exists_in_the_running_container() -> None:
         settings.gripper_topic,
         settings.joint_states_topic,
         settings.object_state_topic,
-        settings.success_topic,
         settings.camera_topic,
         # extra_cameras carries slot 1 now, so it has to be checked too: a
         # mis-typed second view is exactly the failure this test exists for.
         *(topic for _, topic, _, _ in settings.extra_cameras),
     }
     assert configured <= set(AS_BUILT_TOPICS)
+
+
+def test_the_success_topic_is_deliberately_not_consumed() -> None:
+    """The episode is graded from the camera, so nothing subscribes to `/task_success`.
+
+    The reference container publishes it and our simulators no longer do. Grading on it
+    means grading on state no camera can see and no real SO-101 emits, which makes the
+    grader better informed than the policy it is grading. This pins the removal: a
+    setting that quietly reintroduced the topic would put that privileged channel back.
+    """
+    assert not hasattr(rs, "TASK_SUCCESS_TOPIC")
+    assert not any("success" in name for name in rs.RosSettings().base_kwargs())
 
 
 def test_free_joint_topic_carries_its_plugin_namespace() -> None:

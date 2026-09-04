@@ -14,6 +14,8 @@ import pytest
 
 from robot_console.arm.success import (
     GEOMETRIC_SUCCESS_KEY,
+    REFERENCE_DISTANCE_KEY,
+    REFERENCE_SUCCESS_KEY,
     HOLD_SECONDS,
     STAMP_KEY,
     HoldTracker,
@@ -125,12 +127,27 @@ def test_clause_1_now_implies_clause_5_at_the_moved_plate() -> None:
 
 
 def test_success_info_reports_every_measured_quantity() -> None:
-    info = success_info(RESTING, goal=GOAL, apple_speed=0.001, stamp=12.5, sim_success=True)
+    info = success_info(
+        RESTING, goal=GOAL, placed=True, distance=0.004, apple_speed=0.001, stamp=12.5
+    )
     assert info[GEOMETRIC_SUCCESS_KEY] is True
     assert info[STAMP_KEY] == 12.5
     assert info["apple_speed"] == 0.001
-    assert math.isclose(info["distance"], 0.0, abs_tol=1e-12)
+    assert math.isclose(info["distance"], 0.004, abs_tol=1e-12)
     assert info["apple_displacement"] > 0.25
+
+
+def test_the_graded_verdict_is_the_camera_and_the_pose_is_only_a_reference() -> None:
+    """The two columns are independent, and the camera's is the one that grades.
+
+    Passing a `placed=False` alongside a pose that plainly satisfies the predicate is
+    exactly the shape of a detector that has stopped working, and it must show up as a
+    failure with a disagreeing reference -- not be quietly rescued by the pose.
+    """
+    info = success_info(RESTING, goal=GOAL, placed=False, distance=0.9, apple_speed=0.001)
+    assert info[GEOMETRIC_SUCCESS_KEY] is False
+    assert info[REFERENCE_SUCCESS_KEY] is True
+    assert math.isclose(info[REFERENCE_DISTANCE_KEY], 0.0, abs_tol=1e-12)
 
 
 def test_success_info_survives_an_unobserved_apple() -> None:

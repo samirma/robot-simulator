@@ -446,7 +446,6 @@ make it *less* like the real robot are regressions even when nothing fails.
 | console → robot | `/gripper_controller/commands` | `std_msgs/msg/Float64MultiArray` |
 | robot → console | `/joint_states` | `sensor_msgs/msg/JointState` |
 | robot → console | `/free_joint_publisher/free_joint_states` | `mujoco_ros2_control_msgs/msg/FreeJointStateArray` |
-| robot → console | `/task_success` | `std_msgs/msg/Bool` |
 | robot → console | `/overhead/color/compressed`, `/side/color/compressed`, `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
 | console → robot | `/reset`, `/mujoco_ros2_control_node/reset_world` | Trigger-shaped `{success, message}` |
 
@@ -468,6 +467,9 @@ Five things that are silent when wrong, and each cost a debugging session:
 - **The gripper must be a topic, not an action.** The client's ROS adapter has no action
   client at all, so a `GripperActionController` — which the stock SO-ARM controller config
   declares — is simply undrivable.
+- **There is no success topic, deliberately.** The reference container publishes
+  `/task_success`; these simulators do not, and a test pins the absence. It is the one
+  place this contract diverges from the container on purpose rather than by oversight.
 - **Stamps are simulated time**, not the wall clock. The success predicate holds for
   ≥ 1.0 s *of simulated time*, the client refuses to start if simulated time is not
   advancing against the wall clock, and the offline scorer re-derives the hold from these
@@ -542,12 +544,37 @@ brings a 20 mm apple, a white plate, two scene cameras and its own arbiter, all 
 relative to wherever the arm got mounted. The engines still supply the room — a task that
 replaced the scene would make them bystanders.
 
-**Success is computed three independent ways and disagreement is the signal.** The
-simulator's own `/task_success`, a live geometric verdict in `arm/success.py`, and an
-offline re-derivation from the recorded log in `arm/scorer.py`. Never make one read
-another's answer; `kitchen.sh` prints a warning when the first two disagree, which
-they legitimately can at the margin — the episode terminates the instant its own hold
-passes 1.0 s and the simulator's hold starts a beat later.
+**Success is inferred from the overhead camera, and nothing on the wire answers the
+task's question.** The simulator used to publish its own verdict on `/task_success` and
+does not any more: grading on it means grading on state no camera can see and no real
+SO-101 emits, which leaves the grader better informed than the policy it grades.
+`arm/vision_success.py` finds the apple and the plate in the same overhead frame the
+policy is handed, back-projects both through the known camera pose, and applies the
+contract's own gate. The embodiment takes that frame out of the observation rather than
+subscribing separately, so grader and policy cannot end up judging different moments.
+
+Two things about that module are load-bearing and were measured, not assumed:
+
+- **Perspective has to be undone properly.** Normalising distances against the plate's own
+  ellipse — the obvious shortcut — reads 24 mm too far at the plate and 43 mm too far at
+  the spawn point, which silently turns the 80 mm gate into a 56 mm one and fails genuine
+  placements. Back-projecting through the camera pose reproduces the poses to 3.0 mm.
+- **The height clause survives, indirectly.** A single overhead view cannot measure height:
+  apparent size is dominated by shading, and the side camera — which at 5.6° really is
+  almost a height sensor — has the arm across the apple too often to rely on. But because
+  frames are projected onto the plane a *resting* apple occupies, an apple held above it
+  lands short, and a gripper lowering one drags its projected position ~30 mm across the
+  plane while a settled apple jitters 5.1 mm. `REST_RADIUS_M` is set from that gap. At a
+  looser 20 mm the verdict fired with the apple still 80 mm up and moving at 40 mm/s, four
+  seconds before the placement; at 8 mm every placement fires inside the contract's height
+  band.
+
+**The free-joint poses stay, and the same predicate is still computed from them** as the
+`reference_success` scorer — recorded every step, grading nothing. It is the one column
+that separates "the policy failed" from "the detector stopped seeing", because a drifted
+detector produces exactly the run of failures a broken policy does. `kitchen.sh` prints a
+warning only when the two disagree, and validating the detector against it over 990
+labelled frames is what caught both problems above before the topic was removed.
 
 Constants that look arbitrary and are not. Each was measured, and each was wrong first:
 

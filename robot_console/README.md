@@ -67,7 +67,7 @@ Registered pieces:
 | policy | `so101_waypoint` | the scripted plan: a task-space pick-and-place lowered through IK, closed-loop on proprioception |
 | policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text |
 | embodiment | `so101_ros` | the arm behind rosbridge |
-| scorer | `apple_on_plate_success`, `sim_task_success`, `apple_plate_distance` | three verdicts, computed independently |
+| scorer | `apple_on_plate_success`, `reference_success`, `apple_plate_distance` | the camera's verdict, plus a pose-derived one that grades nothing and exists to audit it |
 
 The usual way to run it is from the simulator, which starts the world and the client
 together and reports PASS/FAIL:

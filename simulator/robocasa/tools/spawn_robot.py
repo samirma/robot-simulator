@@ -651,7 +651,7 @@ def main() -> int:
 
     if args.task and not args.ros_port and not args.render:
         raise SystemExit(
-            "--task needs --ros-port: the task's verdict goes out on /task_success, and "
+            "--task needs --ros-port: the task publishes its objects and cameras there, and "
             "staging one with nothing to publish it would silently score nothing."
         )
 

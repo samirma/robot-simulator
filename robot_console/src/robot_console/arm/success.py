@@ -16,12 +16,17 @@ accumulates it live inside the embodiment and
 [`final_hold`][robot_console.arm.success.final_hold] reconstructs the same quantity
 offline from a recorded trajectory, so a scorer never needs the network.
 
-The simulator publishes its own verdict for the same predicate on
-``/task_success`` (``so_arm_mujoco/task_manager.py``, whose constants this file
-mirrors). Both verdicts land in every
-[`StepResult`][inspect_robots.types.StepResult]'s ``info`` under the keys below.
-Keeping both is deliberate: agreement between an independent geometric verdict
-and the simulator's own is evidence, whereas either alone is an assertion.
+The verdict itself is no longer computed here. It is computed from the overhead
+camera by [`vision_success`][robot_console.arm.vision_success] and handed in, so
+that what grades the episode is something the robot can see; the simulator used to
+publish its own answer on ``/task_success`` and no longer does, because no camera
+sees that topic and no real SO-101 publishes it.
+
+What this module still owns is the *reference*: the same predicate evaluated on the
+free-joint poses, recorded beside the camera's answer on every step and graded on by
+nothing. Keeping it is the point rather than an oversight — a detector that has
+quietly drifted is indistinguishable from a policy that got worse, and this column is
+what tells those two apart afterwards.
 """
 
 from __future__ import annotations
@@ -31,10 +36,17 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-#: Truth from the simulator's own ``/task_success`` topic (bool, or None if unseen).
-SIM_SUCCESS_KEY = "sim_task_success"
-#: Our world-frame instantaneous verdict: clauses 1, 2, 3 and 5 (bool).
+#: The task's instantaneous verdict, clauses 1, 3 and 5 as the overhead camera measures
+#: them, with clause 2 enforced through the projection (see
+#: [`vision_success`][robot_console.arm.vision_success]). This is the verdict that counts.
 GEOMETRIC_SUCCESS_KEY = "apple_on_plate"
+#: The same predicate computed from the free-joint poses instead of the camera. Nothing
+#: grades on it. It is recorded so the camera verdict stays auditable against ground
+#: truth: a detector that has silently drifted looks exactly like a policy that got worse,
+#: and without this column there is no way to tell those apart after the fact.
+REFERENCE_SUCCESS_KEY = "reference_apple_on_plate"
+#: Pose-derived apple-to-plate distance, metres, beside the camera's own.
+REFERENCE_DISTANCE_KEY = "reference_distance"
 #: Clause 4 satisfied as well — the full contract predicate (bool).
 HELD_KEY = "apple_on_plate_held"
 #: How long the instantaneous verdict has been continuously true, seconds.
@@ -61,9 +73,10 @@ class PlateGoal:
     """The instantaneous half of ``CONTRACT.md`` section 5, in world coordinates.
 
     Every default is the contract's own number, and each is the same constant
-    ``so_arm_mujoco/task_manager.py`` compares against, so this verdict and
-    ``/task_success`` can only disagree if one of them has a bug — which is the
-    point of computing both.
+    ``so_arm_mujoco/task_manager.py`` compares against. Nothing grades on this any
+    more — the camera does — but it is what the recorded reference column is built
+    from, so it has to keep matching the contract exactly or the audit it supports
+    is worthless.
 
     The comparisons match the simulator's directions exactly: horizontal
     distance and speed are strict ``<``, the height band is inclusive
@@ -99,8 +112,8 @@ class PlateGoal:
         the defaults above; passing another radius rebuilds the same *formulae*
         the contract states (``plate_radius - apple_radius`` horizontally,
         ``plate_top_z + apple_radius`` vertically) so an offline run against a
-        modified scene stays self-consistent. The live gate must use the
-        defaults, because that is what ``/task_success`` uses.
+        modified scene stays self-consistent. The reference must use the defaults,
+        because the contract's own numbers are what it exists to represent.
         """
         return cls(
             center_xy=center_xy,
@@ -204,7 +217,8 @@ def success_info(
     apple_xyz: Sequence[float] | None,
     *,
     goal: PlateGoal,
-    sim_success: bool | None = None,
+    placed: bool = False,
+    distance: float | None = None,
     apple_speed: float | None = None,
     stamp: float | None = None,
 ) -> dict[str, Any]:
@@ -218,14 +232,16 @@ def success_info(
     return {
         APPLE_POSITION_KEY: None if apple_xyz is None else [float(v) for v in apple_xyz],
         APPLE_SPEED_KEY: None if apple_speed is None else float(apple_speed),
-        DISTANCE_KEY: (
-            float("inf") if apple_xyz is None else float(goal.horizontal_distance(apple_xyz))
-        ),
+        # `distance` is the camera's, and is what the core distance scorers read.
+        DISTANCE_KEY: float("inf") if distance is None else float(distance),
         DISPLACEMENT_KEY: (
             float("inf") if apple_xyz is None else float(goal.displacement(apple_xyz))
         ),
-        GEOMETRIC_SUCCESS_KEY: goal.is_placed(apple_xyz, apple_speed),
-        SIM_SUCCESS_KEY: sim_success,
+        GEOMETRIC_SUCCESS_KEY: bool(placed),
+        REFERENCE_SUCCESS_KEY: goal.is_placed(apple_xyz, apple_speed),
+        REFERENCE_DISTANCE_KEY: (
+            None if apple_xyz is None else float(goal.horizontal_distance(apple_xyz))
+        ),
         STAMP_KEY: None if stamp is None else float(stamp),
     }
 
