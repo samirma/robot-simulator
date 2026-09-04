@@ -243,7 +243,7 @@ class RosSettings:
     #: `None` keeps the adapter's own default of 2/control_hz, which is a **rate**
     #: assumption dressed up as a freshness one: it only holds if the robot publishes
     #: faster than the control loop runs. A simulator rendering several cameras inside
-    #: its physics loop does not -- measured here at 5-9 Hz against a 10 Hz control rate
+    #: its physics loop does not -- measured here at 8-10 Hz against a 10 Hz control rate
     #: -- and a VLA doing seconds of inference between steps widens the gap further. The
     #: symptom is an episode dying part-way through with "EmbodimentFault: no
     #: post-publish joint state within fresh_obs_timeout_s=0.2s". Raising it does not

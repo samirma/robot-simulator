@@ -69,6 +69,12 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
 .sliders{margin-top:14px;display:grid;gap:9px}
 .sliders[aria-disabled=true]{opacity:.45;pointer-events:none}
 .row{display:grid;grid-template-columns:130px 1fr 76px;align-items:center;gap:12px}
+.scenery{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:14px 0 0}
+.scenery .k{margin:0}
+.scenery .obj{font:13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9aa4b2}
+.scenery .obj b{font-weight:600;color:#c9d1d9}
+.scenery .obj.moved{color:#e5c07b}
+.scenery .obj.moved b{color:#e5c07b}
 .row label{font-size:12.5px;font-family:var(--mono);color:var(--muted)}
 .row input[type=range]{width:100%;accent-color:var(--accent)}
 .row .val{font-family:var(--mono);font-size:12.5px;text-align:right}
@@ -105,6 +111,17 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
       <div class="n">the simulator's own verdict</div></div>
   </div>
 
+  <!-- The wire carries six free bodies, not one. The other five get a strip rather than
+       five more cards, because their absolute positions are staged constants that never
+       change and would be five readouts of the same numbers all episode. What is worth
+       seeing is the moment one of them stops being a constant, so each shows how far it
+       has drifted from where this page first saw it: a jaw that clipped the mug on its
+       way past is otherwise invisible until the episode inexplicably fails. -->
+  <div class="scenery" id="scenery">
+    <span class="k">Also on the surface</span>
+    <span class="empty" id="scenery-empty">waiting for free-joint states…</span>
+  </div>
+
   <div class="control" id="control">
     <label class="arm"><input type="checkbox" id="enable"> Enable control
       <span class="warn" id="warn">observing only — publishes nothing</span></label>
@@ -123,7 +140,8 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
   <code>--wrist</code> appears here without a reload. Also subscribed to
   <code>/free_joint_publisher/free_joint_states</code>, <code>/joint_states</code> and
   <code>/task_success</code>. Camera rate is the simulator's, not this page's, and it falls as
-  more cameras are enabled (~4.2 Hz with two, ~2.9 Hz with three). While disarmed the sliders
+  more cameras are enabled: measured on MolmoSpaces, ~9.7 Hz with two and ~7.6 Hz with three,
+  roughly halving again when both engines share one GPU. While disarmed the sliders
   follow the measured pose, so enabling control never jumps the arm.</footer>
 </div>
 
@@ -134,6 +152,34 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
 // numbers whether the arm is bolted to a kitchen island or standing on a bare table.
 // That module is the authority for this constant.
 const PLATE = [0.226, -0.226];
+
+// Where each non-apple body was the first time this page saw it. Captured rather than
+// hard-coded: the staged poses are the task's to change, and a strip that quietly
+// measured drift against a stale copy of them would report every object as displaced.
+const sceneryOrigin = new Map();
+
+// Movement worth flagging, in metres. Loose enough to ignore the millimetre of settling
+// a resting mesh does against the surface, tight enough that a knock shows up.
+const SCENERY_MOVED = 0.005;
+
+function updateScenery(bodies) {
+  const parts = [];
+  for (const b of bodies) {
+    if (b.name === 'apple') continue;   // it has four cards of its own
+    const p = b.pose?.pose?.position;
+    if (!p) continue;
+    const here = [p.x, p.y, p.z];
+    if (!sceneryOrigin.has(b.name)) sceneryOrigin.set(b.name, here);
+    const from = sceneryOrigin.get(b.name);
+    const d = Math.hypot(here[0] - from[0], here[1] - from[1], here[2] - from[2]);
+    const moved = d >= SCENERY_MOVED;
+    parts.push('<span class="obj' + (moved ? ' moved' : '') + '"><b>' + b.name +
+               '</b> ' + (moved ? '+' + d.toFixed(3) + ' m' : 'in place') + '</span>');
+  }
+  if (!parts.length) return;
+  el('scenery').innerHTML =
+    '<span class="k">Also on the surface</span>' + parts.join('');
+}
 const URL = new URLSearchParams(location.search).get('url') || 'ws://127.0.0.1:9090';
 
 // Cameras are DISCOVERED, not listed. rosbridge exposes rosapi, whose
@@ -300,7 +346,9 @@ function connect() {
     if (m.topic === APPLE) {
       // The array is `free_joints`, not `states`, and each entry wraps a
       // PoseStamped -- so the position sits at pose.pose.position.
-      const entry = (m.msg.free_joints || []).find(f => f.name === 'apple');
+      const bodies = m.msg.free_joints || [];
+      updateScenery(bodies);
+      const entry = bodies.find(f => f.name === 'apple');
       if (!entry) return;
       const p = entry.pose?.pose?.position;
       const v = entry.twist?.twist?.linear;

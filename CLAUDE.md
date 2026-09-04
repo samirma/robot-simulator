@@ -131,6 +131,15 @@ Both sets of message builders live side by side in that file, clearly labelled. 
 that had to guess which dialect a stamp was in would be a worse thing than a little
 duplication.
 
+The `rosapi` shim answers `/rosapi/topics` from **both** what a surface has published and
+what it declared to `on()` -- which is why `on()` takes a message type it does not need in
+order to route anything. A real `rosapi` lists a node's subscriptions beside its
+publications, so a client can discover how to *command* a robot as well as how to watch
+it; answering from publications alone left the two command topics invisible and the arm
+looking like a sensor. `topics_for_type` still answers from publications alone, on
+purpose: its one caller asks what publishes CompressedImage and subscribes to the answer,
+so a subscription in that list could only ever be a topic to wait on that nothing sends.
+
 **The SO-101 used to speak a bespoke msgpack protocol (`molmospaces-control-v1`) on its
 own port, and no longer does.** The rationale for that choice was that a real SO-101 does
 not speak ROS — true of the servo bus, but not of how anyone deploys one: the arm ships

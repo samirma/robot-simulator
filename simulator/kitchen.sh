@@ -24,6 +24,9 @@
 #   --wrist                also stream the eye-in-hand camera
 #   --viewer               open the engine's own MuJoCo window while it serves. One
 #                          process, so the window shows exactly the state on the wire.
+#                          It costs camera rate -- measured on MolmoSpaces with three
+#                          cameras, 7.6 Hz headless against 5.0 Hz with the window --
+#                          and the loop still holds real time at that price.
 #   --no-reference-table   put the task's objects on the engine's own worktop instead
 #                          of on the reference work surface
 #   --no-dressing          apple and plate only, without the bowl/mug/banana/lemon
@@ -404,7 +407,7 @@ case "$cmd" in
         # fresh_obs_timeout_s: how long a step waits for an observation newer than the
         # command it just sent. The default is 2/control_hz = 0.2 s, which assumes the
         # simulator publishes faster than the control rate -- and this one does not: it
-        # renders two cameras inside the physics loop and manages 5-9 Hz, and a VLA adds
+        # renders its cameras inside the physics loop and manages 8-10 Hz, and a VLA adds
         # seconds of inference on top. Measured: an episode died mid-run with
         # "EmbodimentFault: no post-publish joint state within fresh_obs_timeout_s=0.2s".
         # Two seconds is generous, and it is still a freshness guarantee -- a stale

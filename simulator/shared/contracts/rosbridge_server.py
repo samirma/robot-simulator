@@ -366,13 +366,31 @@ class RosBridgeServer:
         # topic -> ROS type string, learned from what has actually been published. This
         # is what `rosapi` answers from; see `serve_rosapi`.
         self._published_types: dict[str, str] = {}
+        # topic -> ROS type string for what this server *accepts*, declared by `on`. Kept
+        # apart from `_published_types` because the two are learned differently: a
+        # publication announces its own type the first time it goes out, a subscription
+        # has to be told.
+        self._subscribed_types: dict[str, str] = {}
         self._seq = 0
 
     # -- lifecycle ---------------------------------------------------------------
 
-    def on(self, topic: str, callback: Callable[[dict], None]) -> None:
-        """Register a handler for messages clients publish to `topic`."""
-        self._handlers[normalise(topic)] = callback
+    def on(
+        self, topic: str, callback: Callable[[dict], None], message_type: str | None = None
+    ) -> None:
+        """Register a handler for messages clients publish to `topic`.
+
+        `message_type` is optional only because it is not needed to *route* a message --
+        but pass it, because it is what makes the topic discoverable. A real `rosapi`
+        lists a node's subscriptions alongside its publications, so a client can find out
+        how to command a robot as well as how to observe it; with no type recorded here
+        the command topics are invisible to discovery and only the published ones answer
+        `/rosapi/topics`.
+        """
+        topic = normalise(topic)
+        self._handlers[topic] = callback
+        if message_type is not None:
+            self._subscribed_types[topic] = message_type
 
     def service(self, name: str, callback: Callable[[dict], dict]) -> None:
         """Register a handler for `call_service` on `name`.
@@ -398,13 +416,21 @@ class RosBridgeServer:
         an empty grid -- a failure with no error in it.
 
         Only the two queries that page makes are implemented. `topics` reports what has
-        actually been published at least once, not what was advertised, because on this
-        server nothing advertises: publishers are the surface code, not clients.
+        actually been published at least once -- not what was advertised, because on this
+        server nothing advertises: publishers are the surface code, not clients -- plus
+        the command topics the surface declared to `on`, which is the half a client needs
+        to discover how to *drive* the robot rather than only how to watch it.
+
+        `topics_for_type` deliberately answers from publications alone. Its one caller
+        asks for everything publishing CompressedImage and subscribes to the answer, so
+        folding subscriptions in could only ever hand it a topic to listen to that
+        nothing sends.
         """
 
         def topics(_args: dict) -> dict:
-            names = sorted(self._published_types)
-            return {"topics": names, "types": [self._published_types[n] for n in names]}
+            known = {**self._subscribed_types, **self._published_types}
+            names = sorted(known)
+            return {"topics": names, "types": [known[n] for n in names]}
 
         def topics_for_type(args: dict) -> dict:
             wanted = args.get("type")

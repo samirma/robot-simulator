@@ -123,8 +123,10 @@ def serve_ros(
     """
     from contracts.rosbridge_server import (
         TYPE_BOOL,
+        TYPE_FLOAT64_MULTI_ARRAY,
         TYPE_FREE_JOINT_STATE_ARRAY,
         TYPE_JOINT_STATE,
+        TYPE_JOINT_TRAJECTORY,
         RosBridgeServer,
         free_joint_state_array,
         joint_state,
@@ -177,8 +179,8 @@ def serve_ros(
         if data:
             target[-1] = float(data[0])
 
-    server.on(TOPIC_ARM_COMMAND, on_arm_command)
-    server.on(TOPIC_GRIPPER_COMMAND, on_gripper_command)
+    server.on(TOPIC_ARM_COMMAND, on_arm_command, TYPE_JOINT_TRAJECTORY)
+    server.on(TOPIC_GRIPPER_COMMAND, on_gripper_command, TYPE_FLOAT64_MULTI_ARRAY)
     # Topic discovery, so the live camera page finds the cameras rather than being told.
     server.serve_rosapi()
 

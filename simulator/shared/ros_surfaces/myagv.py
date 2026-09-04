@@ -49,6 +49,7 @@ def serve_ros(port: int, base, model, camera: str | None, camera_size, jpeg_qual
         TOPIC_DEPTH,
         TOPIC_ODOM,
         TOPIC_SCAN,
+        TYPE_TWIST,
         RosBridgeServer,
         odometry,
     )
@@ -65,7 +66,7 @@ def serve_ros(port: int, base, model, camera: str | None, camera_size, jpeg_qual
         command["wz"] = float(angular.get("z", 0.0))
         command["at"] = time.monotonic()
 
-    server.on(TOPIC_CMD_VEL, on_cmd_vel)
+    server.on(TOPIC_CMD_VEL, on_cmd_vel, TYPE_TWIST)
 
     sensors = SensorStreams(
         server, model, camera, camera_size, jpeg_quality, scan, depth,
