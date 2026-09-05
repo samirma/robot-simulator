@@ -346,7 +346,11 @@ def find_counter_mount(arena, model, data, radius: float, reach=ARM_REACH):
         f"{2 * region['half'][1]:.2f} m, facing the room (yaw {np.degrees(yaw):.0f} deg)",
         file=sys.stderr,
     )
-    return xy, region["top_z"] + SO101_BASE_LIFT, yaw, out
+    # The free worktop as the arm sees it, in its base frame: x forward from the base,
+    # back edge `radius` behind it, front edge the region's full depth ahead of that; y
+    # along the run. The native-object placer needs this to keep things on the counter.
+    worktop = (-float(radius), 2.0 * depth - float(radius), float(max(region["half"])))
+    return xy, region["top_z"] + SO101_BASE_LIFT, yaw, out, worktop
 
 
 def make_kitchen_objects(categories, seed: int, scale: float = 1.0):
@@ -389,19 +393,38 @@ def make_kitchen_objects(categories, seed: int, scale: float = 1.0):
 #: 173-grey the detector's `val > 150` gate only just admits).
 NATIVE_MODELS = {"apple": "apple_10", "plate": "plate_4"}
 
+#: The dressing, from the registry: the task's own four (bowl, mug, banana, lemon --
+#: what the reference rig keeps on its table) plus four more so the counter reads as a
+#: kitchen rather than a rig. Nothing red: the instruction names *the red apple* and
+#: the camera verdict finds it by hue, so a red cup is a second apple to both. Measured
+#: on the textures, both registry cups are red (redness 88 and 136 on the scale that
+#: puts apple_10 at 141), so there is no cup and a pear instead; the sampler's default
+#: mug and bowl were red too, so those are pinned to the least red of their kind
+#: (mug_7 at -41, bowl_11 at -19). `None` lets the sampler choose, at the engine's own
+#: 0.7x graspable scale; `layout_native_dressing` keeps them from overlapping.
+NATIVE_DRESSING: dict[str, str | None] = {
+    "bowl": "bowl_11",
+    "mug": "mug_7",
+    "banana": None,
+    "lemon": None,
+    "orange": None,
+    "pear": None,
+    "bread": None,
+    "kiwi": None,
+}
 
-def make_task_objects(task, *, swap: bool) -> list:
-    """RoboCasa's own apple and plate, sized for the task and named for it.
 
-    The engine-native counterpart of the task's measured YCB pair. Each model is scaled
-    from its registry bounding box to the task's radius -- the apple to the contract's
-    20 mm (apple_10 ships at ~65 mm, past the ~70 mm the jaw opens), the plate to 0.10 m
-    -- and the apple's colliders get the task's contact block, which is what makes an
-    object *equivalent* rather than merely present: `condim 6` is the difference
-    between rolling friction existing and being parsed and discarded.
+def make_task_objects(task, *, swap: bool, dressing: bool = True, seed: int = 0) -> list:
+    """RoboCasa's own apple, plate and dressing, sized for the task and named for it.
 
-    Bodies are renamed to the task's `APPLE_BODY`/`PLATE_BODY` in `adopt_task_objects`,
-    after the kitchen spec is compiled around them.
+    The engine-native counterpart of the task's measured YCB set. The apple and plate
+    are scaled from their registry bounding boxes to the task's radii -- the apple to
+    the contract's 20 mm (apple_10 ships at ~65 mm, past the ~70 mm the jaw opens), the
+    plate to 0.10 m. The dressing is sampled by category (`NATIVE_DRESSING`) at the
+    engine's graspable scale; which model each category resolves to depends on `seed`.
+
+    Bodies are renamed to the task's names in `adopt_task_objects`, after the kitchen
+    spec is compiled around them; the apple's physics is replaced there too.
     """
     import xml.etree.ElementTree as ET
 
@@ -422,7 +445,82 @@ def make_task_objects(task, *, swap: bool) -> list:
         print(f"  native {category}: {model_name} scaled x{scale:.2f} "
               f"(registry half-extent {half * 1000:.0f} mm -> {radii[category] * 1000:.0f} mm)",
               file=sys.stderr)
+    if dressing:
+        rng = np.random.default_rng(seed)
+        for category, pinned in NATIVE_DRESSING.items():
+            groups = str(root / category / pinned / "model.xml") if pinned else [category]
+            kwargs, info = sample_kitchen_object(
+                groups=groups, rng=rng, obj_registries=("objaverse", "lightwheel"),
+                max_size=(0.30, 0.30, 0.30), object_scale=0.7,
+            )
+            objects.append(MJCFObject(name=f"task_{category}_native", **kwargs))
+            print(f"  native {category}: {Path(info['mjcf_path']).parent.name}"
+                  f"{' (pinned)' if pinned else ''}", file=sys.stderr)
     return objects
+
+
+def layout_native_dressing(objects, poses, worktop, task) -> dict[str, np.ndarray]:
+    """xy in the arm base frame for each free dressing object, none of them overlapping.
+
+    The task's own dressing positions are the first choice for the four categories the
+    reference rig has -- they are what the VLA's training scenes looked like -- but they
+    were laid out for the *standard* layout: with the plate at the apple's spawn, the
+    banana at (0.156, 0.156) reaches into the plate's footprint. So every spot is checked
+    against what is already down (the apple, the plate, the arm's own footprint, and each
+    object placed before it), against the worktop's edges, and against the straight line
+    the apple travels along to the plate; the nearest free cell to the preferred spot
+    wins. Extras prefer the far corners of the worktop, away from the working area.
+
+    Each object's footprint is robosuite's own `horizontal_radius`, plus a margin. An
+    object with no free cell is left out rather than squeezed in, and said so.
+    """
+    x_min, x_max, y_half = worktop
+    margin = 0.02
+    apple = np.asarray(poses["apple"][:2], dtype=float)
+    plate = np.asarray(poses["plate"][:2], dtype=float)
+    placed: list[tuple[np.ndarray, float]] = [
+        (apple, task.APPLE_RADIUS),
+        (plate, task.PLATE_RADIUS),
+        (np.zeros(2), 0.16),  # the arm's base and its elbow room at rest
+    ]
+    preferred = {name: np.asarray(pos[:2], dtype=float) for name, pos, *_ in task.DRESSING}
+    corners = [np.array([0.12, 0.45]), np.array([0.12, -0.45]),
+               np.array([0.40, 0.45]), np.array([0.40, -0.45])]
+
+    def off_the_carry_line(c: np.ndarray, r: float) -> bool:
+        d = plate - apple
+        t = float(np.clip(np.dot(c - apple, d) / max(float(np.dot(d, d)), 1e-9), 0.0, 1.0))
+        return float(np.linalg.norm(c - (apple + t * d))) > r + 0.05
+
+    xs = np.arange(x_min + 0.05, x_max - 0.03, 0.02)
+    ys = np.arange(-y_half + 0.03, y_half - 0.03, 0.02)
+    grid = np.stack(np.meshgrid(xs, ys, indexing="ij"), axis=-1).reshape(-1, 2)
+
+    spots: dict[str, np.ndarray] = {}
+    extra = 0
+    for obj in objects:
+        category = obj.name.split("_")[1]
+        r = float(obj.horizontal_radius) + margin
+        inside = (grid[:, 0] > x_min + r) & (grid[:, 0] < x_max - r) & (np.abs(grid[:, 1]) < y_half - r)
+        free = np.array([
+            inside[i]
+            and all(float(np.linalg.norm(c - p)) > r + pr for p, pr in placed)
+            and off_the_carry_line(c, r)
+            for i, c in enumerate(grid)
+        ], dtype=bool)
+        if not free.any():
+            print(f"  native {category}: no free spot on the worktop; left out", file=sys.stderr)
+            continue
+        if category in preferred:
+            goal = preferred[category]
+        else:
+            goal = corners[extra % len(corners)]
+            extra += 1
+        candidates = grid[free]
+        choice = candidates[int(np.argmin(np.linalg.norm(candidates - goal, axis=1)))]
+        spots[obj.name] = choice
+        placed.append((choice, r))
+    return spots
 
 
 def _spec_body(body, name: str):
@@ -463,7 +561,12 @@ def adopt_task_objects(spec: mujoco.MjSpec, objects: list, task, plate_world, wo
         body = _spec_body(spec.worldbody, obj.root_body)
         if body is None:
             raise SystemExit(f"native {category}: root body {obj.root_body!r} not in the spec")
-        body.name = names[category]
+        # `task_bowl` and friends for the dressing: the same names the task's own
+        # dressing carries, so the free-joint topic publishes them and the workspace
+        # clearing leaves them alone.
+        body.name = names.get(category, f"task_{category}")
+        if category not in names:
+            continue
         if category == "apple":
             stack = [body]
             while stack:
@@ -953,13 +1056,15 @@ def main() -> int:
     # RoboCasa kitchen is repeatedly the standing space in front of the very counter the
     # arm is about to be bolted to, and the task then stages a 0.92 m slab on top of it.
     keep_out: list[np.ndarray] = []
+    # The arm's free worktop in its base frame, from `find_counter_mount`; None without an arm.
+    arm_worktop = None
 
     for inst in sorted(instances, key=lambda i: not i.tabletop):
         if inst.tabletop:
             # No spawn margin for an arm: the margin is a driving allowance -- room to not be
             # touching a cabinet door you would then have to unstick yourself from -- and
             # adding it here would reject every 0.6 m-deep counter run in the dataset.
-            xy, mount_z, yaw, out = find_counter_mount(
+            xy, mount_z, yaw, out, arm_worktop = find_counter_mount(
                 arena, kitchen, kdata, ROBOT_RADIUS[inst.name]
             )
             inst.mount_z = mount_z
@@ -1006,7 +1111,9 @@ def main() -> int:
         import importlib
 
         task_module = importlib.import_module(TASKS[args.task][0])
-        task_objects = make_task_objects(task_module, swap=args.swap_objects)
+        task_objects = make_task_objects(
+            task_module, swap=args.swap_objects, dressing=args.dressing, seed=args.seed,
+        )
         objects = list(task_objects)
     if objects:
         spec = compile_spec(objects)
@@ -1087,7 +1194,9 @@ def main() -> int:
             [float(arm_instance.xy[0]), float(arm_instance.xy[1]), arm_instance.mount_z],
             float(arm_instance.yaw),
             reference_table=args.reference_table,
-            dressing=args.dressing,
+            # With native objects the dressing is RoboCasa's too (NATIVE_DRESSING),
+            # spawned above; the task's YCB set would be a second bowl inside the first.
+            dressing=args.dressing and not task_objects,
             lighting=args.reference_lighting,
             extra_lights=args.extra_lights,
             swap=args.swap_objects,
@@ -1098,11 +1207,24 @@ def main() -> int:
     data = mujoco.MjData(model)
 
     if task_objects:
-        # Only the apple: the plate was made static and placed on the spec in
-        # `adopt_task_objects`, so it has no free joint to write.
-        placeable = [o for o in task_objects if o.name.split("_")[1] == "apple"]
-        spots = [np.asarray(task_module._apply(task_transform, task_poses["apple"])[:2])
-                 for _ in placeable]
+        # Everything but the plate, which was made static and placed on the spec in
+        # `adopt_task_objects` and so has no free joint to write. The apple goes to the
+        # task's pose; the dressing wherever the placer found room.
+        laid_out = layout_native_dressing(
+            [o for o in task_objects if o.name.split("_")[1] not in ("apple", "plate")],
+            task_poses, arm_worktop, task_module,
+        )
+        placeable, spots = [], []
+        for o in task_objects:
+            category = o.name.split("_")[1]
+            if category == "apple":
+                local = task_poses["apple"]
+            elif o.name in laid_out:
+                local = (float(laid_out[o.name][0]), float(laid_out[o.name][1]), 0.0)
+            else:
+                continue
+            placeable.append(o)
+            spots.append(np.asarray(task_module._apply(task_transform, local)[:2]))
     else:
         placeable = objects
         spots = object_layout(xy, yaw, out, ARM_REACH, len(objects))

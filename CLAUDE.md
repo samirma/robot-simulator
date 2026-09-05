@@ -400,6 +400,21 @@ iTHOR apple's hull needed neither. One more trap: the two engines' venvs run **M
 and 3.3.1**, whose spec-editing APIs disagree exactly (`spec.delete(el)` only in 3.5,
 `el.delete()` only in 3.3.1); `apple_on_plate.spec_delete` is the one rule both use.
 
+On RoboCasa the **dressing is the registry's too** (`NATIVE_DRESSING`: the reference
+rig's bowl, mug, banana and lemon, plus orange, pear, bread and kiwi), and it is placed by
+`layout_native_dressing` rather than at the task's fixed positions, because those were
+laid out for the standard layout: with the plate at the apple's spawn the task's banana
+reached into the plate's footprint. The placer takes each object's own
+`horizontal_radius`, keeps it off the apple, the plate, the arm's footprint, everything
+placed before it, the worktop's edges and the apple-to-plate carry line, and picks the
+free cell nearest the reference position (or a far corner, for the extras). Nothing red
+besides the apple, and that was measured rather than eyeballed: both registry cups are
+red (so there is a pear instead), and the sampler's default mug and bowl were too (so
+`mug_7` and `bowl_11` are pinned). What remains is a 4 mm contact between the jaw at its
+start pose -- jaw centre (0.241, 0.014, 0.044) -- and the rim of a plate parked where
+the arm's home position looks; the plate is static, so it costs a warning and nothing
+else.
+
 **One engine swaps the objects.** `kitchen.sh serve --engine robocasa` stages the plate
 at the apple's spawn and the apple where the plate was (`--swap-objects`, on by default
 there and off for MolmoSpaces; `--no-swap-objects` reverts). The console is never told:
