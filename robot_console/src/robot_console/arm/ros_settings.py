@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from robot_console.arm.kinematics import ARM_JOINTS, GRIPPER_JOINT, JOINT_LIMITS
+from robot_console.topics import namespaced
 
 #: rosbridge websocket the simulator exposes.
 DEFAULT_URL = "ws://127.0.0.1:9090"
@@ -128,7 +129,7 @@ SIDE_CAMERA_HEIGHT = 480
 #: was added to the arm MJCF, so a comment here used to say it did not exist.
 #:
 #: **It is not published unless the simulator was started with
-#: ``./start_sim.sh --wrist``.** The camera is declared but disabled by default,
+#: ``./kitchen.sh serve --wrist``.** The camera is declared but disabled by default,
 #: because the MuJoCo plugin renders inside the physics loop and rate falls for
 #: *every* camera when another one is enabled: measured 4.23/4.15 Hz with it off
 #: against 2.94/2.98/2.97 Hz with it on. Selecting this view against a sim
@@ -198,6 +199,20 @@ class RosSettings:
     """Everything the ROS embodiment needs to talk to this simulator."""
 
     url: str = DEFAULT_URL
+    #: ROS namespace this arm is under. Several robots on one graph each get one -- the
+    #: simulator defaults it to the robot's own name -- so the topics below reach the wire
+    #: as `/so101/joint_states` and the services as `/so101/reset`.
+    #:
+    #: **The fields below stay bare, and the prefix is applied in `base_kwargs()` and
+    #: `cameras()`.** That is deliberate: those constants are transcribed from
+    #: `ros2 topic list -t` run inside the reference container, so they are the record of
+    #: what a real bringup presents, and `tests/arm/test_ros_settings.py` checks them
+    #: against that record. Prefixing them in place would make the record disagree with
+    #: itself; prefixing at the point of use keeps the claim checkable in both forms --
+    #: bare for the hardware contract, namespaced for what actually goes out.
+    #:
+    #: `""` reproduces the single-robot wire exactly.
+    namespace: str = "so101"
     ros_version: int = 2
     joints: tuple[str, ...] = ARM_JOINTS
     joint_states_topic: str = JOINT_STATES_TOPIC
@@ -293,19 +308,31 @@ class RosSettings:
         """Upper arm-joint command bounds, straight from the MJCF ranges."""
         return tuple(JOINT_LIMITS[name][1] for name in self.joints)
 
+    def topic(self, name: str) -> str:
+        """One of this settings object's topics or services, as it goes on the wire.
+
+        The single place the namespace is applied, so a caller can never end up
+        subscribing bare while publishing prefixed. Idempotent, so a topic given
+        explicitly (``-E camera_topic=/somewhere/else``) is left exactly as given.
+        """
+        return namespaced(name, self.namespace)
+
     def cameras(self) -> dict[str, tuple[str, int, int]]:
         """Camera map in the upstream adapter's ``name -> (topic, height, width)`` form.
 
         Insertion order is the declaration order, which is what a policy taking
-        views positionally depends on.
+        views positionally depends on. Topics come out namespaced; the *names* do not --
+        they are slot labels a policy matches on, not addresses.
         """
         out: dict[str, tuple[str, int, int]] = {}
         if self.camera_topic is not None:
-            out[self.camera_name] = (self.camera_topic, self.camera_height, self.camera_width)
+            out[self.camera_name] = (
+                self.topic(self.camera_topic), self.camera_height, self.camera_width
+            )
         for name, topic, width, height in self.extra_cameras:
             if name in out:
                 raise ValueError(f"duplicate camera name {name!r}")
-            out[name] = (topic, int(height), int(width))
+            out[name] = (self.topic(topic), int(height), int(width))
         return out
 
     def base_kwargs(self) -> dict[str, Any]:
@@ -322,14 +349,15 @@ class RosSettings:
             "url": self.url,
             "ros_version": self.ros_version,
             "joints": self.joints,
-            "joint_states_topic": self.joint_states_topic,
-            "command_topic": self.command_topic,
+            "joint_states_topic": self.topic(self.joint_states_topic),
+            "command_topic": self.topic(self.command_topic),
             "command_type": self.command_type,
             "action_low": self.action_low,
             "action_high": self.action_high,
             "cameras": self.cameras(),
             "control_hz": self.control_hz,
-            "reset_service": self.reset_service,
+            "reset_service": (None if self.reset_service is None
+                              else self.topic(self.reset_service)),
             "obs_timeout_s": self.obs_timeout_s,
             "fresh_obs_timeout_s": self.fresh_obs_timeout_s,
             "staleness_s": self.staleness_s,
@@ -338,7 +366,7 @@ class RosSettings:
         }
         if self.gripper_mode != "none":
             kwargs.update(
-                gripper_topic=self.gripper_topic,
+                gripper_topic=self.topic(self.gripper_topic),
                 gripper_joint=self.gripper_joint,
                 gripper_low=gripper_low,
                 gripper_high=gripper_high,

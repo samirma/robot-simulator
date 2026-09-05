@@ -21,6 +21,7 @@ stack.
 from __future__ import annotations
 
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -361,6 +362,9 @@ class TabletopMount:
     # last resort -- a 0.6 m counter against a wall has no room for a 0.77 m arm, and the
     # caller's job is then to try the next surface, not to bolt the arm into the wall.
     clear: bool = True
+    # Fraction of the arm's forward workspace with worktop under it at this pose. Below 1
+    # means part of what gets staged in the base frame is over thin air.
+    coverage: float = 1.0
 
 
 def static_blockers(
@@ -424,10 +428,15 @@ def _standing_on(
     geomid = np.zeros(1, dtype=np.int32)
     down = np.array([0.0, 0.0, -1.0])
     # The centre plus four points at arm's length: the whole robot has to be over the
-    # surface, not just the middle of its base.
-    probes = [np.zeros(2)] + [
-        radius * np.array([np.cos(a), np.sin(a)]) for a in np.linspace(0, 2 * np.pi, 4, endpoint=False)
-    ]
+    # surface, not just the middle of its base. `radius = 0` asks about the point itself,
+    # which is what the workspace lookup wants -- and five identical rays per point would
+    # be most of the cost of building it.
+    probes = [np.zeros(2)]
+    if radius > 0:
+        probes += [
+            radius * np.array([np.cos(a), np.sin(a)])
+            for a in np.linspace(0, 2 * np.pi, 4, endpoint=False)
+        ]
 
     mask = np.ones(len(cells), dtype=bool)
     for i, cell in enumerate(cells):
@@ -468,6 +477,68 @@ def dynamic_clutter(
     return np.array(rows, dtype=float).reshape(-1, 3)
 
 
+#: The forward workspace is sampled on this many bearings and this many radii. 9 x 4 is
+#: enough to catch a cell whose annulus clips a corner; the cost is a table lookup.
+_WORKSPACE_BEARINGS = 9
+_WORKSPACE_RADII = 4
+#: How far past the working annulus the worktop still has to reach. What gets staged in
+#: the arm's base frame is not only what the arm can reach: the reference table's bowl
+#: sits at r = 0.42 m, outside the 0.35 m annulus on purpose, and an object staged over
+#: thin air does not land on a worse surface, it falls to the floor.
+WORKSPACE_MARGIN = 0.10
+#: Headings tried at every candidate cell, 15 degrees apart.
+_YAW_STEPS = 24
+#: Coverage is compared in whole percentage points, so one sample in 36 cannot outrank
+#: facing the objects; the alignment tie-break below is scaled to stay inside one point.
+_COVERAGE_QUANTUM = 0.01
+
+
+def _workspace_offsets(reach_range: tuple[float, float], radius: float) -> np.ndarray:
+    """Sample points of the arm's forward workspace in its base frame (heading = +x).
+
+    A half-disc rather than a wedge: the reference table's mug sits at +79.5 degrees and
+    its bowl at -70.7, so "in front of the arm" for staging purposes is the whole forward
+    semicircle, not the narrow cone the pick-and-place sweeps.
+    """
+    radii = np.linspace(reach_range[0], radius, _WORKSPACE_RADII)
+    bearings = np.linspace(-np.pi / 2, np.pi / 2, _WORKSPACE_BEARINGS)
+    r, b = np.meshgrid(radii, bearings, indexing="ij")
+    return np.stack([r * np.cos(b), r * np.sin(b)], axis=-1).reshape(-1, 2)
+
+
+def _support_lookup(model, data, rects, top_z: float, body_id: int, lo, hi, step: float):
+    """Answer "is this surface underfoot here?" for whole arrays of points at once.
+
+    Built once over the region and then indexed, rather than ray-cast per query: scoring
+    every candidate cell against every heading is tens of thousands of points, and one
+    `mj_ray` each would dominate startup. It is the same question `_standing_on` asks,
+    asked in advance and on a grid.
+    """
+    xs = np.arange(lo[0], hi[0] + step, step)
+    ys = np.arange(lo[1], hi[1] + step, step)
+    points = np.stack(np.meshgrid(xs, ys, indexing="ij"), axis=-1).reshape(-1, 2)
+    if model is not None and data is not None and body_id >= 0:
+        flat = _standing_on(model, data, points, top_z, body_id, radius=0.0)
+    elif rects is not None and len(rects):
+        flat = np.array([_rects_covering(p, rects).any() for p in points], dtype=bool)
+    else:
+        # Nothing to test against; every point counts as supported, which makes coverage
+        # a constant and leaves the older tie-breaks deciding.
+        flat = np.ones(len(points), dtype=bool)
+    grid = flat.reshape(len(xs), len(ys))
+
+    def on_surface(query: np.ndarray) -> np.ndarray:
+        ix = np.rint((query[..., 0] - xs[0]) / step).astype(int)
+        iy = np.rint((query[..., 1] - ys[0]) / step).astype(int)
+        # Anything past the region was not sampled, and the region already covers every
+        # candidate's whole workspace -- so out of range means off the surface, not
+        # unknown, and clipping the index would wrongly answer yes at the far edge.
+        inside = (ix >= 0) & (ix < len(xs)) & (iy >= 0) & (iy < len(ys))
+        return grid[np.clip(ix, 0, len(xs) - 1), np.clip(iy, 0, len(ys) - 1)] & inside
+
+    return on_surface
+
+
 def find_tabletop_mount(
     target: GraspTarget,
     *,
@@ -480,14 +551,37 @@ def find_tabletop_mount(
     clutter: np.ndarray | None = None,
     model: mujoco.MjModel | None = None,
     data: mujoco.MjData | None = None,
+    edge_bias: bool = True,
+    workspace_radius: float | None = None,
 ) -> TabletopMount:
-    """Pick a clear patch of `target`'s surface within reach of what is on it.
+    """Pick a clear patch of `target`'s surface with the worktop in front of the arm.
 
     Candidates are grid cells on the top face, inset by half the robot's footprint so the
     base does not overhang the edge, minus anything sitting too close to an object already
-    there. Among what survives, prefer the cell with the most elbow room, and break ties by
-    how much of the surface's clutter falls inside the arm's working annulus -- so the arm
-    faces the busy side of the table rather than an empty corner of it.
+    there. Each survivor is then scored at 24 headings by **workspace coverage**: the
+    fraction of the arm's forward half-disc, out to `workspace_radius`, that has worktop
+    underneath it. That is the first key, and it is what makes "at the edge" mean anything.
+
+    Coverage, and not "face the nearest object", because a task lays its objects out in the
+    *arm's base frame* and they go wherever the heading points. Choosing the heading by
+    where the target object happened to sit put the arm on the corner of an iTHOR island
+    looking diagonally off it: the placement report read fine, and the staged mug hung in
+    mid-air over the floor with a third of the overhead camera's frame showing floorboards.
+    A heading that leaves the surface takes the whole task with it.
+
+    Coverage is maximised by standing at the rim looking in -- an arm in the middle of a
+    0.65 m counter reaches the front lip and the empty air past it, one against the back
+    edge has the whole depth in front of it -- so this subsumes what `edge_bias` used to
+    do by hand. `edge_bias` remains as the tie-break between cells that cover equally
+    well, which is what settles a free-standing island where many cells score 1.0. Pass
+    False for the older centre-seeking behaviour.
+
+    Objects in reach stay ahead of the rim in the ordering, and cells that reach nothing
+    are dropped while any cell reaches something: the caller rejects a surface on
+    `n_in_reach == 0` and moves to the next one, so maximising coverage across cells that
+    can reach nothing would silently give a usable surface away. Every candidate here has
+    already passed the `_standing_on` probes at `body_radius`, so "at the edge" still
+    cannot mean "overhanging it".
     """
     obj_xy = np.asarray(target.object_xyz[:2], dtype=float)
     lo = np.asarray(target.support_xy_min, dtype=float)
@@ -592,19 +686,72 @@ def find_tabletop_mount(
     )
     n_in_reach = ((in_reach > reach_range[0]) & (in_reach < reach_range[1])).sum(axis=1)
 
-    order = np.lexsort((-clearance[idx], -n_in_reach))
-    best = idx[order[0]]
+    # Distance from each surviving cell to the nearest side of the inset rectangle. The
+    # inset is already half the base plus a margin, so 0 here is the base's edge flush
+    # with the surface's, not hanging over it.
+    to_edge = np.minimum(grid - lo_in, hi_in - grid).min(axis=1)
 
-    to_target = obj_xy - grid[best]
-    yaw = float(np.arctan2(to_target[1], to_target[0]))
+    # ---- which way to face, and whether the worktop is there when it does -------------
+    cells = grid[idx]
+    if workspace_radius is None:
+        workspace_radius = reach_range[1] + WORKSPACE_MARGIN
+    offsets = _workspace_offsets(reach_range, workspace_radius)
+    headings = np.linspace(-np.pi, np.pi, _YAW_STEPS, endpoint=False)
+
+    # The lookup only has to span what the candidates can see, which on an L-shaped
+    # counter is a small fraction of the AABB the grid was cut from.
+    pad = float(np.abs(offsets).max()) + step
+    on_surface = _support_lookup(
+        model, data, rects, target.support_top_z, target.support_body_id,
+        cells.min(axis=0) - pad, cells.max(axis=0) + pad, step,
+    )
+
+    cos, sin = np.cos(headings), np.sin(headings)
+    # (yaw, sample, 2): the workspace rotated to each heading, once for every cell.
+    rotated = np.stack(
+        [
+            np.outer(cos, offsets[:, 0]) - np.outer(sin, offsets[:, 1]),
+            np.outer(sin, offsets[:, 0]) + np.outer(cos, offsets[:, 1]),
+        ],
+        axis=-1,
+    )
+    coverage = on_surface(cells[:, None, None, :] + rotated[None, :, :, :]).mean(axis=2)
+
+    # Among headings that cover the worktop equally well, still look at what is on it.
+    # Quantised coverage in whole points, plus an alignment term scaled to stay strictly
+    # inside one point, so this only ever breaks a tie.
+    to_target = obj_xy[None, :] - cells
+    target_yaw = np.arctan2(to_target[:, 1], to_target[:, 0])
+    align = np.cos(headings[None, :] - target_yaw[:, None])
+    score = np.round(coverage / _COVERAGE_QUANTUM) + 0.4 * (align + 1.0) / 2.0
+    best_yaw = score.argmax(axis=1)
+    cell_rows = np.arange(len(cells))
+    cell_cov = np.round(coverage[cell_rows, best_yaw] / _COVERAGE_QUANTUM)
+
+    # A cell that reaches nothing is not an option while any cell reaches something --
+    # `place_arm_on_table` reads `n_in_reach == 0` as "wrong surface" and moves on.
+    pool = cell_rows[n_in_reach > 0] if (n_in_reach > 0).any() else cell_rows
+
+    # lexsort reads its keys last-first: coverage, then objects in reach, then the rim,
+    # then elbow room.
+    if edge_bias:
+        order = np.lexsort(
+            (-clearance[idx][pool], to_edge[idx][pool], -n_in_reach[pool], -cell_cov[pool])
+        )
+    else:
+        order = np.lexsort((-clearance[idx][pool], -n_in_reach[pool], -cell_cov[pool]))
+    chosen = pool[order[0]]
+    best = idx[chosen]
+
     return TabletopMount(
         xy=grid[best].copy(),
         z=float(target.support_top_z),
-        yaw=yaw,
+        yaw=float(headings[best_yaw[chosen]]),
         target=target,
-        n_in_reach=int(n_in_reach[order[0]]),
+        n_in_reach=int(n_in_reach[chosen]),
         clearance=float(min(clearance[best], 9.99)),
         clear=clear,
+        coverage=float(coverage[chosen, best_yaw[chosen]]),
     )
 
 
@@ -617,6 +764,25 @@ def _spot_in_annulus(free_xy: np.ndarray, centre: np.ndarray, annulus: tuple[flo
     mid = (annulus[0] + annulus[1]) / 2
     idx = np.where(keep)[0]
     return free_xy[idx[np.argmin(np.abs(d[idx] - mid))]]
+
+
+def _outside_all(free_xy: np.ndarray, exclude: Sequence[tuple[np.ndarray, float]]) -> np.ndarray:
+    """Drop free points inside any keep-out circle, unless that would leave none.
+
+    Falling back to the unfiltered set is deliberate: in a small room the keep-outs can
+    cover every reachable cell, and a robot placed awkwardly is a far better failure than
+    a scene that will not spawn. The caller's `describe` line still says where it went.
+    """
+    if not len(free_xy) or not exclude:
+        return free_xy
+    keep = np.ones(len(free_xy), dtype=bool)
+    for centre, radius in exclude:
+        keep &= np.linalg.norm(free_xy - np.asarray(centre, dtype=float), axis=1) > radius
+    if not keep.any():
+        print("no free floor outside the other robots' clearance; placing anyway",
+              file=sys.stderr)
+        return free_xy
+    return free_xy[keep]
 
 
 def _open_floor_spot(free_xy: np.ndarray) -> tuple[np.ndarray, float]:
@@ -693,6 +859,7 @@ def find_robot_placement(
     yaw_deg: float | None = None,
     max_targets: int = 12,
     prefer: str = "table",
+    exclude: Sequence[tuple[np.ndarray, float]] = (),
 ) -> Placement:
     """Choose where the robot should stand and which way it should face.
 
@@ -722,6 +889,11 @@ def find_robot_placement(
 
     free_pts = thormap.get_free_points()
     free_xy = free_pts[:, :2] if len(free_pts) else np.zeros((0, 2))
+    # Keep-out circles: where another robot already went, plus the room it needs around
+    # it. This has to narrow the free set rather than re-rank it -- the roomiest floor in
+    # a kitchen is very often the standing space in front of the counter an arm was just
+    # mounted on, so a preference would still pick it every time.
+    free_xy = _outside_all(free_xy, exclude)
     targets = (
         find_grasp_targets(scene_path, model, data, thormap=thormap)[:max_targets]
         if prefer != "floor"
@@ -778,8 +950,12 @@ def describe(placement: Placement | TabletopMount) -> str:
             f"mounting robot on {t.support_category or t.support_name.split('_')[0]} at "
             f"({placement.xy[0]:.2f}, {placement.xy[1]:.2f}, {placement.z:.2f}) "
             f"yaw {np.degrees(placement.yaw):.0f} deg, "
-            f"facing {t.object_category or t.object_name.split('_')[0]} "
+            # Not "facing X" any more: the heading is chosen by what is under the
+            # workspace, not by where X sits, and a line that said otherwise is how the
+            # arm came to be looking off the side of an island without anyone noticing.
+            f"chosen for {t.object_category or t.object_name.split('_')[0]} "
             f"({placement.n_in_reach}/{t.n_objects_on_support} objects in reach, "
+            f"{placement.coverage:.0%} of its workspace on the worktop, "
             f"{placement.clearance:.2f} m clear)"
         )
     where = f"({placement.pos[0]:.2f}, {placement.pos[1]:.2f}) yaw {np.degrees(placement.yaw):.0f} deg"

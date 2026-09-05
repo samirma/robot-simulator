@@ -187,27 +187,21 @@ def test_ik_lands_where_it_says_it_does(model_and_data) -> None:
         np.testing.assert_allclose(tcp_position(solve.joints), actual, atol=TOLERANCE)
 
 
-def test_the_whole_solved_plan_is_reachable_in_mujoco(model_and_data) -> None:
-    """Every waypoint the shipped plan produces must land where it claims.
+def test_both_layouts_pass_the_preflight_reach_gate() -> None:
+    """The grasp and release poses solve from both places the objects may be staged.
 
-    This is the check that matters operationally: ``build_plan`` refuses
-    geometry whose IK residual exceeds its own limit, but that residual is
-    measured against our transcribed chain. Here it is measured against MuJoCo.
+    The scripted plan used to prove this on every preflight by solving all 37 of its
+    waypoints; with the plan gone the preflight solves the two that decide a
+    pick-and-place, and this pins that both layouts in ``task.LAYOUTS`` pass it. A
+    layout that failed here would refuse every episode at preflight, which is the
+    right failure -- but it should be found by this test, not by a run.
     """
-    from robot_console.arm.waypoints import build_plan
+    from robot_console.arm.preflight import _within_reach
+    from robot_console.arm.task import LAYOUTS
 
-    model, data = model_and_data
-    plan = build_plan()
-    worst = 0.0
-    for waypoint, joints in zip(plan.waypoints, plan.joint_targets, strict=True):
-        arm = joints[: len(ARM_JOINTS)]
-        expected = mujoco_tcp_pose(model, data, arm)
-        np.testing.assert_allclose(fk(arm), expected, atol=TOLERANCE)
-        centre = expected[:3, 3] + JAW_CENTER_OFFSET * expected[:3, 2]
-        error = float(np.linalg.norm(centre - np.asarray(waypoint.xyz)))
-        worst = max(worst, error)
-        assert error < 5e-3, f"waypoint {waypoint.name!r} is {error:.4f} m off in MuJoCo"
-    assert worst < 5e-3
+    for name, (apple, plate) in LAYOUTS.items():
+        ok, detail = _within_reach(np.asarray(apple), np.asarray(plate))
+        assert ok, f"layout {name!r}: {detail}"
 
 
 def test_level_jaw_roll_actually_levels_the_jaws(model_and_data) -> None:

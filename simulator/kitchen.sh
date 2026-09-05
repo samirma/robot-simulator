@@ -3,32 +3,60 @@
 #
 #   ./kitchen.sh                 render a screenshot from each engine into shots/
 #   ./kitchen.sh view            open the engine in the MuJoCo viewer
-#   ./kitchen.sh serve           run on rosbridge (see --engine); add --viewer for a window
-#   ./kitchen.sh inspect         stage the task, run inspect-robot against it, PASS/FAIL
-#   ./kitchen.sh cameras         open the live camera page on a running `serve`/`inspect`
+#   ./kitchen.sh serve           stage the task and serve it on rosbridge; --viewer for a window
+#   ./kitchen.sh cameras         open the live camera page on a running `serve`
 #   ./kitchen.sh help
 #
-#   --objects bowl,apple   the pair to stage the scene around (default: bowl,apple)
+# This script hosts the world. Running a task against it is the console's job:
+#
+#   cd ../robot_console && ./run_task.sh [--episodes N]
+#
+# `inspect` used to do both halves here and no longer exists -- grading an episode is not
+# simulation configuration, and the shell heredoc it lived in was untested.
+#
+#   --objects plate,apple  the pair each engine builds its worktop around (default
+#                          plate,apple), for shot/view only. Each engine furnishes it from
+#                          its *own* assets: RoboCasa samples the pair out of its object
+#                          registry, and MolmoSpaces moves the house's own apple and plate
+#                          into the arm's working annulus and sinks the clutter that was in
+#                          its way. MolmoSpaces used to spawn nothing at all -- --target
+#                          only *ranked* the house's surfaces -- so its shot was of a book,
+#                          a loaf and a tomato while RoboCasa's was of the pair, and the
+#                          two screenshots were not comparable. --target still ranks
+#                          surfaces as well; ranking picks the counter, the placement then
+#                          furnishes it. Under `serve` neither of these runs: the task
+#                          stages its own measured apple and plate 0.32 m from the arm and
+#                          clears the same workspace itself. The engine prints both
+#                          distances at startup, so "in reach" is read, not assumed.
 #   --scene ithor:1        MolmoSpaces scene    (default: ithor:1, a kitchen)
 #   --layout 1 --style 1   RoboCasa kitchen     (both 1-60)
 #   --out DIR              where screenshots go (default: shots/)
-#   --port 9090            rosbridge port for `serve`/`inspect`
+#   --port 9090            rosbridge port for `serve`
 #
-#   serve / inspect:
-#   --policy P             so101_waypoint (default) | molmoact2
+#   serve:
+#   --robots A,B           which robots share the kitchen and the port (default so101).
+#                          `so101,myagv` mounts the arm on a work surface and puts the
+#                          base on the floor of the same room, both on one rosbridge
+#                          under /so101/* and /myagv/* -- one ROS graph, a namespace per
+#                          robot, which is how a real multi-robot bringup is arranged.
+#                          run_task.sh still grades the arm; pass it the same --robots
+#                          and it checks the extra robot is on the wire.
 #   --engine E             molmospaces (default) | robocasa. One engine per run: only
 #                          the engine named here needs to be set up, and every command
 #                          honours it.
-#   --steps N              episode budget (default 400)
-#   --episodes N           run N episodes and report the pass count (default 1)
 #   --wrist                also stream the eye-in-hand camera
 #   --viewer               open the engine's own MuJoCo window while it serves. One
 #                          process, so the window shows exactly the state on the wire.
 #                          It costs camera rate -- measured on MolmoSpaces with three
 #                          cameras, 7.6 Hz headless against 5.0 Hz with the window --
 #                          and the loop still holds real time at that price.
-#   --no-reference-table   put the task's objects on the engine's own worktop instead
-#                          of on the reference work surface
+#   --reference-table      also stage the reference rig's 0.92 m wooden work surface
+#                          under the objects. Off by default: it sits on top of the
+#                          kitchen's own counter and reads as one table overlapping
+#                          another, and measured it does not move the VLA's pass count
+#                          (2/6 on the bare counter against 1/6 with the slab). The
+#                          scripted policy is verified both ways.
+#   --no-reference-table   the default, kept so older invocations still parse
 #   --no-dressing          apple and plate only, without the bowl/mug/banana/lemon
 #   --reference-lighting   impose the reference rig's exposure on the kitchen. Off by
 #                          default, against what the photometry says: it matches the
@@ -36,9 +64,19 @@
 #                          MolmoAct2 the task outright (0/24 episodes with it, 6/18
 #                          without). For comparing exposure, not for running a policy.
 #   --extra-lights         add the reference's two lamps (they blow out a lit kitchen)
+#   --swap-objects         stage the plate at the apple's spawn and the apple where the
+#                          plate was. ON BY DEFAULT for --engine robocasa and off for
+#                          molmospaces, so the two engines show the policy the same
+#                          objects in different arrangements; --no-swap-objects turns it
+#                          off. The console reads the layout off the wire (the apple's
+#                          reset position), so run_task.sh needs no matching flag.
+#   --task-objects         stage the task's own measured YCB apple and plate. The default
+#                          is each engine's *native* pair -- the iTHOR house's apple and
+#                          plate in MolmoSpaces, apple_10 and plate_4 from RoboCasa's
+#                          registry -- scaled to the task's radii and with the task's
+#                          measured contact block on the apple. See adopt_native_objects
+#                          / make_task_objects in each engine's spawn_robot.py.
 #   --http-port 8791       port the `cameras` page is served on
-#   --log-dir DIR          where run logs go (default: runs/kitchen-arm)
-#   --                     everything after this goes to inspect-robot
 #
 # One engine per run. Two at once meant two ports, two of every flag, and two kitchens
 # competing for one GPU -- which on this machine is not a theoretical cost: RoboCasa's
@@ -47,24 +85,24 @@
 # the point, and running each in turn against the same client is what actually
 # demonstrates the thing worth demonstrating -- that the client cannot tell them apart.
 #
-# What the task brings, and what the engines bring. `serve` and `inspect` stage
+# What the task brings, and what the engines bring. `serve` stages
 # shared/tasks/apple_on_plate.py into whichever kitchen an engine compiled: the reference
-# rig's work surface and everything on it -- a 20 mm apple, a white plate, and the bowl,
-# mug, banana and lemon it keeps as scenery -- at the poses and contact parameters that
-# were measured there. The engine still supplies the room and still mounts the arm on its
-# counter; the task supplies the geometry, because that is the part a procedurally chosen
-# object cannot.
+# rig's objects -- a 20 mm apple, a white plate, and the bowl, mug, banana and lemon it
+# keeps as scenery -- at the poses and contact parameters that were measured there, on
+# the engine's own counter. The engine still supplies the room and still mounts the arm;
+# the task supplies the geometry, because that is the part a procedurally chosen object
+# cannot.
 #
-# Bringing a table into a kitchen sounds redundant and is not. A camera's framing is a
-# property of the surface under it: with the reference slab staged, all four of its
-# corners land in the overhead frame at a worst normalised radius of 0.930, which is the
-# reference rig's own figure -- against a bare counter running diagonally across the frame
-# with a third of it floor. `--no-reference-table` is the other arrangement, and the
-# scripted policy is verified both ways.
+# The reference rig's wooden slab is not staged by default (see --reference-table). It
+# matches the reference's overhead framing to the figure -- all four corners at a worst
+# normalised radius of 0.930 -- and it does not move the VLA's pass count, while it does
+# sit visibly on top of the kitchen's own island. Framing that matches a number is not the
+# same as a scene a policy can act in; the lighting result taught that already.
 #
-# `--objects`/`--target` still choose what the *engines* put on their worktops, which is
-# what `shot` and `view` compare. They are not passed to `serve`/`inspect`: a task that
-# stages its own apple does not want a second one the jaw cannot close on.
+# `--objects` chooses what RoboCasa puts on its worktop for `shot` and `view`; it is not
+# passed to `serve`, because a task that stages its own apple does not want a second one
+# the jaw cannot close on. MolmoSpaces gets the same pair as `--target` in every command,
+# which only ranks surfaces and spawns nothing.
 #
 set -euo pipefail
 
@@ -83,15 +121,8 @@ ROOT="$(realpath "$ROOT" 2>/dev/null || echo "${ROOT%/.}")"
 
 MOLMO="$ROOT/molmospaces"
 ROBOCASA="$ROOT/robocasa"
-CONSOLE="$ROOT/../robot_console"
-CONSOLE="$(realpath "$CONSOLE" 2>/dev/null || echo "$CONSOLE")"
-# Two console venvs, and which one runs depends on the policy. torch is a multi-gigabyte
-# dependency that only the VLA needs, and keeping it out of `.venv` is what makes the
-# offline test suite fast and the scripted baseline cheap to run.
-CONSOLE_VENV="$CONSOLE/.venv"
-CONSOLE_VLA_VENV="$CONSOLE/.venv-vla"
 
-OBJECTS="bowl,apple"
+OBJECTS="plate,apple"
 SCENE="ithor:1"
 LAYOUT=1
 STYLE=1
@@ -99,19 +130,25 @@ OUT="$ROOT/shots"
 # 9090 is the rosbridge default and what a real bringup for this arm presents, so it is
 # the right port for whichever engine is running. There is only ever one.
 PORT="9090"
-POLICY="so101_waypoint"
+# Which robots share the kitchen, and therefore the port. One ROS graph with a namespace
+# per robot -- `so101` alone is on /so101/*, and `so101,myagv` adds /myagv/* beside it on
+# the same socket. The default is the arm alone, so every existing invocation is
+# unchanged.
+ROBOTS="so101"
 ENGINE="molmospaces"
-STEPS=400
-EPISODES=1
 WRIST=0
 VIEWER=0
 HTTP_PORT=8791
-LOG_DIR=""
-declare -a STAGE_FLAGS=()
+# The task stages the reference slab unless told not to; this script tells it not to.
+declare -a STAGE_FLAGS=(--no-reference-table)
+# Whether the plate and the apple trade places. "auto" resolves per engine once the
+# engine is known: on for robocasa, off for molmospaces -- one engine keeps the
+# contract's arrangement and the other shows the policy the same objects the other way
+# round. The console needs no matching flag; it reads the layout off the wire.
+SWAP="auto"
 # Set by the commands that stage a task, so the engine wrappers know not to also ask the
 # engine for loose objects of its own.
 STAGING_TASK=0
-declare -a PASSTHRU=()
 
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
@@ -132,19 +169,21 @@ while [ $# -gt 0 ]; do
     --out)      OUT="$2";     shift 2 ;;
     --port)     PORT="$2";    shift 2 ;;
     --ports)    die "--ports is gone: one engine runs at a time now, so use --port PORT" ;;
-    --policy)   POLICY="$2";  shift 2 ;;
     --engine)   ENGINE="$2";  shift 2 ;;
-    --steps)    STEPS="$2";   shift 2 ;;
-    --episodes) EPISODES="$2"; shift 2 ;;
-    --log-dir)  LOG_DIR="$2"; shift 2 ;;
+    --robots)   ROBOTS="$2";  shift 2 ;;
+    --policy|--steps|--episodes|--log-dir|--)
+      die "$1 belongs to robot_console/run_task.sh now: this script only hosts the world" ;;
     --wrist)    WRIST=1;      shift ;;
     --viewer)   VIEWER=1;     shift ;;
     --http-port) HTTP_PORT="$2"; shift 2 ;;
-    --no-reference-table) STAGE_FLAGS+=(--no-reference-table); shift ;;
+    --no-reference-table) shift ;;
+    --reference-table)    STAGE_FLAGS=("${STAGE_FLAGS[@]/--no-reference-table}"); shift ;;
     --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
     --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
     --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
-    --)         shift; PASSTHRU=("$@"); break ;;
+    --swap-objects)       SWAP=1; shift ;;
+    --no-swap-objects)    SWAP=0; shift ;;
+    --task-objects)       STAGE_FLAGS+=(--task-objects);       shift ;;
     *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
   esac
 done
@@ -155,8 +194,6 @@ if [ "$cmd" = "help" ] || [ "$cmd" = "-h" ] || [ "$cmd" = "--help" ]; then
 fi
 
 
-[ -n "$LOG_DIR" ] || LOG_DIR="$ROOT/runs/kitchen-arm"
-
 case "$ENGINE" in
   molmospaces|robocasa) ;;
   both) die "--engine both is gone: run one engine at a time.
@@ -166,6 +203,18 @@ case "$ENGINE" in
     because a client cannot tell them apart." ;;
   *) die "--engine: expected molmospaces or robocasa" ;;
 esac
+
+# The swap resolves per engine only once the engine is known -- see SWAP above.
+if [ "$SWAP" = auto ]; then
+  [ "$ENGINE" = robocasa ] && SWAP=1 || SWAP=0
+fi
+[ "$SWAP" -eq 0 ] || STAGE_FLAGS+=(--swap-objects)
+
+# Defined here rather than beside the other engine helpers below, because `need_engine`
+# calls it 70 lines before that point and bash binds a function only when it executes the
+# definition. It used to live below, and every command except `cameras` died on
+# `engine_root: command not found` with an empty engine name in the message.
+engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
 
 need_engine() {
   [ -x "$1/.venv/bin/python" ] \
@@ -199,7 +248,7 @@ molmospaces() {
     # subshell forks python as a child, `kill $!` reaps only the subshell, and the engine
     # is orphaned still holding its port -- which the next run then fails on, blaming the
     # port rather than the leak.
-    exec "$1" "$MOLMO/tools/spawn_robot.py" so101 --scene "$xml" --target "$OBJECTS" "${@:2}"
+    exec "$1" "$MOLMO/tools/spawn_robot.py" "$ROBOTS" --scene "$xml" --target "$OBJECTS" "${@:2}"
   )
 }
 
@@ -214,7 +263,7 @@ robocasa() {
     # from ever being asked for.
     local objects=()
     [ "$STAGING_TASK" -eq 1 ] || objects=(--objects "$OBJECTS")
-    exec "$1" "$ROBOCASA/tools/spawn_robot.py" so101 --layout "$LAYOUT" --style "$STYLE" \
+    exec "$1" "$ROBOCASA/tools/spawn_robot.py" "$ROBOTS" --layout "$LAYOUT" --style "$STYLE" \
       ${objects[@]+"${objects[@]}"} "${@:2}"
   )
 }
@@ -241,16 +290,12 @@ viewer() {
 # right default here -- but it is also a popular port, and a sibling checkout running its
 # own simulator is the likeliest thing holding it. Naming the holder turns a puzzling
 # failure into an obvious one.
-# The engines this invocation covers, as `name:port`, honouring --engine.
-# The port belongs to whichever engine was asked for; there is only one of each.
-engine_port() { echo "$PORT"; }
-engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
 
 port_free() {
   nc -z 127.0.0.1 "$1" 2>/dev/null || return 0
   local holder
   holder="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | sort -u | paste -sd, -)"
-  die "port $1 is already in use${holder:+ (by: $holder)} - pick others with --ports A,B"
+  die "port $1 is already in use${holder:+ (by: $holder)} - pick another with --port PORT"
 }
 
 # Kill a backgrounded engine and everything it forked, then wait for the port to actually
@@ -264,27 +309,6 @@ stop_engine() {
     sleep 0.5
   done
   echo "warning: port $port still held after stopping the engine" >&2
-}
-
-# Wait for the topics, not for the port. A listening socket only means the websocket
-# server bound; it says nothing about whether the scene compiled, the cameras resolved,
-# or the task staged. Every one of those failures otherwise arrives minutes later as a
-# client-side reset timeout with no clue in it.
-wait_for_topics() {
-  local url="$1" pidfile="$2" label="$3" i
-  for i in $(seq 1 180); do
-    if [ -n "$pidfile" ] && ! kill -0 "$pidfile" 2>/dev/null; then
-      echo >&2; die "$label died during startup - see the log above"
-    fi
-    if "$CONSOLE/.venv/bin/python" -m robot_console.arm.preflight \
-         --url "$url" --no-reset --allow-out-of-reach >/dev/null 2>&1; then
-      echo " ready (${i}s)" >&2
-      return 0
-    fi
-    [ $((i % 5)) -eq 0 ] && printf '.' >&2
-    sleep 1
-  done
-  echo >&2; die "$label never published its topics on $url"
 }
 
 # ---------------------------------------------------------------- commands
@@ -320,16 +344,16 @@ case "$cmd" in
     # EXIT as well as INT/TERM: without it a `die` anywhere below leaves the engine
     # holding its port, and the next run fails the port check for no visible reason.
     trap 'stop_engine "$sim_pid" "$PORT"' INT TERM EXIT
-    echo ">> $ENGINE so101 on ws://127.0.0.1:$PORT$([ "$VIEWER" -eq 1 ] && echo ' (with a window)')"
+    echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT$([ "$VIEWER" -eq 1 ] && echo ' (with a window)')"
     "$ENGINE" "$(engine_python "$ENGINE")" $(headless_arg) --ros-port "$PORT" \
       --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" \
       ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
     sim_pid=$!
     echo
-    echo "drive it from robot_console/:"
-    echo "  inspect-robot run --task apple_on_plate --policy so101_waypoint \\"
-    echo "      --embodiment so101_ros -E url=ws://127.0.0.1:$PORT \\"
-    echo "      -E fresh_obs_timeout_s=2.0 -T max_steps=$STEPS --max-action-delta 0.65"
+    echo "run the task against it from robot_console/:"
+    echo "  ./run_task.sh --label $ENGINE$([ "$PORT" = 9090 ] || echo " --url ws://127.0.0.1:$PORT") --episodes 6"
+    echo "  (layout: $([ "$SWAP" -eq 1 ] && echo 'swapped -- plate at the apple spawn' || echo 'standard'); the console reads it off the wire)"
+    echo "watch it:"
     echo "  ./kitchen.sh cameras --engine $ENGINE$([ "$PORT" = 9090 ] || echo " --port $PORT")"
     wait
     ;;
@@ -348,7 +372,11 @@ case "$cmd" in
       >/dev/null 2>&1 &
     http_pid=$!
     trap 'kill "$http_pid" 2>/dev/null || true' INT TERM EXIT
-    page_url="http://127.0.0.1:$HTTP_PORT/live_cameras.html?url=$url"
+    # `ns` tells the page which robot's state and command topics to drive. The camera
+    # grid does not need it -- it discovers streams from rosapi, so every robot on the
+    # port shows up regardless -- but the arm sliders address one robot and must be told
+    # which. The arm is always `so101` here.
+    page_url="http://127.0.0.1:$HTTP_PORT/live_cameras.html?url=$url&ns=so101"
     say "camera page: $page_url"
     echo "  cameras are discovered from the wire, so --wrist shows up without a reload"
     echo "  the sliders drive the arm once you tick 'Enable control'"
@@ -358,141 +386,10 @@ case "$cmd" in
     ;;
 
   inspect)
-    # The VLA policy needs torch, which lives only in .venv-vla; everything else runs in
-    # the light venv. Choosing here rather than making the caller remember it.
-    case "$POLICY" in
-      molmoact2) RUN_VENV="$CONSOLE_VLA_VENV"; extra="vla" ;;
-      *)         RUN_VENV="$CONSOLE_VENV";     extra="dev,arm" ;;
-    esac
-    [ -x "$RUN_VENV/bin/inspect-robot" ] || die \
-      "inspect-robot is not installed in $(basename "$RUN_VENV") - run:
-    cd $CONSOLE && uv venv --python 3.12 $(basename "$RUN_VENV") \
-        && VIRTUAL_ENV=$(basename "$RUN_VENV") uv pip install -e '.[$extra]'"
-
-    # There are two console venvs and only one of them runs on any given invocation, so a
-    # change to the entry points can leave the other stale for as long as nobody picks
-    # that policy. It does not fail loudly when they do: the scorer name resolves in one
-    # venv and not the other, every episode dies before its first step, and the run prints
-    # `apple nan` -- which reads as a task that went wrong rather than an install that is
-    # behind. The editable install picks up source edits by itself; it is only the entry
-    # points, declared in pyproject.toml, that need the reinstall.
-    if [ "$CONSOLE/pyproject.toml" -nt "$RUN_VENV/bin/inspect-robot" ]; then
-      say "refreshing $(basename "$RUN_VENV") - pyproject.toml is newer than its install"
-      ( cd "$CONSOLE" && VIRTUAL_ENV="$RUN_VENV" uv pip install -e ".[$extra]" -q ) \
-        || die "could not refresh $(basename "$RUN_VENV")"
-      touch "$RUN_VENV/bin/inspect-robot"
-    fi
-
-    STAGING_TASK=1
-    overall=0
-    for name in "$ENGINE"; do
-      port="$PORT"; url="ws://127.0.0.1:$port"
-      port_free "$port"
-      wrist_arg=(); [ "$WRIST" -eq 1 ] && wrist_arg=(--wrist-camera)
-
-      say "== $name: staging apple_on_plate on $url"
-      "$name" "$(engine_python "$name")" $(headless_arg) \
-        --ros-port "$port" --task apple_on_plate --control-hz 10 "${wrist_arg[@]}" \
-        ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
-      sim_pid=$!
-      trap 'stop_engine "$sim_pid" "$port"' INT TERM EXIT
-
-      printf 'waiting for topics' >&2
-      wait_for_topics "$url" "$sim_pid" "$name"
-
-      passes=0
-      for episode in $(seq 1 "$EPISODES"); do
-        run_dir="$LOG_DIR/$name/$(date +%Y%m%d-%H%M%S)-$episode"
-        # The preflight is separate from the episode's own reset for a reason: /reset
-        # says the world was restored, and this checks that it *was* -- the apple
-        # measured back at spawn and the scripted plan still solving from there. A
-        # drifted apple otherwise scores zero looking exactly like a policy failure.
-        if ! "$CONSOLE/.venv/bin/python" -m robot_console.arm.preflight --url "$url" \
-               --json "$run_dir/scene_reset.json"; then
-          case $? in
-            2) die "no simulator answering on $url" ;;
-            3) die "the world did not reset - restart the engine" ;;
-            4) die "the apple is where the arm cannot complete the plan" ;;
-            *) die "preflight failed" ;;
-          esac
-        fi
-
-        # fresh_obs_timeout_s: how long a step waits for an observation newer than the
-        # command it just sent. The default is 2/control_hz = 0.2 s, which assumes the
-        # simulator publishes faster than the control rate -- and this one does not: it
-        # renders its cameras inside the physics loop and manages 8-10 Hz, and a VLA adds
-        # seconds of inference on top. Measured: an episode died mid-run with
-        # "EmbodimentFault: no post-publish joint state within fresh_obs_timeout_s=0.2s".
-        # Two seconds is generous, and it is still a freshness guarantee -- a stale
-        # observation is refused, it is just given time to arrive.
-        #
-        # --max-action-delta 0.65 raises the framework's own per-step limiter above the
-        # policy's largest intended single-step change (the jaw closing 1.0 -> 0.40).
-        # The default is derived from the action space and lands near 0.03, which halves
-        # the arm's 0.06 rad step: measured, `home` and `pre_grasp` then burn their whole
-        # 40-step budget without arriving and the episode runs out of steps in transit.
-        # The policy is already the rate limiter, and it is the one holding the measured
-        # constants; this leaves the bounds clamp in place and gets the limiter out of
-        # its way.
-        set +e
-        "$RUN_VENV/bin/inspect-robot" run \
-          --task apple_on_plate --policy "$POLICY" --embodiment so101_ros \
-          -E "url=$url" -E "fresh_obs_timeout_s=2.0" -T "max_steps=$STEPS" \
-          --max-action-delta 0.65 --grader none --no-prompt \
-          --log-dir "$run_dir" ${PASSTHRU[@]+"${PASSTHRU[@]}"} > "$run_dir/episode.log" 2>&1
-        status=$?
-        set -e
-        # The verdict is decided in Python, not by string-matching in the shell: these
-        # scores are floats on the wire (`1.0`, not `1`), and `[ "$x" = "1" ]` quietly
-        # calls a passing episode a failure. Measured the hard way, on an episode that
-        # placed the apple 13 mm from the plate centre and was reported FAIL.
-        verdict="$("$CONSOLE/.venv/bin/python" - "$run_dir" <<'PY'
-import glob, json, sys
-files = [f for f in glob.glob(sys.argv[1] + "/*.json") if "scene_reset" not in f]
-if not files:
-    print("FAIL FAIL nan")
-    raise SystemExit
-log = json.load(open(files[0]))
-sample = log["samples"][0]
-# An episode that *errored* and one that ran and scored zero are different failures, and
-# reporting both as "apple nan m from plate centre" hides the first behind the second.
-if log.get("status") != "success" or sample.get("error"):
-    reason = str(sample.get("error") or log.get("error") or "errored").splitlines()[0]
-    print(f"ERROR ERROR {reason[:90]}")
-    raise SystemExit
-scores = sample["epochs"][0]
-scored = "PASS" if float(scores.get("apple_on_plate", 0)) >= 1.0 else "FAIL"
-ref = "PASS" if float(scores.get("reference_success", 0)) >= 1.0 else "FAIL"
-print(f"{scored} {ref} {scores.get('apple_plate_distance', float('nan')):.4f} m from plate centre")
-PY
-)"
-        read -r scored ref_said detail <<<"$verdict"
-        if [ "$scored" = "PASS" ] && [ "$status" -eq 0 ]; then
-          passes=$((passes + 1))
-          printf '  episode %s/%s: \033[32mPASS\033[0m  apple %s' \
-            "$episode" "$EPISODES" "$detail"
-        elif [ "$scored" = "ERROR" ]; then
-          printf '  episode %s/%s: \033[31mERROR\033[0m %s' "$episode" "$EPISODES" "$detail"
-        else
-          printf '  episode %s/%s: \033[31mFAIL\033[0m  apple %s (gate 0.080)' \
-            "$episode" "$EPISODES" "$detail"
-        fi
-        # The graded verdict is the camera's. `reference_success` recomputes the same
-        # predicate from the free-joint poses and grades nothing; it is printed only when
-        # the two disagree, which is the one signal that separates "the policy failed"
-        # from "the detector stopped seeing". A run where this fires repeatedly is a
-        # reason to look at the overhead frames, not at the policy.
-        [ "$ref_said" = "$scored" ] \
-          || printf '  \033[33m[camera says %s, pose reference says %s]\033[0m' \
-               "$scored" "$ref_said"
-        echo "   log: $run_dir"
-      done
-
-      say "== $name: $passes/$EPISODES passed"
-      [ "$passes" -gt 0 ] || overall=1
-      stop_engine "$sim_pid" "$port"
-      trap - INT TERM EXIT
-    done
-    exit "$overall"
+    # Gone, in the tradition of --ports and --engine both: the simulator hosts the world
+    # and the console runs the task. Two terminals, two projects.
+    die "inspect has moved to robot_console/run_task.sh.
+    terminal 1:  ./kitchen.sh serve --engine $ENGINE$([ "$VIEWER" -eq 1 ] && echo ' --viewer')
+    terminal 2:  cd ../robot_console && ./run_task.sh --label $ENGINE [--episodes N]"
     ;;
 esac

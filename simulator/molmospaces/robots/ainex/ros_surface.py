@@ -59,11 +59,16 @@ class _State:
         self.init_pose_requested = False
 
 
-def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
-              control_hz: float, watchdog_s: float, scan: dict | None = None,
-              depth: dict | None = None, extra: dict | None = None):
-    """Present the AiNex on its manufacturer's topics and return a per-step callback."""
-    from contracts.rosbridge_server import RosBridgeServer, header
+def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: int,
+               control_hz: float, watchdog_s: float, scan: dict | None = None,
+               depth: dict | None = None, extra: dict | None = None, scene_option=None,
+               camera_period: float = 0.0, world_reset=None):
+    """Wire the AiNex onto an already-built bus and return a per-step callback.
+
+    The vendor topic names in `topics.py` stay bare; the bus applies whatever namespace
+    this robot was given. See `contracts/namespace.py`.
+    """
+    from contracts.rosbridge_server import header
     from tools.spawn_robot import PlanarSetpoint, SensorStreams, SensorTopics
 
     for group in ("base", "legs"):
@@ -83,7 +88,6 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
     actuator_ids = {n: model.actuator(f"{namespace}{n}").id for n in servos.SERVOS}
     qpos_adr = {n: model.jnt_qposadr[joint_ids[n]] for n in servos.SERVOS}
 
-    server = RosBridgeServer(port=port)
     state = _State()
 
     # ---------------------------------------------------------------- subscribers
@@ -159,12 +163,12 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
 
         return handler
 
-    server.on(topics.TOPIC_APP_WALKING_PARAM, on_app_walking_param)
-    server.on(topics.TOPIC_SET_WALKING_PARAM, on_walking_param)
-    server.on(topics.TOPIC_APP_ACTION, on_set_action)
-    server.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set)
-    server.on(topics.TOPIC_HEAD_PAN, head_setter("head_pan"))
-    server.on(topics.TOPIC_HEAD_TILT, head_setter("head_tilt"))
+    bus.on(topics.TOPIC_APP_WALKING_PARAM, on_app_walking_param)
+    bus.on(topics.TOPIC_SET_WALKING_PARAM, on_walking_param)
+    bus.on(topics.TOPIC_APP_ACTION, on_set_action)
+    bus.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set)
+    bus.on(topics.TOPIC_HEAD_PAN, head_setter("head_pan"))
+    bus.on(topics.TOPIC_HEAD_TILT, head_setter("head_tilt"))
 
     # ---------------------------------------------------------------- services
 
@@ -217,10 +221,10 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
             state.init_pose_requested = True
         return {}
 
-    server.service(topics.SRV_WALKING_COMMAND, walking_command)
-    server.service(topics.SRV_GET_WALKING_PARAM, get_walking_param)
-    server.service(topics.SRV_IS_WALKING, is_walking)
-    server.service(topics.SRV_INIT_POSE, init_pose)
+    bus.service(topics.SRV_WALKING_COMMAND, walking_command)
+    bus.service(topics.SRV_GET_WALKING_PARAM, get_walking_param)
+    bus.service(topics.SRV_IS_WALKING, is_walking)
+    bus.service(topics.SRV_INIT_POSE, init_pose)
 
     # ---------------------------------------------------------------- streams
 
@@ -235,15 +239,22 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
     )
     setpoint = PlanarSetpoint()
 
-    server.start()
+    if world_reset is not None:
+        # Same reason as the myAGV surface: a whole-world reset restores this robot's
+        # joints and actuator targets but not the setpoint integrating its gait, so the
+        # torso would drive for a pose it no longer occupies.
+        world_reset.on_reset(setpoint.reset)
+
     subscribed = [
         topics.TOPIC_APP_WALKING_PARAM, topics.TOPIC_SET_WALKING_PARAM,
         topics.TOPIC_APP_ACTION, topics.TOPIC_BUS_SERVO_SET,
         topics.TOPIC_HEAD_PAN, topics.TOPIC_HEAD_TILT,
     ]
     published = [topics.TOPIC_IS_WALKING, topics.TOPIC_JOINT_STATES, topics.TOPIC_IMU]
+    # The port belongs to the fleet, not to this robot: several surfaces may be sharing
+    # it, and each printing its own address would suggest otherwise.
     print(
-        f"ROS topics on ws://0.0.0.0:{port}\n"
+        f"ainex topics under namespace {bus.ns}\n"
         f"  sub {', '.join(subscribed)}\n"
         f"  srv {', '.join([topics.SRV_WALKING_COMMAND, topics.SRV_GET_WALKING_PARAM, topics.SRV_IS_WALKING, topics.SRV_INIT_POSE])}\n"
         f"  pub {', '.join(published + sensors.published)}",
@@ -259,7 +270,6 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
     def step(data):
         if data is None:
             sensors.close()
-            server.stop()
             return
 
         with state.lock:
@@ -271,7 +281,7 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
             state.servo_writes.clear()
             wants_init = state.init_pose_requested
             state.init_pose_requested = False
-            clients = server.client_count
+            clients = bus.client_count
 
         # The myAGV's silence-based watchdog is wrong for a state machine: a correct
         # client sends nothing at all between `start` and `stop`. Losing the last client
@@ -329,9 +339,9 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
 
-        seq = server.next_seq()
+        seq = bus.next_seq()
         positions = [float(data.qpos[qpos_adr[n]]) for n in servos.BY_ID]
-        server.publish(
+        bus.publish(
             topics.TOPIC_JOINT_STATES,
             {
                 "header": header(seq, topics.FRAME_BASE),
@@ -341,8 +351,8 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
                 "effort": [],
             },
         )
-        server.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)})
-        server.publish(topics.TOPIC_IMU, _imu_msg(seq, yaw, wz))
+        bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)})
+        bus.publish(topics.TOPIC_IMU, _imu_msg(seq, yaw, wz))
         sensors.publish(data, seq, x, y, yaw)
 
     return step
@@ -411,3 +421,19 @@ def _imu_msg(seq: int, yaw: float, wz: float) -> dict:
         "linear_acceleration": {"x": 0.0, "y": 0.0, "z": 0.0},
         "linear_acceleration_covariance": [-1.0] + [0.0] * 8,
     }
+
+
+def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
+              control_hz: float, watchdog_s: float, scan: dict | None = None,
+              depth: dict | None = None, extra: dict | None = None,
+              host: str = "0.0.0.0", namespace: str = ""):
+    """The single-robot path: own a server on `port`, put one AiNex on it, start it."""
+    from ros_surfaces import RobotFleet
+
+    fleet = RobotFleet(port=port, host=host)
+    fleet.attach(namespace, attach_ros, view=view, model=model, camera=camera,
+                 camera_size=camera_size, jpeg_quality=jpeg_quality,
+                 control_hz=control_hz, watchdog_s=watchdog_s, scan=scan, depth=depth,
+                 extra=extra)
+    fleet.start()
+    return fleet

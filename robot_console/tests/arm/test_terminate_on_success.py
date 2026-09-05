@@ -83,15 +83,21 @@ class _Sample:
 
 
 class _ScriptedClient:
-    """The two monitor topics, driven by a caller-set apple pose and clock."""
+    """The two monitor topics, driven by a caller-set apple pose and clock.
 
-    def __init__(self) -> None:
+    The topic it answers to is passed in rather than written out, because the embodiment
+    subscribes under its ROS namespace: a fake keyed on the bare contract name answers
+    nothing, which looks exactly like a simulator that stopped publishing.
+    """
+
+    def __init__(self, object_state_topic: str) -> None:
+        self.object_state_topic = object_state_topic
         self.position = SPAWN
         self.speed = 0.0
         self.time = 0.0
 
     def latest(self, topic: str) -> _Sample | None:
-        if topic == "/free_joint_publisher/free_joint_states":
+        if topic == self.object_state_topic:
             whole = int(self.time)
             header = {
                 "stamp": {"sec": whole, "nanosec": round((self.time - whole) * 1e9)},
@@ -139,7 +145,9 @@ def embodiment(monkeypatch: pytest.MonkeyPatch) -> SO101RosEmbodiment:
         ),
     )
     subject = SO101RosEmbodiment(RosSettings(control_hz=10.0))
-    subject._client = _ScriptedClient()  # type: ignore[assignment]
+    subject._client = _ScriptedClient(  # type: ignore[assignment]
+        subject.settings.topic(subject.settings.object_state_topic)
+    )
     # A few steps with the apple at its spawn point. Every real episode begins this way,
     # and the camera needs it twice over: clause 5 measures travel against somewhere it has
     # actually seen the apple, and the airborne test needs the apple's own apparent size

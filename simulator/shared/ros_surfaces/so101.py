@@ -112,8 +112,8 @@ def to_mjcf_gripper(contract: float) -> float:
     return float(np.clip(contract, low, high)) - GRIPPER_OFFSET_RAD
 
 
-def serve_ros(
-    port: int,
+def attach_ros(
+    bus,
     view,
     model,
     task=None,
@@ -122,25 +122,27 @@ def serve_ros(
     jpeg_quality: int = 70,
     control_hz: float = 10.0,
     scene_option=None,
-    host: str = "0.0.0.0",
+    world_reset=None,
 ):
-    """Present the arm on its ROS topics and return a per-step callback.
+    """Wire the arm onto an already-built bus and return a per-step callback.
 
     Call the returned function with a `mujoco.MjData` each control period, and with
-    `None` to shut the server down -- the same shape as `ros_surfaces/myagv.py`.
+    `None` to close this robot's streams -- the same shape as `ros_surfaces/myagv.py`.
+    It does not stop the server: the fleet that owns the port does that, once.
+
+    The topic constants above stay bare and the `bus` applies the namespace, so
+    `/joint_states` reaches the wire as `/so101/joint_states` without a prefix being
+    spelled out anywhere in this file.
     """
     from contracts.rosbridge_server import (
         TYPE_FLOAT64_MULTI_ARRAY,
         TYPE_FREE_JOINT_STATE_ARRAY,
         TYPE_JOINT_STATE,
         TYPE_JOINT_TRAJECTORY,
-        RosBridgeServer,
         free_joint_state_array,
         joint_state,
     )
     from mujoco_bridge import CameraStreams
-
-    server = RosBridgeServer(port=port)
     # Either a MolmoSpaces `RobotView` or a plain mapping of move groups, because that is
     # the one place the two engines genuinely differ: MolmoSpaces builds its groups out of
     # the upstream `RobotView` trio, RoboCasa builds equivalent ones straight off the raw
@@ -186,10 +188,12 @@ def serve_ros(
         if data:
             target[-1] = float(data[0])
 
-    server.on(TOPIC_ARM_COMMAND, on_arm_command, TYPE_JOINT_TRAJECTORY)
-    server.on(TOPIC_GRIPPER_COMMAND, on_gripper_command, TYPE_FLOAT64_MULTI_ARRAY)
-    # Topic discovery, so the live camera page finds the cameras rather than being told.
-    server.serve_rosapi()
+    bus.on(TOPIC_ARM_COMMAND, on_arm_command, TYPE_JOINT_TRAJECTORY)
+    bus.on(TOPIC_GRIPPER_COMMAND, on_gripper_command, TYPE_FLOAT64_MULTI_ARRAY)
+    # `serve_rosapi()` used to be called here. It is a *server* concern -- one topic list
+    # answers for every robot on the port -- so the fleet calls it once instead. That it
+    # lived here is why a myAGV-only run had no topic discovery at all: the mobile-base
+    # surface never called it.
 
     # A reset is *requested* here and *performed* on the simulation thread. Service
     # handlers run on the websocket thread, and writing qpos from there while the step
@@ -215,11 +219,12 @@ def serve_ros(
             return {"success": False, "message": "reset requested but the simulation loop did not apply it"}
         return {"success": True, "message": "world reset"}
 
-    server.service(SERVICE_RESET, do_reset)
-    server.service(SERVICE_RESET_WORLD, do_reset)
+    bus.service(SERVICE_RESET, do_reset)
+    bus.service(SERVICE_RESET_WORLD, do_reset)
 
     streams = CameraStreams(
-        model, DEFAULT_CAMERAS if cameras is None else cameras, jpeg_quality, scene_option
+        model, DEFAULT_CAMERAS if cameras is None else cameras, jpeg_quality, scene_option,
+        frame_of=bus.frame,
     )
 
     # `do_reset` runs on a websocket thread and needs the MjData the step loop owns.
@@ -242,18 +247,9 @@ def serve_ros(
         }
     last_contacts = [-1]
 
-    server.start()
-    published = [TOPIC_JOINT_STATES, TOPIC_FREE_JOINT_STATES, *streams.published]
-    print(
-        f"ROS topics on ws://{host}:{port} "
-        f"(sub {TOPIC_ARM_COMMAND}, {TOPIC_GRIPPER_COMMAND}; pub {', '.join(published)})",
-        file=sys.stderr,
-    )
-
     def step(data):
         if data is None:
             streams.close()
-            server.stop()
             return
 
         _live[0] = data
@@ -264,6 +260,13 @@ def serve_ros(
                 task.reset(data)
             target[:5] = np.asarray(arm.joint_pos, dtype=np.float64).reshape(-1)
             target[-1] = to_contract_gripper(float(np.asarray(gripper.joint_pos).reshape(-1)[0]))
+            # The task's reset restores the WHOLE world -- qpos, qvel and ctrl -- which on
+            # a shared scene includes every other robot in it. Their surfaces latch state
+            # the snapshot cannot restore (an integrated `cmd_vel` setpoint, most of all),
+            # so they are told to drop it here, inside the same critical section, before
+            # the blocked service caller is released.
+            if world_reset is not None:
+                world_reset.fire()
             reset_applied.set()
 
         arm.ctrl = target[:5].tolist()
@@ -275,7 +278,7 @@ def serve_ros(
         # three read this number, and a wall-clock stamp makes all three agree on an
         # answer about the wrong clock.
         stamp = float(data.time)
-        seq = server.next_seq()
+        seq = bus.next_seq()
 
         positions = np.concatenate(
             [
@@ -289,20 +292,20 @@ def serve_ros(
                 np.asarray(gripper.joint_vel, dtype=np.float64).reshape(-1),
             ]
         )
-        server.publish(
+        bus.publish(
             TOPIC_JOINT_STATES,
             joint_state(list(JOINT_ORDER), positions, velocities, stamp),
             TYPE_JOINT_STATE,
         )
 
         if task is not None:
-            server.publish(
+            bus.publish(
                 TOPIC_FREE_JOINT_STATES,
                 free_joint_state_array(task.free_joint_entries(data), stamp),
                 TYPE_FREE_JOINT_STATE_ARRAY,
             )
 
-        streams.publish(server, data, seq, stamp)
+        streams.publish(bus, data, seq, stamp)
 
         if contact_debug:
             n = 0
@@ -319,3 +322,34 @@ def serve_ros(
                       file=sys.stderr)
 
     return step
+
+
+def serve_ros(
+    port: int,
+    view,
+    model,
+    task=None,
+    *,
+    cameras: dict[str, tuple[str, int, int]] | None = None,
+    jpeg_quality: int = 70,
+    control_hz: float = 10.0,
+    scene_option=None,
+    host: str = "0.0.0.0",
+    namespace: str = "",
+):
+    """The single-robot path: own a server on `port`, put one arm on it, start it.
+
+    A thin wrapper over `attach_ros`, kept so callers that only ever want one robot need
+    no knowledge of fleets. `spawn_robot.py` builds a `RobotFleet` directly, because it
+    may be asked for several robots at once and they must share the one port.
+    """
+    from ros_surfaces import RobotFleet
+
+    fleet = RobotFleet(port=port, host=host)
+    fleet.attach(namespace, attach_ros, view=view, model=model, task=task,
+                 cameras=cameras, jpeg_quality=jpeg_quality, control_hz=control_hz,
+                 scene_option=scene_option)
+    fleet.start()
+    print(f"SO-101 on ws://{host}:{port} under namespace {namespace or '<bare>'}",
+          file=sys.stderr)
+    return fleet

@@ -11,7 +11,13 @@ from typing import Optional, Sequence, Tuple
 from robot_console import __version__
 from robot_console.robots import DEFAULT_ROBOT, PROFILES
 from robot_console.teleop import HOLD_TIMEOUT, SPEED_DEFAULT, SPEED_MAX
-from robot_console.topics import TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM
+from robot_console.topics import (
+    TOPIC_CAMERA,
+    TOPIC_CMD_VEL,
+    TOPIC_ODOM,
+    namespaced,
+    normalise,
+)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 9090
@@ -57,6 +63,19 @@ def split_host_port(value: str, default_port: int = DEFAULT_PORT) -> Tuple[str, 
         if port.isdigit():
             return (host or DEFAULT_HOST), int(port)
     return text, default_port
+
+
+
+def resolve_topic(explicit: Optional[str], default: str, namespace: str) -> str:
+    """The topic to use: what the caller named, else the contract default namespaced.
+
+    An explicitly named topic is taken as given -- naming one is a more specific
+    instruction than naming a namespace, and silently prefixing it would make
+    `--odom-topic /elsewhere/odom` mean something the caller did not ask for. The flags
+    therefore default to `None` rather than to the constant, which is the only way to
+    tell "left alone" from "set to the default value on purpose".
+    """
+    return normalise(explicit) if explicit is not None else namespaced(default, namespace)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -116,9 +135,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--connect-timeout", type=float, default=10.0, help="rosbridge connect timeout in seconds")
     # The AiNex has no equivalent of either, and its profile ignores both rather than
     # pretending to honour them; say so instead of failing quietly.
-    parser.add_argument("--cmd-topic", default=TOPIC_CMD_VEL, help="Twist robots only (myagv)")
-    parser.add_argument("--odom-topic", default=TOPIC_ODOM, help="Twist robots only (myagv)")
-    parser.add_argument("--camera-topic", default=TOPIC_CAMERA)
+    # A namespace, not four flags. Several robots on one rosbridge each get one -- the
+    # simulator names it after the robot -- so `--namespace myagv` reaches
+    # `/myagv/cmd_vel` and friends without spelling any of them out. Applied only to
+    # topics left at their default, so an explicit `--odom-topic` still wins; the default
+    # is empty, which is the bare contract a real myAGV bringup presents.
+    parser.add_argument(
+        "--namespace", default="", metavar="NAME",
+        help="ROS namespace the robot is under, e.g. `myagv` for /myagv/cmd_vel")
+    parser.add_argument("--cmd-topic", default=None, help="Twist robots only (myagv)")
+    parser.add_argument("--odom-topic", default=None, help="Twist robots only (myagv)")
+    parser.add_argument("--camera-topic", default=None)
     parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
     return parser
 
@@ -156,9 +183,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Options:
         max_speed=max_speed,
         hold_timeout=None if args.latch else max(0.05, float(args.hold_timeout)),
         record_fps=args.record_fps,
-        cmd_topic=args.cmd_topic,
-        odom_topic=args.odom_topic,
-        camera_topic=args.camera_topic,
+        cmd_topic=resolve_topic(args.cmd_topic, TOPIC_CMD_VEL, args.namespace),
+        odom_topic=resolve_topic(args.odom_topic, TOPIC_ODOM, args.namespace),
+        camera_topic=resolve_topic(args.camera_topic, TOPIC_CAMERA, args.namespace),
     )
 
 

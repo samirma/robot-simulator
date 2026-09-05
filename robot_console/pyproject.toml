@@ -43,7 +43,7 @@ inspect = [
     "inspect-robots-agent",
 ]
 # The MolmoAct2 VLA policy. Installed into its own venv (.venv-vla) by
-# bin/arm_task.sh, never into .venv: torch is a multi-gigabyte dependency and the
+# run_task.sh, never into .venv: torch is a multi-gigabyte dependency and the
 # offline test suite must stay fast and torch-free. The `molmoact2` entry point is
 # declared unconditionally below and still imports without this extra -- torch and
 # transformers are reached from inside `MolmoAct2Policy._load()`, not at module
@@ -89,10 +89,9 @@ robot-console-navigate = "robot_console.navigate:main"
 apple_on_plate = "robot_console.arm.task:apple_on_plate"
 
 [project.entry-points."inspect_robots.policies"]
-# so101_waypoint is the scripted baseline and the thing to run first when a run
-# fails: it is closed-loop on proprioception and has never missed at 400 steps, so
-# a failure from it is a scene/transport fault, not a policy one.
-so101_waypoint = "robot_console.arm.policy:so101_waypoint"
+# The scripted so101_waypoint baseline used to be registered beside this. It was
+# removed deliberately: the VLA is the only policy this console runs now, and the
+# transport check it provided is covered by the preflight's IK reach gate.
 molmoact2 = "robot_console.arm.molmoact:molmoact2"
 
 [project.entry-points."inspect_robots.embodiments"]

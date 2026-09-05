@@ -180,14 +180,22 @@ function updateScenery(bodies) {
   el('scenery').innerHTML =
     '<span class="k">Also on the surface</span>' + parts.join('');
 }
-const URL = new URLSearchParams(location.search).get('url') || 'ws://127.0.0.1:9090';
+const PARAMS = new URLSearchParams(location.search);
+const URL = PARAMS.get('url') || 'ws://127.0.0.1:9090';
+// Which robot on the graph this page drives. Several robots share one rosbridge, each
+// under its own namespace, so the arm's state and command topics below have to carry it.
+// The camera grid needs nothing: it discovers streams from rosapi and so picks up every
+// robot's views automatically, whatever they are called. `?ns=` overrides; the default
+// matches the simulator's, which names a namespace after its robot.
+const NS = PARAMS.has('ns') ? PARAMS.get('ns').replace(/^\/+|\/+$/g, '') : 'so101';
+const nsTopic = (t) => (NS ? '/' + NS + (t.startsWith('/') ? t : '/' + t) : t);
 
 // Cameras are DISCOVERED, not listed. rosbridge exposes rosapi, whose
 // topics_for_type answers "what is publishing CompressedImage right now" -- so
 // the page shows exactly the cameras that exist, however many that is.
 //
 // Why this matters here rather than being tidiness: the eye-in-hand camera is
-// off unless the simulator was started with `./start_sim.sh --wrist`, so the
+// off unless the simulator was started with `./kitchen.sh serve --wrist`, so the
 // camera count legitimately differs between runs. A hardcoded pair is wrong in
 // both directions at once -- it hides a camera that is publishing, and it shows
 // a dead black tile for one that is not.
@@ -238,7 +246,7 @@ function addCamera(topic) {
   return true;
 }
 
-const APPLE = '/free_joint_publisher/free_joint_states';
+const APPLE = nsTopic('/free_joint_publisher/free_joint_states');
 // There is no success topic any more: the simulator stopped answering its own question
 // so that nothing could be graded on state a camera cannot see. This page therefore does
 // what the grader does -- decides from the geometry it can measure. It has the plate's
@@ -246,9 +254,9 @@ const APPLE = '/free_joint_publisher/free_joint_states';
 // rather than pretending to re-run the detector in JavaScript; `arm/vision_success.py` is
 // the authority, and this gauge is a convenience beside the live views.
 const GATE_M = 0.080;
-const JOINTS = '/joint_states';
-const ARM_CMD = '/joint_trajectory_controller/joint_trajectory';
-const GRIP_CMD = '/gripper_controller/commands';
+const JOINTS = nsTopic('/joint_states');
+const ARM_CMD = nsTopic('/joint_trajectory_controller/joint_trajectory');
+const GRIP_CMD = nsTopic('/gripper_controller/commands');
 
 // MJCF ranges, mirroring kinematics.JOINT_LIMITS. The five arm joints go on the
 // trajectory controller; gripper_joint is a separate ForwardCommandController.
@@ -289,7 +297,7 @@ function updateFooter() {
   const empty = el('views-empty');
   if (empty && names.length === 0) {
     empty.textContent = 'No camera is publishing. The eye-in-hand view needs '
-      + './start_sim.sh --wrist; if none appear at all, check the simulator is running.';
+      + './kitchen.sh serve --wrist; if none appear at all, check the simulator is running.';
   }
 }
 

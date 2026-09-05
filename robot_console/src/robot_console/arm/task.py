@@ -49,6 +49,39 @@ INSTRUCTION = (
 #: Apple sphere radius in ``task_scene.xml``, and the contract's declared value.
 APPLE_RADIUS = 0.020
 
+#: The two layouts a simulator may stage, as (apple spawn, plate centre). ``standard``
+#: is the contract's; ``swapped`` puts the plate at the apple's spawn and the apple where
+#: the plate was, which is what one engine now serves so the policy is shown the same
+#: objects in a different arrangement rather than the one it could have memorised.
+#: The console does not decide which it is talking to -- the preflight reads the apple's
+#: spawn off the wire and ``layout_of`` names it, so the reference predicate follows the
+#: world instead of a flag that could disagree with it.
+LAYOUTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "standard": (APPLE_XYZ, PLATE_XYZ),
+    "swapped": (
+        (PLATE_XYZ[0], PLATE_XYZ[1], APPLE_XYZ[2]),
+        (APPLE_XYZ[0], APPLE_XYZ[1], PLATE_XYZ[2]),
+    ),
+}
+
+#: The arm pose every episode starts from: five arm joints, radians, contract order.
+#: Mirrors the simulator's ``apple_on_plate.START_ARM_QPOS`` -- it is the task's, not the
+#: engine's rest pose, and ``wrist_roll`` at +1.62 is what keeps the first state a VLA
+#: sees inside the band it was trained on. Pinned here so a test can hold the two sides
+#: together; the scripted plan whose first waypoint used to serve as this record is gone.
+START_ARM_QPOS: tuple[float, float, float, float, float] = (0.0, -0.6, 1.0, 0.6, 1.62)
+
+
+def layout_of(apple_xyz, *, tolerance: float = 0.03) -> str | None:
+    """Name the layout whose apple spawn is within ``tolerance`` of ``apple_xyz``, or None."""
+    import math
+
+    x, y = float(apple_xyz[0]), float(apple_xyz[1])
+    for name, (spawn, _plate) in LAYOUTS.items():
+        if math.hypot(x - spawn[0], y - spawn[1]) <= tolerance:
+            return name
+    return None
+
 
 def resolve_instruction(text: str | None = None, path: str | None = None) -> str:
     """Pick the instruction from a literal, a file, or the benchmark's default.
@@ -66,7 +99,7 @@ def resolve_instruction(text: str | None = None, path: str | None = None) -> str
     return INSTRUCTION if text is None else text
 
 
-def instruction_warning(instruction: str, *, policy_ignores_it: bool = False) -> str | None:
+def instruction_warning(instruction: str) -> str | None:
     """Return the caveat owed to a run given a non-default instruction, or None.
 
     Changing the instruction changes what the policy is *told*. It does not
@@ -92,13 +125,6 @@ def instruction_warning(instruction: str, *, policy_ignores_it: bool = False) ->
         "whether the policy achieved the goal typed above. This probes instruction",
         "following, not task success.",
     ]
-    if policy_ignores_it:
-        lines += [
-            "",
-            "Worse here: SO101WaypointPolicy never reads the instruction. It executes a",
-            "fixed apple->plate plan, so this run is identical to one with the default",
-            "text. The text is recorded as provenance and has no other effect.",
-        ]
     lines.append("=" * 78)
     return "\n".join(lines)
 
@@ -156,6 +182,7 @@ def apple_on_plate(
     epochs: int = 1,
     apple_radius: float = APPLE_RADIUS,
     instruction: str = INSTRUCTION,
+    layout: str = "standard",
     **_: Any,
 ) -> Task:
     """The benchmark: one scene, geometric success plus the simulator's own verdict.
@@ -165,16 +192,32 @@ def apple_on_plate(
     the text says, so a run given some other goal scores 0 against *this*
     task and that 0 is not a verdict on the goal that was typed.
 
-    It is declared explicitly rather than left to ``**_`` because that
+    ``layout`` names which of `LAYOUTS` the simulator staged. The camera verdict
+    finds both objects in the frame and does not care; it is the pose-derived
+    ``reference_success`` column that would otherwise grade a swapped world against
+    the standard plate centre and disagree with the camera on every step.
+    ``run_task.sh`` passes what the preflight measured rather than what anyone typed.
+
+    Both are declared explicitly rather than left to ``**_`` because that
     catch-all swallows a misspelled keyword in silence -- the run would then
     use the default text while the caller believed otherwise, and nothing in
     the log would say so. Callers should still read the instruction back off
     the returned scene; see the guard in ``scripts/molmoact_eval.py``.
     """
     text = str(instruction)
+    if layout not in LAYOUTS:
+        raise ValueError(f"layout must be one of {sorted(LAYOUTS)}, not {layout!r}")
+    spawn, plate = LAYOUTS[layout]
     return Task(
         name="apple_on_plate",
-        scenes=[apple_on_plate_scene(apple_radius=float(apple_radius), instruction=text)],
+        scenes=[
+            apple_on_plate_scene(
+                apple_radius=float(apple_radius),
+                apple_xy=(spawn[0], spawn[1]),
+                plate_xyz=plate,
+                instruction=text,
+            )
+        ],
         scorer=["apple_on_plate_success", "reference_success", "apple_plate_distance"],
         max_steps=int(max_steps),
         epochs=int(epochs),
@@ -183,5 +226,6 @@ def apple_on_plate(
             "transport": "rosbridge",
             "instruction": text,
             "apple_radius_m": float(apple_radius),
+            "layout": layout,
         },
     )

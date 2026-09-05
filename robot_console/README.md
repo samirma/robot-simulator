@@ -55,7 +55,7 @@ ships no arm console script of its own:
 ```bash
 uv pip install -e '.[arm]'        # numpy + inspect-robots + inspect-robots-ros
 .venv/bin/inspect-robot list tasks        # apple_on_plate
-.venv/bin/inspect-robot list policies     # molmoact2, so101_waypoint
+.venv/bin/inspect-robot list policies     # molmoact2
 .venv/bin/inspect-robot list embodiments  # so101_ros
 ```
 
@@ -64,8 +64,7 @@ Registered pieces:
 | kind | name | what it is |
 |---|---|---|
 | task | `apple_on_plate` | pick a 20 mm apple off the work surface, place it on the plate, hold it there |
-| policy | `so101_waypoint` | the scripted plan: a task-space pick-and-place lowered through IK, closed-loop on proprioception |
-| policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text |
+| policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text. The scripted `so101_waypoint` plan that used to sit beside it was deleted; the preflight's IK reach gate covers what it checked |
 | embodiment | `so101_ros` | the arm behind rosbridge |
 | scorer | `apple_on_plate_success`, `reference_success`, `apple_plate_distance` | the camera's verdict, plus a pose-derived one that grades nothing and exists to audit it |
 
@@ -73,18 +72,21 @@ The usual way to run it is from the simulator, which starts the world and the cl
 together and reports PASS/FAIL:
 
 ```bash
-cd ../simulator && ./kitchen.sh inspect                    # scripted baseline
-cd ../simulator && ./kitchen.sh inspect --policy molmoact2 --episodes 8
+./run_task.sh --episodes 8                                 # MolmoAct2, a pass count
 ```
 
-Manually, against a simulator someone else started:
+Manually, against a simulator someone else started (the VLA lives in `.venv-vla`):
 
 ```bash
 .venv/bin/python -m robot_console.arm.preflight --url ws://127.0.0.1:9090   # reset + verify
-.venv/bin/inspect-robot run --task apple_on_plate --policy so101_waypoint \
+.venv-vla/bin/inspect-robot run --task apple_on_plate --policy molmoact2 \
     --embodiment so101_ros -E url=ws://127.0.0.1:9090 -T max_steps=400 \
-    --max-action-delta 0.65
+    -T layout=standard --max-action-delta 0.65
 ```
+
+`-T layout=` is `standard` or `swapped` (plate at the apple's spawn, apple at the
+plate's); the preflight prints which one the simulator is serving and `run_task.sh`
+passes that along, so the pose-derived reference scorer grades the right arrangement.
 
 Three flags there are load-bearing rather than decorative:
 
@@ -110,7 +112,7 @@ none of it. So the VLA extra installs into a **separate** venv:
 uv venv --python 3.12 .venv-vla && VIRTUAL_ENV=.venv-vla uv pip install -e '.[vla]'
 ```
 
-`kitchen.sh inspect` picks the venv from `--policy`, so this is only worth knowing
+`run_task.sh` picks the venv from `--policy`, so this is only worth knowing
 when running the client by hand. `arm/molmoact.py` imports torch inside `_load()` rather
 than at module scope, which is what lets `inspect-robot list policies` work — and the
 offline test suite run — in the torch-free venv.
@@ -325,9 +327,8 @@ src/robot_console/
     ros_client.py          the header-stamping shim (without it the arm never moves)
     ros_settings.py        every topic name, type and camera size, in one place
     kinematics.py          FK/IK for the SO-101                  (pure, MuJoCo-free)
-    waypoints.py policy.py the scripted pick-and-place plan      (pure)
     molmoact.py            the MolmoAct2-SO100_101 VLA (torch imported inside _load)
-    task.py                the task, its scene and its instruction
+    task.py                the task, its scene, its instruction and its two layouts
     success.py             the live geometric verdict            (pure)
     scorer.py              the offline re-derivation from a log  (pure)
     embodiment.py          the arm behind rosbridge

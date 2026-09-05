@@ -43,16 +43,17 @@ REST = np.zeros(6)
 
 @pytest.fixture(scope="module")
 def home() -> np.ndarray:
-    """The pose every episode actually starts from, solved by the repo's own IK.
+    """The pose every episode actually starts from: the task's start pose, jaw open.
 
     ``REST`` (all zeros) is a convenient constant, not the initial condition: the
-    arm is homed before every run, and ``build_plan``'s first waypoint IS that
-    home pose. wrist_roll there is ``level_jaw_roll`` = +1.5717 rad = +90.05 deg,
-    which is exactly the pose the corrected calibration maps to the model's zero.
+    simulator puts the arm at ``START_ARM_QPOS`` before it snapshots the spawn state,
+    and the console mirrors that tuple in ``task.py``. wrist_roll there is +1.62 rad,
+    chosen so the corrected calibration maps it to the middle of the trained band
+    (model -2.8 deg) -- see the simulator's ``apple_on_plate.START_ARM_QPOS``.
     """
-    from robot_console.arm.waypoints import build_plan
+    from robot_console.arm.task import START_ARM_QPOS
 
-    return np.asarray(build_plan().joint_targets[0], dtype=np.float64)
+    return np.asarray([*START_ARM_QPOS, 1.0], dtype=np.float64)
 
 #: The floor this suite pins, kept as a literal so a silent edit to the constant
 #: fails here rather than passing by comparing the value to itself. It is 0.0
@@ -233,11 +234,12 @@ def test_home_is_in_band_on_wrist_roll(stats, home) -> None:
     index = stats["state_stats"]["names"].index("wrist_roll")
     q01 = stats["state_stats"]["q01"][index]
     q99 = stats["state_stats"]["q99"][index]
-    assert home[4] == pytest.approx(np.pi / 2, abs=2e-3), "home is the level-jaw roll"
+    assert home[4] == pytest.approx(1.62, abs=1e-6), "home is the task's start roll"
     mapped = to_model_state(home)[index]
     assert q01 <= mapped <= q99, f"wrist_roll {mapped:.2f} outside [{q01:.2f}, {q99:.2f}]"
-    # It is not merely inside; it sits essentially on the model's zero.
-    assert abs(mapped) < 1.0
+    # It is not merely inside; it sits near the model's zero (-2.8 deg by design, the
+    # trained median being -11) rather than near either edge of the band.
+    assert abs(mapped) < 5.0
     # And the mapping this replaces would have been out the top, by ~47 deg.
     assert np.degrees(home[4]) - q99 > 45.0
 

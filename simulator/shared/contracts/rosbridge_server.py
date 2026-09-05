@@ -64,13 +64,15 @@ TYPE_IMAGE = "sensor_msgs/Image"
 TYPE_CAMERA_INFO = "sensor_msgs/CameraInfo"
 
 
-def normalise(topic: str) -> str:
-    """ROS resolves a relative name against the node namespace; we only have the root.
+# The namespacing rule lives in `namespace.py`, which is stdlib-only so the console's
+# cross-project contract test can load it by path and pin the rule itself. Re-exported
+# here because every existing caller imports these two from this module.
+try:
+    from contracts.namespace import RobotNamespace, normalise, ns_frame, ns_topic
+except ImportError:  # run as a script, with this directory on the path rather than shared/
+    from namespace import RobotNamespace, normalise, ns_frame, ns_topic
 
-    myagv_ros advertises `cmd_vel` while clients usually ask for `/cmd_vel`; treating
-    them as the same name avoids a silent no-op subscription.
-    """
-    return topic if topic.startswith("/") else "/" + topic
+__all_namespace__ = ("RobotNamespace", "normalise", "ns_frame", "ns_topic")
 
 
 def header(seq: int, frame_id: str) -> dict:
@@ -317,13 +319,20 @@ ODOM_POSE_COVARIANCE = [
 ODOM_TWIST_COVARIANCE = list(ODOM_POSE_COVARIANCE)
 
 
-def odometry(seq: int, x: float, y: float, yaw: float, vx: float, vy: float, wz: float) -> dict:
-    """nav_msgs/Odometry in the frames myagv_odometry uses (odom -> base_footprint)."""
+def odometry(seq: int, x: float, y: float, yaw: float, vx: float, vy: float, wz: float,
+             frame_id: str = "odom", child_frame_id: str = "base_footprint") -> dict:
+    """nav_msgs/Odometry in the frames myagv_odometry uses (odom -> base_footprint).
+
+    The frames are arguments rather than literals because a fleet prefixes them: two bases
+    on one graph both report `odom -> base_footprint` otherwise, and a consumer building a
+    tf tree out of that gets one frame with two parents. `ns_frame` is what supplies the
+    prefixed pair; the defaults are the single-robot contract.
+    """
     import math
 
     return {
-        "header": header(seq, "odom"),
-        "child_frame_id": "base_footprint",
+        "header": header(seq, frame_id),
+        "child_frame_id": child_frame_id,
         "pose": {
             "pose": {
                 "position": {"x": x, "y": y, "z": 0.0},
@@ -388,6 +397,18 @@ class RosBridgeServer:
         `/rosapi/topics`.
         """
         topic = normalise(topic)
+        # Refuse rather than overwrite. This dict is one callback per topic, so before
+        # this check a second robot attaching the same surface to the same server took
+        # the first one's `/cmd_vel` away in silence -- the first robot then sat still
+        # while both published `/odom` onto one topic, which reads as a physics bug and
+        # is not one. Namespacing is what makes a fleet legal; a collision means the
+        # namespaces were not applied, and that is worth failing on.
+        if topic in self._handlers:
+            raise ValueError(
+                f"{topic} already has a handler on this server. Two robots sharing one "
+                "bridge must each be namespaced (see ns_topic); without that they "
+                "silently overwrite each other's command topics."
+            )
         self._handlers[topic] = callback
         if message_type is not None:
             self._subscribed_types[topic] = message_type
@@ -403,7 +424,10 @@ class RosBridgeServer:
         Like `on`, the handler runs on the calling client's reader thread rather than on
         the simulation thread, so it may only touch small shared state; never MjData.
         """
-        self._services[normalise(name)] = callback
+        name = normalise(name)
+        if name in self._services:
+            raise ValueError(f"service {name} is already registered on this server")
+        self._services[name] = callback
 
     def serve_rosapi(self) -> None:
         """Answer the `rosapi` queries a browser client uses to discover topics.
@@ -426,6 +450,11 @@ class RosBridgeServer:
         folding subscriptions in could only ever hand it a topic to listen to that
         nothing sends.
         """
+
+        # Idempotent: a fleet's owner calls this once, but a single-robot surface used to
+        # call it for itself, and `service()` now refuses a duplicate registration.
+        if "/rosapi/topics" in self._services:
+            return
 
         def topics(_args: dict) -> dict:
             known = {**self._subscribed_types, **self._published_types}
@@ -597,6 +626,71 @@ class RosBridgeServer:
             pass
         if level != "info":
             log.warning("%s: %s", level, msg)
+
+
+class NamespacedBus:
+    """One robot's view of a shared `RosBridgeServer`.
+
+    A surface takes a bus instead of a server and otherwise keeps its bare topic
+    constants: `bus.on(TOPIC_CMD_VEL, ...)` registers `/myagv/cmd_vel`. That is the whole
+    of what a surface has to know about sharing a graph, which is the point -- the
+    alternative was every surface composing prefixes at every call site, where one missed
+    name is a topic silently landing in another robot's namespace.
+
+    A bus deliberately does NOT expose `start`/`stop`. The server is owned by whatever
+    built it; a surface that stopped it would take every other robot on the port down.
+    """
+
+    def __init__(self, server: "RosBridgeServer", namespace: str = "") -> None:
+        self.server = server
+        self.ns = RobotNamespace(namespace)
+        self.published: list[str] = []
+        self.subscribed: list[str] = []
+        # Per-bus, not per-server. `header.seq` is a per-publisher counter on real ROS 1,
+        # and the console reads it to line video up against the command log
+        # (`robot_console/camera.py:header_seq`). Sharing one counter across robots makes
+        # every robot's seq skip by however many messages its neighbours sent.
+        self._seq = 0
+
+    # -- naming ------------------------------------------------------------------
+
+    def topic(self, topic: str) -> str:
+        return self.ns.topic(topic)
+
+    def frame(self, frame_id: str) -> str:
+        return self.ns.frame(frame_id)
+
+    # -- the server's surface, namespaced ----------------------------------------
+
+    def on(self, topic: str, callback: Callable[[dict], None],
+           message_type: str | None = None) -> None:
+        name = self.ns.topic(topic)
+        self.server.on(name, callback, message_type)
+        self.subscribed.append(name)
+
+    def service(self, name: str, callback: Callable[[dict], dict]) -> None:
+        full = self.ns.service(name)
+        self.server.service(full, callback)
+
+    def publish(self, topic: str, msg: dict, message_type: str | None = None) -> None:
+        name = self.ns.topic(topic)
+        if message_type is not None and name not in self.published:
+            self.published.append(name)
+        self.server.publish(name, msg, message_type)
+
+    def next_seq(self) -> int:
+        self._seq += 1
+        return self._seq
+
+    @property
+    def client_count(self) -> int:
+        """How many clients the whole server has -- not this robot's share.
+
+        rosbridge does not tell a publisher who is subscribed to what, so per-robot is
+        not a number this transport can produce. The AiNex surface uses it only to decide
+        whether anyone is listening at all, which this answers correctly.
+        """
+        return self.server.client_count
 
 
 def main() -> int:

@@ -99,7 +99,13 @@ class SO101RosEmbodiment(RosEmbodiment):
         # robot_console.arm.ros_client for the measurements.
         self._client = HeaderStampingClient(
             self.url,
-            stamped_topics=(self.settings.command_topic,),
+            # The namespaced name, matching what the base adapter was handed in
+            # `base_kwargs()`. Keyed on the bare one the shim matches nothing, every
+            # trajectory goes out without a header, and `joint_trajectory_controller`
+            # accepts and ignores all of them -- the arm holds its pose, the gripper
+            # keeps working, and the episode looks alive. That is the failure this whole
+            # class exists to prevent, so it must not be reintroduced by a namespace.
+            stamped_topics=(self.settings.topic(self.settings.command_topic),),
             clock=self._clock,
             sleep=self._sleep,
         )
@@ -111,8 +117,15 @@ class SO101RosEmbodiment(RosEmbodiment):
 
     # -- lifecycle ---------------------------------------------------------
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
-        """Reset through the base adapter, then clear cached success state."""
+        """Reset through the base adapter, then clear cached success state.
+
+        The reference goal follows the scene's target rather than the constructor's
+        default: the task now carries a layout (`task.LAYOUTS`), and a `PlateGoal` built
+        for the standard plate centre would grade a swapped world wrong on every step
+        while the camera verdict, which finds the plate in the frame, got it right.
+        """
         self._vision.reset()
+        self.goal = _goal_from_scene(scene, self.goal)
         return super().reset(scene, seed=seed)
 
     def step(self, action: Action) -> StepResult:
@@ -191,7 +204,7 @@ class SO101RosEmbodiment(RosEmbodiment):
         this code and cannot disagree with the episode it is clearing the way
         for.
         """
-        sample = self._client.latest(self.settings.object_state_topic)
+        sample = self._client.latest(self.settings.topic(self.settings.object_state_topic))
         if sample is None:
             return None, None, None
         return apple_state_from(sample.msg, self.settings.object_body)
@@ -202,7 +215,7 @@ class SO101RosEmbodiment(RosEmbodiment):
         return (*super()._all_topics(), *self._monitor_topics())
 
     def _monitor_topics(self) -> tuple[str, ...]:
-        return (self.settings.object_state_topic,)
+        return (self.settings.topic(self.settings.object_state_topic),)
 
     def _ensure_initialized(self) -> None:
         """Subscribe the monitor topics before the base adapter waits on them."""
@@ -214,7 +227,7 @@ class SO101RosEmbodiment(RosEmbodiment):
             except Exception as exc:
                 raise ConnectionError(_CONNECT_HINT.format(url=self.url)) from exc
             self._client.subscribe(
-                self.settings.object_state_topic,
+                self.settings.topic(self.settings.object_state_topic),
                 subscription_id=_OBJECT_SUBSCRIPTION_ID,
                 message_type=FREE_JOINT_STATES_TYPE,
                 throttle_rate=max(1, round(1000.0 / self.settings.control_hz)),
@@ -265,6 +278,34 @@ class SO101RosEmbodiment(RosEmbodiment):
         if sample is None:
             return None
         return _stamp_seconds(sample.msg.get("header"))
+
+
+def _goal_from_scene(scene: Scene, fallback: PlateGoal) -> PlateGoal:
+    """The reference `PlateGoal` the scene's target describes, or `fallback` if it has none.
+
+    Every number is read from the target spec the task wrote (`apple_on_plate_scene`), so
+    the reference column grades exactly the geometry the task declared -- including a
+    swapped layout -- and cannot drift from it through a second copy kept here.
+    """
+    target = getattr(scene, "target", None)
+    spec = getattr(target, "spec", None)
+    if not isinstance(spec, Mapping):
+        return fallback
+    try:
+        centre = spec["plate_center_xy"]
+        low, high = spec["placed_z_range"]
+        spawn = spec["apple_xyz"]
+        return PlateGoal(
+            center_xy=(float(centre[0]), float(centre[1])),
+            radius=float(spec["max_horizontal_distance"]),
+            center_z=(float(low) + float(high)) / 2.0,
+            z_tolerance=(float(high) - float(low)) / 2.0,
+            max_speed=float(spec["max_speed_mps"]),
+            spawn_xyz=(float(spawn[0]), float(spawn[1]), float(spawn[2])),
+            min_displacement=float(spec["min_displacement_m"]),
+        )
+    except (KeyError, TypeError, ValueError, IndexError):
+        return fallback
 
 
 def _nested(msg: Any, *keys: str) -> Any:

@@ -109,9 +109,22 @@ APPLE_MIN_VAL = 60
 #: both of which are larger and brighter than the plate. Circularity rejects them: the
 #: plate measures 0.65-0.83 across every frame tried, the marble 0.18, the cabinets
 #: 0.11-0.14. The low end of the plate's range is a frame where the arm crosses it.
+#:
+#: **Circularity alone was not enough, and `MAX_SAT` is why.** At 40 the mask does not
+#: separate the plate from an iTHOR marble worktop at all: the two merge into one white
+#: region, `findContours(RETR_EXTERNAL)` returns the counter's outline with the plate
+#: inside it, and `find_plate` answers None for the whole episode -- so a placement the
+#: pose scorer confirmed was graded FAIL at "0.9035 m from plate centre". Measured on
+#: overhead frames from FloorPlan1, labelling pixels by projecting the plate's known
+#: position rather than by eye: the plate runs sat 4-5 (p5-p95) and the surrounding marble
+#: 15-243, a gap with nothing in it. Sweeping the threshold reproduces that cliff -- 15
+#: still finds nothing, 10 recovers the plate 2.6 px from where the geometry says it is,
+#: on both the edge and the centre mount. 10 sits in the gap with margin either side.
+#: `MIN_VAL` was swept at the same time and changes nothing between 150 and 200, so it is
+#: left where it was.
 PLATE_MIN_AREA_PX = 1500
 PLATE_MIN_CIRCULARITY = 0.55
-PLATE_MAX_SAT = 40
+PLATE_MAX_SAT = 10
 PLATE_MIN_VAL = 150
 
 
@@ -277,9 +290,14 @@ def find_apple(bgr: np.ndarray) -> Blob | None:
     return best
 
 
-def find_plate(bgr: np.ndarray) -> Plate | None:
-    """Find the plate as an ellipse, or None if no circular white region is in frame."""
-    contours, _ = cv2.findContours(_mask(bgr, red=False), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+#: Percentile of the white region's own value channel used to recover a plate that the
+#: flat mask could not separate; see `_bright_core`.
+PLATE_BRIGHT_PERCENTILE = 95
+
+
+def _plate_from_mask(mask: np.ndarray) -> Plate | None:
+    """The most circular blob in `mask` that is big enough to be the plate."""
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best: Plate | None = None
     best_circ = PLATE_MIN_CIRCULARITY
     for c in contours:
@@ -294,6 +312,54 @@ def find_plate(bgr: np.ndarray) -> Plate | None:
         best_circ = circ
         best = Plate(cx, cy, max(d1, d2) / 2.0, min(d1, d2) / 2.0, ang)
     return best
+
+
+def _bright_core(bgr: np.ndarray) -> np.ndarray:
+    """The brightest slice of the white region, as a mask.
+
+    A white plate on a white worktop does not always survive a flat threshold, and the two
+    engines fail it in *different* directions -- which is why there is no pair of constants
+    that fixes both. Measured on overhead frames, labelling plate pixels by projecting the
+    staged plate's known position:
+
+        engine        plate sat   counter sat   plate val   counter val
+        MolmoSpaces      4-5        15-243       240-255      85-255
+        RoboCasa         0-5         3-245       252-255      83-249
+
+    So saturation separates them on an iTHOR marble worktop and value separates them on a
+    RoboCasa one, and each engine's separator is useless on the other: sweeping the flat
+    thresholds, MolmoSpaces needs `sat < 10` and finds nothing above `val > 245`, while
+    RoboCasa needs `val > 250` and finds nothing below it.
+
+    What is true on both is that the plate is the *brightest* thing in the white field, so
+    a percentile of that field's own distribution says it without the constant. At the 95th
+    it recovers the RoboCasa plate 7.5 px from where the geometry puts it, at the right
+    size (semi-major 46 px against the 46.3 measured directly on MolmoSpaces); below the
+    93rd the blob stops being circular enough to accept at all.
+    """
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    s, v = hsv[..., 1], hsv[..., 2]
+    white = (s < PLATE_MAX_SAT) & (v > PLATE_MIN_VAL)
+    if int(white.sum()) < PLATE_MIN_AREA_PX:
+        return np.zeros(v.shape, np.uint8)
+    thr = np.percentile(v[white], PLATE_BRIGHT_PERCENTILE)
+    m = ((v >= thr) & white).astype(np.uint8) * 255
+    m = cv2.morphologyEx(m, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+    return cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+
+
+def find_plate(bgr: np.ndarray) -> Plate | None:
+    """Find the plate as an ellipse, or None if no circular white region is in frame.
+
+    Two passes, and the order matters: the flat mask first, so a frame where the plate is
+    already its own blob is answered exactly as before, and the brightest-core recovery
+    only on frames that would otherwise have returned None. The fallback can therefore add
+    detections but never change one that already succeeded.
+    """
+    plate = _plate_from_mask(_mask(bgr, red=False))
+    if plate is not None:
+        return plate
+    return _plate_from_mask(_bright_core(bgr))
 
 
 _PROJECTOR: GroundProjector | None = None

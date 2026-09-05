@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 from robot_console import __version__
-from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT, split_host_port
+from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT, resolve_topic, split_host_port
 from robot_console.slam.explorer import STALL_SECONDS
 from robot_console.slam.frontier import DISTANCE_BIAS_M, MIN_FRONTIER_CELLS
 from robot_console.slam.grid import DEFAULT_RESOLUTION
@@ -147,10 +147,18 @@ def build_parser(mode: Optional[str] = None) -> argparse.ArgumentParser:
     parser.add_argument("--autosave", type=float, default=30.0, metavar="SECONDS",
                         help="save the map this often while running; 0 disables")
 
-    parser.add_argument("--cmd-topic", default=TOPIC_CMD_VEL)
-    parser.add_argument("--odom-topic", default=TOPIC_ODOM)
-    parser.add_argument("--camera-topic", default=TOPIC_CAMERA)
-    parser.add_argument("--scan-topic", default=TOPIC_SCAN)
+    # A namespace, not four flags. Several robots on one rosbridge each get one -- the
+    # simulator names it after the robot -- so `--namespace myagv` reaches
+    # `/myagv/cmd_vel` and friends without spelling any of them out. Applied only to
+    # topics left at their default, so an explicit `--odom-topic` still wins; the default
+    # is empty, which is the bare contract a real myAGV bringup presents.
+    parser.add_argument(
+        "--namespace", default="", metavar="NAME",
+        help="ROS namespace the robot is under, e.g. `myagv` for /myagv/cmd_vel")
+    parser.add_argument("--cmd-topic", default=None)
+    parser.add_argument("--odom-topic", default=None)
+    parser.add_argument("--camera-topic", default=None)
+    parser.add_argument("--scan-topic", default=None)
     parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
     return parser
 
@@ -176,10 +184,10 @@ def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None)
         port=port,
         preflight=args.preflight,
         connect_timeout=float(args.connect_timeout),
-        cmd_topic=args.cmd_topic,
-        odom_topic=args.odom_topic,
-        camera_topic=args.camera_topic,
-        scan_topic=args.scan_topic,
+        cmd_topic=resolve_topic(args.cmd_topic, TOPIC_CMD_VEL, args.namespace),
+        odom_topic=resolve_topic(args.odom_topic, TOPIC_ODOM, args.namespace),
+        camera_topic=resolve_topic(args.camera_topic, TOPIC_CAMERA, args.namespace),
+        scan_topic=resolve_topic(args.scan_topic, TOPIC_SCAN, args.namespace),
         out=Path(args.out),
         load=Path(args.load) if args.load else None,
         record=Path(args.record) if args.record else None,

@@ -14,11 +14,13 @@ plausible. Both sides have to agree that the sort happens and that names are the
 from __future__ import annotations
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
 from robot_console.arm.kinematics import ARM_JOINTS, GRIPPER_JOINT, JOINT_ORDER
+from robot_console.topics import namespaced
 from robot_console.arm.ros_settings import (
     ARM_COMMAND_TOPIC,
     FREE_JOINT_STATES_TOPIC,
@@ -30,19 +32,35 @@ from robot_console.arm.ros_settings import (
     WRIST_CAMERA_TOPIC,
 )
 
-SURFACE = (
-    Path(__file__).resolve().parents[3]
-    / "simulator" / "shared" / "ros_surfaces" / "so101.py"
-)
+_SIMULATOR = Path(__file__).resolve().parents[3] / "simulator" / "shared"
+SURFACE = _SIMULATOR / "ros_surfaces" / "so101.py"
+#: The simulator's copy of the namespacing rule. Deliberately a stdlib-only module on
+#: that side, so it can be loaded here the same way the surface is.
+NAMESPACE = _SIMULATOR / "contracts" / "namespace.py"
+
+
+def _load(path: Path, name: str):
+    if not path.exists():
+        pytest.skip(f"sibling simulator checkout not present at {path}")
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before it is executed, because `@dataclass` resolves its annotations
+    # through `sys.modules[cls.__module__]` and raises on a module that is not there.
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)  # stdlib and numpy only; no mujoco at import time
+    except Exception:
+        del sys.modules[name]
+        raise
+    return module
 
 
 def _surface():
-    if not SURFACE.exists():
-        pytest.skip(f"sibling simulator checkout not present at {SURFACE}")
-    spec = importlib.util.spec_from_file_location("_so101_surface", SURFACE)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # numpy only; no mujoco at import time
-    return module
+    return _load(SURFACE, "_so101_surface")
+
+
+def _namespace():
+    return _load(NAMESPACE, "_sim_namespace")
 
 
 def test_every_topic_name_matches_the_simulators() -> None:
@@ -103,3 +121,83 @@ def test_the_gripper_map_clamps_to_the_contract_range() -> None:
     s = _surface()
     assert s.to_contract_gripper(5.0) == 1.0
     assert s.to_contract_gripper(-5.0) == 0.0
+
+
+# --------------------------------------------------------------- namespacing
+
+
+def test_both_sides_compose_a_namespaced_topic_the_same_way() -> None:
+    """The two projects each own a copy of the rule; this is where they are held equal.
+
+    The console cannot import the simulator -- it has to install and run with no
+    simulator checkout at all -- so the composition rule is duplicated rather than
+    shared. A duplicated rule that drifts is worse than no rule: the client would
+    subscribe to `/so101/joint_states` while the simulator published `/so101//joint_states`
+    or `/joint_states`, and the failure would be an empty observation, not an error.
+    """
+    sim = _namespace()
+    for namespace in ("so101", "myagv", "", "robot_2"):
+        for topic in (
+            ARM_COMMAND_TOPIC,
+            GRIPPER_COMMAND_TOPIC,
+            JOINT_STATES_TOPIC,
+            FREE_JOINT_STATES_TOPIC,
+            OVERHEAD_CAMERA_TOPIC,
+            SIDE_CAMERA_TOPIC,
+            WRIST_CAMERA_TOPIC,
+            TASK_MANAGER_RESET_SERVICE,
+            "/cmd_vel",
+            "/odom",
+            "/scan",
+        ):
+            assert sim.ns_topic(namespace, topic) == namespaced(topic, namespace)
+
+
+def test_both_sides_agree_that_an_empty_namespace_changes_nothing() -> None:
+    """The bare vendor contract, which is what the tables in CLAUDE.md document."""
+    sim = _namespace()
+    for topic in (JOINT_STATES_TOPIC, "/cmd_vel", "/odom"):
+        assert sim.ns_topic("", topic) == topic == namespaced(topic, "")
+
+
+def test_the_simulator_prefixes_frames_without_a_leading_slash() -> None:
+    """Topics are absolute graph paths; frame ids are tf names joined by `tf_prefix`.
+
+    Getting these the same way round produces `/myagv/odom` as a *frame*, which no real
+    stack emits and nothing will connect a tf tree to. Only the simulator composes
+    frames -- the console reads them, in `smoke.py`, and this is what that check is
+    checking against.
+    """
+    sim = _namespace()
+    assert sim.ns_frame("myagv", "base_footprint") == "myagv/base_footprint"
+    assert sim.ns_frame("myagv", "odom") == "myagv/odom"
+    assert sim.ns_frame("", "odom") == "odom"
+    # A JointState carries an empty frame on a real broadcaster, and namespacing must not
+    # invent one -- that would be a difference from hardware, which is the one thing the
+    # contract exists to avoid.
+    assert sim.ns_frame("so101", "") == ""
+
+
+def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
+    """What the embodiment actually subscribes and publishes, end to end.
+
+    The dataclass fields stay bare -- they are the transcript of `ros2 topic list -t`
+    inside the reference container -- and the prefix is applied where they are handed to
+    the adapter. So this checks the half that goes on the wire, and
+    `test_ros_settings.py` checks the half that records the hardware.
+    """
+    from robot_console.arm.ros_settings import RosSettings
+
+    settings = RosSettings(namespace="so101")
+    kwargs = settings.base_kwargs()
+    assert kwargs["joint_states_topic"] == "/so101/joint_states"
+    assert kwargs["command_topic"] == "/so101/joint_trajectory_controller/joint_trajectory"
+    assert kwargs["gripper_topic"] == "/so101/gripper_controller/commands"
+    assert kwargs["reset_service"] == "/so101/reset"
+    assert set(kwargs["cameras"]) == {"overhead", "side"}
+    assert kwargs["cameras"]["overhead"][0] == "/so101/overhead/color/compressed"
+
+    # Stripping the namespace back off must reproduce the container's own names exactly.
+    bare = RosSettings(namespace="").base_kwargs()
+    for key in ("joint_states_topic", "command_topic", "gripper_topic", "reset_service"):
+        assert kwargs[key] == "/so101" + bare[key]

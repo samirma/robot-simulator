@@ -111,13 +111,77 @@ definition:
 ```bash
 python robots/myagv/test_attach.py [--scene /path/to/house.xml]
 python tools/render_robots.py --outdir /tmp/robots   # render/load test for every robot
+python tools/test_placement.py                       # where a tabletop arm gets bolted
 ```
 
-### One bridge, two robots, two ROS dialects — do not conflate the dialects
+### One bridge, N robots, one namespace each
 
 `shared/contracts/rosbridge_server.py` is the only transport: plain rosbridge JSON over a
-websocket, served in-process, wired up by `serve_ros()` in each engine's
+websocket, served in-process, wired up by `RobotFleet` in each engine's
 `tools/spawn_robot.py`. Every robot is on it, and `robot_console` speaks nothing else.
+
+**Several robots share one server, one port and one graph.** That is ROS's own answer,
+not a shortcut: `ROS_NAMESPACE=robot1` / `<group ns="robot1">` in ROS 1, `-r __ns:=/robot1`
+in ROS 2, with the matching prefix on every `frame_id`. rosbridge sits above that -- one
+websocket exposes the whole graph -- so a fleet is one port whose topic list reads
+`/so101/joint_states` beside `/myagv/cmd_vel`, and a client picks its robot by prefix.
+Two bridges on two ports would be two graphs: the robots could not see each other, and
+nothing could discover the fleet or drive it over one connection.
+
+    ./kitchen.sh serve --robots so101,myagv       # both, on ws://127.0.0.1:9090
+    ../robot_console/run_task.sh --robots so101,myagv   # ...and grade the arm task in it
+
+Three rules, in `shared/contracts/namespace.py`, each of them a test:
+
+- **Topics get a leading slash, frames do not.** `/myagv/cmd_vel` is an absolute graph
+  path; `myagv/base_footprint` is a tf node joined by `tf_prefix`. Composing a frame the
+  way a topic is composed gives `/myagv/odom`, which no real stack emits and nothing will
+  connect a tf tree to.
+- **An empty namespace is the identity**, so the bare single-robot contract -- the tables
+  further down, the thing this simulator claims to be indistinguishable from -- stays
+  expressible and therefore testable. `--ros-namespace ''` on either engine, and
+  `namespace=""` on `RosSettings`, reproduce it exactly.
+- **Composition is idempotent**, which is what lets a client pass a namespace *and* name a
+  topic explicitly without being prefixed twice.
+
+The namespace defaults to the robot's own name and is **on even for one robot**, so a
+lone SO-101 is on `/so101/*`. The topic constants in `ros_surfaces/` and in the console
+stay bare regardless: they are the record of what each vendor's stack presents, and the
+prefix is applied where a name reaches the wire (`NamespacedBus` on one side,
+`RosSettings.topic()` on the other). Prefixing them in place would make the record
+disagree with itself.
+
+Two things that were silent before and now are not:
+
+- **`RosBridgeServer.on` refuses a second handler for a topic.** It used to overwrite,
+  so an unnamespaced second robot took the first one's `/cmd_vel` and both published
+  `/odom` onto one topic -- the first robot simply stopped responding, which reads as a
+  physics fault and is a naming one.
+- **`serve_rosapi()` is called once per server, by the fleet.** It used to be called from
+  inside the SO-101's surface, which meant a myAGV-only run had no topic discovery at all.
+
+**The MJCF prefix and the ROS namespace are different things.** `robot_0/` prefixes
+bodies, joints, actuators and cameras inside one compiled MuJoCo model; `/so101` prefixes
+topics and services on the wire. Conflating them would put an engine's model layout onto
+the wire, where a client could see it -- which is also why `CameraStreams` derives a
+camera's `frame_id` from its topic and not from the MJCF camera name, after the wrist view
+was found shipping `robot_0/wrist` as its frame.
+
+**Two robots in one engine is not the `--engine both` that was removed.** That was two
+*engines*, two ports and two kitchens sharing one GPU. This is one engine, one port, one
+scene -- and the cost is real but different: see the rate note below.
+
+**Rate is the cost of a fleet, and it is the camera.** Cameras render inside the physics
+loop. Measured on an iTHOR kitchen at `--control-hz 10`: the SO-101 alone publishes at
+9.8 Hz; adding a myAGV takes it to **5.7 Hz**; disabling only the AGV's colour camera puts
+it back to 8.4 Hz, while dropping the AGV's lidar entirely is worth just 1.0 Hz, and depth
+0.3 Hz. So the render is the cost and the lidar is not, which is the opposite of the
+intuition. It matters: at 5.7 Hz the scripted policy still passes the camera verdict 3/3,
+but `reference_success` -- the pose-based scorer that checks the height clause -- goes
+3/3 to **0/3**, and comes back to 1/1 the moment the AGV's camera is off. `--camera-hz N`
+caps a base's frame rate independently of the control rate (`--camera-hz 2` recovers
+7.5 Hz), which is also what real hardware does: the lidar and depth streams have had
+their own clocks in `SensorStreams` all along and the colour camera did not.
 
 What differs per robot is the **dialect**, because each one mirrors a different piece of
 real hardware:
@@ -165,6 +229,22 @@ directory, so none of this requires forking the upstream clone — **never modif
 
 Three sets in `spawn_robot.py` drive placement and are the thing to check when a robot
 spawns wrong: `HOLONOMIC_BASE_ROBOTS`, `TABLETOP_ROBOTS`, `ARM_REACH`.
+
+**A tabletop arm's heading is chosen by what is under its workspace, not by where the
+target object is.** `find_tabletop_mount` scores every candidate cell at 24 headings by
+*coverage* — the fraction of the arm's forward half-disc, out to the reach annulus plus
+`WORKSPACE_MARGIN`, with worktop underneath — and that is the first sort key, ahead of
+objects in reach, the rim, and elbow room. It has to be, because a task lays its objects
+out in the **arm's base frame**: a heading that runs off the surface takes the plate, the
+mug and both cameras with it. Facing the target object instead put the arm on the corner
+of FloorPlan1's island looking diagonally off it, which reads perfectly in the placement
+log — the apple was 0.23 m away and in reach — while the staged mug hung in mid-air over
+the floor and a third of the overhead camera's frame was floorboards. Coverage went from
+that pose to 100 %, and the arm now sits at the rim looking in, which is what the RoboCasa
+engine's own `find_counter_mount` has always done and what a clamp-mounted arm looks like.
+`--mount-centre` (`edge_bias=False`) now only drops a tie-break and on most surfaces
+changes nothing. `tools/test_placement.py` pins the rule on synthetic surfaces, including
+an L-shaped counter whose notch is open floor.
 
 `assets/` is a generated MolmoSpaces symlink tree that gets force-refreshed — curated
 files belong in `robots/<name>/`, never there. See `robots/README.md` and
@@ -254,26 +334,92 @@ both engines up around the same object pair for comparison.
 
 ## robot_console/
 
-The arm task, from `simulator/`:
+The arm task takes two terminals, because it is two projects. The simulator hosts the
+world; the console runs the task against it. From `simulator/`:
 
 ```bash
-./kitchen.sh inspect                       # sim + inspect-robot, reports PASS/FAIL
-./kitchen.sh inspect --policy molmoact2    # the VLA instead of the scripted plan
-./kitchen.sh inspect --episodes 8          # a pass count, which is the only useful unit
-./kitchen.sh inspect --engine robocasa     # the other engine; --engine both for a pair
-./kitchen.sh serve --viewer                # rosbridge + the engine's own MuJoCo window
+./kitchen.sh serve                         # stage the task, serve it on ws://127.0.0.1:9090
+./kitchen.sh serve --viewer                # ...plus the engine's own MuJoCo window
+./kitchen.sh serve --engine robocasa       # the other engine (one engine per run)
+./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
 ./kitchen.sh cameras                       # the live camera page against a running serve
 ```
 
-`inspect` is the front door and it does four things in order: stage the task into the
-engine's kitchen, wait for the *topics* (not the port — a listening socket says nothing
-about whether the scene compiled), reset and **verify** the world, then run the episode
-and report a verdict. Each of those exists because its absence produced a confusing
-failure; the comments in the script say which.
+and from `robot_console/`:
 
-**Report pass counts, never a single run.** The scripted policy has passed every attempt
-so far, but a VLA on this task is a coin toss on the reference rig, and one episode of it
-tells you nothing.
+```bash
+./run_task.sh                              # MolmoAct2 over ROS against the default port
+./run_task.sh --episodes 8 --label robocasa   # a pass count, named after the engine serving
+./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
+```
+
+**The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA
+is the only policy this console runs. What it used to provide -- a transport check that
+passed every time, and the preflight's "does the plan solve from here" reach gate -- is
+covered by the fleet check and by `arm/preflight.py` solving a top-down grasp at the
+apple and a release over the plate with the console's own IK (`_within_reach`). Its
+first waypoint was also the record of the start pose; that is now `task.START_ARM_QPOS`,
+held to the simulator's by a test.
+
+`kitchen.sh serve` stages the task into the engine's kitchen -- on the engine's own
+counter, without the reference rig's wooden slab (`--reference-table` puts it back; it
+overlapped the island visibly and, measured, does not move the VLA's pass count) -- and
+prints whether the staged plate and apple are inside the arm's reach annulus, read from
+the compiled model, along with the layout, the plate centre, the apple's measured radius
+and the resting height the success gate will use.
+
+**The apple and the plate are each engine's own, by default.** `--task-objects` brings
+back the task's measured YCB pair; without it MolmoSpaces adopts the iTHOR house's
+nearest apple and plate (`adopt_native_objects`) and RoboCasa spawns `apple_10` and
+`plate_4` from its registry (`make_task_objects`; `NATIVE_MODELS` records why those
+two -- the reddest apple and the only pure-white plate, by measured texture). Both
+engines scale the apple to the contract's 20 mm radius, give its colliders the task's
+`APPLE_CONTACT` block (`condim 6` is what makes rolling friction exist at all), and hand
+the bodies to the task under `task_apple`/`task_plate` -- the `task_` prefix is what
+keeps the workspace clearing from sinking them. The arbiter then *measures* the plate
+centre, the apple radius and the resting height off the compiled model rather than
+reading the constants, which is what lets one predicate grade a YCB sphere on a rimmed
+cylinder and an iTHOR hull on an iTHOR plate alike. One trap, measured: **MjSpec keeps
+compiled mesh data across compiles**, so scaling an existing mesh asset after the
+launcher's first compile changes `mesh_scale` and nothing else -- the apple came out
+full-sized with the metadata claiming 0.4x. Scaled *copies* under new names are compiled
+fresh; that is what `adopt_native_objects` does.
+
+RoboCasa's registry objects needed the task's *physics* as well as its sizes, and the wire
+said so before any episode ran. `apple_10` decomposes into 12 convex pieces, some 1 mm
+thin, and under the task's soft contact block they bounce: after a `/reset` the apple
+was 2 cm off its spawn within half a second, its speed spiked to 0.4-1.1 m/s in bursts
+with nothing touching it, and it had drifted 14 cm in 15 s -- so the preflight never saw
+it still and refused every episode. The free-jointed `plate_4` crept 1 cm across the
+counter in 12 s under the arm's start pose. So on RoboCasa the registry meshes stay for
+looks and the physics is the task's own: the apple's collision is one 20 mm sphere (the
+task's own recipe -- "a textured mesh for looks, a primitive for physics"), and the plate
+is static, as the task's plate and the reference rig's are. Measured afterwards: apple at
+(0.2260, -0.2260), plate at (0.300, 0.100), zero velocity before and after a reset. The
+iTHOR apple's hull needed neither. One more trap: the two engines' venvs run **MuJoCo 3.5
+and 3.3.1**, whose spec-editing APIs disagree exactly (`spec.delete(el)` only in 3.5,
+`el.delete()` only in 3.3.1); `apple_on_plate.spec_delete` is the one rule both use.
+
+**One engine swaps the objects.** `kitchen.sh serve --engine robocasa` stages the plate
+at the apple's spawn and the apple where the plate was (`--swap-objects`, on by default
+there and off for MolmoSpaces; `--no-swap-objects` reverts). The console is never told:
+`arm/preflight.py` reads which layout is on the wire off the apple's reset position
+(`task.layout_of`), writes it to `scene_reset.json`, and `run_task.sh` hands it to the
+task as `-T layout=…`, so the pose-derived `reference_success` column grades the world
+that exists. The camera verdict never needed telling -- it finds both objects in the
+frame.
+`run_task.sh` is the front door for the task and does four things in order: pick the venv
+the policy needs, wait for the *topics* (not the port — a listening socket says nothing
+about whether the scene compiled), check every expected robot is on the wire, then per
+episode reset and **verify** the world, run `inspect-robot`, and grade the log with
+`arm/verdict.py`. Each of those exists because its absence produced a confusing failure;
+the comments in the script say which. `kitchen.sh inspect` used to do both halves in one
+place and no longer exists: grading is the console's business, and the shell heredoc it
+lived in had a bug nobody had hit (its `*.json` glob matched inspect-robot's live snapshot).
+
+**Report pass counts, never a single run.** A VLA on this task is a coin toss on the
+reference rig, and one episode of it tells you nothing. (The scripted policy that used
+to pass every attempt is gone; every figure below that cites it is history.)
 
 The rest of the console, from `robot_console/`:
 
@@ -307,18 +453,26 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `camera.py` — CompressedImage decode + `LatestFrame`, the thread hand-off
 - `bridge.py` — `RobotLink` (roslibpy) and pure `parse_odom`
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
+- `fleet.py` — "which robots are on this rosbridge, and are they the ones expected?" One
+  `/rosapi/topics` call, checked against the console's **own** contract constants rather
+  than a list typed into a shell script, which would drift from both sides. Built on
+  roslibpy, not the arm extra's client, so a fleet check works on a console installed with
+  nothing but numpy/OpenCV/roslibpy. `--dump` prints the sorted topic list, which is how
+  the two engines are compared: identical lists is the "a client cannot tell them apart"
+  invariant checked instead of eyeballed across two terminals.
 - `arm/` — the SO-101 task, and the only part of the console that drives an arm. It
   registers itself with the `inspect-robots` framework through the
   `inspect_robots.{tasks,policies,embodiments,scorers}` entry points in
   `pyproject.toml`, which is what makes `inspect-robot run --task apple_on_plate
   --policy molmoact2 --embodiment so101_ros -E url=ws://…` work with no console script
   of its own. Inside: `ros_client.py` (the header-stamping shim, below), `ros_settings.py`
-  (every topic name and camera size in one place), `kinematics.py` (MuJoCo-free FK/IK),
-  `waypoints.py`/`policy.py` (the scripted plan), `molmoact.py` (the MolmoAct2-SO100_101
+  (every topic name and camera size in one place), `kinematics.py` (MuJoCo-free FK/IK,
+  which the preflight's reach gate solves with), `molmoact.py` (the MolmoAct2-SO100_101
   VLA), `task.py`/`success.py`/`scorer.py`, `embodiment.py`, and `preflight.py`
   (reset-and-verify). Torch lives behind a function-local import so the offline suite
-  stays torch-free; `bin/` has no arm launcher any more because `kitchen.sh inspect`
-  is the front door.
+  stays torch-free. `run_task.sh` at the console's top level is the arm launcher: it
+  picks `.venv-vla` for `molmoact2` and `.venv` for everything else, and grades with
+  `arm/verdict.py` (stdlib-only, tested, and the only reader of an episode's log).
 
 - `slam/` — occupancy-grid SLAM on `/scan`, the same sensor `myagv_slam_laser.launch`
   uses. `scan.py` (message → base-frame points), `grid.py` (log-odds map), `mapio.py`
@@ -398,6 +552,12 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 
 ## The ROS contracts (both sides must agree)
 
+**The tables below are the bare contract** — what a single robot's vendor stack presents,
+and what `--ros-namespace ''` / `namespace=""` reproduce exactly. On the wire every name
+is under the robot's namespace, `myagv` and `so101` by default: `/myagv/cmd_vel`,
+`/so101/joint_states`, and frames `myagv/odom → myagv/base_footprint`. See "One bridge, N
+robots" above for the rule and why the constants stay bare on both sides.
+
 ### The myAGV — a ROS 1 mobile base
 
 | Direction | Topic | Type | Fields used |
@@ -406,6 +566,12 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 | robot → console | `/odom` | `nav_msgs/Odometry` | pose, twist; `odom` → `base_footprint` |
 | robot → console | `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | base64 JPEG |
 | robot → console | `/scan` | `sensor_msgs/LaserScan` | `ranges`, angles, range limits |
+
+Namespaced: `/<ns>/cmd_vel` and friends, with `<ns>/odom → <ns>/base_footprint` and the
+lidar on `<ns>/laser_frame`. `--namespace myagv` on `bin/teleop.sh`, `bin/slam.sh` and
+`robot_console.smoke` sets all four topics at once; naming a topic explicitly still wins.
+**`smoke.py` is the only code anywhere that reads a `frame_id`,** so its odom-frame check
+is what keeps the frame half of this verified rather than merely emitted.
 
 ROS1 single-slash type strings. Body frame: `+x` forward, `+y` left, `+z` CCW. The base
 is holonomic (the myAGV is Mecanum), so `linear.y` is a real strafe.
@@ -449,12 +615,25 @@ make it *less* like the real robot are regressions even when nothing fails.
 | robot → console | `/overhead/color/compressed`, `/side/color/compressed`, `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
 | console → robot | `/reset`, `/mujoco_ros2_control_node/reset_world` | Trigger-shaped `{success, message}` |
 
+Namespaced: `/<ns>/joint_states`, `/<ns>/reset` and the rest, `so101` by default.
+`JointState.frame_id` is the one exception and stays **empty** — a real
+`joint_state_broadcaster` publishes no frame there, and inventing `so101/` would be a
+difference from hardware rather than a fidelity to it. `-E namespace=so101` is how
+`inspect-robot` is pointed at it; `arm/ros_settings.py` applies the prefix in
+`base_kwargs()` and `cameras()`, never to the fields.
+
 ROS 2 `pkg/msg/Type` strings and a `sec`/`nanosec` stamp. Joint order is fixed everywhere
 (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, then the
 gripper), all `_joint`-suffixed, all radians except the gripper, which is 0 (closed) to
 1 (open).
 
-Five things that are silent when wrong, and each cost a debugging session:
+Six things that are silent when wrong, and each cost a debugging session:
+
+- **The header-stamping shim must be keyed on the topic as it goes on the wire.** It is
+  keyed on `settings.topic(command_topic)`, not on the bare constant. Keyed on the bare
+  one under a namespace it matches nothing, every trajectory ships without a header, and
+  `joint_trajectory_controller` accepts and ignores all of them — which is exactly the
+  next failure in this list, reintroduced by a rename. A test pins it.
 
 - **`/joint_states` comes back alphabetically sorted**, which for this arm shares *no*
   index with the contract order — `elbow_flex_joint` first, `shoulder_pan_joint` fourth.
@@ -553,7 +732,44 @@ policy is handed, back-projects both through the known camera pose, and applies 
 contract's own gate. The embodiment takes that frame out of the observation rather than
 subscribing separately, so grader and policy cannot end up judging different moments.
 
-Two things about that module are load-bearing and were measured, not assumed:
+**Finding the white plate on a white worktop is the detector's hard half, and a flat
+threshold does not do it.** As first written the plate mask was `sat < 40 and val > 150`,
+which on both engines returns one white region containing the counter *and* the plate:
+`findContours(RETR_EXTERNAL)` then hands back the counter's outline with the plate inside
+it, `find_plate` answers None for every frame of the episode, and a placement the pose
+scorer confirms is graded FAIL at "0.9035 m from plate centre". It reproduced at both mount
+positions, so it is the threshold and not the framing.
+
+Labelling plate pixels by projecting the staged plate's known position — rather than by eye
+— the two engines fail it in opposite directions, which is why no pair of constants fixes
+both:
+
+| engine | plate sat | counter sat | plate val | counter val |
+|---|---|---|---|---|
+| MolmoSpaces (iTHOR marble) | 4–5 | 15–243 | 240–255 | 85–255 |
+| RoboCasa | 0–5 | 3–245 | 252–255 | 83–249 |
+
+Saturation separates them on marble and value separates them on RoboCasa's worktop, and
+each engine's separator is useless on the other: sweeping the flat thresholds, MolmoSpaces
+needs `sat < 10` and finds nothing above `val > 245`, while RoboCasa needs `val > 250` and
+finds nothing below it. What holds on both is that the plate is the *brightest* thing in
+the white field, so `find_plate` now takes the flat mask first and falls back to the 95th
+percentile of that field's own value distribution (`_bright_core`) — the same statement
+without the constant. The fallback only runs on frames that would have returned None, so it
+can add detections but never move one that already succeeded.
+
+**What that recovery still costs, on RoboCasa, is about 15 mm of plate centre.** The
+percentile eats the dimmer side of the disc, so the fitted centre is pulled 7.5 px off where
+the geometry puts it, against 2.6 px on MolmoSpaces where the plain mask resolves it. The
+size is right — semi-major 46 px on both — and the bias is one-sided. Measured consequence:
+the scripted plan, which `reference_success` confirms places the apple, grades on RoboCasa
+at **0.0807 m against the 0.080 m gate** — a miss by 0.7 mm that is detector bias, not
+policy. Do not close that gap by moving the percentile until an episode passes; that is the
+lighting mistake again. A local Otsu refit around the located plate was tried and is worse
+(it takes the whole window: 32.6 px, semi-major 189). The plate's rim is the cue that has
+not been tried.
+
+Two more things about that module are load-bearing and were measured, not assumed:
 
 - **Perspective has to be undone properly.** Normalising distances against the plate's own
   ellipse — the obvious shortcut — reads 24 mm too far at the plate and 43 mm too far at
@@ -604,13 +820,17 @@ Constants that look arbitrary and are not. Each was measured, and each was wrong
   jaw is far slower than the arm. So the jaw counts as arrived when it reaches its target
   *or* stops moving — a stalled jaw is either shut or pressing on something.
 
-**Report pass counts, never a single run.** The scripted policy has passed every attempt;
-a VLA on this task is a coin toss even on the rig it was tuned for, and one episode of
-`--policy molmoact2` tells you nothing. `--episodes N` exists for this.
+**Report pass counts, never a single run.** A VLA on this task is a coin toss even on
+the rig it was tuned for, and one episode of `--policy molmoact2` tells you nothing.
+`--episodes N` exists for this.
 
 ### Where MolmoAct2 stands here, and what moved the needle
 
-`so101_waypoint` passes every attempt. `molmoact2` passes **3 in 6**, and the pass
+Everything in this section was measured with the task's own YCB apple and plate in the
+standard layout, before the engines switched to their native objects and RoboCasa to the
+swapped layout (see the console section above); the figures are the record of that rig.
+The scripted `so101_waypoint` plan it is compared against passed every attempt and has
+since been deleted. `molmoact2` passed **3 in 6**, and the pass
 count is the least interesting number in this section — what changed under it matters
 more. (It briefly passed **0 in 24**, because the reference exposure block was on by
 default; see the lighting section above, which is the single largest effect anything in
@@ -621,6 +841,41 @@ this repo has had on this policy.)
 | episodes where the apple never left spawn (~0.33 m) | 3 of 4 | 1 of 6 |
 | episodes that engaged the task at all | 1 of 4 | 5 of 6 |
 | passes | 1/4 | 3/6 |
+
+**Namespacing the wire did not move this policy, and that was checked rather than
+assumed.** A matched-pair control, 30 episodes, the only difference being
+`--ros-namespace ''` + `namespace=` (which reproduce the pre-namespacing wire byte for
+byte) against the default `/so101/*`:
+
+| engine | wire | passes | never left spawn |
+|---|---|---|---|
+| molmospaces | bare (pre-change) | 2/6 | 4/6 |
+| molmospaces | namespaced | 2/6 | 4/6 |
+| molmospaces | fleet, `so101,myagv` | 2/6 | 3/6 |
+| robocasa | bare (pre-change) | 0/6 | 5/6 |
+| robocasa | namespaced | 0/6 | 6/6 |
+
+Two things fall out of that table, and neither is about namespacing:
+
+- **RoboCasa is 0/12 for this policy on either wire.** The 3/6 above is a MolmoSpaces
+  figure -- the reference engine -- and nothing here has ever recorded a RoboCasa one.
+  The gap is real, pre-existing, and unexplained; the scripted policy passed on both
+  engines while it existed, so it is the *policy's* transfer between kitchens, not the
+  contract.
+- **The engagement row above no longer reproduces.** 4 of 6 never left spawn on both
+  wires, against the 1 of 6 recorded when that table was written. Whatever drifted, it
+  drifted on the pre-change wire too, so it is the rig or the record and not this work.
+
+Worth running the control before reading anything into a VLA pass count: this policy is a
+coin toss at n = 6, and the wire is the one variable that can be held fixed exactly.
+`/private/tmp` scripts do not survive, so the shape is the thing to keep --
+`--ros-namespace ''` on the engine, `-E namespace=` on the embodiment, same episode count.
+
+Images were the one path the scripted policy did **not** exercise -- a blind waypoint
+plan passes 3/3 with a broken camera stream while the VLA quietly starves -- which is why
+both views are checked directly and still are, now that only the VLA runs: present,
+distinct, 640x480, and framed `so101/overhead` / `so101/side` with no MJCF prefix
+leaking through.
 
 So the policy went from mostly *not attempting* the task to mostly attempting it and
 missing. The pass counts are not distinguishable at this sample size and should not be
@@ -644,13 +899,14 @@ Three things were wrong, all found by measuring the checkpoint rather than the c
 - **The scene had opinions.** The kitchen's own apple landed 0.10 m from the task's
   spawn; see the workspace-clearing note above.
 
-**The two policies want different wrist branches, and that is not a bug to tidy away.**
+**The two wrist branches were not a bug to tidy away, and the lesson outlives the plan.**
 `level_jaw_roll` always has two solutions half a turn apart. The VLA needs the +1.62 one
-because that is where its state band lives. The scripted plan needs the -1.52 one because
-rolled the other way its jaw fouls the plate rim while lowering -- measured, the arm error
-grew 0.057 -> 0.087 -> 0.118 rad across the last three sub-waypoints with each running its
-full step budget. They are set independently: the start pose is the task's, the plan's
-branch is `PickPlaceConfig.wrist_roll_preference`.
+because that is where its state band lives; the scripted plan, while it existed, needed
+the -1.52 one because rolled the other way its jaw fouled the plate rim while lowering --
+measured, the arm error grew 0.057 -> 0.087 -> 0.118 rad across the last three
+sub-waypoints with each running its full step budget. The start pose is the task's
+(`START_ARM_QPOS`, mirrored in the console's `task.py`), and nothing else picks a branch
+any more.
 
 That white-plate-on-white-marble worry is now answered, and the answer was no. Staging
 the reference's brown wood slab under the plate -- the fix that worry implied -- moves the

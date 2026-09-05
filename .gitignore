@@ -43,7 +43,8 @@ simulator/robocasa/data/
 # Scratch run output (keep the committed evidence videos, drop scratch runs).
 simulator/*/outputs/
 simulator/*/runs/
-# `kitchen.sh inspect` writes here: one directory per episode, holding the eval log,
+# `kitchen.sh inspect` used to write here (`run_task.sh` now writes under
+# `robot_console/runs/task/`): one directory per episode, holding the eval log,
 # the preflight's JSON and the recorded actions. Evidence of a particular run against a
 # particular revision, never a fixture -- re-run rather than trusting a stale one.
 simulator/runs/

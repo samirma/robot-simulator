@@ -65,10 +65,10 @@ ROBOTS = ("myagv", "so101")
 # name -> (module, function) presenting that robot's own vendor ROS topics. Only mobile
 # bases have one; an arm is served over the control protocol instead.
 ROS_SURFACES = {
-    "myagv": ("ros_surfaces.myagv", "serve_ros"),
+    "myagv": ("ros_surfaces.myagv", "attach_ros"),
     # The same shared surface the other engine uses. That is the point: the arm's topic
     # set belongs to the arm, so a client cannot tell which engine is hosting it.
-    "so101": ("ros_surfaces.so101", "serve_ros"),
+    "so101": ("ros_surfaces.so101", "attach_ros"),
 }
 
 # Robots whose ROS surface is an arm contract rather than a mobile-base one: no cmd_vel,
@@ -202,7 +202,7 @@ def clearance_field(boxes: np.ndarray, grid: np.ndarray) -> np.ndarray:
     return np.linalg.norm(np.maximum(delta, 0.0), axis=-1).min(axis=1)
 
 
-def find_open_floor(model, data, radius: float, step: float = 0.05):
+def find_open_floor(model, data, radius: float, step: float = 0.05, keep_out=()):
     """Return (xy, yaw) for the roomiest patch of floor, facing the middle of the room.
 
     Facing the room centre rather than a fixed heading matters for a robot that starts by
@@ -210,6 +210,13 @@ def find_open_floor(model, data, radius: float, step: float = 0.05):
     an explorer sees is 30 cm of door.
     """
     boxes = world_boxes(model, data, FLOOR_BAND)
+    # Keep-outs are simply more obstacles. `clearance_field` already measures distance to
+    # box surfaces, so where another robot is standing -- and the room it needs -- costs
+    # nothing extra to express, and the "no patch clears N metres" failure below stays the
+    # one failure this function has.
+    if len(keep_out):
+        extra = np.asarray(keep_out, dtype=float).reshape(-1, 4)
+        boxes = extra if len(boxes) == 0 else np.vstack([boxes, extra])
     if len(boxes) == 0:
         return np.zeros(2), 0.0
 
@@ -224,8 +231,9 @@ def find_open_floor(model, data, radius: float, step: float = 0.05):
     best, best_clear = grid[best_i], float(clear[best_i])
     if best_clear < radius:
         raise SystemExit(
-            f"no floor patch in this kitchen clears {radius:.2f} m (best {best_clear:.2f} m); "
-            "try another --layout, or place the robot by hand with --pos/--yaw"
+            f"no floor patch in this kitchen clears {radius:.2f} m (best {best_clear:.2f} m"
+            + (f", with {len(keep_out)} robot keep-out(s) in the way" if len(keep_out) else "")
+            + "); try another --layout, or place the robot by hand with --pos/--yaw"
         )
 
     # The centroid of the free space, not of the room: in an L-shaped kitchen the room
@@ -371,6 +379,116 @@ def make_kitchen_objects(categories, seed: int, scale: float = 1.0):
         objects.append(MJCFObject(name=f"obj_{i}_{category}", **kwargs))
         print(f"  object {category}: {Path(info['mjcf_path']).parent.name}", file=sys.stderr)
     return objects
+
+
+#: Which of RoboCasa's registry models stand in for the task's apple and plate. Chosen by
+#: measuring every model's texture, not by eye: apple_10 is the reddest of the 22 apples
+#: (mean RGB 151/12/8; the sampler's usual pick, apple_13, is 185/153/64 -- yellow, which
+#: the instruction's "red apple" and the camera verdict's red-hue detector both miss), and
+#: plate_4 is the only pure-white plate (255/255/255; plate_19, the usual pick, is a
+#: 173-grey the detector's `val > 150` gate only just admits).
+NATIVE_MODELS = {"apple": "apple_10", "plate": "plate_4"}
+
+
+def make_task_objects(task, *, swap: bool) -> list:
+    """RoboCasa's own apple and plate, sized for the task and named for it.
+
+    The engine-native counterpart of the task's measured YCB pair. Each model is scaled
+    from its registry bounding box to the task's radius -- the apple to the contract's
+    20 mm (apple_10 ships at ~65 mm, past the ~70 mm the jaw opens), the plate to 0.10 m
+    -- and the apple's colliders get the task's contact block, which is what makes an
+    object *equivalent* rather than merely present: `condim 6` is the difference
+    between rolling friction existing and being parsed and discarded.
+
+    Bodies are renamed to the task's `APPLE_BODY`/`PLATE_BODY` in `adopt_task_objects`,
+    after the kitchen spec is compiled around them.
+    """
+    import xml.etree.ElementTree as ET
+
+    import robocasa
+    from robocasa.models.objects.kitchen_object_utils import sample_kitchen_object
+    from robocasa.models.objects.objects import MJCFObject
+
+    root = Path(robocasa.__file__).resolve().parent / "models" / "assets" / "objects" / "objaverse"
+    radii = {"apple": task.APPLE_RADIUS, "plate": task.PLATE_RADIUS}
+    objects = []
+    for category, model_name in NATIVE_MODELS.items():
+        path = root / category / model_name / "model.xml"
+        bbox = ET.parse(path).getroot().find(".//geom[@name='reg_bbox']")
+        half = max(float(v) for v in bbox.get("size").split()[:2])
+        scale = radii[category] / half
+        kwargs, _info = sample_kitchen_object(groups=str(path), object_scale=scale)
+        objects.append(MJCFObject(name=f"task_{category}_native", **kwargs))
+        print(f"  native {category}: {model_name} scaled x{scale:.2f} "
+              f"(registry half-extent {half * 1000:.0f} mm -> {radii[category] * 1000:.0f} mm)",
+              file=sys.stderr)
+    return objects
+
+
+def _spec_body(body, name: str):
+    """Find a body by name anywhere under `body`, or None."""
+    if body.name == name:
+        return body
+    for child in body.bodies:
+        found = _spec_body(child, name)
+        if found is not None:
+            return found
+    return None
+
+
+def adopt_task_objects(spec: mujoco.MjSpec, objects: list, task, plate_world, worktop_z) -> None:
+    """Rename the native objects' root bodies to the task's, and give them the task's physics.
+
+    On the compiled-around spec, so the task's `stage(objects="engine")` finds
+    `APPLE_BODY` and `PLATE_BODY` as top-level bodies and the arbiter reads them like
+    its own. The registry meshes stay for looks; the physics is the task's, and both
+    halves of that were forced by what the wire showed when the meshes were left alone:
+
+    * **The apple's collision is one 20 mm sphere, not its hull pieces.** apple_10
+      decomposes into 12 convex pieces, some 1 mm thin, and under the task's soft
+      contact block they bounce: measured after a `/reset`, the apple was 2 cm off its
+      spawn within half a second and its speed spiked to 0.4-1.1 m/s in bursts while
+      nothing touched it, drifting 14 cm in 15 s -- so the preflight never saw it still.
+      A sphere on a textured mesh is exactly how the task's own apple is built, and it
+      is what the grasp tuning (`APPLE_CONTACT`, `grasp_gripper`) was measured against.
+    * **The plate is static.** Free, it crept 1 cm across the counter in 12 s and the
+      arm's start pose pressed into its rim by 4 mm; the task's own plate has no free
+      joint either, and the free-joint topic publishes it with zero velocity just as
+      the reference rig does. It is therefore placed here, on the spec, rather than by
+      the post-compile qpos write the free objects get.
+    """
+    names = {"apple": task.APPLE_BODY, "plate": task.PLATE_BODY}
+    for obj in objects:
+        category = obj.name.split("_")[1]
+        body = _spec_body(spec.worldbody, obj.root_body)
+        if body is None:
+            raise SystemExit(f"native {category}: root body {obj.root_body!r} not in the spec")
+        body.name = names[category]
+        if category == "apple":
+            stack = [body]
+            while stack:
+                b = stack.pop()
+                stack.extend(b.bodies)
+                for g in list(b.geoms):
+                    if g.contype or g.conaffinity:
+                        task.spec_delete(spec, g)  # this venv's MuJoCo differs from the other's
+            sphere = body.add_geom(
+                name=f"{task.APPLE_BODY}_geom",
+                type=mujoco.mjtGeom.mjGEOM_SPHERE,
+                size=[task.APPLE_RADIUS, 0.0, 0.0],
+                mass=task.APPLE_MASS,
+                rgba=[1.0, 0.0, 0.0, 0.0],
+                group=0,  # collision; group 0 carries inertia here, see the task module
+            )
+            for key, value in task.APPLE_CONTACT.items():
+                setattr(sphere, key, value)
+        else:
+            for joint in list(body.joints):
+                task.spec_delete(spec, joint)
+            body.pos = [
+                float(plate_world[0]), float(plate_world[1]),
+                float(worktop_z) - float(obj.bottom_offset[2]) + 0.002,
+            ]
 
 
 def object_layout(xy, yaw, out, reach, n: int) -> list[np.ndarray]:
@@ -563,9 +681,123 @@ def warn_on_penetration(model, data, prefix: str, depth: float = -0.001) -> None
         return
 
 
+class _Instance:
+    """One robot in the kitchen. See the MolmoSpaces engine's twin for the reasoning.
+
+    `mjcf` prefixes bodies, joints and actuators inside the compiled model; `ns` prefixes
+    topics and services on the wire. They stay separate so an engine's model layout never
+    reaches a client.
+    """
+
+    __slots__ = ("name", "mjcf", "ns", "holonomic", "tabletop",
+                 "xy", "yaw", "out", "mount_z", "base", "groups")
+
+    def __init__(self, name, mjcf, ns, holonomic, tabletop):
+        self.name, self.mjcf, self.ns = name, mjcf, ns
+        self.holonomic, self.tabletop = holonomic, tabletop
+        self.xy = self.yaw = self.out = None
+        self.mount_z = 0.0
+        self.base, self.groups = None, {}
+
+    def __repr__(self) -> str:
+        return f"<{self.name} mjcf={self.mjcf!r} ns={self.ns!r}>"
+
+
+def _surface_kwargs(args, inst, model, task, scene_option):
+    """Everything one robot's surface needs, chosen by which contract it speaks.
+
+    The twin of the MolmoSpaces engine's function of the same name. The two engines build
+    the same two bags, which is what keeps their topic lists identical -- the property the
+    whole multi-engine split exists to preserve.
+    """
+    prefix = inst.mjcf
+    if inst.name in ARM_ROS_SURFACES:
+        from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
+
+        cameras = dict(DEFAULT_CAMERAS)
+        if args.wrist_camera:
+            cameras.update({t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()})
+        return {
+            "view": inst.groups, "model": model, "task": task, "cameras": cameras,
+            "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+            "scene_option": scene_option,
+        }
+
+    camera = _pick_camera(args, model, prefix)
+    scan_cfg = None
+    if not args.no_scan:
+        defaults = SCAN_DEFAULTS[inst.name]
+        offset = args.scan_offset or defaults["offset"]
+        scan_cfg = {
+            "beams": args.scan_beams,
+            "max_range": args.scan_range or defaults["max_range"],
+            "min_range": args.scan_min_range or defaults["min_range"],
+            "offset_x": offset[0],
+            "offset_z": offset[1],
+            "period": 1.0 / max(args.scan_hz, 1e-3),
+            # Rays start inside the robot's own chassis and must not range it. Only its
+            # own: another robot in the kitchen is something the lidar is meant to see.
+            "body": f"{prefix}base",
+            "exclude_bodies": frozenset(
+                i for i in range(model.nbody)
+                if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
+                and n.startswith(prefix)
+            ),
+        }
+    # Depth is not one of the four topics in the ROS contract and nothing in the
+    # console reads it, but the MolmoSpaces engine publishes it -- and an engine a
+    # client could tell apart by its topic list is the regression this split exists
+    # to prevent. Same defaults, same flag to turn it off.
+    depth_cfg = None
+    if not args.no_depth and camera is not None:
+        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
+        depth_cfg = {
+            "size": args.depth_size,
+            "period": 1.0 / max(args.depth_hz, 1e-3),
+            "max_range": args.depth_range,
+            "fovy": float(model.cam_fovy[cam_id]),
+        }
+    return {
+        "base": inst.base, "model": model, "camera": camera,
+        "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
+        "control_hz": args.control_hz, "watchdog_s": args.watchdog,
+        "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
+        "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
+    }
+
+
+def _pick_camera(args, model, prefix: str) -> str | None:
+    """The MJCF camera a mobile base streams, resolved against its own prefix.
+
+    `--camera` names one for every robot, which is only meaningful when there is one;
+    with a fleet each base falls back to its own.
+    """
+    if args.camera is not None:
+        if args.camera.lower() == "none":
+            return None
+        return args.camera
+    for candidate in ("task_camera", f"{prefix}front_camera", f"{prefix}exo_camera",
+                      f"{prefix}wrist_cam"):
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
+            return candidate
+    return None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("robot", choices=ROBOTS)
+    ap.add_argument(
+        "robot",
+        help=f"one of: {', '.join(ROBOTS)}. A comma-separated list spawns several into "
+             "the same kitchen, sharing one --ros-port: `so101,myagv` mounts the arm on a "
+             "worktop and puts the base on the floor. One ROS graph, a namespace per "
+             "robot -- which is what a real multi-robot bringup is.",
+    )
+    ap.add_argument(
+        "--ros-namespace", default=None, dest="ros_namespace",
+        help="comma-separated ROS namespaces, positionally matched to the robots. "
+             "Defaults to each robot's own name; pass an empty element for the bare, "
+             "unnamespaced vendor contract.",
+    )
     ap.add_argument("--layout", type=int, default=1, help="kitchen layout id (1-60)")
     ap.add_argument("--style", type=int, default=1, help="kitchen style id (1-60)")
     ap.add_argument("--seed", type=int, default=0, help="fixture-state RNG seed")
@@ -578,6 +810,16 @@ def main() -> int:
     ap.add_argument("--object-scale", type=float, default=0.7, dest="object_scale",
                     help="scale for spawned objects (default %(default)s: sized for "
                          "the SO-101's ~7 cm gripper span rather than for realism)")
+    ap.add_argument("--swap-objects", action="store_true", dest="swap_objects",
+                    help="with --task: stage the plate at the apple's spawn and the apple "
+                         "where the plate was. The console reads which layout is on the "
+                         "wire off the apple's reset position, so nothing else is told.")
+    ap.add_argument("--task-objects", action="store_false", dest="native_objects",
+                    help="with --task: stage the task's own measured YCB apple and plate "
+                         "instead of RoboCasa's. Default is RoboCasa's -- apple_10 and "
+                         "plate_4 from its registry (NATIVE_MODELS says why those two), "
+                         "scaled to the task's radii and with the task's contact block "
+                         "on the apple.")
     ap.add_argument("--render", default=None, help="write a PNG instead of opening the viewer")
     ap.add_argument("--headless", action="store_true",
                     help="run the step and control loop with no window")
@@ -647,6 +889,11 @@ def main() -> int:
     ap.add_argument("--depth-size", type=int, nargs=2, default=[320, 240], dest="depth_size")
     ap.add_argument("--depth-range", type=float, default=8.0, dest="depth_range")
     ap.add_argument("--no-depth", action="store_true", dest="no_depth")
+    ap.add_argument("--camera-hz", type=float, default=0.0, dest="camera_hz",
+                    help="cap the colour camera's frame rate, independent of --control-hz. "
+                         "0 (default) renders one frame per control tick. The render is "
+                         "the dominant cost of a second camera-bearing robot in the same "
+                         "physics loop; see the MolmoSpaces engine for the measurements.")
     args = ap.parse_args()
 
     if args.task and not args.ros_port and not args.render:
@@ -656,7 +903,41 @@ def main() -> int:
         )
 
 
-    prefix = "robot_0/"
+    names = [n.strip() for n in args.robot.split(",") if n.strip()]
+    if not names:
+        raise SystemExit("no robot named")
+    unknown = [n for n in names if n not in ROBOTS]
+    if unknown:
+        raise SystemExit(f"unknown robot(s) {unknown}; available: {', '.join(ROBOTS)}")
+
+    if args.ros_namespace is None:
+        namespaces = list(names)
+    else:
+        namespaces = [n.strip() for n in args.ros_namespace.split(",")]
+        if len(namespaces) != len(names):
+            raise SystemExit(
+                f"--ros-namespace has {len(namespaces)} entries for {len(names)} robot(s); "
+                "they are matched positionally"
+            )
+    if len(set(namespaces)) != len(namespaces):
+        raise SystemExit(f"--ros-namespace entries must be distinct, got {namespaces}")
+    if len(names) > 1 and "" in namespaces:
+        raise SystemExit(
+            "the bare contract is only available for a single robot: with two robots "
+            "unnamespaced they share /cmd_vel and /joint_states, and one silently wins"
+        )
+
+    # `robot_N/` prefixes bodies inside the compiled model; the ROS namespace prefixes
+    # topics on the wire. Different things, kept apart -- see the same note in the
+    # MolmoSpaces engine and in shared/contracts/namespace.py.
+    instances = [_Instance(name=n, mjcf=f"robot_{i}/", ns=namespaces[i],
+                           holonomic=n in HOLONOMIC_BASE_ROBOTS,
+                           tabletop=n in TABLETOP_ROBOTS)
+                 for i, n in enumerate(names)]
+    primary = instances[0]
+    prefix = primary.mjcf
+    arm_instance = next((i for i in instances if i.tabletop), primary)
+
     arena, compile_spec = build_kitchen_arena(args.layout, args.style, args.seed)
 
     # Compile the bare kitchen first: the placement search needs a model, and neither the
@@ -666,21 +947,44 @@ def main() -> int:
     kdata = mujoco.MjData(kitchen)
     mujoco.mj_forward(kitchen, kdata)
 
-    holonomic = args.robot in HOLONOMIC_BASE_ROBOTS
-    mount_z = 0.0
-    out = np.array([1.0, 0.0])
-    if args.robot in TABLETOP_ROBOTS:
-        # No spawn margin for an arm: the margin is a driving allowance -- room to not be
-        # touching a cabinet door you would then have to unstick yourself from -- and
-        # adding it here would reject every 0.6 m-deep counter run in the dataset.
-        xy, mount_z, yaw, out = find_counter_mount(arena, kitchen, kdata, ROBOT_RADIUS[args.robot])
-    else:
-        xy, yaw = find_open_floor(kitchen, kdata, ROBOT_RADIUS[args.robot] + SPAWN_MARGIN_M)
-    if args.pos is not None:
-        xy = np.array(args.pos, dtype=float)
-    if args.yaw is not None:
-        yaw = np.radians(args.yaw)
-        out = np.array([np.cos(yaw), np.sin(yaw)])
+    # Arms first, then mobile bases. An arm has no say in where it goes -- it needs a
+    # worktop at working height -- while a base can start anywhere open, so the base is
+    # the one that gives way. Placed the other way round, the roomiest floor in a
+    # RoboCasa kitchen is repeatedly the standing space in front of the very counter the
+    # arm is about to be bolted to, and the task then stages a 0.92 m slab on top of it.
+    keep_out: list[np.ndarray] = []
+
+    for inst in sorted(instances, key=lambda i: not i.tabletop):
+        if inst.tabletop:
+            # No spawn margin for an arm: the margin is a driving allowance -- room to not be
+            # touching a cabinet door you would then have to unstick yourself from -- and
+            # adding it here would reject every 0.6 m-deep counter run in the dataset.
+            xy, mount_z, yaw, out = find_counter_mount(
+                arena, kitchen, kdata, ROBOT_RADIUS[inst.name]
+            )
+            inst.mount_z = mount_z
+            # The arm reaches out over the floor beside its counter and the task stages a
+            # slab there; both are somewhere a base must not be. `clearance_field`
+            # measures to box *surfaces*, so a half-extent box is the natural spelling.
+            reach = ARM_REACH[1] + ROBOT_RADIUS[inst.name]
+            keep_out.append(np.array([xy[0], xy[1], reach, reach], dtype=float))
+        else:
+            xy, yaw = find_open_floor(
+                kitchen, kdata, ROBOT_RADIUS[inst.name] + SPAWN_MARGIN_M,
+                keep_out=keep_out,
+            )
+            out = np.array([np.cos(yaw), np.sin(yaw)])
+            r = ROBOT_RADIUS[inst.name] + SPAWN_MARGIN_M
+            keep_out.append(np.array([xy[0], xy[1], r, r], dtype=float))
+        if args.pos is not None:
+            xy = np.array(args.pos, dtype=float)
+        if args.yaw is not None:
+            yaw = np.radians(args.yaw)
+            out = np.array([np.cos(yaw), np.sin(yaw)])
+        inst.xy, inst.yaw, inst.out = xy, yaw, out
+
+    holonomic = primary.holonomic
+    xy, yaw, out, mount_z = primary.xy, primary.yaw, primary.out, primary.mount_z
 
     # Objects go in before the compile, and their poses are written after it: a free body
     # is placed by its joint, which does not exist until the model is built.
@@ -693,8 +997,33 @@ def main() -> int:
         )
     categories = [c.strip() for c in (args.objects or "").split(",") if c.strip()]
     objects = make_kitchen_objects(categories, args.seed, args.object_scale) if categories else []
+    # A task served on RoboCasa's own apple and plate: the registry models go into the
+    # kitchen like any --objects pair, then take the task's body names so the task stages
+    # around them rather than bringing its own. Placed at the task's poses below.
+    task_objects: list = []
+    task_module = None
+    if args.task and args.native_objects:
+        import importlib
+
+        task_module = importlib.import_module(TASKS[args.task][0])
+        task_objects = make_task_objects(task_module, swap=args.swap_objects)
+        objects = list(task_objects)
     if objects:
         spec = compile_spec(objects)
+    if task_objects:
+        # The task's poses in the arm base frame, mapped into the kitchen with the same
+        # transform `stage()` will use for everything else it places. The plate goes in
+        # here, static; the apple keeps its free joint and is placed after the compile.
+        task_transform = task_module.base_frame(
+            [float(arm_instance.xy[0]), float(arm_instance.xy[1]), arm_instance.mount_z],
+            float(arm_instance.yaw),
+        )
+        task_poses = task_module.object_poses(args.swap_objects)
+        adopt_task_objects(
+            spec, task_objects, task_module,
+            plate_world=task_module._apply(task_transform, task_poses["plate"]),
+            worktop_z=mount_z - SO101_BASE_LIFT,
+        )
 
     if args.robot in TABLETOP_ROBOTS:
         # The SO-101's own exo_camera sits behind-left of its base, which on a counter
@@ -722,16 +1051,18 @@ def main() -> int:
                 target=[float(centre[0]), float(centre[1]), mount_z],
             )
 
-    quat = [float(np.cos(yaw / 2)), 0.0, 0.0, float(np.sin(yaw / 2))]
-    attach_robot(
-        spec,
-        args.robot,
-        prefix,
-        # A holonomic base is grafted in at the origin and driven to its spawn pose
-        # below; its slide joints are world-aligned and mean nothing anywhere else.
-        pos=[0.0, 0.0, 0.0] if holonomic else [float(xy[0]), float(xy[1]), mount_z],
-        quat=[1.0, 0.0, 0.0, 0.0] if holonomic else quat,
-    )
+    for inst in instances:
+        inst_quat = [float(np.cos(inst.yaw / 2)), 0.0, 0.0, float(np.sin(inst.yaw / 2))]
+        attach_robot(
+            spec,
+            inst.name,
+            inst.mjcf,
+            # A holonomic base is grafted in at the origin and driven to its spawn pose
+            # below; its slide joints are world-aligned and mean nothing anywhere else.
+            pos=([0.0, 0.0, 0.0] if inst.holonomic
+                 else [float(inst.xy[0]), float(inst.xy[1]), inst.mount_z]),
+            quat=[1.0, 0.0, 0.0, 0.0] if inst.holonomic else inst_quat,
+        )
 
     stage_task = None
     if args.task:
@@ -753,18 +1084,30 @@ def main() -> int:
         # costs nothing -- it is static.
         stage_task[0](
             spec,
-            [float(xy[0]), float(xy[1]), mount_z],
-            float(yaw),
+            [float(arm_instance.xy[0]), float(arm_instance.xy[1]), arm_instance.mount_z],
+            float(arm_instance.yaw),
             reference_table=args.reference_table,
             dressing=args.dressing,
             lighting=args.reference_lighting,
             extra_lights=args.extra_lights,
+            swap=args.swap_objects,
+            objects="engine" if task_objects else "task",
         )
 
     model = spec.compile()
     data = mujoco.MjData(model)
 
-    for obj, spot in zip(objects, object_layout(xy, yaw, out, ARM_REACH, len(objects))):
+    if task_objects:
+        # Only the apple: the plate was made static and placed on the spec in
+        # `adopt_task_objects`, so it has no free joint to write.
+        placeable = [o for o in task_objects if o.name.split("_")[1] == "apple"]
+        spots = [np.asarray(task_module._apply(task_transform, task_poses["apple"])[:2])
+                 for _ in placeable]
+    else:
+        placeable = objects
+        spots = object_layout(xy, yaw, out, ARM_REACH, len(objects))
+
+    for obj, spot in zip(placeable, spots):
         # `bottom_offset` is how far the object's origin sits above its lowest point, so
         # subtracting it is what rests the object on the worktop instead of half in it.
         z = mount_z - SO101_BASE_LIFT - float(obj.bottom_offset[2]) + 0.002
@@ -776,42 +1119,47 @@ def main() -> int:
         data.qpos[adr:adr + 7] = [spot[0], spot[1], z, 1.0, 0.0, 0.0, 0.0]
         print(f"  placed {obj.name} at ({spot[0]:.2f}, {spot[1]:.2f}, {z:.2f})", file=sys.stderr)
 
-    base = None
-    groups = {}
-    if holonomic:
-        base = PlanarJointBase(model, data, prefix)
-        base.teleport(float(xy[0]), float(xy[1]), float(yaw))
-    else:
-        groups = {
-            # An empty group, and deliberately so. MolmoSpaces gives its SO-101 a `base`
-            # move group -- the unactuated mocap mount the arm is bolted to, zero controls,
-            # see robots/so101/so101_view.py:47 -- and advertises the mount pose as
-            # `base_pose`. Here the arm is bolted straight into the worldbody instead, so
-            # there is no mount body, but the *information* is the same and the client must
-            # not be able to tell: a console that saw `base` on one engine and not the
-            # other could identify which one it was talking to.
-            "base": JointGroup(model, data, prefix, (), frame_body="base"),
-            "arm": JointGroup(model, data, prefix, SO101_ARM_JOINTS, SO101_TCP_BODY),
-            "gripper": JointGroup(model, data, prefix, SO101_GRIPPER_JOINTS),
-        }
-        # Both the joint state and the target: these are position actuators, so a ctrl
-        # left at its default of 0 would make the arm snap out of the rest pose on step 1.
-        for gid, rest in (("arm", SO101_REST_QPOS), ("gripper", SO101_REST_GRIPPER)):
-            groups[gid].joint_pos = rest
-            groups[gid].ctrl = rest
+    for inst in instances:
+        if inst.holonomic:
+            inst.base = PlanarJointBase(model, data, inst.mjcf)
+            inst.base.teleport(float(inst.xy[0]), float(inst.xy[1]), float(inst.yaw))
+        else:
+            inst.groups = {
+                # An empty group, and deliberately so. MolmoSpaces gives its SO-101 a `base`
+                # move group -- the unactuated mocap mount the arm is bolted to, zero controls,
+                # see robots/so101/so101_view.py:47 -- and advertises the mount pose as
+                # `base_pose`. Here the arm is bolted straight into the worldbody instead, so
+                # there is no mount body, but the *information* is the same and the client must
+                # not be able to tell: a console that saw `base` on one engine and not the
+                # other could identify which one it was talking to.
+                "base": JointGroup(model, data, inst.mjcf, (), frame_body="base"),
+                "arm": JointGroup(model, data, inst.mjcf, SO101_ARM_JOINTS, SO101_TCP_BODY),
+                "gripper": JointGroup(model, data, inst.mjcf, SO101_GRIPPER_JOINTS),
+            }
+            # Both the joint state and the target: these are position actuators, so a ctrl
+            # left at its default of 0 would make the arm snap out of the rest pose on step 1.
+            for gid, rest in (("arm", SO101_REST_QPOS), ("gripper", SO101_REST_GRIPPER)):
+                inst.groups[gid].joint_pos = rest
+                inst.groups[gid].ctrl = rest
+
+    base, groups = primary.base, primary.groups
 
     mujoco.mj_forward(model, data)
-    warn_on_penetration(model, data, prefix)
+    for inst in instances:
+        warn_on_penetration(model, data, inst.mjcf)
 
     task = None
     if stage_task is not None:
         # After the rest pose is applied: the arbiter snapshots this state as the one
-        # /reset restores.
-        task = stage_task[1](model, data)
+        # /reset restores. The arm's prefix is passed rather than inferred -- every
+        # robot's root body is called `base`, so the arbiter's "find the one body ending
+        # in /base" rule resolves nothing once a second robot is in the kitchen.
+        task = stage_task[1](model, data, prefix=arm_instance.mjcf)
         placed, reason = task.instantaneous(data)
         print(f"task {args.task}: staged; success predicate reads "
               f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
-        check_task_contacts(model, prefix, task)
+        print(f"task {args.task}: {task.reach_report(data, ARM_REACH)}", file=sys.stderr)
+        check_task_contacts(model, arm_instance.mjcf, task)
         from mujoco_bridge import report_slab_fit
         report_slab_fit(model, data)
     print(
@@ -820,25 +1168,10 @@ def main() -> int:
         file=sys.stderr,
     )
 
-    camera = args.camera
-    if camera is None:
-        # task_camera first: it exists only when this script added it (tabletop robots),
-        # and it is the one guaranteed to see the workspace rather than a cupboard.
-        camera = next(
-            (
-                name
-                for name in (
-                    "task_camera",
-                    f"{prefix}front_camera",
-                    f"{prefix}exo_camera",
-                    f"{prefix}wrist_cam",
-                )
-                if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, name) >= 0
-            ),
-            None,
-        )
-    elif camera.lower() == "none":
-        camera = None
+    # Camera selection moved into `_pick_camera`, because it is per robot: each base
+    # resolves `front_camera` against its own MJCF prefix, and one `camera` variable here
+    # would have handed the second robot the first one's view. `task_camera` still comes
+    # first there, for the same reason it did here.
 
     scene_option = visual_only()
 
@@ -909,72 +1242,30 @@ def main() -> int:
         return 0
 
     controller = None
-    if args.ros_port and args.robot in ARM_ROS_SURFACES:
-        import importlib
-
-        from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
-
-        module_name, func_name = ROS_SURFACES[args.robot]
-        serve_ros = getattr(importlib.import_module(module_name), func_name)
-        cameras = dict(DEFAULT_CAMERAS)
-        if args.wrist_camera:
-            cameras.update({t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()})
-        controller = serve_ros(
-            args.ros_port, groups, model, task,
-            cameras=cameras,
-            jpeg_quality=args.jpeg_quality,
-            control_hz=args.control_hz,
-            scene_option=scene_option,
-            host=args.control_host,
-        )
-    elif args.ros_port:
-        if args.robot not in ROS_SURFACES:
+    if args.ros_port:
+        missing = [i.name for i in instances if i.name not in ROS_SURFACES]
+        if missing:
             raise SystemExit(
-                f"--ros-port: no ROS surface for {args.robot!r}; "
+                f"--ros-port: no ROS surface for {missing}; "
                 f"available: {', '.join(sorted(ROS_SURFACES))}"
             )
+
+        # One server, one port, one graph -- a namespace per robot. Identical to the
+        # MolmoSpaces engine on purpose: a client must not be able to tell which engine
+        # it is talking to, and the topic list is the first thing it would notice.
         import importlib
 
-        module_name, func_name = ROS_SURFACES[args.robot]
-        serve_ros = getattr(importlib.import_module(module_name), func_name)
+        from ros_surfaces import RobotFleet
 
-        scan_cfg = None
-        if not args.no_scan:
-            defaults = SCAN_DEFAULTS[args.robot]
-            offset = args.scan_offset or defaults["offset"]
-            scan_cfg = {
-                "beams": args.scan_beams,
-                "max_range": args.scan_range or defaults["max_range"],
-                "min_range": args.scan_min_range or defaults["min_range"],
-                "offset_x": offset[0],
-                "offset_z": offset[1],
-                "period": 1.0 / max(args.scan_hz, 1e-3),
-                # Rays start inside the robot's own chassis and must not range it.
-                "body": f"{prefix}base",
-                "exclude_bodies": frozenset(
-                    i for i in range(model.nbody)
-                    if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
-                    and n.startswith(prefix)
-                ),
-            }
-        # Depth is not one of the four topics in the ROS contract and nothing in the
-        # console reads it, but the MolmoSpaces engine publishes it -- and an engine a
-        # client could tell apart by its topic list is the regression this split exists
-        # to prevent. Same defaults, same flag to turn it off.
-        depth_cfg = None
-        if not args.no_depth and camera is not None:
-            cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
-            depth_cfg = {
-                "size": args.depth_size,
-                "period": 1.0 / max(args.depth_hz, 1e-3),
-                "max_range": args.depth_range,
-                "fovy": float(model.cam_fovy[cam_id]),
-            }
-        controller = serve_ros(
-            args.ros_port, base, model, camera, args.camera_size, args.jpeg_quality,
-            args.control_hz, args.watchdog, scan=scan_cfg, depth=depth_cfg,
-            scene_option=scene_option,
-        )
+        fleet = RobotFleet(port=args.ros_port, host=args.control_host)
+        for inst in instances:
+            module_name, func_name = ROS_SURFACES[inst.name]
+            attach_ros = getattr(importlib.import_module(module_name), func_name)
+            fleet.attach(inst.ns, attach_ros,
+                         **_surface_kwargs(args, inst, model, task, scene_option))
+        fleet.start()
+        controller = fleet
+
     control_period = 1.0 / args.control_hz
     next_control = 0.0
     deadline = None if args.timeout is None else time.monotonic() + args.timeout

@@ -108,11 +108,18 @@ def test_the_default_cameras_are_the_only_published_pair() -> None:
     # overhead+side are the only cameras the simulator still publishes, so the
     # default is the only pair that can be subscribed at all. Order is
     # load-bearing: MolmoAct2 consumes views positionally.
-    cameras = rs.RosSettings().cameras()
-    assert cameras == {
+    # Topics come out under the arm's namespace, which is on by default; the view
+    # *names* are slot labels a policy matches on and are never prefixed.
+    assert rs.RosSettings().cameras() == {
+        "overhead": ("/so101/overhead/color/compressed", 480, 640),
+        "side": ("/so101/side/color/compressed", 480, 640),
+    }
+    # And `namespace=""` is exactly the bare single-robot wire, unchanged.
+    assert rs.RosSettings(namespace="").cameras() == {
         "overhead": ("/overhead/color/compressed", 480, 640),
         "side": ("/side/color/compressed", 480, 640),
     }
+    cameras = rs.RosSettings().cameras()
     assert list(cameras) == ["overhead", "side"]
     assert rs.RosSettings().base_kwargs()["cameras"] == cameras
 
@@ -126,7 +133,7 @@ def test_the_overhead_side_pair_is_wirable_explicitly() -> None:
         extra_cameras=((rs.SIDE_CAMERA_NAME, rs.SIDE_CAMERA_TOPIC, 640, 480),),
     )
     assert list(settings.cameras()) == ["overhead", "side"]
-    assert settings.cameras()["side"] == ("/side/color/compressed", 480, 640)
+    assert settings.cameras()["side"] == ("/so101/side/color/compressed", 480, 640)
 
 
 def test_extra_cameras_append_in_declaration_order() -> None:

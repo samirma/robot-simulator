@@ -20,6 +20,13 @@ from robot_console.camera import LatestFrame, decode_compressed_image
 from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT, split_host_port
 from robot_console.preflight import probe_tcp, startup_instructions
 from robot_console.teleop import Command
+from robot_console.topics import (
+    TOPIC_CAMERA,
+    TOPIC_CMD_VEL,
+    TOPIC_ODOM,
+    TOPIC_SCAN,
+    namespaced,
+)
 
 DRIVE_SPEED = 0.15
 DRIVE_SECONDS = 2.0
@@ -92,13 +99,21 @@ class Runner:
         time.sleep(0.3)
 
 
-def run(host: str, port: int, *, require_camera: bool, quiet: bool = False) -> int:
-    checks, code = execute(host, port, require_camera=require_camera, quiet=quiet)
+def run(host: str, port: int, *, require_camera: bool, quiet: bool = False,
+        namespace: str = "") -> int:
+    checks, code = execute(host, port, require_camera=require_camera, quiet=quiet,
+                           namespace=namespace)
     return code
 
 
-def execute(host: str, port: int, *, require_camera: bool, quiet: bool = False):
-    """Run every check. Returns `(checks, exit_code)`."""
+def execute(host: str, port: int, *, require_camera: bool, quiet: bool = False,
+            namespace: str = ""):
+    """Run every check. Returns `(checks, exit_code)`.
+
+    `namespace` addresses one robot on a shared graph: with several robots on one
+    rosbridge each is under its own prefix, so this is what points the check at the base
+    rather than at whatever else is on the port.
+    """
     quiet_roslibpy_logging()
     url = f"ws://{host}:{port}"
     if not quiet:
@@ -113,7 +128,19 @@ def execute(host: str, port: int, *, require_camera: bool, quiet: bool = False):
 
     odoms: List[Odom] = []
     latest = LatestFrame()
-    link = RobotLink(host, port)
+    link = RobotLink(
+        host, port,
+        cmd_topic=namespaced(TOPIC_CMD_VEL, namespace),
+        odom_topic=namespaced(TOPIC_ODOM, namespace),
+        camera_topic=namespaced(TOPIC_CAMERA, namespace),
+        scan_topic=namespaced(TOPIC_SCAN, namespace),
+    )
+    # Frames carry the namespace too, joined by `/` and with no leading slash -- that is
+    # what ROS 1's `tf_prefix` and ROS 2's frame prefixing produce, and checking it here
+    # is what keeps the frame half of the contract verified rather than merely emitted.
+    # This is the only place in the console that reads a `frame_id` at all.
+    odom_frame = f"{namespace}/odom" if namespace else "odom"
+    base_frame = f"{namespace}/base_footprint" if namespace else "base_footprint"
 
     started = time.monotonic()
     try:
@@ -134,7 +161,7 @@ def execute(host: str, port: int, *, require_camera: bool, quiet: bool = False):
         time.sleep(1.5)
         rate = len(odoms) / 1.5
         odom = runner.pose()
-        if len(odoms) >= 12 and odom.frame_id == "odom" and odom.child_frame_id == "base_footprint":
+        if len(odoms) >= 12 and odom.frame_id == odom_frame and odom.child_frame_id == base_frame:
             runner.record(
                 Check("odom stream").passed(f"{rate:.1f} Hz, frames {odom.frame_id} -> {odom.child_frame_id}")
             )
@@ -250,6 +277,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--require-camera", action="store_true", help="fail, rather than skip, without a camera")
     parser.add_argument("--json", action="store_true", help="emit one JSON object instead of a table")
+    parser.add_argument(
+        "--namespace", default="", metavar="NAME",
+        help="ROS namespace the base is under, e.g. `myagv` for /myagv/cmd_vel. Empty "
+             "(the default) is the bare single-robot contract.",
+    )
     args = parser.parse_args(argv)
 
     host, port = split_host_port(args.host, DEFAULT_PORT)
@@ -257,9 +289,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         port = args.port
 
     if not args.json:
-        return run(host, port, require_camera=args.require_camera)
+        return run(host, port, require_camera=args.require_camera,
+                   namespace=args.namespace)
 
-    checks, code = execute(host, port, require_camera=args.require_camera, quiet=True)
+    checks, code = execute(host, port, require_camera=args.require_camera, quiet=True,
+                           namespace=args.namespace)
     print(
         json.dumps(
             {

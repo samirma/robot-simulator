@@ -25,6 +25,9 @@ from robot_console.arm.kinematics import ARM_JOINTS
 from robot_console.arm.ros_client import ZERO_HEADER, HeaderStampingClient
 from robot_console.arm.ros_settings import RosSettings
 
+# The bare contract names. The embodiment publishes them under its namespace, so the
+# tests that go through a real embodiment use `settings.topic(...)` rather than these --
+# and one of them exists precisely to catch the shim being keyed on the wrong one.
 ARM_TOPIC = "/joint_trajectory_controller/joint_trajectory"
 GRIPPER_TOPIC = "/gripper_controller/commands"
 
@@ -86,8 +89,17 @@ def test_an_existing_header_is_not_overwritten() -> None:
 
 def test_the_embodiment_installs_the_shim_on_the_arm_topic() -> None:
     embodiment = SO101RosEmbodiment(RosSettings())
+    settings = embodiment.settings
     assert isinstance(embodiment._client, HeaderStampingClient)
-    assert embodiment._client.stamped_topics == (embodiment.settings.command_topic,)
+    # The topic as it goes on the wire, not the bare contract name. Keyed on the bare
+    # name under a namespace the shim matches nothing, every trajectory ships without a
+    # header, and the controller ignores all of them in silence.
+    assert embodiment._client.stamped_topics == (settings.topic(settings.command_topic),)
+    assert embodiment._client.stamped_topics == ("/so101/joint_trajectory_controller"
+                                                 "/joint_trajectory",)
+    # ...and the bare wire still works, so the single-robot contract stays expressible.
+    bare = SO101RosEmbodiment(RosSettings(namespace=""))
+    assert bare._client.stamped_topics == (ARM_TOPIC,)
 
 
 def test_a_step_puts_a_stamped_trajectory_on_the_wire(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,13 +110,12 @@ def test_a_step_puts_a_stamped_trajectory_on_the_wire(monkeypatch: pytest.Monkey
         lambda self, action: _publish_like_upstream(self, action),
     )
     embodiment = SO101RosEmbodiment(RosSettings())
-    recorder = _Recorder(
-        embodiment.url, stamped_topics=(embodiment.settings.command_topic,)
-    )
+    arm_topic = embodiment.settings.topic(embodiment.settings.command_topic)
+    recorder = _Recorder(embodiment.url, stamped_topics=(arm_topic,))
     embodiment._client = recorder
     embodiment.step(Action(data=np.arange(6, dtype=np.float64) / 10.0))
 
-    arm = [m for t, m in recorder.sent if t == ARM_TOPIC]
+    arm = [m for t, m in recorder.sent if t == arm_topic]
     assert arm, "no arm trajectory was published"
     assert "header" in arm[-1]
     assert arm[-1]["joint_names"] == list(ARM_JOINTS)

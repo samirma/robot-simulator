@@ -172,6 +172,29 @@ PLATE_TOP_Z = 2 * PLATE_HALF_HEIGHT  # 0.0204
 #: Where an apple sitting on the plate has its centre: plate top + apple radius.
 RESTING_Z = 0.040
 
+#: The apple's contact parameters, as a block, because an engine that supplies its own
+#: apple (`objects="engine"`) has to put them on that apple's colliders. Every one was
+#: measured: see the sphere geom in `stage()` for what each buys.
+APPLE_CONTACT = dict(
+    condim=6,
+    friction=[2.0, 0.05, 0.001],
+    solref=[0.03, 1.0],
+    solimp=[0.95, 0.99, 0.001, 0.5, 2.0],
+)
+
+
+def object_poses(swap: bool = False) -> dict[str, tuple[float, float, float]]:
+    """Where the apple and the plate go, in the arm base frame.
+
+    ``swap`` exchanges the two: the plate at the apple's spawn, the apple where the plate
+    was. Heights stay the objects' own -- an apple rests at its radius wherever it is put,
+    and the plate's centre is on the surface. One function, so `stage()`, an engine that
+    brings native objects, and the arbiter's report all agree about the layout.
+    """
+    apple = (PLATE_CENTRE[0], PLATE_CENTRE[1], APPLE_SPAWN[2]) if swap else APPLE_SPAWN
+    plate = (APPLE_SPAWN[0], APPLE_SPAWN[1], PLATE_CENTRE[2]) if swap else PLATE_CENTRE
+    return {"apple": apple, "plate": plate}
+
 #: The pose the episode starts from: five arm joints, radians, contract order.
 #:
 #: **`wrist_roll` is +1.62 and that number is doing real work.** A VLA conditions on the
@@ -315,6 +338,8 @@ def stage(
     dressing: bool = True,
     lighting: bool = False,
     extra_lights: bool = False,
+    swap: bool = False,
+    objects: str = "task",
 ) -> list[str]:
     """Add the reference table -- slab, apple, plate, dressing, lights, cameras -- to a spec.
 
@@ -324,6 +349,15 @@ def stage(
     `mount_pos`/`yaw` locate the arm's base body in the engine's world, and everything
     below is placed relative to it, so the contract geometry survives being dropped into
     a kitchen that knows nothing about it.
+
+    `swap` exchanges the apple's and the plate's positions (see `object_poses`).
+
+    `objects` says who supplies the apple and the plate. ``"task"`` stages the measured
+    YCB pair below. ``"engine"`` stages neither: the engine has already put its *own*
+    apple and plate into the spec as top-level free bodies named `APPLE_BODY` and
+    `PLATE_BODY` at `object_poses()`, with `APPLE_CONTACT` on the apple's colliders --
+    and the `task_` prefix is what keeps the workspace clearing below from sinking them.
+    The arbiter reads their geometry off the compiled model either way.
 
     Loose scene objects inside `clear_radius` of the base are sunk under the floor first;
     see `CLEAR_RADIUS`. Only *movable* bodies are touched -- anything without a free joint
@@ -375,103 +409,21 @@ def stage(
             group=2,  # static, so it needs no inertia; visible under both masks
         )
 
-    # ---- apple ------------------------------------------------------------------
-    # Top-level body: MuJoCo refuses a free joint on a nested one.
-    apple = spec.worldbody.add_body(
-        name=APPLE_BODY, pos=_apply(transform, APPLE_SPAWN), quat=base_quat
-    )
-    apple.add_freejoint(name=f"{APPLE_BODY}_joint")
-    # Textured mesh for looks, primitive for physics. The mesh never collides and adds
-    # no mass; the sphere is invisible and carries every tuned contact parameter.
-    apple.add_geom(
-        name=f"{APPLE_BODY}_visual",
-        type=mujoco.mjtGeom.mjGEOM_MESH,
-        meshname="task_apple_vis",
-        material="task_apple_mat",
-        contype=0,
-        conaffinity=0,
-        density=0.0,
-        # Visual geoms group 2, collision geoms group 0 -- and BOTH halves of that are
-        # forced, by different engines, in opposite directions:
-        #
-        #   RoboCasa renders through `visual_only()`, a mask showing groups 1 and 2 only,
-        #   because its own collision hulls are group 0. A visual mesh in group 0 is
-        #   therefore invisible in every camera frame there -- silently: the wire stays
-        #   healthy, the poses are right, and a scripted policy still passes because it
-        #   never looks, while a VLA sees an empty worktop.
-        #
-        #   RoboCasa also sets `inertiagrouprange = [0, 0]`, so **only group-0 geoms
-        #   contribute inertia**. A collision geom outside group 0 leaves its body with
-        #   no mass at all, and the kitchen refuses to compile with "mass and inertia of
-        #   moving bodies must be larger than mjMINVAL" -- an error naming no body, three
-        #   bisections away from its cause.
-        #
-        # Group 2 visual + group 0 collision satisfies both, and is RoboCasa's own
-        # convention. On MolmoSpaces (inertiagrouprange 0-5, default option showing
-        # groups 0-2) it changes nothing: the colliders carry alpha 0 either way.
-        group=2,
-    )
-    apple.add_geom(
-        name=f"{APPLE_BODY}_geom",
-        type=mujoco.mjtGeom.mjGEOM_SPHERE,
-        size=[APPLE_RADIUS, 0.0, 0.0],
-        mass=APPLE_MASS,
-        condim=6,
-        friction=[2.0, 0.05, 0.001],
-        solref=[0.03, 1.0],
-        solimp=[0.95, 0.99, 0.001, 0.5, 2.0],
-        # Deliberately NO `priority`. mujoco_menagerie gives the SO-101's finger geoms
-        # `priority="1"` together with its own contact tuning (solref 0.01, friction 1),
-        # and MuJoCo resolves a contact between geoms of unequal priority with the higher
-        # one's parameters alone -- so at the jaw it is the *jaw's* parameters that act,
-        # and the softer solref above only governs the apple against the table and the
-        # plate. That turns out to be what holds: measured offline over timestep
-        # {0.002, 0.005} x {ramped, jumped} lift, the apple is lifted in all four cases
-        # with the jaw's parameters in force and dropped in all four when the apple was
-        # given a higher priority to force its own soft contact onto the fingers. The
-        # reference rig's soft apple was tuned against a jaw with no contact tuning of
-        # its own; here the jaw already has some, and it is the better half.
-        rgba=[1.0, 0.0, 0.0, 0.0],
-        group=0,  # collision; must be group 0 to carry inertia -- see above
-    )
-
-    # ---- plate ------------------------------------------------------------------
-    plate = spec.worldbody.add_body(
-        name=PLATE_BODY, pos=_apply(transform, PLATE_CENTRE), quat=base_quat
-    )
-    plate.add_geom(
-        name=f"{PLATE_BODY}_visual",
-        type=mujoco.mjtGeom.mjGEOM_MESH,
-        meshname="task_plate_vis",
-        material="task_plate_mat",
-        pos=[0.0, 0.0, PLATE_MESH_Z],
-        contype=0,
-        conaffinity=0,
-        density=0.0,
-        group=2,  # visual; see the apple's visual geom
-    )
-    plate.add_geom(
-        name=f"{PLATE_BODY}_geom",
-        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-        size=[PLATE_RADIUS, PLATE_HALF_HEIGHT, 0.0],
-        pos=[0.0, 0.0, PLATE_HALF_HEIGHT],
-        condim=4,
-        friction=[1.5, 0.05, 0.001],
-        rgba=[1.0, 1.0, 1.0, 0.0],
-        group=0,  # collision
-    )
-    for name, pos, quat, size in _rim_geoms():
-        plate.add_geom(
-            name=name,
-            type=mujoco.mjtGeom.mjGEOM_BOX,
-            size=list(size),
-            pos=list(pos),
-            quat=list(quat),
-            condim=4,
-            friction=[1.5, 0.05, 0.001],
-            rgba=[1.0, 1.0, 1.0, 0.0],
-            group=0,  # collision
-        )
+    # ---- apple and plate --------------------------------------------------------
+    poses = object_poses(swap)
+    if objects == "task":
+        _stage_task_objects(spec, transform, base_quat, poses)
+    elif objects == "engine":
+        # The engine put its own apple and plate in already, named APPLE_BODY and
+        # PLATE_BODY; nothing to stage, and the clearing above left them alone.
+        for name in (APPLE_BODY, PLATE_BODY):
+            if not any(b.name == name for b in spec.worldbody.bodies):
+                raise ValueError(
+                    f"objects='engine' but the spec has no top-level body {name!r}: the "
+                    "engine must add its native object under that name before staging"
+                )
+    else:
+        raise ValueError(f"objects must be 'task' or 'engine', not {objects!r}")
 
     # ---- dressing ---------------------------------------------------------------
     # Same visual/collision split as the apple and the plate, for the same reason: a
@@ -536,6 +488,112 @@ def stage(
         camera.quat = _camera_quat(rot @ right, rot @ up)
 
     return cleared
+
+
+def _stage_task_objects(spec, transform, base_quat, poses) -> None:
+    """The measured YCB apple and plate, at `poses` (arm base frame).
+
+    Split out of `stage()` so an engine can supply its own pair instead
+    (`stage(objects="engine")`); everything in here is otherwise unchanged.
+    """
+    # ---- apple ------------------------------------------------------------------
+    # Top-level body: MuJoCo refuses a free joint on a nested one.
+    apple = spec.worldbody.add_body(
+        name=APPLE_BODY, pos=_apply(transform, poses["apple"]), quat=base_quat
+    )
+    apple.add_freejoint(name=f"{APPLE_BODY}_joint")
+    # Textured mesh for looks, primitive for physics. The mesh never collides and adds
+    # no mass; the sphere is invisible and carries every tuned contact parameter.
+    apple.add_geom(
+        name=f"{APPLE_BODY}_visual",
+        type=mujoco.mjtGeom.mjGEOM_MESH,
+        meshname="task_apple_vis",
+        material="task_apple_mat",
+        contype=0,
+        conaffinity=0,
+        density=0.0,
+        # Visual geoms group 2, collision geoms group 0 -- and BOTH halves of that are
+        # forced, by different engines, in opposite directions:
+        #
+        #   RoboCasa renders through `visual_only()`, a mask showing groups 1 and 2 only,
+        #   because its own collision hulls are group 0. A visual mesh in group 0 is
+        #   therefore invisible in every camera frame there -- silently: the wire stays
+        #   healthy, the poses are right, and a scripted policy still passes because it
+        #   never looks, while a VLA sees an empty worktop.
+        #
+        #   RoboCasa also sets `inertiagrouprange = [0, 0]`, so **only group-0 geoms
+        #   contribute inertia**. A collision geom outside group 0 leaves its body with
+        #   no mass at all, and the kitchen refuses to compile with "mass and inertia of
+        #   moving bodies must be larger than mjMINVAL" -- an error naming no body, three
+        #   bisections away from its cause.
+        #
+        # Group 2 visual + group 0 collision satisfies both, and is RoboCasa's own
+        # convention. On MolmoSpaces (inertiagrouprange 0-5, default option showing
+        # groups 0-2) it changes nothing: the colliders carry alpha 0 either way.
+        group=2,
+    )
+    apple.add_geom(
+        name=f"{APPLE_BODY}_geom",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=[APPLE_RADIUS, 0.0, 0.0],
+        mass=APPLE_MASS,
+        condim=6,
+        friction=[2.0, 0.05, 0.001],
+        solref=[0.03, 1.0],
+        solimp=[0.95, 0.99, 0.001, 0.5, 2.0],
+        # Deliberately NO `priority`. mujoco_menagerie gives the SO-101's finger geoms
+        # `priority="1"` together with its own contact tuning (solref 0.01, friction 1),
+        # and MuJoCo resolves a contact between geoms of unequal priority with the higher
+        # one's parameters alone -- so at the jaw it is the *jaw's* parameters that act,
+        # and the softer solref above only governs the apple against the table and the
+        # plate. That turns out to be what holds: measured offline over timestep
+        # {0.002, 0.005} x {ramped, jumped} lift, the apple is lifted in all four cases
+        # with the jaw's parameters in force and dropped in all four when the apple was
+        # given a higher priority to force its own soft contact onto the fingers. The
+        # reference rig's soft apple was tuned against a jaw with no contact tuning of
+        # its own; here the jaw already has some, and it is the better half.
+        rgba=[1.0, 0.0, 0.0, 0.0],
+        group=0,  # collision; must be group 0 to carry inertia -- see above
+    )
+
+    # ---- plate ------------------------------------------------------------------
+    plate = spec.worldbody.add_body(
+        name=PLATE_BODY, pos=_apply(transform, poses["plate"]), quat=base_quat
+    )
+    plate.add_geom(
+        name=f"{PLATE_BODY}_visual",
+        type=mujoco.mjtGeom.mjGEOM_MESH,
+        meshname="task_plate_vis",
+        material="task_plate_mat",
+        pos=[0.0, 0.0, PLATE_MESH_Z],
+        contype=0,
+        conaffinity=0,
+        density=0.0,
+        group=2,  # visual; see the apple's visual geom
+    )
+    plate.add_geom(
+        name=f"{PLATE_BODY}_geom",
+        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+        size=[PLATE_RADIUS, PLATE_HALF_HEIGHT, 0.0],
+        pos=[0.0, 0.0, PLATE_HALF_HEIGHT],
+        condim=4,
+        friction=[1.5, 0.05, 0.001],
+        rgba=[1.0, 1.0, 1.0, 0.0],
+        group=0,  # collision
+    )
+    for name, pos, quat, size in _rim_geoms():
+        plate.add_geom(
+            name=name,
+            type=mujoco.mjtGeom.mjGEOM_BOX,
+            size=list(size),
+            pos=list(pos),
+            quat=list(quat),
+            condim=4,
+            friction=[1.5, 0.05, 0.001],
+            rgba=[1.0, 1.0, 1.0, 0.0],
+            group=0,  # collision
+        )
+
 
 
 def table_corners(transform: np.ndarray) -> list[list[float]]:
@@ -632,6 +690,19 @@ def _camera_quat(right: np.ndarray, up: np.ndarray) -> list[float]:
     return [float(v) for v in quat]
 
 
+def spec_delete(spec, element) -> None:
+    """Remove `element` (a joint, a geom) from `spec`, whichever MuJoCo this is.
+
+    The two engines' venvs disagree exactly: MolmoSpaces' MuJoCo 3.5 has only
+    `spec.delete(element)`, RoboCasa's 3.3.1 only `element.delete()`. Public, so an engine
+    editing a spec it will hand to this task can use the same rule.
+    """
+    if hasattr(element, "delete"):
+        element.delete()
+    else:
+        spec.delete(element)
+
+
 def _clear_workspace(spec, transform: np.ndarray, radius: float) -> list[str]:
     """Sink every loose scene body inside the task's working area. Returns their names.
 
@@ -683,7 +754,7 @@ def _clear_workspace(spec, transform: np.ndarray, radius: float) -> list[str]:
                 # free joint makes it a static frame, which costs nothing to step.
                 for joint in list(body.joints):
                     if joint.type == mujoco.mjtJoint.mjJNT_FREE:
-                        spec.delete(joint)
+                        spec_delete(spec, joint)
                 body.pos = [body.pos[0], body.pos[1], body.pos[2] - SUNK_DEPTH]
                 moved.append(name)
                 return  # its children go with it
@@ -724,12 +795,22 @@ class AppleOnPlate:
     simulated time is what separates a placement from a fly-past.
     """
 
-    def __init__(self, model, data) -> None:
+    def __init__(self, model, data, *, prefix: str = "") -> None:
+        # `prefix` names the ARM this task is about -- `robot_0/` and friends, the MJCF
+        # name prefix, not the ROS namespace. It is optional so a single-robot caller
+        # needs no change, and load-bearing the moment the scene holds a second robot:
+        # see `_find_body`.
         self._model = model
+        self._prefix = prefix
         self._apple = model.body(APPLE_BODY).id
         self._plate = model.body(PLATE_BODY).id
         self._qpos_adr = model.jnt_qposadr[model.body(APPLE_BODY).jntadr[0]]
         self._qvel_adr = model.jnt_dofadr[model.body(APPLE_BODY).jntadr[0]]
+        # Whole subtrees, not roots: an engine's native apple is a massless free root
+        # with the geoms on a child body, and a contact check that looked at the root
+        # alone would find no collidable geoms and refuse to serve.
+        self._apple_subtree = _subtree(model, self._apple)
+        self._plate_subtree = _subtree(model, self._plate)
 
         # Everything whose pose goes out on the free-joint topic, discovered rather than
         # asserted: `stage()` can be asked for no dressing and no slab, and an arbiter
@@ -755,7 +836,7 @@ class AppleOnPlate:
         # not raise: it would silently leave the transform as identity and publish every
         # pose in the engine's world frame, which for an arm mounted on a kitchen island
         # is a metre and a rotation away from what the console expects.
-        base_id = _find_body(model, "base")
+        base_id = _find_body(model, "base", prefix)
         self._world_from_base = np.eye(4)
         if base_id is not None:
             mujoco.mj_forward(model, data)
@@ -778,6 +859,21 @@ class AppleOnPlate:
         self._spawn_ctrl = data.ctrl.copy()
         self._holding_since: float | None = None
 
+        # The layout, read off the compiled model at spawn rather than echoed from the
+        # constants: with `swap` the plate is at the apple's contract point, and with an
+        # engine-supplied pair the plate's top and the apple's radius are whatever that
+        # engine's meshes make them. Grading against APPLE_SPAWN / PLATE_CENTRE / RESTING_Z
+        # here would fail every genuine placement in a swapped kitchen while reading
+        # perfectly in the standard one -- so the numbers come from where things are.
+        rot = self._base_from_world[:3, :3]
+        origin = self._world_from_base[:3, 3]
+        self._apple_spawn = rot @ (np.asarray(data.xpos[self._apple]) - origin)
+        plate_local = rot @ (np.asarray(data.xpos[self._plate]) - origin)
+        self._plate_centre = (float(plate_local[0]), float(plate_local[1]))
+        self._apple_radius = _collision_radius(model, self._apple_subtree)
+        self._resting_z = _top_face_z(model, data, self._plate_subtree, origin, rot) \
+            + self._apple_radius
+
     def _apply_start_pose(self, data) -> None:
         """Put the arm in the task's start pose before anything is snapshotted.
 
@@ -791,7 +887,7 @@ class AppleOnPlate:
         targets.append(("gripper", START_GRIPPER - GRIPPER_OFFSET_RAD))
         missing = []
         for mjcf, value in targets:
-            jid = _find_joint(self._model, mjcf)
+            jid = _find_joint(self._model, mjcf, self._prefix)
             if jid < 0:
                 missing.append(mjcf)
                 continue
@@ -812,7 +908,7 @@ class AppleOnPlate:
 
     def contact_bodies(self) -> frozenset[int]:
         """Bodies the gripper must be able to touch for the task to be possible."""
-        return frozenset({self._apple, self._plate})
+        return self._apple_subtree | self._plate_subtree
 
     # -- geometry -------------------------------------------------------------------
 
@@ -839,18 +935,53 @@ class AppleOnPlate:
             # names and must not have to know how a scene spells them.
             yield name, pos, quat, lin, ang
 
+    def reach_report(self, data, reach: tuple[float, float]) -> str:
+        """Where the staged plate and apple actually are, against the arm's reach annulus.
+
+        Read from the compiled model through `_base_from_world`, not echoed from the
+        constants: a slab that failed to stage, a plate the workspace clearing sank, or an
+        arm mounted at the wrong height would all print the constants just fine. This is
+        what makes "the plate is in reach" a check rather than an assumption, and it is
+        computed here so that both engines print the identical line.
+        """
+        rot = self._base_from_world[:3, :3]
+        origin = self._world_from_base[:3, 3]
+        parts = []
+        inside = True
+        for name, body in (("plate", self._plate), ("apple", self._apple)):
+            local = rot @ (np.asarray(data.xpos[body]) - origin)
+            r = float(np.hypot(local[0], local[1]))
+            ok = reach[0] <= r <= reach[1]
+            inside &= ok
+            parts.append(f"{name} r={r:.3f} m")
+        verdict = "both in reach" if inside else "NOT in reach"
+        swapped = math.hypot(self._plate_centre[0] - APPLE_SPAWN[0],
+                             self._plate_centre[1] - APPLE_SPAWN[1]) < 0.03
+        return (f"{', '.join(parts)} from the arm base "
+                f"(annulus {reach[0]:.2f}-{reach[1]:.2f} m: {verdict}); "
+                f"layout {'swapped' if swapped else 'standard'}, plate centre "
+                f"({self._plate_centre[0]:.3f}, {self._plate_centre[1]:.3f}), apple radius "
+                f"{self._apple_radius * 1000:.1f} mm, resting z {self._resting_z:.4f}")
+
     def instantaneous(self, data) -> tuple[bool, str]:
-        """Clauses 1, 2, 3 and 5, with the reason the first failing one gives."""
+        """Clauses 1, 2, 3 and 5, with the reason the first failing one gives.
+
+        Against the layout measured at spawn -- `self._plate_centre`, `self._resting_z`,
+        `self._apple_spawn` -- which for the task's own objects in the standard layout
+        are `PLATE_CENTRE`, `RESTING_Z` and `APPLE_SPAWN` to well inside every tolerance.
+        """
         pos, vel = self._apple_state(data)
-        horizontal = math.hypot(pos[0] - PLATE_CENTRE[0], pos[1] - PLATE_CENTRE[1])
+        cx, cy = self._plate_centre
+        horizontal = math.hypot(pos[0] - cx, pos[1] - cy)
         if horizontal >= MAX_HORIZONTAL_DIST:
             return False, f"horizontal {horizontal:.4f} >= {MAX_HORIZONTAL_DIST:.3f}"
-        if abs(pos[2] - RESTING_Z) > Z_TOLERANCE:
-            return False, f"z {pos[2]:.4f} outside {RESTING_Z:.3f} +/- {Z_TOLERANCE:.3f}"
+        if abs(pos[2] - self._resting_z) > Z_TOLERANCE:
+            return False, (f"z {pos[2]:.4f} outside {self._resting_z:.3f} "
+                           f"+/- {Z_TOLERANCE:.3f}")
         speed = float(np.linalg.norm(vel))
         if speed >= MAX_SPEED:
             return False, f"speed {speed:.4f} >= {MAX_SPEED:.3f}"
-        displacement = float(np.linalg.norm(pos - np.asarray(APPLE_SPAWN)))
+        displacement = float(np.linalg.norm(pos - self._apple_spawn))
         if displacement <= MIN_DISPLACEMENT:
             return False, f"displacement {displacement:.4f} <= {MIN_DISPLACEMENT:.3f}"
         return True, "ok"
@@ -886,8 +1017,16 @@ class AppleOnPlate:
         self._holding_since = None
 
 
-def _find_joint(model, suffix: str) -> int:
-    """The id of the joint called `suffix`, whatever namespace an engine prefixed it."""
+def _find_joint(model, suffix: str, prefix: str = "") -> int:
+    """The id of the joint called `suffix`, under `prefix` if one is given.
+
+    Same rule and same reason as `_find_body`: two SO-101s in one scene both have a
+    `shoulder_pan`, and the uniqueness fallback then resolves neither.
+    """
+    if prefix:
+        direct = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{prefix}{suffix}")
+        if direct >= 0:
+            return direct
     exact = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, suffix)
     if exact >= 0:
         return exact
@@ -898,8 +1037,19 @@ def _find_joint(model, suffix: str) -> int:
     return matches[0] if len(matches) == 1 else -1
 
 
-def _find_body(model, suffix: str) -> int | None:
-    """The id of the body called `suffix`, whatever namespace an engine prefixed it with."""
+def _find_body(model, suffix: str, prefix: str = "") -> int | None:
+    """The id of the body called `suffix`, under `prefix` if one is given.
+
+    Naming the prefix is how a multi-robot scene stays unambiguous. Every robot's root
+    body is called `base`, so the uniqueness rule below -- "exactly one body ends in
+    /base" -- answers `None` the moment a second robot is in the scene, and the caller
+    then refuses to build the task at all. The rule stays as the fallback, because a
+    single-robot caller has no prefix to give and this is what has always worked for it.
+    """
+    if prefix:
+        direct = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{suffix}")
+        if direct >= 0:
+            return direct
     exact = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, suffix)
     if exact >= 0:
         return exact
@@ -908,3 +1058,59 @@ def _find_body(model, suffix: str) -> int | None:
         if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i) or "").endswith("/" + suffix)
     ]
     return matches[0] if len(matches) == 1 else None
+
+
+def _subtree(model, root: int) -> frozenset[int]:
+    """`root` and every body under it. MuJoCo orders parents before children, so one pass."""
+    ids = {int(root)}
+    for b in range(int(root) + 1, model.nbody):
+        if int(model.body_parentid[b]) in ids:
+            ids.add(b)
+    return frozenset(ids)
+
+
+def _collision_geoms(model, bodies: frozenset[int]) -> list[int]:
+    return [
+        g for g in range(model.ngeom)
+        if int(model.geom_bodyid[g]) in bodies
+        and (model.geom_contype[g] or model.geom_conaffinity[g])
+    ]
+
+
+def _collision_radius(model, bodies: frozenset[int]) -> float:
+    """Half the object's collision extent: the sphere's radius, or a mesh's largest half-size.
+
+    For the task's own apple this is `APPLE_RADIUS` exactly. For an engine's native apple
+    -- a handful of convex mesh pieces -- it is the largest axis-aligned half-extent of any
+    piece, which for an apple-shaped hull is its radius. Not the bounding *sphere*
+    (`geom_rbound`): that is the diagonal of a flattened piece, measured 28.6 mm on a
+    20 mm fruit, and it went straight into the resting height the success gate reads.
+    """
+    geoms = _collision_geoms(model, bodies)
+    if not geoms:
+        return APPLE_RADIUS
+    return float(max(float(np.max(model.geom_aabb[g][3:])) for g in geoms))
+
+
+def _top_face_z(model, data, bodies: frozenset[int], origin, rot) -> float:
+    """Height, in the arm base frame, of the widest collision geom's top face.
+
+    The plate's well floor, not its rim: the rim boxes stand higher but are narrow, so
+    "widest" picks the disc an apple actually rests on -- for the task's own plate the
+    cylinder's top at 0.0204, for an engine's native plate whatever its slab is.
+    """
+    geoms = _collision_geoms(model, bodies)
+    if not geoms:
+        return PLATE_TOP_Z
+    # `geom_aabb` is (centre offset, half sizes) in the geom's own frame for every geom
+    # type, mesh included -- which is the point: a plate from an engine's registry is a
+    # convex-hull mesh, and its bounding *sphere* is its diameter, not its thickness.
+    def horizontal(g: int) -> float:
+        return float(np.max(model.geom_aabb[g][3:5]))
+
+    widest = max(geoms, key=horizontal)
+    axes = rot @ np.asarray(data.geom_xmat[widest]).reshape(3, 3)
+    offset, half = model.geom_aabb[widest][:3], model.geom_aabb[widest][3:]
+    centre = rot @ (np.asarray(data.geom_xpos[widest]) - origin) + axes @ np.asarray(offset)
+    # The vertical half-extent along the base frame's z, whatever the geom's own axes.
+    return float(centre[2] + float(np.abs(axes[2]) @ np.asarray(half)))

@@ -99,9 +99,36 @@ def test_slam_hz_has_a_floor():
 
 
 def test_topics_can_be_overridden():
+    # A relative name comes back absolute: resolution now happens in `parse_args`, so
+    # `Options` holds the name that actually goes on the wire. `RobotLink` normalised it
+    # anyway, so this is the same topic -- just settled one layer earlier, which is what
+    # lets `--namespace` and an explicit topic be combined without guessing.
     options = parse_args(["--scan-topic", "/laser", "--odom-topic", "odom2"], mode="map")
     assert options.scan_topic == "/laser"
-    assert options.odom_topic == "odom2"
+    assert options.odom_topic == "/odom2"
+
+
+def test_a_namespace_prefixes_every_topic_but_an_explicit_one_wins():
+    """One flag for a robot on a shared graph; naming a topic still overrides it."""
+    options = parse_args(["--namespace", "myagv"], mode="map")
+    assert options.cmd_topic == "/myagv/cmd_vel"
+    assert options.odom_topic == "/myagv/odom"
+    assert options.scan_topic == "/myagv/scan"
+    assert options.camera_topic == "/myagv/camera/image_raw/compressed"
+
+    # An explicit topic is left exactly as given, and one already carrying the namespace
+    # is not prefixed twice.
+    explicit = parse_args(
+        ["--namespace", "myagv", "--odom-topic", "/elsewhere/odom",
+         "--scan-topic", "/myagv/scan"],
+        mode="map",
+    )
+    assert explicit.odom_topic == "/elsewhere/odom"
+    assert explicit.scan_topic == "/myagv/scan"
+    assert explicit.cmd_topic == "/myagv/cmd_vel"
+
+    # And no namespace is the bare contract a real myAGV bringup presents.
+    assert parse_args([], mode="map").cmd_topic == "/cmd_vel"
 
 
 def test_help_does_not_need_a_display(capsys):

@@ -108,11 +108,16 @@ class SensorTopics:
     names came from.
     """
 
-    __slots__ = ("camera", "scan", "depth", "camera_info")
+    __slots__ = ("camera", "scan", "depth", "camera_info", "camera_frame", "scan_frame")
 
-    def __init__(self, camera: str, scan: str, depth: str, camera_info: str) -> None:
+    def __init__(self, camera: str, scan: str, depth: str, camera_info: str,
+                 camera_frame: str = "camera", scan_frame: str = "laser_frame") -> None:
         self.camera, self.scan = camera, scan
         self.depth, self.camera_info = depth, camera_info
+        # Frames, not topics, and they carry the namespace *without* a leading slash --
+        # see contracts/namespace.py. Two bases on one graph both reporting `laser_frame`
+        # give a tf tree one frame with two parents.
+        self.camera_frame, self.scan_frame = camera_frame, scan_frame
 
 
 class PlanarSetpoint:
@@ -173,7 +178,8 @@ class SensorStreams:
 
     def __init__(self, server, model, camera: str | None, camera_size,
                  jpeg_quality: int, scan: dict | None, depth: dict | None,
-                 topics: SensorTopics, scene_option: "mujoco.MjvOption | None" = None) -> None:
+                 topics: SensorTopics, scene_option: "mujoco.MjvOption | None" = None,
+                 camera_period: float = 0.0) -> None:
         self._server = server
         self._model = model
         self._camera = camera
@@ -183,6 +189,19 @@ class SensorStreams:
         self._topics = topics
         self._scan_next = 0.0
         self._depth_next = 0.0
+        # The colour camera gets its own clock, like `/scan` and depth beside it. It is
+        # the one stream here that used to render once per control tick, which made it
+        # both less like real hardware -- a camera has a frame rate of its own -- and the
+        # thing that couples one robot's cost to another's control rate. Measured on an
+        # iTHOR kitchen at 10 Hz control: the SO-101 alone publishes at 9.8 Hz, and adding
+        # a myAGV takes it to 5.7 Hz; disabling only the AGV's colour camera puts it back
+        # to 8.4 Hz, while dropping the AGV's lidar entirely is worth just 1.0 Hz. The
+        # render is the cost, so this is the knob that moves it.
+        #
+        # 0 keeps the old behaviour -- one frame per control tick -- so nothing changes
+        # for a caller that does not ask.
+        self._camera_period = float(camera_period)
+        self._camera_next = 0.0
         # Engines whose scenes carry debug-only geometry (RoboCasa's collision geoms,
         # painted in random semi-transparent colours) pass a scene_option to keep it out
         # of the camera stream; None renders whatever MuJoCo's defaults show.
@@ -228,6 +247,10 @@ class SensorStreams:
 
     def publish(self, data, seq: int, x: float, y: float, yaw: float) -> None:
         from contracts.rosbridge_server import (
+            TYPE_CAMERA_INFO,
+            TYPE_COMPRESSED_IMAGE,
+            TYPE_IMAGE,
+            TYPE_LASER_SCAN,
             camera_info,
             compressed_image,
             image,
@@ -262,8 +285,9 @@ class SensorStreams:
                 laser_scan(
                     seq, ranges, -np.pi, np.pi - step_angle, step_angle,
                     range_min=scan["min_range"], range_max=scan["max_range"],
-                    scan_time=scan["period"],
+                    scan_time=scan["period"], frame_id=self._topics.scan_frame,
                 ),
+                TYPE_LASER_SCAN,
             )
 
         if self._depth_renderer is not None and now >= self._depth_next:
@@ -280,12 +304,20 @@ class SensorStreams:
                 metres * 1000.0, 0.0,
             ).astype(np.uint16)
             dw, dh = self._depth["size"]
-            self._server.publish(self._topics.depth, image(seq, mm.tobytes(), "16UC1", dw, dh))
             self._server.publish(
-                self._topics.camera_info, camera_info(seq, dw, dh, self._depth["fovy"])
+                self._topics.depth,
+                image(seq, mm.tobytes(), "16UC1", dw, dh, frame_id=self._topics.camera_frame),
+                TYPE_IMAGE,
+            )
+            self._server.publish(
+                self._topics.camera_info,
+                camera_info(seq, dw, dh, self._depth["fovy"],
+                            frame_id=self._topics.camera_frame),
+                TYPE_CAMERA_INFO,
             )
 
-        if self._renderer is not None:
+        if self._renderer is not None and now >= self._camera_next:
+            self._camera_next = now + self._camera_period
             self._renderer.update_scene(
                 data, camera=self._camera, scene_option=self._scene_option
             )
@@ -300,7 +332,10 @@ class SensorStreams:
                 )
                 if ok:
                     self._server.publish(
-                        self._topics.camera, compressed_image(seq, buf.tobytes())
+                        self._topics.camera,
+                        compressed_image(seq, buf.tobytes(),
+                                         frame_id=self._topics.camera_frame),
+                        TYPE_COMPRESSED_IMAGE,
                     )
             except Exception as exc:
                 print(f"camera encode failed: {exc}", file=sys.stderr)
@@ -418,11 +453,21 @@ class CameraStreams:
     wrist view is opt-in.
     """
 
-    def __init__(self, model, cameras, jpeg_quality: int = 70, scene_option=None) -> None:
-        """`cameras` is an ordered mapping of topic -> (mjcf camera name, width, height)."""
+    def __init__(self, model, cameras, jpeg_quality: int = 70, scene_option=None,
+                 frame_of=None) -> None:
+        """`cameras` is an ordered mapping of topic -> (mjcf camera name, width, height).
+
+        `frame_of` maps a contract camera name to the `frame_id` to publish, which is how
+        a namespace reaches the frame. The frame is derived from the **topic**, not from
+        the MJCF camera name: those differ, and using the MJCF name shipped the engine's
+        own body prefix onto the wire -- the wrist view went out as `frame_id`
+        `robot_0/wrist`, which is an engine detail a client is not supposed to be able to
+        see, let alone one it could tell the two engines apart by.
+        """
         self._model = model
         self._jpeg_quality = jpeg_quality
         self._scene_option = scene_option
+        self._frame_of = frame_of if frame_of is not None else (lambda name: name)
         self._cameras: list[tuple[str, str, int, int]] = []
         self._renderers: dict[tuple[int, int], "mujoco.Renderer"] = {}
 
@@ -462,7 +507,7 @@ class CameraStreams:
             server.publish(
                 topic,
                 compressed_image_ros2(seq, _encode_jpeg(frame, self._jpeg_quality), stamp_s,
-                                      frame_id=name),
+                                      frame_id=self._frame_of(_camera_frame(topic))),
                 TYPE_COMPRESSED_IMAGE_ROS2,
             )
 
@@ -471,6 +516,20 @@ class CameraStreams:
             if renderer is not None:
                 renderer.close()
         self._renderers.clear()
+
+
+def _camera_frame(topic: str) -> str:
+    """`/overhead/color/compressed` -> `overhead`; the contract's name for that view.
+
+    `image_transport republish` appends `/color/compressed` to the camera's own name, so
+    stripping that suffix recovers it -- the same rule `simulator/live_cameras.html` uses
+    to label a stream it discovered.
+    """
+    name = topic.strip("/")
+    for suffix in ("/color/compressed", "/image_raw/compressed", "/compressed"):
+        if name.endswith(suffix.strip("/")) and len(name) > len(suffix.strip("/")):
+            return name[: -len(suffix)]
+    return name
 
 
 def _encode_jpeg(frame, quality: int) -> bytes:

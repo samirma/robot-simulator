@@ -28,6 +28,7 @@ an external control bridge.
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
 | `robots/` | out-of-tree robot definitions (so101, myagv, rebot_b601, ainex) |
 | `tools/render_robots.py` | render every loadable robot; doubles as a load test |
+| `tools/test_placement.py` | self-test for where a tabletop arm gets bolted down |
 
 ## Commands
 
@@ -51,12 +52,12 @@ drives the simulated arm and a real one:
 
 # terminal 2: the client
 cd ../../robot_console
-.venv/bin/inspect-robot run --task apple_on_plate --policy so101_waypoint \
+.venv-vla/bin/inspect-robot run --task apple_on_plate --policy molmoact2 \
     --embodiment so101_ros -E url=ws://127.0.0.1:9090 -T max_steps=400 \
-    --max-action-delta 0.65
+    -T layout=standard --max-action-delta 0.65
 ```
 
-`../kitchen.sh inspect` does both of those, plus the readiness gate and the
+`../../robot_console/run_task.sh` does both of those, plus the readiness gate and the
 reset-and-verify step, and reports PASS/FAIL — it is the front door and this is the
 manual version of it.
 
@@ -121,6 +122,7 @@ is running will block until it finishes rather than fail.
 python tools/render_robots.py --outdir /tmp/robots     # render them all
 ./run.sh view --robot so101 --ros-port 9090       # ...on its ROS topics (see above)
 python robots/so101/test_attach.py               # self-test in an empty world
+python tools/test_placement.py                   # where the arm gets bolted down
 ```
 
 See [robots/README.md](robots/README.md) for how each was added and what its

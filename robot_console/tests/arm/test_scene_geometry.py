@@ -1,17 +1,15 @@
-"""Every module's copy of the scene geometry must agree, and the scripted
-release point must be a placement the contract's own gate accepts.
+"""Every module's copy of the scene geometry must agree, on both sides of the wire.
 
 The plate has moved once already -- ``(0.40, -0.20)`` -> ``(0.226, -0.226)`` --
 and four files each held their own literal copy of the old position, none of
 which the other tests would have caught. These tests fail if any of them drifts
-again, and they judge the release point against the gate rather than against a
-remembered number.
+again. The two halves of the contract live in different projects and are
+installed separately, so nothing but a test can hold them together.
 """
 
 from __future__ import annotations
 
 import math
-import re
 
 import pytest
 
@@ -20,36 +18,32 @@ from robot_console.arm.task import (
     APPLE_RADIUS,
     APPLE_XYZ,
     INSTRUCTION,
+    LAYOUTS,
     PLATE_XYZ,
+    START_ARM_QPOS,
     apple_on_plate,
     instruction_warning,
+    layout_of,
     resolve_instruction,
 )
-from robot_console.arm.waypoints import PickPlaceConfig, build_plan
 
 GOAL = PlateGoal()
-CFG = PickPlaceConfig()
-#: Where an apple's centre sits once it is resting on the plate.
-RESTING_Z = 0.0204 + APPLE_RADIUS
 
 
 def test_every_module_agrees_on_the_plate_centre() -> None:
     assert PLATE_XYZ[:2] == GOAL.center_xy
-    assert CFG.plate_xyz == PLATE_XYZ
 
 
 def test_every_module_agrees_on_the_apple_spawn() -> None:
     assert APPLE_XYZ == GOAL.spawn_xyz
-    assert CFG.apple_xyz == APPLE_XYZ
 
 
 def test_the_geometry_still_matches_the_simulator_scene() -> None:
     """The staged task is the source of truth; these constants only mirror it.
 
-    The two halves of this contract live in different projects and are installed
-    separately, so nothing but a test can hold them together. When the simulator tree is
-    checked out beside the console -- which is how anyone runs the task -- the numbers
-    the console plans against are compared to the numbers the simulator actually stages.
+    When the simulator tree is checked out beside the console -- which is how anyone
+    runs the task -- the numbers the console grades against are compared to the numbers
+    the simulator actually stages.
     """
     task = _shared_task_module()
     if task is None:
@@ -70,6 +64,81 @@ def test_the_geometry_still_matches_the_simulator_scene() -> None:
     assert task.MIN_DISPLACEMENT == GOAL.min_displacement
 
 
+def test_the_start_pose_matches_the_simulator() -> None:
+    """The first state a VLA sees is the simulator's, and the console's record of it.
+
+    The scripted plan's first waypoint used to be that record. It is gone, so the
+    tuple lives in ``task.py`` and this holds it to the one the simulator applies before
+    it snapshots the spawn state.
+    """
+    task = _shared_task_module()
+    if task is None:
+        pytest.skip("sibling simulator checkout not present")
+    assert tuple(task.START_ARM_QPOS) == START_ARM_QPOS
+
+
+def test_the_swapped_layout_is_the_standard_one_with_the_objects_exchanged() -> None:
+    """Swapping means the plate sits at the apple's spawn and the apple at the plate's.
+
+    Heights are the objects' own: the apple rests at its radius wherever it is, and the
+    plate's gate height does not move with its position.
+    """
+    apple, plate = LAYOUTS["swapped"]
+    assert apple[:2] == PLATE_XYZ[:2]
+    assert apple[2] == APPLE_XYZ[2]
+    assert plate[:2] == APPLE_XYZ[:2]
+    assert plate[2] == PLATE_XYZ[2]
+    assert LAYOUTS["standard"] == (APPLE_XYZ, PLATE_XYZ)
+
+
+def test_layout_of_reads_the_layout_off_the_apple_and_nothing_else() -> None:
+    assert layout_of(APPLE_XYZ) == "standard"
+    assert layout_of((PLATE_XYZ[0], PLATE_XYZ[1], 0.024)) == "swapped"
+    # A metre off the table is neither, not the nearer of the two.
+    assert layout_of((1.30, 0.10, 0.02)) is None
+    # The tolerance is the caller's: a native engine apple settles a few millimetres
+    # off the contract point, which is inside the default and outside a strict one.
+    assert layout_of((0.32, 0.10, 0.02)) == "standard"
+    assert layout_of((0.32, 0.10, 0.02), tolerance=0.005) is None
+
+
+def test_the_task_carries_the_layout_into_the_scene_it_grades() -> None:
+    """``-T layout=swapped`` has to reach the scene's target, or the reference column
+    grades a swapped world against the standard plate centre on every step."""
+    swapped = apple_on_plate(layout="swapped")
+    spec = swapped.scenes[0].target.spec
+    apple, plate = LAYOUTS["swapped"]
+    assert tuple(spec["apple_xyz"]) == apple
+    assert tuple(spec["plate_center_xy"]) == plate[:2]
+    assert swapped.metadata["layout"] == "swapped"
+
+    standard = apple_on_plate()
+    assert tuple(standard.scenes[0].target.spec["plate_center_xy"]) == PLATE_XYZ[:2]
+    assert standard.metadata["layout"] == "standard"
+
+    with pytest.raises(ValueError):
+        apple_on_plate(layout="upside_down")
+
+
+def test_the_embodiment_rebuilds_its_goal_from_the_scene() -> None:
+    from robot_console.arm.embodiment import _goal_from_scene
+
+    scene = apple_on_plate(layout="swapped").scenes[0]
+    goal = _goal_from_scene(scene, PlateGoal())
+    apple, plate = LAYOUTS["swapped"]
+    assert goal.center_xy == plate[:2]
+    assert goal.spawn_xyz == apple
+    assert goal.radius == GOAL.radius
+    assert goal.center_z == pytest.approx(GOAL.center_z)
+    assert goal.z_tolerance == pytest.approx(GOAL.z_tolerance)
+    # Displacement is measured from the swapped spawn, so a resting apple at the swapped
+    # plate has travelled the same distance the standard layout requires.
+    resting = (plate[0], plate[1], GOAL.center_z)
+    assert goal.displacement(resting) == pytest.approx(
+        math.hypot(APPLE_XYZ[0] - PLATE_XYZ[0], APPLE_XYZ[1] - PLATE_XYZ[1]), abs=1e-3
+    )
+
+
 def _shared_task_module():
     """Import the simulator's task module without importing the simulator."""
     import importlib.util
@@ -88,44 +157,6 @@ def _shared_task_module():
     except ImportError:
         return None  # the task module needs mujoco; the console deliberately lacks it
     return module
-
-def _resting_at_release() -> list[float]:
-    """Where the apple ends up if the release point is hit exactly."""
-    return [CFG.release_xy[0], CFG.release_xy[1], RESTING_Z]
-
-
-def test_the_release_point_places_the_apple_inside_the_gate() -> None:
-    placed = _resting_at_release()
-    assert GOAL.explain(placed, 0.0) == "ok"
-    assert GOAL.horizontal_distance(placed) < GOAL.radius
-    assert GOAL.displacement(placed) > GOAL.min_displacement
-
-
-def test_the_release_point_is_biased_away_from_the_spawn() -> None:
-    """Clause 5's slack is thinnest on the spawn side, so aim past the centre.
-
-    An apple resting at the near edge of the clause-1 disc has travelled only
-    0.2551 m against a 0.25 m gate. Biasing the release point away from the
-    spawn widens the near-ward settling error the plan tolerates from 80 mm to
-    105 mm; the cost is far-ward tolerance, 80 mm down to 55 mm.
-    """
-    dx = PLATE_XYZ[0] - APPLE_XYZ[0]
-    dy = PLATE_XYZ[1] - APPLE_XYZ[1]
-    norm = math.hypot(dx, dy)
-    away = (dx / norm, dy / norm)
-    offset = (CFG.release_xy[0] - PLATE_XYZ[0], CFG.release_xy[1] - PLATE_XYZ[1])
-
-    along = offset[0] * away[0] + offset[1] * away[1]
-    assert along > 0, "release point is on the spawn side of the plate centre"
-    # Essentially all of the bias is along that axis, not sideways.
-    assert math.hypot(*offset) == pytest.approx(along, abs=1e-3)
-    # Big enough to matter, small enough to leave clause 1 most of its margin.
-    assert 0.015 < along < 0.040
-
-
-def test_the_whole_plan_still_solves_for_the_moved_plate() -> None:
-    plan = build_plan()
-    assert plan.worst_position_error < CFG.max_position_error
 
 
 def test_a_custom_instruction_reaches_both_the_scene_and_the_metadata() -> None:
@@ -154,9 +185,6 @@ def test_the_instruction_warning_fires_only_off_the_default() -> None:
     assert warning is not None
     assert "apple_on_plate_success" in warning
     assert "put the apple in the bowl" in warning
-    # The waypoint policy never reads the text at all; say so rather than
-    # letting the run look like it honoured the request.
-    assert "SO101WaypointPolicy" in instruction_warning("x", policy_ignores_it=True)
 
 
 def test_resolve_instruction_prefers_explicit_text_then_falls_back(tmp_path) -> None:
