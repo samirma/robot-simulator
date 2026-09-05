@@ -463,6 +463,16 @@ def so101_ros(**kwargs: Any) -> SO101RosEmbodiment:
             settings_kwargs[key] = coerced
         else:
             other[key] = coerced
+    # ``-E views=overhead,wrist`` chooses which cameras are subscribed, in that order,
+    # through `settings_for_views` -- the same list the policy is given with
+    # ``-P views=``, so the two cannot name different cameras for the same slot.
+    views = other.pop("views", None)
+    if views is not None:
+        names = (tuple(p.strip() for p in views.split(",") if p.strip())
+                 if isinstance(views, str) else tuple(views))
+        from robot_console.arm.ros_settings import settings_for_views
+
+        return SO101RosEmbodiment(settings_for_views(names, **settings_kwargs), **other)
     return SO101RosEmbodiment(RosSettings(**settings_kwargs), **other)
 
 

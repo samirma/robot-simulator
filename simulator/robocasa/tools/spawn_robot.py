@@ -923,6 +923,12 @@ def main() -> int:
                          "plate_4 from its registry (NATIVE_MODELS says why those two), "
                          "scaled to the task's radii and with the task's contact block "
                          "on the apple.")
+    ap.add_argument("--side-camera-mirror", action="store_true", dest="side_camera_mirror",
+                    help="with --task: stage the side camera on the other side of the "
+                         "worktop (reflected across the arm's x-z plane, looking +y). "
+                         "In the swapped layout the reference side view has the plate "
+                         "between it and the apple; from the other side the apple is "
+                         "the near object.")
     ap.add_argument("--render", default=None, help="write a PNG instead of opening the viewer")
     ap.add_argument("--headless", action="store_true",
                     help="run the step and control loop with no window")
@@ -1201,6 +1207,7 @@ def main() -> int:
             extra_lights=args.extra_lights,
             swap=args.swap_objects,
             objects="engine" if task_objects else "task",
+            side_camera_mirror=args.side_camera_mirror,
         )
 
     model = spec.compile()

@@ -76,6 +76,12 @@
 #                          registry -- scaled to the task's radii and with the task's
 #                          measured contact block on the apple. See adopt_native_objects
 #                          / make_task_objects in each engine's spawn_robot.py.
+#   --side-camera-mirror   stage the side camera on the other side of the worktop
+#                          (reflected across the arm's x-z plane). In the swapped
+#                          layout the reference side view has the plate between it and
+#                          the apple; from the other side the apple is the near object.
+#                          An experiment flag; the policy is still told the contract
+#                          poses in its docs.
 #   --http-port 8791       port the `cameras` page is served on
 #
 # One engine per run. Two at once meant two ports, two of every flag, and two kitchens
@@ -184,6 +190,7 @@ while [ $# -gt 0 ]; do
     --swap-objects)       SWAP=1; shift ;;
     --no-swap-objects)    SWAP=0; shift ;;
     --task-objects)       STAGE_FLAGS+=(--task-objects);       shift ;;
+    --side-camera-mirror) STAGE_FLAGS+=(--side-camera-mirror); shift ;;
     *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
   esac
 done

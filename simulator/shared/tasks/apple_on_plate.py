@@ -340,6 +340,7 @@ def stage(
     extra_lights: bool = False,
     swap: bool = False,
     objects: str = "task",
+    side_camera_mirror: bool = False,
 ) -> list[str]:
     """Add the reference table -- slab, apple, plate, dressing, lights, cameras -- to a spec.
 
@@ -477,6 +478,16 @@ def stage(
     for name, pos, xyaxes, fovy, resolution in SCENE_CAMERAS:
         right = np.asarray(xyaxes[:3], dtype=np.float64)
         up = np.asarray(xyaxes[3:], dtype=np.float64)
+        if side_camera_mirror and name == "side":
+            # The same camera reflected across the arm's x-z plane: on the -y side of
+            # the surface, looking +y. With the plate at the apple's spawn (`swap`), the
+            # reference side view has the plate between itself and the apple; from
+            # here the apple is the near object and the plate the far one. A reflection
+            # flips handedness, so the right vector is negated after mirroring to keep
+            # the image the right way round: z = right x up must stay the view's back.
+            pos = (pos[0], -pos[1], pos[2])
+            right = -right * np.array([1.0, -1.0, 1.0])
+            up = up * np.array([1.0, -1.0, 1.0])
         rot = transform[:3, :3]
         camera = spec.worldbody.add_camera(
             name=name,
