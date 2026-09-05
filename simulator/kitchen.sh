@@ -183,7 +183,11 @@ while [ $# -gt 0 ]; do
     --viewer)   VIEWER=1;     shift ;;
     --http-port) HTTP_PORT="$2"; shift 2 ;;
     --no-reference-table) shift ;;
-    --reference-table)    STAGE_FLAGS=("${STAGE_FLAGS[@]/--no-reference-table}"); shift ;;
+    --reference-table)
+      # Rebuilt rather than pattern-substituted: `${arr[@]/pat}` leaves an EMPTY element
+      # where the flag was, and spawn_robot.py then dies on "unrecognized arguments: ".
+      kept=(); for f in "${STAGE_FLAGS[@]}"; do [ "$f" = --no-reference-table ] || kept+=("$f"); done
+      STAGE_FLAGS=("${kept[@]}"); shift ;;
     --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
     --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
     --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
