@@ -227,23 +227,31 @@ MIN_DISPLACEMENT = 0.25  # it genuinely travelled, rather than being nudged
 # ------------------------------------------------------------------ cameras
 
 #: (name, pos, xyaxes, fovy, resolution) in the arm base frame.
-#: `overhead` looks down at 62 deg from 1.110 m, framing all four corners of a work
+#: `overhead` looks down at 62 deg (from 1.110 m on the reference rig; 0.888 m here, see
+#: below), framing all four corners of a work
 #: surface with 16.8 px of edge slack, with zero roll -- its right vector is pinned to
 #: +y, so "left in the image" is "left in the world" and a policy's pixel claims
 #: unproject without a sign trap. `side` is distinguished from it by *elevation*, not by
 #: standing on the other side of the table: near-horizontal at 5.6 deg, which is the view
 #: that resolves height and the one an overhead camera cannot supply.
 SCENE_CAMERAS: tuple[tuple[str, tuple, tuple, float, tuple[int, int]], ...] = (
+    # Both cameras sit 20 % closer than the reference rig's along their own optical axes,
+    # orientation unchanged: `overhead` keeps looking at (0.205, 0, 0) on the work plane,
+    # from 1.006 m instead of 1.257 m; `side` keeps its look-at on the plane at
+    # (0.322, -0.111), from 0.733 m instead of 0.916 m. The reference poses were
+    # (0.795, 0.000, 1.110) and (0.28, 0.80, 0.13). The console mirrors these in
+    # `ros_settings.SCENE_CAMERA_POSES` -- its grader back-projects through them -- and
+    # a test holds the two copies together.
     (
         "overhead",
-        (0.795, 0.000, 1.110),
+        (0.677, 0.000, 0.888),
         (0.00000, 1.00000, 0.00000, -0.88295, 0.00000, 0.46947),
         45.0,
         (640, 480),
     ),
     (
         "side",
-        (0.28, 0.80, 0.13),
+        (0.288, 0.618, 0.112),
         (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
         45.0,
         (640, 480),

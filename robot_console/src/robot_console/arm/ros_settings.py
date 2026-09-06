@@ -83,9 +83,13 @@ APPLE_BODY = "apple"
 #: `SCENE_CAMERAS`. It went stale once already -- the overhead camera was re-posed from
 #: (0.500, 0.051, 0.614) to (0.795, 0.000, 1.110) and the prose kept the old number for
 #: weeks, which is 0.5 m of height for anything unprojecting pixels from that text.
+#: Re-posed again 2026-09-06: both cameras 20 % closer along their own optical axes,
+#: orientation unchanged (overhead 1.257 -> 1.006 m from its look-at point, side
+#: 0.916 -> 0.733 m). `vision_success` back-projects through this table, so a stale copy
+#: here is not a documentation error, it is a wrong verdict.
 SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
-    "overhead": (0.795, 0.000, 1.110),
-    "side": (0.28, 0.80, 0.13),
+    "overhead": (0.677, 0.000, 0.888),
+    "side": (0.288, 0.618, 0.112),
 }
 #: Down-tilt of each scene camera, degrees below horizontal, for the same text.
 SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
