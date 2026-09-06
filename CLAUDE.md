@@ -407,7 +407,12 @@ laid out for the standard layout: with the plate at the apple's spawn the task's
 reached into the plate's footprint. The placer takes each object's own
 `horizontal_radius`, keeps it off the apple, the plate, the arm's footprint, everything
 placed before it, the worktop's edges and the apple-to-plate carry line, and picks the
-free cell nearest the reference position (or a far corner, for the extras). Nothing red
+free cell nearest the reference position (or a far corner, for the extras). **The
+dressing is static**, like the plate, and for the same measured reason: left free, the
+registry hulls bounce on their own under the task's solver settings -- the banana, lemon
+and mug drifted 8-14 cm in 20 s with 0.4-1.2 m/s speed spikes while nothing touched
+them, visible as scenery wandering on the live camera page -- and static they read
+exactly zero. It means the arm cannot knock them over, which is the lesser evil. Nothing red
 besides the apple, and that was measured rather than eyeballed: both registry cups are
 red (so there is a pear instead), and the sampler's default mug and bowl were too (so
 `mug_7` and `bowl_11` are pinned). What remains is a 4 mm contact between the jaw at its

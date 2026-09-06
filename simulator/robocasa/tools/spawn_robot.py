@@ -534,8 +534,15 @@ def _spec_body(body, name: str):
     return None
 
 
-def adopt_task_objects(spec: mujoco.MjSpec, objects: list, task, plate_world, worktop_z) -> None:
+def adopt_task_objects(spec: mujoco.MjSpec, objects: list, task, plate_world, worktop_z,
+                       dressing_world: dict | None = None) -> None:
     """Rename the native objects' root bodies to the task's, and give them the task's physics.
+
+    The dressing is static too, placed here at `dressing_world` (object name -> world
+    xyz, z ignored). Left free, the registry hulls bounce on their own: measured with
+    nothing touching them, the banana, lemon and mug drifted 8-14 cm in 20 s with speed
+    spikes of 0.4-1.2 m/s, while the sphere apple and the static plate read exactly
+    zero. Scenery that wanders is worse than scenery that cannot be knocked over.
 
     On the compiled-around spec, so the task's `stage(objects="engine")` finds
     `APPLE_BODY` and `PLATE_BODY` as top-level bodies and the arbiter reads them like
@@ -566,6 +573,19 @@ def adopt_task_objects(spec: mujoco.MjSpec, objects: list, task, plate_world, wo
         # clearing leaves them alone.
         body.name = names.get(category, f"task_{category}")
         if category not in names:
+            spot = (dressing_world or {}).get(obj.name)
+            if spot is None:
+                # No room was found for it; it stays where the kitchen XML put it,
+                # static, out of the way. The placer already said so.
+                for joint in list(body.joints):
+                    task.spec_delete(spec, joint)
+                continue
+            for joint in list(body.joints):
+                task.spec_delete(spec, joint)
+            body.pos = [
+                float(spot[0]), float(spot[1]),
+                float(worktop_z) - float(obj.bottom_offset[2]) + 0.002,
+            ]
             continue
         if category == "apple":
             stack = [body]
@@ -1132,10 +1152,20 @@ def main() -> int:
             float(arm_instance.yaw),
         )
         task_poses = task_module.object_poses(args.swap_objects)
+        # The dressing's spots are decided here, before the compile, because the
+        # dressing is placed on the spec as static bodies -- see adopt_task_objects.
+        laid_out = layout_native_dressing(
+            [o for o in task_objects if o.name.split("_")[1] not in ("apple", "plate")],
+            task_poses, arm_worktop, task_module,
+        )
         adopt_task_objects(
             spec, task_objects, task_module,
             plate_world=task_module._apply(task_transform, task_poses["plate"]),
             worktop_z=mount_z - SO101_BASE_LIFT,
+            dressing_world={
+                name: task_module._apply(task_transform, (float(xy[0]), float(xy[1]), 0.0))
+                for name, xy in laid_out.items()
+            },
         )
 
     if args.robot in TABLETOP_ROBOTS:
@@ -1214,24 +1244,11 @@ def main() -> int:
     data = mujoco.MjData(model)
 
     if task_objects:
-        # Everything but the plate, which was made static and placed on the spec in
-        # `adopt_task_objects` and so has no free joint to write. The apple goes to the
-        # task's pose; the dressing wherever the placer found room.
-        laid_out = layout_native_dressing(
-            [o for o in task_objects if o.name.split("_")[1] not in ("apple", "plate")],
-            task_poses, arm_worktop, task_module,
-        )
-        placeable, spots = [], []
-        for o in task_objects:
-            category = o.name.split("_")[1]
-            if category == "apple":
-                local = task_poses["apple"]
-            elif o.name in laid_out:
-                local = (float(laid_out[o.name][0]), float(laid_out[o.name][1]), 0.0)
-            else:
-                continue
-            placeable.append(o)
-            spots.append(np.asarray(task_module._apply(task_transform, local)[:2]))
+        # Only the apple keeps a free joint: the plate and the dressing were made static
+        # and placed on the spec in `adopt_task_objects`, so there is nothing to write.
+        placeable = [o for o in task_objects if o.name.split("_")[1] == "apple"]
+        spots = [np.asarray(task_module._apply(task_transform, task_poses["apple"])[:2])
+                 for _ in placeable]
     else:
         placeable = objects
         spots = object_layout(xy, yaw, out, ARM_REACH, len(objects))
