@@ -6,6 +6,32 @@ All notable changes to this model will be documented in this file.
 
 - Initial release.
 
+## [2026-09-06]
+
+**The model is now mujoco_menagerie's `robotstudio_so101` and nothing else** --
+rendering, joints, actuators and camera positions alike. `model.xml` is still generated
+by `molmospaces/robots/so101/make_model.py`, but its whole delta from `so101.xml` is one
+group-3 `<site name="tcp">`: no visual, no collision, no dynamics. It stays because
+`SO101RobotView` resolves it by name, and removing it would break the MolmoSpaces engine
+at load without changing anything the simulator renders or steps.
+
+Removed, all three of them measured and all three now recorded in `make_model.py` rather
+than in the model:
+
+- **`exo_camera`.** Not upstream. Both engines' `_pick_camera` falls through to
+  `wrist_cam`; RoboCasa already preferred its own scene camera to it.
+- **Gripper `forcerange="-0.30 0.30"`.** The gripper actuator is back on the `sts3215`
+  class default of +/-2.94 N.m, which is the servo's real figure and far too strong for
+  a 20 g apple: at the equivalent +/-3.35 the rig measured peak jaw force 96 N and the
+  apple slipping 397.9 mm out of the fingers. **Expect the apple-on-plate grasp to
+  regress**; that is what the official actuator does, not a fault.
+- **The `wrist` camera.** The ROS wrist topic now renders upstream's `wrist_cam`, 119 mm
+  and 53.7 degrees from where the removed camera sat, at 48.5 deg fovy against 75 and
+  16:9 against 1:1. The removed camera was placed by ray-casting a 4 x 7 x 3 grid to
+  find a line to the grasp point that the printed wrist_roll_follower housing does not
+  block; the official pose is one of the poses that search rejected, so the housing is
+  in frame.
+
 ## [2026-09-03]
 
 `model.xml` is generated; both changes are in

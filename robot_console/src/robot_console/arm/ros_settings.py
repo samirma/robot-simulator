@@ -141,15 +141,18 @@ SIDE_CAMERA_HEIGHT = 480
 #: the intended loud failure -- an eye-in-hand policy fed a stale or absent wrist
 #: frame is worse than one that refuses to start.
 #:
-#: 256x256, not 640x480 like the two scene cameras. The consuming policies resize
-#: to 224, so 256 makes that a downsample rather than an upsample, and the
-#: smaller frame is why enabling it costs ~29% of the camera rate instead of the
-#: ~50% the older four-camera measurements would predict.
+#: 640x360, the 16:9 aspect of the SO-101's own `wrist_cam` as mujoco_menagerie
+#: publishes it. It was 256x256 for a project-added camera that no longer exists:
+#: the simulator now renders the official camera at its official pose, so the view
+#: a policy is handed is the one the upstream model defines. Note the aspect is
+#: 16:9 where the two scene cameras are 4:3, and MolmoAct2's preprocessor stretches
+#: to 4:3 without preserving aspect -- so a policy fed this view sees it squeezed.
+#: That is a property of the official camera, and the reason the flag stays opt-in.
 WRIST_CAMERA_NAME = "wrist"
 WRIST_CAMERA_TOPIC = "/wrist/color/compressed"
 WRIST_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
-WRIST_CAMERA_WIDTH = 256
-WRIST_CAMERA_HEIGHT = 256
+WRIST_CAMERA_WIDTH = 640
+WRIST_CAMERA_HEIGHT = 360
 
 # History, so the gap in the record is not mistaken for an oversight: a
 # ``trainlow``/``trainhigh`` pair was defined here and used as the default

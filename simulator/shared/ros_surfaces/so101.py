@@ -95,8 +95,20 @@ DEFAULT_CAMERAS: dict[str, tuple[str, int, int]] = {
     "/overhead/color/compressed": ("overhead", 640, 480),
     "/side/color/compressed": ("side", 640, 480),
 }
+#: The wrist view renders `wrist_cam` -- mujoco_menagerie's own camera, at its published
+#: pose and intrinsics, because the SO-101 here is exclusively menagerie's model. It used
+#: to render a project-added camera 119 mm and 53.7 degrees away, sited by ray-casting to
+#: dodge the wrist_roll_follower housing; that camera is gone along with every other
+#: non-upstream edit, and the housing occlusion it avoided is now simply what the official
+#: pose sees.
+#:
+#: 640x360 keeps the camera's own 16:9 aspect (sensorsize 0.00576 x 0.00324 is exactly
+#: 16:9) rather than its declared 1920x1080, which is a 2 Mpx render inside the physics
+#: loop -- 30x the pixels of the view this replaces, and render cost is what sets the
+#: control rate. The aspect is the part a client can be wrong about; the pixel count is a
+#: capture mode, which is a thing a real UVC module is configured for too.
 WRIST_CAMERA: dict[str, tuple[str, int, int]] = {
-    "/wrist/color/compressed": ("wrist", 256, 256),
+    "/wrist/color/compressed": ("wrist_cam", 640, 360),
 }
 
 

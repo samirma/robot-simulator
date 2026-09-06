@@ -899,8 +899,7 @@ def _pick_camera(args, model, prefix: str) -> str | None:
         if args.camera.lower() == "none":
             return None
         return args.camera
-    for candidate in ("task_camera", f"{prefix}front_camera", f"{prefix}exo_camera",
-                      f"{prefix}wrist_cam"):
+    for candidate in ("task_camera", f"{prefix}front_camera", f"{prefix}wrist_cam"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
             return candidate
     return None
@@ -1169,10 +1168,12 @@ def main() -> int:
         )
 
     if args.robot in TABLETOP_ROBOTS:
-        # The SO-101's own exo_camera sits behind-left of its base, which on a counter
-        # mounted against a wall puts it inside the wall cabinets -- the streamed frame
-        # is the black inside of a cupboard. A kitchen counter is not the tabletop that
-        # camera was framed for, so add a scene-level camera and prefer it below.
+        # A tabletop arm needs a scene-level camera of its own. The SO-101 model carries
+        # exactly one camera -- menagerie's wrist_cam, on the gripper -- so there is no
+        # robot-mounted view of the workspace to fall back on. (There was a project-added
+        # `exo_camera` here until 2026-09-06; it sat behind-left of the base, which on a
+        # counter against a wall put it inside the wall cabinets, streaming the black
+        # inside of a cupboard. It is gone with every other non-upstream edit.)
         #
         # Steeply overhead rather than from the front, and that angle was bought with
         # failed episodes: a policy watching from the front cannot see alignment along

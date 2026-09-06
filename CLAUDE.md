@@ -677,6 +677,22 @@ Six things that are silent when wrong, and each cost a debugging session:
   rad and the contract runs 0…1; the map is an exact *offset*, verified by measuring tip
   separation against the curve the grasp tuning was fitted on (agreement to ~0.1 mm).
   Rescaling instead would move the aperture at every value.
+- **The arm is mujoco_menagerie's `robotstudio_so101` and nothing else.** Verified by git
+  blob SHA against upstream: all 20 meshes, `so101.xml`, `scene.xml`, `scene_box.xml`,
+  the README, the LICENSE and the render byte-identical, and `urdf/` likewise against
+  TheRobotStudio's `SO-ARM100/Simulation/SO101`. `model.xml` is generated from
+  `so101.xml` and its whole delta is one group-3 `tcp` site with no visual, collision or
+  dynamics, kept because `SO101RobotView` resolves it by name. Three project edits were
+  removed on 2026-09-06 and each has a measured cost recorded in `make_model.py`: an
+  `exo_camera`; a softened gripper `forcerange` (the actuator is back on the `sts3215`
+  class default of ±2.94 N·m, which is the servo's real figure and **far too strong for a
+  20 g apple** — expect the grasp to regress); and a second wrist camera. `/wrist/…` now
+  renders upstream's `wrist_cam` at 640x360 — its own 16:9 aspect, not the declared
+  1920x1080, which is 2 Mpx inside the physics loop. That pose is 119 mm and 53.7° from
+  the removed camera, its half-FOV is 24.2° against the grasp point's 15.9° offset, and
+  the printed wrist_roll_follower housing is in frame: the removed camera existed
+  precisely because a ray-cast found no unoccluded on-axis mount. A test pins the MJCF
+  camera by name, because a rename is how the model would quietly stop being upstream's.
 
 Poses on `free_joint_states` are in the **arm base frame** with the work surface at
 z = 0 — not the engine's world frame. That is what lets one client read the same numbers

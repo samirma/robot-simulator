@@ -1,12 +1,16 @@
 #!/usr/bin/env python
-"""Generate model.xml from the upstream so101.xml, applying MolmoSpaces conventions.
+"""Generate model.xml from the upstream so101.xml, adding the one site the engine needs.
 
 Kept as a generator rather than a hand-edited copy so the delta from mujoco_menagerie
 stays explicit and can be re-applied if the upstream model changes. The TCP frame is
 *computed* from the model geometry rather than hardcoded, so it stays correct if the
 jaw geometry is revised.
 
-Edits applied:
+The delta is now a single `<site>` in group 3 -- no visual, no collision, no dynamics,
+no effect on rendering, joints, actuators or camera positions. Everything the simulator
+renders and steps is menagerie's `robotstudio_so101` exactly as published.
+
+Edit applied:
 
 1. **TCP site `tcp`.** MolmoSpaces' gripper convention is `+z` = approach direction with
    the fingers opening along `y` (see "Robot Conventions" in the MolmoSpaces README; the
@@ -24,26 +28,26 @@ Edits applied:
    NOMINAL_GRIP (~4 cm between the tips, a typical small-object grasp), where it is
    within ~8 degrees of perpendicular.
 
-2. **Exo camera `exo_camera`.** Base-mounted third-person view of the workspace, so the
-   robot has an exo view like the Franka configs do. The upstream `wrist_cam` is kept
-   as the wrist camera.
+That is the *only* edit. Three others were applied here until 2026-09-06 and were
+removed on the instruction that the SO-101 be exclusively menagerie's -- rendering,
+joints, actuators and camera positions alike. They are recorded here because each was
+measured, and because removing them has consequences that will show up as physics or
+policy regressions rather than as errors:
 
-3. **Gripper `forcerange`.** Upstream puts the gripper actuator on the `sts3215` class,
-   which carries `forcerange="-2.94 2.94"` -- correct for the servo, wrong for grasping
-   a light object. Measured on the sibling apple-on-plate rig at the equivalent +/-3.35:
-   peak jaw force 96 N, mean 56 N, the apple slipping 397.9 mm and ending extruded onto
-   the table at z 0.0199. At +/-0.30: peak 12.4 N, mean 4.8 N, slip 19.6 mm, apple held
-   at z 0.1003. Below about +/-1.0 the commanded jaw value stops mattering at all, because
-   the actuator saturates on force before it reaches its target -- which is the regime a
-   compliant grasp wants. The arm's five other actuators are untouched.
-
-4. **Task wrist camera `wrist`.** Added *beside* upstream's `wrist_cam` rather than
-   replacing it. `wrist_cam` is menagerie's photographic camera (1920x1080, specified by
-   `sensorsize`/`focal`), which is a fine thing to look through but is not what a policy
-   was trained on: MolmoAct2's preprocessor stretches to 4:3 without preserving aspect,
-   so a 16:9 frame arrives distorted in a way training data never was. The added camera
-   is the geometry the apple-on-plate rig verified -- see the anchor below for the
-   derivation of every number in it.
+- **`exo_camera`**, a base-mounted third-person view. Not in upstream, so gone. Both
+  engines' `_pick_camera` now falls through to upstream's `wrist_cam`; RoboCasa already
+  preferred its own scene camera over it.
+- **Gripper `forcerange="-0.30 0.30"`**, overriding the `sts3215` class default of
+  +/-2.94 N.m that upstream gives the gripper actuator. Measured on the apple-on-plate
+  rig at the equivalent +/-3.35: peak jaw force 96 N, mean 56 N, the apple slipping
+  397.9 mm and ending extruded onto the table at z 0.0199. At +/-0.30: peak 12.4 N,
+  mean 4.8 N, slip 19.6 mm, apple held at z 0.1003. The servo's own figure is right for
+  the servo and far too strong for a 20 g apple, so the task's grasp is expected to
+  regress at the upstream value; that is a property of the official model, not a bug.
+- **A second wrist camera `wrist`** (256x256, fovy 75), 119 mm and 53.7 degrees from
+  `wrist_cam`, sited by ray-casting because the printed wrist_roll_follower housing
+  occludes every on-axis mount. The ROS wrist topic now renders `wrist_cam` instead --
+  the official pose, occlusion included.
 
 Run:  python robots/so101/make_model.py
 """
@@ -74,74 +78,17 @@ GRIPPER_BODY = "gripper"
 GRIPPERFRAME = (
     '<site group="3" name="gripperframe" pos="0.012 -0.000218 -0.098127" quat="1 0 1 0"/>'
 )
-BASEFRAME = '<site group="3" name="baseframe" pos="0 0 0" quat="1 0 0 0"/>'
-
-# Upstream drives the gripper off the sts3215 class, whose forcerange is right for the
-# servo and far too strong for a compliant grasp. See edit 3 in the module docstring.
-GRIPPER_ACTUATOR = (
-    '<position class="sts3215" name="gripper" joint="gripper" ctrlrange="-0.17453 1.74533"/>'
-)
-GRIPPER_ACTUATOR_SOFT = (
-    '<position class="sts3215" name="gripper" joint="gripper" ctrlrange="-0.17453 1.74533"\n'
-    '      forcerange="-0.30 0.30"/>'
-)
-
-WRIST_CAM = (
-    '<camera name="wrist_cam" mode="fixed" pos="0.0 0.055 -0.045" euler="-0.57 0 0" '
-    'resolution="1920 1080"\n'
-    '                    sensorsize="0.00576 0.00324" focal="0.0036 0.0036"/>'
-)
-TASK_WRIST_CAM = f"""{WRIST_CAM}
-                  <!--
-                    Eye-in-hand camera for the task pipeline. Every number here was
-                    measured, not chosen:
-
-                    pos    45 mm to the side on -y, NOT behind the jaws. The printed
-                           wrist_roll_follower housing occludes every on-axis mount --
-                           checked by ray-casting a 4 x 7 x 3 grid of candidate positions
-                           at the grasp point and finding no clear line from any of them.
-                           From here the working distance to the jaw centre is 127.1 mm
-                           and the frame spans 195 mm.
-                    xyaxes aims at the jaw centre, which projects to (0.00, -0.00) at
-                           every waypoint of the scripted plan, with the apple inside
-                           |u|,|v| < 0.15 through pre_grasp, descend, close and lift --
-                           the whole phase where a wrist view decides anything.
-                    fovy   75, matching robosuite's robot0_eye_in_hand, which is the FOV
-                           the wrist views in LIBERO-derived training data were rendered
-                           at. Free to match, so match it.
-                    resolution MANDATORY. A <camera> with no resolution renders zero-sized
-                           images and says nothing about it. 256x256 because consuming
-                           policies resize to 224: publishing 256 makes that a downsample,
-                           the same direction as training. It is also 65k px against the
-                           307k px of a 640x480 scene camera, and render time is what
-                           scales with camera count.
-
-                    Rendering it costs real control rate (measured elsewhere: 4.1 Hz with
-                    two cameras, ~2.1 Hz with four, against a 10 Hz loop), so the ROS
-                    surface leaves it off unless asked. Declaring it here is free.
-                  -->
-                  <camera
-                    name="wrist"
-                    mode="fixed"
-                    pos="0.000 -0.045 0.020"
-                    xyaxes="0.99400 -0.03877 0.10227 -0.00000 0.93506 0.35448"
-                    fovy="75"
-                    resolution="256 256"
-                  />"""
 
 HEADER = """<!--
   GENERATED by make_model.py from so101.xml - do not edit by hand.
 
-  so101.xml is mujoco_menagerie/robotstudio_so101 verbatim (Apache 2.0, see LICENSE).
-  This file adds a MolmoSpaces-convention TCP site, an exo camera, a task-pipeline
-  wrist camera, and a softened gripper forcerange; see make_model.py.
+  so101.xml is mujoco_menagerie/robotstudio_so101 verbatim (Apache 2.0, see LICENSE),
+  and so is every geom, joint, actuator and camera below it. The only addition is the
+  group-3 `tcp` site, which SO101RobotView resolves by name; it has no visual, no
+  collision and no dynamics. See make_model.py for what used to be here and why it is
+  not any more.
 -->
 """
-
-EXO_CAMERA = f"""{BASEFRAME}
-      <!-- Third-person view of the arm's workspace -->
-      <camera name="exo_camera" mode="fixed" pos="-0.25 -0.45 0.45"
-        xyaxes="0.87 -0.5 0 0.22 0.38 0.9" fovy="58"/>"""
 
 
 def compute_tcp_frame() -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
@@ -195,12 +142,7 @@ def main() -> int:
                   xyaxes="{fmt(x_axis)} {fmt(y_axis)}"/>"""
 
     xml = UPSTREAM.read_text()
-    for anchor, replacement, label in (
-        (GRIPPERFRAME, tcp_site, "tcp site"),
-        (BASEFRAME, EXO_CAMERA, "exo camera"),
-        (WRIST_CAM, TASK_WRIST_CAM, "task wrist camera"),
-        (GRIPPER_ACTUATOR, GRIPPER_ACTUATOR_SOFT, "gripper forcerange"),
-    ):
+    for anchor, replacement, label in ((GRIPPERFRAME, tcp_site, "tcp site"),):
         if anchor not in xml:
             raise SystemExit(f"anchor for {label} not found in {UPSTREAM}; upstream model changed?")
         xml = xml.replace(anchor, replacement, 1)

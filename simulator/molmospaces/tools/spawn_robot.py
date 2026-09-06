@@ -920,7 +920,7 @@ def _pick_camera(args, model, ns: str) -> str | None:
         if args.camera.lower() == "none":
             return None
         return args.camera
-    for candidate in (f"{ns}exo_camera", f"{ns}front_camera", f"{ns}wrist_cam"):
+    for candidate in (f"{ns}front_camera", f"{ns}wrist_cam"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
             return candidate
     return None

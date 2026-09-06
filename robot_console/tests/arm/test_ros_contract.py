@@ -88,11 +88,25 @@ def test_the_camera_topics_and_sizes_match() -> None:
     published = {**s.DEFAULT_CAMERAS, **s.WRIST_CAMERA}
     assert set(published) == {OVERHEAD_CAMERA_TOPIC, SIDE_CAMERA_TOPIC, WRIST_CAMERA_TOPIC}
     # The sizes are contract terms: the VLA's preprocessor stretches to 4:3 without
-    # preserving aspect, and the wrist view is 256 so a policy resizing to 224
-    # downsamples rather than upsamples.
+    # preserving aspect, which is why the two scene cameras are 640x480.
     assert published[OVERHEAD_CAMERA_TOPIC][1:] == (640, 480)
     assert published[SIDE_CAMERA_TOPIC][1:] == (640, 480)
-    assert published[WRIST_CAMERA_TOPIC][1:] == (256, 256)
+    # The wrist view is 16:9 because it renders the SO-101's own `wrist_cam` at
+    # menagerie's published pose and intrinsics, and that camera's sensor is 16:9.
+    # It was a 256x256 project-added camera until 2026-09-06; the model is now
+    # exclusively upstream's, so the view is whatever upstream's camera sees.
+    assert published[WRIST_CAMERA_TOPIC][1:] == (640, 360)
+
+
+def test_the_wrist_view_renders_the_upstream_camera() -> None:
+    """The MJCF camera behind the wrist topic must be menagerie's, by name.
+
+    A rename here is how the model would quietly stop being upstream's: the topic and
+    the frame size would look untouched while the view moved 119 mm and 53.7 degrees,
+    which is exactly what the removed project camera did.
+    """
+    s = _surface()
+    assert s.WRIST_CAMERA[WRIST_CAMERA_TOPIC][0] == "wrist_cam"
 
 
 def test_both_sides_agree_on_the_joint_names_and_their_order() -> None:
