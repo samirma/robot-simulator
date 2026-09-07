@@ -32,8 +32,8 @@ times). No conditionals, no loops, no parameterised geometry, so the expansion i
 deterministic.
 
 ```bash
-python robots/ainex/urdf/flatten_xacro.py \
-    <ainex_description dir> robots/ainex/urdf/ainex.urdf
+python shared/robots/ainex/urdf/flatten_xacro.py \
+    <ainex_description dir> shared/robots/ainex/urdf/ainex.urdf
 ```
 
 Re-run it after pulling a newer vendor description, and re-check the figures below.
@@ -56,7 +56,8 @@ jointless URDF root gets merged; here it happens twice, because `base_link` is j
 disconnected root bodies** — both `hip_yaw` links, `head_pan_link` and both `sho_pitch`
 links — and drops `body_link`'s 0.743 kg out of the tree, leaving 1.6045 kg of the 2.3475.
 Adding the three virtual planar joints to `body_link` is what makes it a real body again;
-after that there is one root and the mass is right. `robots/ainex/ainex.py` does this, and
+after that there is one root and the mass is right.
+`molmospaces/robots/ainex/ainex.py` does this, and
 `test_attach.py` checks both the single root and the total mass, because a silent
 regression here looks like a robot that merely falls apart.
 

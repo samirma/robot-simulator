@@ -254,7 +254,8 @@ python robots/ainex/test_ros.py                      # self-test of the ROS surf
 
 It is the first robot here that walks rather than rolls, and the first whose ROS contract
 has nothing in common with the myAGV's. Both facts drive everything below. Provenance and
-the vendored files are in [ainex/urdf/PROVENANCE.md](ainex/urdf/PROVENANCE.md).
+the vendored files are in
+[shared/robots/ainex/urdf/PROVENANCE.md](../../shared/robots/ainex/urdf/PROVENANCE.md).
 
 ### It does not actually walk
 
@@ -307,7 +308,8 @@ ordering `gait_manager.move()` uses for its own preset list.
 The real AiNex has no inverse-kinematics service and no Cartesian arm interface at all.
 Every manipulation it performs is a recorded servo trajectory replayed open-loop by
 `MotionManager.run_action`, triggered over ROS by `/app/set_action`. This follows that
-model: `robots/ainex/actions/` holds a small set of keyframed poses, and `actions.py` also
+model: `shared/ros_surfaces/ainex/action_groups/` holds a small set of keyframed
+poses, and `actions.py` beside it also
 reads Hiwonder's own `.d6a` (SQLite) format so `--action-dir` can point straight at a real
 robot's `ActionGroups` directory.
 

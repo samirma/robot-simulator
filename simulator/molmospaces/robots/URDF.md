@@ -31,13 +31,15 @@ Every source above is under an identified licence **except `ainex`**. The Hiwond
 repository carries no LICENSE file despite describing itself as fully open source, and
 that covers the URDF, the meshes and `servo_controller.yaml` alike — not merely the action
 groups. It is vendored anyway, as a deliberate exception with the risk recorded rather than
-hidden; `ainex/urdf/PROVENANCE.md` repeats the note beside the files themselves. The
+hidden; `../../shared/robots/ainex/urdf/PROVENANCE.md` repeats the note beside the
+files themselves, which is where they live: the AiNex's hardware description is
+engine-neutral and sits with every other robot's under `shared/robots/`. The
 third-party MuJoCo ports of the same description (`Glowing-Torch/ainex_rl` and others)
 carry no licence either, so they are not a way around it — which is one of the reasons the
 vendor description is used directly rather than one of them.
 
 Consequence for anything derived from vendor data: no Hiwonder action group is
-redistributed here. `robots/ainex/actions.py` reads their `.d6a` format so that an owner
+redistributed here. `shared/ros_surfaces/ainex/actions.py` reads their `.d6a` format so that an owner
 points `--action-dir` at their own robot and supplies the licensed data themselves.
 
 ## Loading one of these in MuJoCo

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+
+import robots_spec as _robots_spec
 from typing import Any, Callable
 
 import numpy as np
@@ -17,7 +19,10 @@ from ros_surfaces.ainex import servos
 from .ainex import CAMERA_FOVY_DEG, CAMERA_NAME, AiNexRobot
 from .ainex_view import AiNexRobotView
 
-ROBOT_DIR = Path(__file__).resolve().parent
+#: The hardware description is engine-neutral and lives with the other robots' in
+#: `shared/robots/`, so both engines load the same one. Only the MolmoSpaces
+#: adapter -- this file, `ainex.py` and `ainex_view.py` -- is here.
+ROBOT_DIR = _robots_spec.spec_dir("ainex")
 
 
 class AiNexCameraSystem(CameraSystemConfig):
