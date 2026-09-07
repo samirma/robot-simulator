@@ -384,7 +384,15 @@ class PlanarJointBase:
 
     AXES = ("x", "y", "theta")
 
-    def __init__(self, model, data, prefix: str = "", root: str = "base") -> None:
+    def __init__(self, model, data, prefix: str = "", root: str = "base",
+                 body: str | None = None) -> None:
+        """`root` names the three joints (`base_x`...); `body` is the body they move.
+
+        The two are the same on a wheeled base and are not on a legged one: the AiNex
+        carries its planar joints on `body_link`, the torso the vendor URDF roots at.
+        Conflating them is a robot that reports a base pose from whichever body happened
+        to be called `base`.
+        """
         self._data = data
         self._qpos = []
         self._ctrl = []
@@ -401,17 +409,23 @@ class PlanarJointBase:
             self._qpos.append(int(model.jnt_qposadr[jid]))
             self._ctrl.append(aid)
 
-        self._body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{root}")
+        body = body or root
+        self._body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{body}")
         if self._body < 0:
-            raise ValueError(f"no body named {prefix}{root!r}")
-        # The joints are the pose only if the body's own frame is the world frame.
+            raise ValueError(f"no body named {prefix}{body!r}")
+        # The joints are the pose only if the body's own frame is the world frame in x,
+        # y and rotation. A pure z offset is safe and is how a legged robot is grafted:
+        # its root is a torso standing a ride height above whatever it stands on, and the
+        # slide joints are x/y only, so lifting cannot rotate or shift the axes the base
+        # drives along. Anything else and a commanded +x is no longer world +x.
         offset = model.body_pos[self._body]
         quat = model.body_quat[self._body]
-        if not (np.allclose(offset, 0.0, atol=1e-9) and np.allclose(quat, [1, 0, 0, 0], atol=1e-9)):
+        if not (np.allclose(offset[:2], 0.0, atol=1e-9)
+                and np.allclose(quat, [1, 0, 0, 0], atol=1e-9)):
             raise ValueError(
-                f"{prefix}{root} is attached at pos={offset} quat={quat}, not at the "
-                "origin with identity rotation; its world-aligned slide joints would no "
-                "longer mean world x/y. Attach at the origin and set the pose instead."
+                f"{prefix}{body} is attached at pos={offset} quat={quat}; its "
+                "world-aligned slide joints would no longer mean world x/y. Attach it "
+                "over the origin -- a z offset is fine -- and set the pose instead."
             )
 
     @property

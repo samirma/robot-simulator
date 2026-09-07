@@ -124,7 +124,7 @@ do_view() {
   # wire contracts; anything else is a robosuite robot name for the plain viewer, which
   # is where `--robot PandaOmron` has always gone.
   case "$robot" in
-    myagv|so101)
+    myagv|so101|ainex)
       local py="$MJPY"
       [ "$headless" = 1 ] && py="$PY"
       exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" "${rest[@]+"${rest[@]}"}"

@@ -246,6 +246,14 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
         if body_name not in HAND_BODIES:
             geom.contype = 0
             geom.conaffinity = 0
+        # ...and into the shared robots' render convention while we are here: group 2 is
+        # visual, group 3 is collision. MuJoCo's URDF importer leaves every mesh in
+        # group 0, which is invisible in a RoboCasa kitchen -- that engine renders
+        # through a mask showing groups 1-2, because *its* collision hulls are the ones
+        # in group 0. The robot spawned, served, and rendered as nothing at all: the
+        # kitchen was there, the counter was there, and the AiNex standing on it was not.
+        # Group 2 is visible under both engines' masks and under MuJoCo's default.
+        geom.group = 2
 
     extent = _measure(spec)
     torso.add_geom(
@@ -409,7 +417,17 @@ def _add_gripper_frames(spec: MjSpec) -> None:
             data.xmat[hand_body.id].reshape(3, 3),
             data.xpos[hand_body.id],
         )
-        jaw_world = jaw_pts @ hand_rot.T + hand_pos
+        # numpy raises overflow/invalid/divide-by-zero from this `matmul` under one
+        # engine's MuJoCo (3.3.1) and not the other's (3.5.0), on float32 mesh vertices
+        # against a rotation. Measured before silencing: every input is finite, the
+        # product is finite, and everything this file computes comes out identical to
+        # six decimals under both -- mass, ride height, hull, all four claw frames, the
+        # camera pose. The flags are the BLAS path's, not the arithmetic's. Left alone
+        # they print on every start of one engine and not the other, which is the worst
+        # way for a warning to behave: the next one that means something reads as more
+        # of the same.
+        with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+            jaw_world = jaw_pts @ hand_rot.T + hand_pos
         palm = jaw_pts[int(np.argmin(np.linalg.norm(jaw_world - tip_world, axis=1)))]
         data.qpos[model.jnt_qposadr[joint.id]] = 0.0
 
@@ -438,10 +456,23 @@ def _add_gripper_frames(spec: MjSpec) -> None:
 
 
 def _mesh_points(model, body_id: int) -> np.ndarray:
-    """Vertices of a body's mesh geom, in the body's own frame."""
-    geoms = [g for g in range(model.ngeom) if model.geom_bodyid[g] == body_id]
+    """Vertices of a body's mesh geom, in the body's own frame.
+
+    The first *mesh* on the body, not the first geom: a marker sphere or a primitive hull
+    has `geom_dataid == -1`, and indexing `mesh_vertadr` with that reads the last mesh in
+    the model instead of raising. The measurement then comes out of another link's
+    vertices -- which is not hypothetical. It showed up as `overflow encountered in
+    matmul` under one engine's MuJoCo and silently correct numbers under the other's,
+    which is the two engines compiling different robots: the thing the shared spec exists
+    to make impossible.
+    """
+    geoms = [
+        g for g in range(model.ngeom)
+        if model.geom_bodyid[g] == body_id
+        and model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
+    ]
     if not geoms:
-        raise ValueError(f"body {body_id} has no geom to measure")
+        raise ValueError(f"body {body_id} has no mesh geom to measure")
     geom = geoms[0]
     mesh = model.geom_dataid[geom]
     start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
@@ -476,17 +507,21 @@ def _measure(spec: MjSpec) -> dict[str, float]:
     # the mesh vertices, not from `geom_rbound`: that is a bounding-sphere radius, and
     # on a foot mesh it sits several centimetres below the sole, which would hang the
     # robot in the air by that much.
-    foot_z = min(
-        float(
-            (_mesh_points(model, bid) @ data.xmat[bid].reshape(3, 3).T
-             + data.xpos[bid])[:, 2].min()
+    # See the note on the same guard in _add_gripper_frames: spurious FPE flags from
+    # numpy under one engine's MuJoCo and not the other's, with every input and the
+    # product measured finite and every number this file returns identical under both.
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        foot_z = min(
+            float(
+                (_mesh_points(model, bid) @ data.xmat[bid].reshape(3, 3).T
+                 + data.xpos[bid])[:, 2].min()
+            )
+            for bid in range(1, model.nbody)
+            if any(
+                model.geom_bodyid[g] == bid and model.geom_dataid[g] >= 0
+                for g in range(model.ngeom)
+            )
         )
-        for bid in range(1, model.nbody)
-        if any(
-            model.geom_bodyid[g] == bid and model.geom_dataid[g] >= 0
-            for g in range(model.ngeom)
-        )
-    )
     return {
         "dx": max(float(hi[0] - lo[0]), 0.06),
         "dy": max(float(hi[1] - lo[1]), 0.06),

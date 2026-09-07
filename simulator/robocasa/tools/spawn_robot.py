@@ -60,7 +60,7 @@ from robots_spec import model_xml  # noqa: E402
 # Robots this engine can spawn. Kept to the shared specs: anything here must also spawn
 # in the MolmoSpaces engine, since that is what "the console cannot tell them apart"
 # means in practice.
-ROBOTS = ("myagv", "so101")
+ROBOTS = ("myagv", "so101", "ainex")
 
 # name -> (module, function) presenting that robot's own vendor ROS topics. Only mobile
 # bases have one; an arm is served over the control protocol instead.
@@ -69,6 +69,8 @@ ROS_SURFACES = {
     # The same shared surface the other engine uses. That is the point: the arm's topic
     # set belongs to the arm, so a client cannot tell which engine is hosting it.
     "so101": ("ros_surfaces.so101", "attach_ros"),
+    # The same shared package the other engine's adapter delegates to.
+    "ainex": ("ros_surfaces.ainex", "attach_ros"),
 }
 
 # Robots whose ROS surface is an arm contract rather than a mobile-base one: no cmd_vel,
@@ -81,19 +83,34 @@ TASKS = {"apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate")}
 # Transcribed from ydlidar_ros_driver/launch/X2.launch and the base_footprint ->
 # laser_frame transform in myagv_active.launch. Same numbers as the MolmoSpaces engine;
 # a client that could measure a difference here would have found a regression.
-SCAN_DEFAULTS = {"myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0}}
+SCAN_DEFAULTS = {
+    "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
+    # Byte-identical to the MolmoSpaces engine's, deliberately: a client that could
+    # measure a different /scan across engines has found the regression the split exists
+    # to prevent. The AiNex has no lidar at all -- the topic is an invention both engines
+    # make the same way.
+    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
+}
 
 # Robots grafted in at the origin and then *driven* to their spawn pose, because their
 # base joints are world-aligned slides.
-HOLONOMIC_BASE_ROBOTS = {"myagv"}
+HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
 # Arms: no base of their own, so they are bolted to a work surface. In a kitchen that is
 # a countertop rather than a table.
-TABLETOP_ROBOTS = {"so101"}
+# Robots that go *on* a worktop rather than on the floor. The AiNex is both this and
+# holonomic: it stands on the counter where an arm would be bolted, and gets there on the
+# same world-aligned slide joints the myAGV drives on. The two sets are read
+# independently -- one chooses where a robot is put, the other how it is moved.
+TABLETOP_ROBOTS = {"so101", "ainex"}
 
 # Footprint radius used when searching for somewhere to stand. The myAGV chassis is
 # 311 x 230 mm, so its half-diagonal is 0.193 m; the margin is what keeps a spawn from
 # touching a cabinet door it would then have to unstick itself from.
-ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20}
+# Footprint radius used when searching for somewhere to stand or to be bolted.
+# The AiNex is 2.35 kg and about 0.21 m across the shoulders standing; 0.16 m is that
+# half-width plus room for the arms, measured off the compiled model's torso hull rather
+# than typed from the datasheet.
+ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.16}
 SPAWN_MARGIN_M = 0.12
 
 # The height band a driving robot sweeps through. The floor sits at z=0 and RoboCasa
@@ -652,12 +669,29 @@ def add_task_camera(spec: mujoco.MjSpec, eye, target, name: str = "task_camera")
     )
 
 
+def robot_spec(robot: str):
+    """The shared description of one robot, and the name of its root body.
+
+    Two robots are a `model.xml` on disk. The AiNex is not: what its vendor ships is a
+    URDF that needs a documented set of corrections before it is a usable model, and
+    those are measurements taken off compiled models, so they live as a builder in
+    `shared/ainex_model.py` rather than as a file that could drift from the code that
+    wrote it. Either way the description is shared, which is the part that matters --
+    both engines compile the same robot.
+    """
+    if robot == "ainex":
+        import ainex_model
+
+        return ainex_model.build_spec(), ainex_model.robot_model_root_name()
+    return mujoco.MjSpec.from_file(str(model_xml(robot))), "base"
+
+
 def attach_robot(spec: mujoco.MjSpec, robot: str, prefix: str, pos, quat) -> None:
-    """Graft a shared robot MJCF into the kitchen spec under `prefix`."""
-    robot_spec = mujoco.MjSpec.from_file(str(model_xml(robot)))
-    root = robot_spec.body("base")
+    """Graft a shared robot into the kitchen spec under `prefix`."""
+    robot_spec_, root_name = robot_spec(robot)
+    root = robot_spec_.body(root_name)
     if root is None:
-        raise SystemExit(f"no 'base' body in the shared {robot} spec")
+        raise SystemExit(f"no {root_name!r} body in the shared {robot} spec")
     # The reference site MolmoSpaces' base group measures against. Harmless here, and it
     # keeps the two engines' compiled models the same shape.
     spec.worldbody.add_site(name=f"{prefix}world", pos=[0, 0, 0.005], quat=[1, 0, 0, 0])
@@ -886,13 +920,19 @@ def _surface_kwargs(args, inst, model, task, scene_option):
             "max_range": args.depth_range,
             "fovy": float(model.cam_fovy[cam_id]),
         }
-    return {
+    bag = {
         "base": inst.base, "model": model, "camera": camera,
         "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
         "control_hz": args.control_hz, "watchdog_s": args.watchdog,
         "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
         "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
     }
+    if inst.name == "ainex":
+        # A per-robot tail rather than two more keys in the common bag: the myAGV's
+        # shared surface is called from here with no adapter in between, so anything
+        # extra in the bag every base gets is a TypeError on that one.
+        bag |= {"prefix": inst.mjcf, "extra": {"action_dir": args.action_dir}}
+    return bag
 
 
 def _pick_camera(args, model, prefix: str) -> str | None:
@@ -1032,6 +1072,11 @@ def main() -> int:
     )
     ap.add_argument("--watchdog", type=float, default=0.5,
                     help="stop the base if no command arrives for this long")
+    ap.add_argument("--action-dir", default=None, dest="action_dir", metavar="DIR",
+                    help="AiNex only: directory of action groups for /app/set_action. "
+                         "Reads Hiwonder's .d6a format, so this can point straight at a "
+                         "real robot's ActionGroups directory; defaults to the small "
+                         "in-tree set in shared/ros_surfaces/ainex/action_groups")
     ap.add_argument("--camera", default=None, help="MJCF camera to stream, or 'none'")
     ap.add_argument("--camera-size", type=int, nargs=2, default=[640, 480], dest="camera_size")
     ap.add_argument("--jpeg-quality", type=int, default=70, dest="jpeg_quality")
@@ -1234,6 +1279,21 @@ def main() -> int:
                 target=[float(centre[0]), float(centre[1]), mount_z],
             )
 
+    def _graft_z(inst) -> float:
+        """How high a holonomic robot's root is grafted: its ride height, on its floor.
+
+        Zero for a wheeled base, whose model already has its wheels at z = 0. A legged
+        robot's root is its torso, which stands a measured distance above the surface --
+        `ainex_model.ride_height` reads it off the compiled model rather than assuming a
+        pose -- and the surface is the counter when the robot is bolted to one.
+        """
+        if inst.name != "ainex":
+            return 0.0
+        import ainex_model
+
+        floor = inst.mount_z if inst.tabletop else 0.0
+        return float(floor + ainex_model.ride_height(robot_spec(inst.name)[0]))
+
     for inst in instances:
         inst_quat = [float(np.cos(inst.yaw / 2)), 0.0, 0.0, float(np.sin(inst.yaw / 2))]
         attach_robot(
@@ -1242,10 +1302,22 @@ def main() -> int:
             inst.mjcf,
             # A holonomic base is grafted in at the origin and driven to its spawn pose
             # below; its slide joints are world-aligned and mean nothing anywhere else.
-            pos=([0.0, 0.0, 0.0] if inst.holonomic
+            # Except in z, which those joints do not touch: a legged robot's root sits a
+            # ride height above whatever it stands on, and for a robot standing on a
+            # counter that is the counter. Getting this wrong is a robot buried in the
+            # worktop or hovering over it, in a scene where everything else looks right.
+            pos=([0.0, 0.0, _graft_z(inst)] if inst.holonomic
                  else [float(inst.xy[0]), float(inst.xy[1]), inst.mount_z]),
             quat=[1.0, 0.0, 0.0, 0.0] if inst.holonomic else inst_quat,
         )
+
+    # The AiNex's actuator gains assume an implicit integrator. Every MolmoSpaces house
+    # already sets one; robosuite's base.xml declares none, which means Euler, where 24
+    # servos on ~1e-4 kg.m^2 links go NaN. Set only when one is present, because it
+    # changes the physics of everything else in the kitchen -- including a grasp window
+    # measured to 0.1 mm -- and that is not a change to make for robots that never asked.
+    if any(i.name == "ainex" for i in instances):
+        spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
 
     stage_task = None
     if args.task:
@@ -1307,8 +1379,35 @@ def main() -> int:
 
     for inst in instances:
         if inst.holonomic:
-            inst.base = PlanarJointBase(model, data, inst.mjcf)
+            # The AiNex's planar joints ride its torso, which the vendor URDF roots as
+            # `body_link`; every other base calls that body `base`.
+            inst.base = PlanarJointBase(
+                model, data, inst.mjcf,
+                body=(robot_spec(inst.name)[1] if inst.name == 'ainex' else None),
+            )
             inst.base.teleport(float(inst.xy[0]), float(inst.xy[1]), float(inst.yaw))
+            if inst.name == "ainex":
+                # The one thing MolmoSpaces supplies that this engine has no object for:
+                # a robot config carrying an initial pose. Imported from the shared servo
+                # table rather than copied, unlike the SO-101's constants above -- that
+                # table is shared precisely so the two engines stand this robot up the
+                # same way. Joint *and* ctrl: these are position actuators, so a ctrl left
+                # at 0 would snap all 24 limbs out of the pose on the first step.
+                from ros_surfaces.ainex import servos
+
+                for joint, angle in servos.INIT_POSE.items():
+                    jid = mujoco.mj_name2id(
+                        model, mujoco.mjtObj.mjOBJ_JOINT, f"{inst.mjcf}{joint}"
+                    )
+                    aid = mujoco.mj_name2id(
+                        model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{inst.mjcf}{joint}"
+                    )
+                    if jid < 0 or aid < 0:
+                        raise SystemExit(
+                            f"ainex joint/actuator {inst.mjcf}{joint!r} missing from the model"
+                        )
+                    data.qpos[model.jnt_qposadr[jid]] = angle
+                    data.ctrl[aid] = angle
         else:
             inst.groups = {
                 # An empty group, and deliberately so. MolmoSpaces gives its SO-101 a `base`

@@ -40,6 +40,7 @@ simulator/
                   definition of done (apple_on_plate.py) — engine-neutral
     robots/       so101/ + myagv/ hardware specs (MJCF, meshes, URDF) — engine-neutral
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
+  ainex_model.py    the AiNex's model, built from the vendor URDF; both engines call it
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
   robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
   kitchen.sh  the SO-101 on a kitchen work surface, in one engine at a time
@@ -346,13 +347,14 @@ The arm task takes two terminals, because it is two projects. The simulator host
 world; the console runs the task against it. From `simulator/`:
 
 ```bash
-./kitchen.sh serve                         # the task on ws://127.0.0.1:9090, in a window
-./kitchen.sh serve --headless              # ...without one; what a console run wants
+./kitchen.sh serve                         # the task on ws://127.0.0.1:9090, headless
 ./kitchen.sh serve --engine robocasa       # the other engine (one engine per run)
 ./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
-./kitchen.sh serve --cameras both          # ...with the eye-in-hand view as well
-./kitchen.sh view                          # the camera page on whatever is serving,
-                                           # from a second terminal
+./kitchen.sh serve --robots so101,ainex    # ...or the humanoid, on /ainex/*
+./kitchen.sh serve --cameras robot         # each robot's own camera and nothing else
+./kitchen.sh serve --engine robocasa --robots ainex --cameras robot
+./kitchen.sh view --live                   # the camera page on whatever is serving
+./kitchen.sh view                          # ...and a MuJoCo window on a world of its own
 ./kitchen.sh serve --help                  # per-command help; `view --help` too
 ```
 
@@ -364,30 +366,39 @@ and from `robot_console/`:
 ./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
 ```
 
-**`serve` loads the world and `view` looks at it, and they do not overlap.** `serve` is
-the only command that loads anything, so every flag that configures a simulator is its:
-the engine, the kitchen, the robots, the camera set, what the task stages. `view` takes
-`--port` and `--http-port` and refuses the rest, naming the command they belong to --
-which is what keeps "view is exclusively the view" from being a rule to remember. Each
-command's `--help` prints the shared header plus its own section, cut out of that header
-by `#:` markers, so neither can drift from the flags it parses.
+**`serve` loads a world and serves it; `view` looks at one.** `serve` is headless,
+always -- a run is watched through the cameras the robots present, and a window costs
+control rate for every client on the port. `view` opens both a MuJoCo window and the live
+camera page, with `--mujoco` or `--live` narrowing to one. Each command refuses the
+other's flags by name, and each `--help` prints the shared header plus its own section,
+cut out of that header by `#:` markers, so neither can drift from what it parses.
 
-**The MuJoCo window is `serve`'s because it cannot be anything else's.** `mujoco.viewer`
-offers `launch`, `launch_from_path` and `launch_passive` and no `connect` (checked on
-3.5.0 and 3.3.1, the two engines' versions), so a viewer is built from the model and data
-objects in memory and exists in the process that owns the physics or not at all. That is
-why it is not a flag but a default: a serve has a window, and `--headless` is how a run
-nobody will look at stops paying for it -- 7.6 Hz headless against 5.0 Hz with the window,
-measured on MolmoSpaces with three cameras. `run_task.sh` wants `--headless`.
+**The two halves of `view` are not the same kind of thing, and the help says so.**
+`--live` really does attach: it is a websocket client, so it shows what a `serve` in
+another terminal is publishing. `--mujoco` cannot -- `mujoco.viewer` offers `launch`,
+`launch_from_path` and `launch_passive` and no `connect` (checked on 3.5.0 and 3.3.1, the
+two engines' versions), so a viewer is built from the model and data objects in memory and
+belongs to the process holding the physics. `view --mujoco` therefore opens a world of its
+own, served to nobody, and takes the same `--engine`/`--scene`/`--layout`/`--robots` flags
+`serve` does because it has to be told which world.
 
-`--cameras` chooses what the arm streams -- `scene` (the contract's `/overhead` and
-`/side`), `both` (those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which
-takes the two scene topics *off* the wire and is for isolating what a policy sees, not
-for running the task, since the console checks for the set it expects).
+`--cameras` chooses what renders: `both` (default -- the worktop rig and every robot's
+own), `scene` (the rig alone) or `robot` (each robot's own official camera alone: the
+SO-101's `wrist_cam`, a myAGV's or an AiNex's `front_camera`). No per-robot syntax is
+needed behind those words, because each engine already resolves a base's camera against
+that robot's own MJCF prefix and the arm's is one flag. Both narrowing settings take
+topics off the wire that something expects -- `robot` drops the rig the arm task is graded
+from, `scene` drops a base's camera, which is one of the four rows of its vendor
+contract -- so the console's fleet check refuses them by name.
+
+**`apple_on_plate` is the arm's task and is staged only when an arm is in `--robots`.**
+It lays its objects out in the arm's base frame and its arbiter grades a jaw closing on an
+apple; a kitchen with no arm has nothing for that to be about, and staging it anyway bound
+the task to whichever robot happened to be first in the list.
 
 `shot`, `inspect` and `cameras` used to be commands here and are gone: `shot` rendered a
 screenshot per engine back when two could run at once, grading is the console's half of
-the split, and `cameras` is what `view` now is.
+the split, and `cameras` is what `view --live` now is.
 
 
 **The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA

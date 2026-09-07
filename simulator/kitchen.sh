@@ -22,6 +22,11 @@
 #                         `myagv`, `ainex`, comma-separated. Each gets its own namespace
 #                         on one rosbridge -- /so101/*, /myagv/*, /ainex/* -- which is one
 #                         ROS graph with a namespace per robot, as a real bringup is.
+#                         The arm is bolted to a worktop and the AiNex stands on one; a
+#                         myAGV takes the floor of the same room. apple_on_plate is the
+#                         arm's task and is staged only when an arm is in the list -- so
+#                         without one you get the kitchen, the robots and their cameras,
+#                         and no /scene rig.
 #   --cameras both        which cameras render:
 #                           both   the worktop rig and every robot's own
 #                           scene  the rig alone, on /scene/overhead and /scene/side
@@ -212,6 +217,16 @@ esac
 
 [ "$REFERENCE_TABLE" -eq 1 ] || STAGE_FLAGS+=(--no-reference-table)
 
+# apple_on_plate is the SO-101's task: it stages its objects in the arm's base frame and
+# its arbiter grades a jaw closing on an apple. A kitchen with no arm in it has nothing
+# for that to be about, so it gets the room and the robots and no task -- which is also
+# what stops the staging from binding to whichever robot happened to be first.
+declare -a TASK_FLAGS=()
+case ",$ROBOTS," in
+  *,so101,*) TASK_FLAGS=(--task apple_on_plate) ;;
+  *) ;;
+esac
+
 if [ "$SWAP" = auto ]; then
   [ "$ENGINE" = robocasa ] && SWAP=1 || SWAP=0
 fi
@@ -326,10 +341,10 @@ if [ "$cmd" = view ]; then
   if [ "$MUJOCO" -eq 1 ]; then
     need_engine "$(engine_root "$ENGINE")"
     echo ">> $ENGINE $ROBOTS in a window (its own world; nothing is served)"
-    # No --ros-port: this world is looked at, not served. The task is still staged, so
-    # the window shows the apple and the plate rather than a bare counter.
-    "$ENGINE" "$(engine_python viewer)" --task apple_on_plate --control-hz 10 \
-      ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
+    # No --ros-port: this world is looked at, not served. The task is still staged when
+    # there is an arm, so the window shows the apple and the plate, not a bare counter.
+    "$ENGINE" "$(engine_python viewer)" --control-hz 10 \
+      ${TASK_FLAGS[@]+"${TASK_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
     view_pid=$!
   fi
 
@@ -354,9 +369,9 @@ port_free "$PORT" "pick another with --port PORT"
 # its port, and the next run fails the port check for no visible reason.
 trap cleanup INT TERM EXIT
 echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT (cameras: $CAMERAS)"
-"$ENGINE" "$(engine_python headless)" --headless --ros-port "$PORT" \
-  --task apple_on_plate --control-hz 10 \
-  ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
+"$ENGINE" "$(engine_python headless)" --headless --ros-port "$PORT" --control-hz 10 \
+  ${TASK_FLAGS[@]+"${TASK_FLAGS[@]}"} ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} \
+  ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
 sim_pid=$!
 echo
 echo "run the task against it from robot_console/:"
