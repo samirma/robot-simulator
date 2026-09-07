@@ -347,7 +347,9 @@ world; the console runs the task against it. From `simulator/`:
 ./kitchen.sh view                          # the same world, with the window and the
                                            # camera page both open (--mujoco / --live
                                            # each pick just one of the two)
-./kitchen.sh cameras                       # the camera page against a running serve
+./kitchen.sh view --live                   # ...and on a port that is already serving,
+                                           # this watches that instead of starting a
+                                           # second engine
 ```
 
 and from `robot_console/`:
@@ -363,9 +365,11 @@ and they differ only in what they open by default and in what they print. `--cam
 chooses what the arm streams -- `scene` (the contract's `/overhead` and `/side`), `both`
 (those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which takes the two scene
 topics *off* the wire and is for isolating what a policy sees, not for running the task).
-`shot` and `inspect` used to be commands here and are gone: `shot` rendered a screenshot
-per engine back when two could run at once, and grading is the console's half of the
-split.
+`shot`, `inspect` and `cameras` used to be commands here and are gone: `shot` rendered a
+screenshot per engine back when two could run at once, grading is the console's half of
+the split, and `cameras` -- the page against somebody else's `serve` -- is what
+`view --live` does when it finds the port already busy, which is also the one case where
+this script starts no engine.
 
 
 **The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA

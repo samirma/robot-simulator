@@ -4,7 +4,6 @@
 #   ./kitchen.sh view            look at the world: the MuJoCo window and the live
 #                                camera page, both by default. The default command.
 #   ./kitchen.sh serve           host the world for the console, windowless by default
-#   ./kitchen.sh cameras         open the live camera page on a `serve` already running
 #   ./kitchen.sh help
 #
 # `view` and `serve` stage the same task into the same kitchen and put it on the same
@@ -24,8 +23,13 @@
 #                          rate -- measured on MolmoSpaces with three cameras, 7.6 Hz
 #                          headless against 5.0 Hz with the window -- and the loop still
 #                          holds real time at that price.
-#   --live                 open the live camera page in a browser, served over HTTP
-#                          against this run's own rosbridge.
+#   --live                 open the live camera page in a browser, served over HTTP.
+#                          `view --live` on a port something is *already* serving
+#                          attaches to that instead of starting a second engine, which
+#                          is how a `serve` running in another terminal gets watched --
+#                          the `cameras` command used to be exactly this and no longer
+#                          exists. `serve` never attaches: its whole job is to host, so
+#                          a port it cannot have is an error rather than a surprise.
 #                          `view` turns both of these on unless one is named explicitly;
 #                          `serve` turns neither on unless asked.
 #
@@ -172,7 +176,7 @@ say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 cmd="view"
 case "${1:-}" in
-  view|serve|cameras|help|-h|--help) cmd="$1"; shift || true ;;
+  view|serve|help|-h|--help) cmd="$1"; shift || true ;;
 esac
 
 while [ $# -gt 0 ]; do
@@ -237,7 +241,7 @@ fi
 
 # Defined here rather than beside the other engine helpers below, because `need_engine`
 # calls it before that point and bash binds a function only when it executes the
-# definition. It used to live below, and every command except `cameras` died on
+# definition. It used to live below, and every run that started an engine died on
 # `engine_root: command not found` with an empty engine name in the message.
 engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
 
@@ -245,10 +249,19 @@ need_engine() {
   [ -x "$1/.venv/bin/python" ] \
     || die "$(basename "$1") is not set up yet - run: cd $1 && ./run.sh setup"
 }
-# Only the engine actually being run has to be installed. Setting up the other is a
-# large download, and requiring it in order to use this one is a barrier with nothing
-# behind it. `cameras` starts no engine at all.
-[ "$cmd" = cameras ] || need_engine "$(engine_root "$ENGINE")"
+
+# `view --live` with something already on the port watches *that*, rather than failing
+# the port check on its way to starting a kitchen nobody asked for. It is the one case
+# where this script starts no engine, which is also why the setup check comes after it:
+# watching another terminal's RoboCasa should not require this engine to be installed.
+# A window cannot attach to someone else's process, so --mujoco excludes it, and so does
+# `serve`, which exists to host.
+ATTACH=0
+if [ "$cmd" = view ] && [ "$LIVE" -eq 1 ] && [ "$MUJOCO" -eq 0 ] \
+   && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
+  ATTACH=1
+fi
+[ "$ATTACH" -eq 1 ] || need_engine "$(engine_root "$ENGINE")"
 
 # ---------------------------------------------------------------- engines
 #
@@ -311,7 +324,7 @@ port_free() {
   nc -z 127.0.0.1 "$1" 2>/dev/null || return 0
   local holder
   holder="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | sort -u | paste -sd, -)"
-  die "port $1 is already in use${holder:+ (by: $holder)} - pick another with --port PORT"
+  die "port $1 is already in use${holder:+ (by: $holder)} - ${2:-pick another port}"
 }
 
 # Kill a backgrounded engine and everything it forked, then wait for the port to actually
@@ -350,7 +363,7 @@ wait_for_rosbridge() {
 serve_page() {
   local page="$ROOT/live_cameras.html"
   [ -f "$page" ] || die "missing $page"
-  port_free "$HTTP_PORT"
+  port_free "$HTTP_PORT" "pick another with --http-port PORT"
   python3 -m http.server "$HTTP_PORT" --directory "$ROOT" --bind 127.0.0.1 >/dev/null 2>&1 &
   http_pid=$!
   # `ns` tells the page which robot's state and command topics to drive. The camera grid
@@ -364,40 +377,39 @@ serve_page() {
   command -v open >/dev/null && open "$page_url" || true
 }
 
-# ---------------------------------------------------------------- commands
+# ---------------------------------------------------------------- run
+#
+# `help` has already exited and `cameras` is now `view --live`, so two paths are left:
+# watch a rosbridge somebody else is serving, or serve one.
 
-case "$cmd" in
-  view|serve)
-    # Checked up front, because the failure otherwise arrives as a websockets traceback
-    # from an engine that has already spent a minute compiling a kitchen.
-    port_free "$PORT"
-    [ "$LIVE" -eq 1 ] && port_free "$HTTP_PORT"
-    # EXIT as well as INT/TERM: without it a `die` anywhere below leaves the engine
-    # holding its port, and the next run fails the port check for no visible reason.
-    trap cleanup INT TERM EXIT
-    echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT (cameras: $CAMERAS$([ "$MUJOCO" -eq 1 ] && echo ', with a window'))"
-    "$ENGINE" "$(engine_python)" $(headless_arg) --ros-port "$PORT" \
-      --task apple_on_plate --control-hz 10 \
-      ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
-    sim_pid=$!
-    if [ "$LIVE" -eq 1 ]; then
-      wait_for_rosbridge
-      serve_page
-    fi
-    echo
-    echo "run the task against it from robot_console/:"
-    echo "  ./run_task.sh --label $ENGINE$([ "$PORT" = 9090 ] || echo " --url ws://127.0.0.1:$PORT") --episodes 6"
-    echo "  (layout: $([ "$SWAP" -eq 1 ] && echo 'swapped -- plate at the apple spawn' || echo 'standard'); the console reads it off the wire)"
-    [ "$LIVE" -eq 1 ] || echo "watch it:  ./kitchen.sh cameras --engine $ENGINE$([ "$PORT" = 9090 ] || echo " --port $PORT")"
-    wait "$sim_pid"
-    ;;
+if [ "$ATTACH" -eq 1 ]; then
+  trap cleanup INT TERM EXIT
+  echo ">> attaching to the rosbridge already on ws://127.0.0.1:$PORT"
+  serve_page
+  echo "  Ctrl-C stops serving the page; the simulator keeps running"
+  wait "$http_pid"
+  exit 0
+fi
 
-  cameras)
-    nc -z 127.0.0.1 "$PORT" 2>/dev/null \
-      || die "nothing is serving on ws://127.0.0.1:$PORT - start one with ./kitchen.sh serve --engine $ENGINE"
-    trap cleanup INT TERM EXIT
-    serve_page
-    echo "  Ctrl-C stops serving the page; the simulator keeps running"
-    wait "$http_pid"
-    ;;
-esac
+# Checked up front, because the failure otherwise arrives as a websockets traceback
+# from an engine that has already spent a minute compiling a kitchen.
+port_free "$PORT" "pick another with --port PORT, or watch the one that is there: ./kitchen.sh view --live"
+[ "$LIVE" -eq 1 ] && port_free "$HTTP_PORT" "pick another with --http-port PORT"
+# EXIT as well as INT/TERM: without it a `die` anywhere below leaves the engine
+# holding its port, and the next run fails the port check for no visible reason.
+trap cleanup INT TERM EXIT
+echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT (cameras: $CAMERAS$([ "$MUJOCO" -eq 1 ] && echo ', with a window'))"
+"$ENGINE" "$(engine_python)" $(headless_arg) --ros-port "$PORT" \
+  --task apple_on_plate --control-hz 10 \
+  ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
+sim_pid=$!
+if [ "$LIVE" -eq 1 ]; then
+  wait_for_rosbridge
+  serve_page
+fi
+echo
+echo "run the task against it from robot_console/:"
+echo "  ./run_task.sh --label $ENGINE$([ "$PORT" = 9090 ] || echo " --url ws://127.0.0.1:$PORT") --episodes 6"
+echo "  (layout: $([ "$SWAP" -eq 1 ] && echo 'swapped -- plate at the apple spawn' || echo 'standard'); the console reads it off the wire)"
+[ "$LIVE" -eq 1 ] || echo "watch it:  ./kitchen.sh view --live$([ "$PORT" = 9090 ] || echo " --port $PORT")"
+wait "$sim_pid"
