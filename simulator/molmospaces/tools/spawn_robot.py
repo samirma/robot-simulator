@@ -855,7 +855,7 @@ def _surface_kwargs(args, inst, model, task):
     if inst.name in ARM_ROS_SURFACES:
         from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
 
-        cameras = dict(DEFAULT_CAMERAS)
+        cameras = dict(DEFAULT_CAMERAS) if args.scene_cameras else {}
         if args.wrist_camera:
             # The scene cameras sit on the worldbody under their own names; the wrist
             # camera rides the gripper and so carries the robot's MJCF prefix.
@@ -1050,6 +1050,13 @@ def main() -> int:
         "--task", default=None, choices=sorted(TASKS),
         help="stage a task into the scene: its objects, its cameras and its success "
              "predicate. Requires --ros-port, which is what publishes the verdict.",
+    )
+    ap.add_argument(
+        "--no-scene-cameras", action="store_false", dest="scene_cameras",
+        help="drop the two scene views (/overhead, /side) and stream only what is left, "
+             "which is the wrist view or nothing. This takes topics OFF the contract, so "
+             "a console expecting the arm's declared camera set will not find it; it is "
+             "here to isolate what a policy sees, in the way --side-camera-mirror is.",
     )
     ap.add_argument(
         "--wrist-camera", action="store_true", dest="wrist_camera",
@@ -1468,6 +1475,15 @@ def main() -> int:
         raise SystemExit(
             "--task needs --ros-port: the task publishes its objects and cameras there, and "
             "staging one with nothing to publish it would silently score nothing."
+        )
+
+    # An arm surface with an empty camera set advertises no images at all: the topics are
+    # simply absent, and a client waiting for a frame waits forever with nothing to read
+    # the reason off. --no-scene-cameras is for *narrowing* the set, never for emptying it.
+    if not args.scene_cameras and not args.wrist_camera:
+        raise SystemExit(
+            "--no-scene-cameras leaves the arm with no cameras at all; pass --wrist-camera "
+            "as well if the eye-in-hand view is the one you want on its own."
         )
 
     if args.ros_port:

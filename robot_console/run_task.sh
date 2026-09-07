@@ -23,7 +23,7 @@
 #
 # The simulator is somebody else's job. Start one first, from simulator/:
 #
-#   ./kitchen.sh serve [--engine robocasa] [--viewer] [--wrist]
+#   ./kitchen.sh serve [--engine robocasa] [--mujoco] [--cameras both]
 #
 # and this script does the console's half: pick the venv the policy needs, wait for the
 # *topics* (a listening socket says nothing about whether the scene compiled), check every
@@ -162,7 +162,7 @@ wait_for_topics() {
     if ! nc -z "$HOST" "$PORT_NUM" 2>/dev/null; then
       if [ "$said_closed" -eq 0 ]; then
         echo "nothing listening on $URL - in another terminal, from simulator/:" >&2
-        echo "  ./kitchen.sh serve [--engine robocasa] [--viewer] [--wrist]" >&2
+        echo "  ./kitchen.sh serve [--engine robocasa] [--mujoco] [--cameras both]" >&2
         said_closed=1
       fi
     elif "$PY" -m robot_console.arm.preflight --url "$URL" --namespace "$NS" \

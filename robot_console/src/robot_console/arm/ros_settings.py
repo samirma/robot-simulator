@@ -133,7 +133,7 @@ SIDE_CAMERA_HEIGHT = 480
 #: was added to the arm MJCF, so a comment here used to say it did not exist.
 #:
 #: **It is not published unless the simulator was started with
-#: ``./kitchen.sh serve --wrist``.** The camera is declared but disabled by default,
+#: ``./kitchen.sh serve --cameras both``.** The camera is declared but disabled by default,
 #: because the MuJoCo plugin renders inside the physics loop and rate falls for
 #: *every* camera when another one is enabled: measured 4.23/4.15 Hz with it off
 #: against 2.94/2.98/2.97 Hz with it on. Selecting this view against a sim

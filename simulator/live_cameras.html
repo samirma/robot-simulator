@@ -195,7 +195,7 @@ const nsTopic = (t) => (NS ? '/' + NS + (t.startsWith('/') ? t : '/' + t) : t);
 // the page shows exactly the cameras that exist, however many that is.
 //
 // Why this matters here rather than being tidiness: the eye-in-hand camera is
-// off unless the simulator was started with `./kitchen.sh serve --wrist`, so the
+// off unless the simulator was started with `--cameras both`, so the
 // camera count legitimately differs between runs. A hardcoded pair is wrong in
 // both directions at once -- it hides a camera that is publishing, and it shows
 // a dead black tile for one that is not.
@@ -297,7 +297,7 @@ function updateFooter() {
   const empty = el('views-empty');
   if (empty && names.length === 0) {
     empty.textContent = 'No camera is publishing. The eye-in-hand view needs '
-      + './kitchen.sh serve --wrist; if none appear at all, check the simulator is running.';
+      + './kitchen.sh serve --cameras both; if none appear at all, check the simulator is running.';
   }
 }
 

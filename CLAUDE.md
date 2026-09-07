@@ -42,7 +42,7 @@ simulator/
     mujoco_bridge.py  MuJoCo→wire helpers shared by the MuJoCo engines (imports mujoco)
   molmospaces/  engine #1 — MuJoCo + MolmoSpaces (iTHOR / procthor houses)
   robocasa/     engine #2 — MuJoCo + robosuite + RoboCasa (kitchens)
-  kitchen.sh  the SO-101 in both engines at once, around the same objects
+  kitchen.sh  the SO-101 on a kitchen work surface, in one engine at a time
 ```
 
 Each engine has its own `run.sh`, `env.sh`, `tools/spawn_robot.py`, and `uv` venv, and each
@@ -266,7 +266,7 @@ Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `
 ### macOS constraints (these explain otherwise-baffling code)
 
 - **The MuJoCo viewer and offscreen camera rendering do coexist in one process**, which
-  is what `kitchen.sh serve --viewer` relies on and was not safe to assume. Under
+  is what `kitchen.sh --mujoco` relies on and was not safe to assume. Under
   `MUJOCO_GL=glfw` each `mujoco.Renderer` opens a *hidden* GLFW window -- a real
   `NSWindow` -- while under `mjpython` the script runs off the Cocoa main thread, and
   GLFW documents window creation as main-thread-only there. Verified working before the
@@ -327,8 +327,9 @@ has nothing to reach for until `--objects` spawns some from RoboCasa's own regis
 is the one real asymmetry with MolmoSpaces, where iTHOR houses come with graspables and
 their metadata, and it is why **arm-with-objects work belongs in MolmoSpaces**:
 `tools/scene_placement.py` there finds a surface that already has graspable objects on it
-and mounts the arm so they land in its working annulus. `simulator/kitchen.sh` sets
-both engines up around the same object pair for comparison.
+and mounts the arm so they land in its working annulus. `simulator/kitchen.sh` stages the
+task's own apple and plate on either engine's counter, which is what makes the two
+comparable without either engine's registry having a say.
 
 ---
 
@@ -339,10 +340,14 @@ world; the console runs the task against it. From `simulator/`:
 
 ```bash
 ./kitchen.sh serve                         # stage the task, serve it on ws://127.0.0.1:9090
-./kitchen.sh serve --viewer                # ...plus the engine's own MuJoCo window
+./kitchen.sh serve --mujoco                # ...plus the engine's own MuJoCo window
 ./kitchen.sh serve --engine robocasa       # the other engine (one engine per run)
 ./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
-./kitchen.sh cameras                       # the live camera page against a running serve
+./kitchen.sh serve --cameras both          # ...with the eye-in-hand view as well
+./kitchen.sh view                          # the same world, with the window and the
+                                           # camera page both open (--mujoco / --live
+                                           # each pick just one of the two)
+./kitchen.sh cameras                       # the camera page against a running serve
 ```
 
 and from `robot_console/`:
@@ -352,6 +357,16 @@ and from `robot_console/`:
 ./run_task.sh --episodes 8 --label robocasa   # a pass count, named after the engine serving
 ./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
 ```
+
+`view` and `serve` are one implementation: both stage the task and put it on rosbridge,
+and they differ only in what they open by default and in what they print. `--cameras`
+chooses what the arm streams -- `scene` (the contract's `/overhead` and `/side`), `both`
+(those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which takes the two scene
+topics *off* the wire and is for isolating what a policy sees, not for running the task).
+`shot` and `inspect` used to be commands here and are gone: `shot` rendered a screenshot
+per engine back when two could run at once, and grading is the console's half of the
+split.
+
 
 **The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA
 is the only policy this console runs. What it used to provide -- a transport check that
