@@ -13,7 +13,7 @@ from molmo_spaces.configs.robot_configs import BaseRobotConfig
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.robots.robot_views.abstract import RobotViewFactory
 
-from . import servos
+from ros_surfaces.ainex import servos
 from .ainex import CAMERA_FOVY_DEG, CAMERA_NAME, AiNexRobot
 from .ainex_view import AiNexRobotView
 

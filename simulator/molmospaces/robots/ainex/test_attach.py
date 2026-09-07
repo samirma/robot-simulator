@@ -109,8 +109,8 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
     args = ap.parse_args()
 
     from robots.ainex import AiNexRobot, AiNexRobotConfig, AiNexRobotView
-    from robots.ainex import gait, servos
-    from robots.ainex.actions import ActionPlayer, load_action_dir
+    from ros_surfaces.ainex import gait, servos
+    from ros_surfaces.ainex.actions import ActionPlayer, load_action_dir
     from robots.ainex.ainex import GRIPPER_ANGLES
 
     config = AiNexRobotConfig()

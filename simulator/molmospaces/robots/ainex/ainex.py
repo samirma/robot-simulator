@@ -36,8 +36,8 @@ from molmo_spaces.controllers.joint_rel_pos import JointRelPosController
 from molmo_spaces.kinematics.mujoco_kinematics import MlSpacesKinematics
 from molmo_spaces.robots.abstract import Robot
 
-from . import servos
-from .gait import LegGeometry
+from ros_surfaces.ainex import servos
+from ros_surfaces.ainex.gait import LegGeometry
 
 if TYPE_CHECKING:
     from molmo_spaces.configs.abstract_exp_config import MlSpacesExpConfig

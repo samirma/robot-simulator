@@ -33,7 +33,11 @@ from pathlib import Path
 
 from .servos import BY_ID, INIT_POSE, SERVOS, clamp, count_to_angle
 
-ACTION_DIR = Path(__file__).resolve().parent / "actions"
+#: Renamed from `actions/` when this moved into `shared/`: a data directory of that
+#: name sat beside `actions.py` in one package and resolved only because a regular
+#: module outranks a namespace package. It worked, and it was one import away from
+#: not working.
+ACTION_DIR = Path(__file__).resolve().parent / "action_groups"
 
 
 @dataclass(frozen=True)

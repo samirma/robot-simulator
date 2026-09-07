@@ -38,7 +38,7 @@ from molmo_spaces.robots.robot_views.abstract import (
 )
 from molmo_spaces.utils.mj_model_and_data_utils import body_pose
 
-from .servos import ARM_JOINTS, HEAD_JOINTS, LEG_JOINTS
+from ros_surfaces.ainex.servos import ARM_JOINTS, HEAD_JOINTS, LEG_JOINTS
 
 BASE_AXES = ("x", "y", "theta")
 TORSO_BODY = "body_link"

@@ -95,7 +95,7 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
     args = ap.parse_args()
 
     from robots.ainex import AiNexRobot, AiNexRobotConfig, AiNexRobotView
-    from robots.ainex import servos, topics
+    from ros_surfaces.ainex import servos, topics
     from robots.ainex.ros_surface import serve_ros
     from tools.spawn_robot import SCAN_DEFAULTS
 

@@ -1121,7 +1121,7 @@ def main() -> int:
                     help="AiNex only: directory of action groups for /app/set_action. "
                          "Reads Hiwonder's .d6a format, so this can point straight at a "
                          "real robot's ActionGroups directory; defaults to the small "
-                         "in-tree set in robots/ainex/actions")
+                         "in-tree set in shared/ros_surfaces/ainex/action_groups")
     ap.add_argument("--depth-hz", type=float, default=5.0, dest="depth_hz",
                     help="rate for the depth image; 640x480 float over a websocket is "
                          "1.2 MB a frame, so this is deliberately slower than the control rate")
