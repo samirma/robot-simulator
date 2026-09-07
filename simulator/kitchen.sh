@@ -43,24 +43,36 @@
 #   --port 9090            rosbridge port
 #
 #   what is on the wire:
-#   --cameras SET          which views are rendered (default `scene`):
-#                            scene  the worktop rig's two, on /scene/overhead and
-#                                   /scene/side -- not under a robot's namespace,
-#                                   because the rig is not a robot's
-#                            both   those plus the arm's own /<robot>/wrist
-#                            wrist  the eye-in-hand view ALONE
-#                          `wrist` takes the two scene topics off the wire, so the
-#                          console will not find the camera set it expects -- it is for
-#                          isolating what a policy sees, not for running the task. Every
-#                          camera is rendered inside the physics loop, so each one costs
-#                          control rate for every client.
+#   --cameras SET          which cameras render (default `both`):
+#                            both   the worktop rig and every robot's own
+#                            scene  the rig alone: /scene/overhead and /scene/side,
+#                                   which are not under a robot's namespace because
+#                                   the rig is not a robot's
+#                            robot  each robot's own official camera alone -- the
+#                                   SO-101's wrist_cam on /<ns>/wrist/color/compressed,
+#                                   a myAGV's or an AiNex's front_camera on
+#                                   /<ns>/camera/image_raw/compressed
+#                          Every camera renders inside the physics loop, so each one
+#                          costs control rate for *every* client on the port, not just
+#                          whoever wanted the view -- measured, one SO-101 publishes at
+#                          9.8 Hz and adding a camera-bearing myAGV takes it to 5.7. That
+#                          is what the two narrowing settings are for.
+#                          Both of them take topics off the wire that something expects:
+#                          `robot` drops the rig the arm task is graded from, and `scene`
+#                          drops a mobile base's camera, which is one of the four rows of
+#                          its vendor contract -- so run_task.sh's fleet check refuses a
+#                          `scene` simulator that was asked for a myAGV, by name. Neither
+#                          is for running the task; both are for isolating what a policy
+#                          sees.
 #   --robots A,B           which robots share the kitchen and the port (default so101).
-#                          `so101,myagv` mounts the arm on a work surface and puts the
-#                          base on the floor of the same room, both on one rosbridge
-#                          under /so101/* and /myagv/* -- one ROS graph, a namespace per
-#                          robot, which is how a real multi-robot bringup is arranged.
+#                          `so101`, `myagv` and `ainex` -- the arm gets bolted to a work
+#                          surface, the base and the humanoid stand on the floor of the
+#                          same room, and all of them share one rosbridge under /so101/*,
+#                          /myagv/* and /ainex/*: one ROS graph, a namespace per robot,
+#                          which is how a real multi-robot bringup is arranged. The task
+#                          is the arm's, so a kitchen without one has nothing to grade.
 #                          run_task.sh still grades the arm; pass it the same --robots
-#                          and it checks the extra robot is on the wire.
+#                          and it checks the extra robots are on the wire.
 #
 #   which kitchen:
 #   --engine E             molmospaces (default) | robocasa. One engine per run: only
@@ -182,7 +194,9 @@ HTTP_PORT=8791
 # unchanged.
 ROBOTS="so101"
 ENGINE="molmospaces"
-CAMERAS="scene"
+# The rig and every robot's own camera. Narrowed with --cameras; see the header for what
+# each setting costs and what it takes off the wire.
+CAMERAS="both"
 # A serve has a window, because the window cannot exist anywhere else -- see the header.
 HEADLESS=0
 declare -a STAGE_FLAGS=()
@@ -266,14 +280,18 @@ else
     *) die "--engine: expected molmospaces or robocasa" ;;
   esac
 
-  # The wrist view is a topic on top of the contract's two; `wrist` alone takes those two
-  # away, which is the one setting the console cannot run against. Both are engine flags
-  # and both engines take them, so the camera set is not somewhere the two can drift apart.
+  # Three words, and no per-robot syntax behind them: an engine already resolves each
+  # base's own camera against that robot's MJCF prefix, and the arm's is one flag, so
+  # "every robot's own" is simply what happens when neither is overridden. `--camera none`
+  # is the fleet-wide off switch, which is exactly what `scene` wants.
+  #
+  # All of these are engine flags and both engines take them identically, so the camera
+  # set is not somewhere the two engines can drift apart.
   case "$CAMERAS" in
-    scene) ;;
     both)  CAMERA_FLAGS=(--wrist-camera) ;;
-    wrist) CAMERA_FLAGS=(--wrist-camera --no-scene-cameras) ;;
-    *)     die "--cameras: expected scene, both or wrist" ;;
+    scene) CAMERA_FLAGS=(--camera none) ;;
+    robot) CAMERA_FLAGS=(--wrist-camera --no-scene-cameras) ;;
+    *)     die "--cameras: expected both, scene or robot" ;;
   esac
 
   [ "$REFERENCE_TABLE" -eq 1 ] || STAGE_FLAGS+=(--no-reference-table)
@@ -414,6 +432,9 @@ port_free "$PORT" "pick another with --port PORT, or watch the one that is there
 # holding its port, and the next run fails the port check for no visible reason.
 trap cleanup INT TERM EXIT
 echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT (cameras: $CAMERAS$([ "$HEADLESS" -eq 1 ] && echo ', headless' || echo ', with a window'))"
+# Each camera renders inside the physics loop, so the count is the thing that sets the
+# achievable control rate for everyone on the port. Worth saying once, where it is chosen.
+[ "$CAMERAS" = both ] || echo "   (--cameras $CAMERAS takes topics off the wire; ./kitchen.sh serve --help says which)"
 "$ENGINE" "$(engine_python)" $(headless_arg) --ros-port "$PORT" \
   --task apple_on_plate --control-hz 10 \
   ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &

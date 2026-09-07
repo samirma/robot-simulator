@@ -213,6 +213,24 @@ class SensorStreams:
             model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
             model.vis.global_.offheight = max(model.vis.global_.offheight, height)
             self._renderer = mujoco.Renderer(model, height, width)
+        else:
+            # Three topics of the vendor contract leave the wire together here -- colour,
+            # depth and camera_info, since depth renders through the same camera -- and
+            # the only other trace is that `published` below gets shorter. A client that
+            # expects a mobile base's camera (the console's own fleet check does, because
+            # a real myAGV always publishes one) then reports it missing, which is right
+            # but reads as a fault in the simulator rather than as something that was
+            # asked for. So say it was asked for.
+            # Named as they would have gone on the wire, not as the bare constants: two
+            # bases on one graph would otherwise print the same sentence twice with
+            # nothing to say which robot lost its camera.
+            on_wire = getattr(server, "topic", lambda t: t)
+            print(
+                f"no colour camera on {on_wire(topics.camera)}: that topic, "
+                f"{on_wire(topics.depth)} and {on_wire(topics.camera_info)} "
+                "will not be published",
+                file=sys.stderr,
+            )
 
         # A second renderer, because a MuJoCo renderer is either in depth mode or not and
         # toggling it per frame would fight the colour stream sharing the same object.

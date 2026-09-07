@@ -898,14 +898,29 @@ def _surface_kwargs(args, inst, model, task, scene_option):
 def _pick_camera(args, model, prefix: str) -> str | None:
     """The MJCF camera a mobile base streams, resolved against its own prefix.
 
-    `--camera` names one for every robot, which is only meaningful when there is one;
-    with a fleet each base falls back to its own.
+    `--camera` names one for every robot, which is only meaningful when there is one.
+    With a fleet each base falls back to its own `front_camera`, which is what makes
+    `--cameras robot` mean "each robot's own official camera" without a per-robot flag:
+    the fallback already is per-robot.
+
+    An unknown name is refused here rather than three steps later. It used to be returned
+    verbatim, and `mj_name2id` then answered -1 for the fovy lookup, which numpy reads as
+    the *last* camera in the model -- so `camera_info` shipped a different camera's
+    intrinsics and the real failure arrived inside the physics loop, where a render raises.
+    The arm's `CameraStreams` has always named the model's cameras when asked for one it
+    has not got; this is the same courtesy on the path that had none.
     """
     if args.camera is not None:
         if args.camera.lower() == "none":
             return None
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.camera) < 0:
+            declared = [model.camera(i).name for i in range(model.ncam)]
+            raise SystemExit(
+                f"--camera {args.camera!r} is not in this model; it declares {declared}. "
+                "Pass 'none' to stream no colour camera at all."
+            )
         return args.camera
-    for candidate in ("task_camera", f"{prefix}front_camera", f"{prefix}wrist_cam"):
+    for candidate in (f"{prefix}front_camera", f"{prefix}wrist_cam"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
             return candidate
     return None
@@ -1340,8 +1355,11 @@ def main() -> int:
 
     # Camera selection moved into `_pick_camera`, because it is per robot: each base
     # resolves `front_camera` against its own MJCF prefix, and one `camera` variable here
-    # would have handed the second robot the first one's view. `task_camera` still comes
-    # first there, for the same reason it did here.
+    # would have handed the second robot the first one's view. `task_camera` used to come
+    # first there and no longer does: it is this engine's fixed overhead view above a
+    # tabletop arm, so a myAGV in an untasked scene published the *arm's* view on its own
+    # camera topic, where the other engine handed the same robot its own -- the one thing
+    # the two engines are not allowed to differ on.
 
     scene_option = visual_only()
 

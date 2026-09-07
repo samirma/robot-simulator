@@ -921,12 +921,26 @@ def _pick_camera(args, model, ns: str) -> str | None:
     """The MJCF camera a mobile base streams, resolved against its own prefix.
 
     `--camera` names one for every robot, which is only meaningful when there is one.
-    With a fleet each base falls back to its own `front_camera`, which is what makes the
-    flag's default behaviour right for both cases.
+    With a fleet each base falls back to its own `front_camera`, which is what makes
+    `--cameras robot` mean "each robot's own official camera" without a per-robot flag:
+    the fallback already is per-robot.
+
+    An unknown name is refused here rather than three steps later. It used to be returned
+    verbatim, and `mj_name2id` then answered -1 for the fovy lookup, which numpy reads as
+    the *last* camera in the model -- so `camera_info` shipped a different camera's
+    intrinsics and the real failure arrived inside the physics loop, where a render raises.
+    The arm's `CameraStreams` has always named the model's cameras when asked for one it
+    has not got; this is the same courtesy on the path that had none.
     """
     if args.camera is not None:
         if args.camera.lower() == "none":
             return None
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.camera) < 0:
+            declared = [model.camera(i).name for i in range(model.ncam)]
+            raise SystemExit(
+                f"--camera {args.camera!r} is not in this model; it declares {declared}. "
+                "Pass 'none' to stream no colour camera at all."
+            )
         return args.camera
     for candidate in (f"{ns}front_camera", f"{ns}wrist_cam"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
