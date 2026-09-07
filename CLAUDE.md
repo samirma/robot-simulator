@@ -266,7 +266,7 @@ Only out-of-tree robots load with `view`; the MolmoSpaces built-ins (`franka`, `
 ### macOS constraints (these explain otherwise-baffling code)
 
 - **The MuJoCo viewer and offscreen camera rendering do coexist in one process**, which
-  is what `kitchen.sh --mujoco` relies on and was not safe to assume. Under
+  is what a `kitchen.sh serve` window relies on and was not safe to assume. Under
   `MUJOCO_GL=glfw` each `mujoco.Renderer` opens a *hidden* GLFW window -- a real
   `NSWindow` -- while under `mjpython` the script runs off the Cocoa main thread, and
   GLFW documents window creation as main-thread-only there. Verified working before the
@@ -339,14 +339,14 @@ The arm task takes two terminals, because it is two projects. The simulator host
 world; the console runs the task against it. From `simulator/`:
 
 ```bash
-./kitchen.sh serve                         # stage the task, serve it on ws://127.0.0.1:9090
-./kitchen.sh serve --mujoco                # ...plus the engine's own MuJoCo window
+./kitchen.sh serve                         # the task on ws://127.0.0.1:9090, in a window
+./kitchen.sh serve --headless              # ...without one; what a console run wants
 ./kitchen.sh serve --engine robocasa       # the other engine (one engine per run)
 ./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
 ./kitchen.sh serve --cameras both          # ...with the eye-in-hand view as well
-./kitchen.sh serve --mujoco --live         # ...and open both the window and the page
 ./kitchen.sh view                          # the camera page on whatever is serving,
                                            # from a second terminal
+./kitchen.sh serve --help                  # per-command help; `view --help` too
 ```
 
 and from `robot_console/`:
@@ -357,15 +357,21 @@ and from `robot_console/`:
 ./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
 ```
 
-**`serve` hosts the world and `view` looks at it, and they do not overlap.** `serve` is
-the only command that starts anything, so every flag that configures a simulator is its:
+**`serve` loads the world and `view` looks at it, and they do not overlap.** `serve` is
+the only command that loads anything, so every flag that configures a simulator is its:
 the engine, the kitchen, the robots, the camera set, what the task stages. `view` takes
 `--port` and `--http-port` and refuses the rest, naming the command they belong to --
-which is what keeps "view is exclusively the view" from being a rule to remember.
-`--mujoco` is a `serve` flag for a reason worth knowing: MuJoCo renders the window inside
-the process holding the model, so a window belongs to the run that owns the physics and
-cannot be opened onto one already under way. `--live` opens the page from inside a
-`serve`, saving the second terminal that `view` is.
+which is what keeps "view is exclusively the view" from being a rule to remember. Each
+command's `--help` prints the shared header plus its own section, cut out of that header
+by `#:` markers, so neither can drift from the flags it parses.
+
+**The MuJoCo window is `serve`'s because it cannot be anything else's.** `mujoco.viewer`
+offers `launch`, `launch_from_path` and `launch_passive` and no `connect` (checked on
+3.5.0 and 3.3.1, the two engines' versions), so a viewer is built from the model and data
+objects in memory and exists in the process that owns the physics or not at all. That is
+why it is not a flag but a default: a serve has a window, and `--headless` is how a run
+nobody will look at stops paying for it -- 7.6 Hz headless against 5.0 Hz with the window,
+measured on MolmoSpaces with three cameras. `run_task.sh` wants `--headless`.
 
 `--cameras` chooses what the arm streams -- `scene` (the contract's `/overhead` and
 `/side`), `both` (those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which
