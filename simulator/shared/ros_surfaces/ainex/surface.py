@@ -172,12 +172,18 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
 
         return handler
 
-    bus.on(topics.TOPIC_APP_WALKING_PARAM, on_app_walking_param)
-    bus.on(topics.TOPIC_SET_WALKING_PARAM, on_walking_param)
-    bus.on(topics.TOPIC_APP_ACTION, on_set_action)
-    bus.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set)
-    bus.on(topics.TOPIC_HEAD_PAN, head_setter("head_pan"))
-    bus.on(topics.TOPIC_HEAD_TILT, head_setter("head_tilt"))
+    # The type is what makes a subscription *discoverable*: `/rosapi/topics` answers
+    # from what has been published plus what was declared here, and a topic declared
+    # without one is recorded nowhere. Untyped, this robot advertised no way to command
+    # it at all -- a client asking the wire what is on it saw a camera and a lidar.
+    bus.on(topics.TOPIC_APP_WALKING_PARAM, on_app_walking_param,
+           topics.TYPE_APP_WALKING_PARAM)
+    bus.on(topics.TOPIC_SET_WALKING_PARAM, on_walking_param, topics.TYPE_WALKING_PARAM)
+    bus.on(topics.TOPIC_APP_ACTION, on_set_action, topics.TYPE_STRING)
+    bus.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set,
+           topics.TYPE_SET_BUS_SERVOS_POSITION)
+    bus.on(topics.TOPIC_HEAD_PAN, head_setter("head_pan"), topics.TYPE_HEAD_STATE)
+    bus.on(topics.TOPIC_HEAD_TILT, head_setter("head_tilt"), topics.TYPE_HEAD_STATE)
 
     # ---------------------------------------------------------------- services
 
@@ -369,9 +375,10 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
                 "velocity": [],
                 "effort": [],
             },
+            topics.TYPE_JOINT_STATE,
         )
-        bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)})
-        bus.publish(topics.TOPIC_IMU, _imu_msg(seq, yaw, wz))
+        bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)}, topics.TYPE_BOOL)
+        bus.publish(topics.TOPIC_IMU, _imu_msg(seq, yaw, wz), topics.TYPE_IMU)
         sensors.publish(data, seq, x, y, yaw)
 
     return step

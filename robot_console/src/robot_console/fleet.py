@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import sys
 
+from robot_console.ainex_topics import CONTRACT_TOPICS as AINEX_CONTRACT_TOPICS
 from robot_console.topics import (
     TOPIC_CAMERA,
     TOPIC_CMD_VEL,
@@ -40,6 +41,14 @@ EXIT_TRANSPORT = 2
 
 #: What a mobile base must present, from `topics.py` -- the myAGV contract.
 BASE_TOPICS: tuple[str, ...] = (TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_CAMERA, TOPIC_SCAN)
+
+#: What a humanoid must present, from `ainex_topics.py` -- the Hiwonder AiNex contract.
+#: A third kind rather than a second flavour of base: the AiNex is commanded as a walking
+#: state machine and has no wheels, so it shares not one topic with the myAGV beyond
+#: `/joint_states` and its camera. Checking it as a base demanded `/cmd_vel` and `/odom`
+#: of a biped, which is how `--robots so101,ainex` failed its fleet check even when every
+#: topic it does present was on the wire.
+HUMANOID_TOPICS: tuple[str, ...] = AINEX_CONTRACT_TOPICS
 
 
 def arm_topics() -> tuple[str, ...]:
@@ -110,6 +119,9 @@ def main() -> int:
                              "namespace rather than the arm's -- it is not the arm's.")
     parser.add_argument("--base", action="append", default=[], metavar="NS",
                         help="a mobile base is expected under this namespace; repeatable")
+    parser.add_argument("--humanoid", action="append", default=[], metavar="NS",
+                        help="an AiNex is expected under this namespace; repeatable. Not "
+                             "a --base: it walks, so it has no cmd_vel and no odometry.")
     parser.add_argument("--dump", action="store_true",
                         help="print every topic on the wire, sorted, and exit 0. This is "
                              "how the two engines are compared: their lists must match, "
@@ -132,6 +144,8 @@ def main() -> int:
     missing: list[str] = []
     for namespace in args.base:
         missing += missing_for(present, namespace, BASE_TOPICS)
+    for namespace in args.humanoid:
+        missing += missing_for(present, namespace, HUMANOID_TOPICS)
     for namespace in args.arm:
         missing += missing_for(present, namespace, arm_topics())
     if args.arm:
@@ -148,6 +162,7 @@ def main() -> int:
 
     robots = [f"arm {ns or '<bare>'}" for ns in args.arm]
     robots += [f"base {ns or '<bare>'}" for ns in args.base]
+    robots += [f"humanoid {ns or '<bare>'}" for ns in args.humanoid]
     print(f"{args.url}: {len(present)} topics, all expected ones present "
           f"({'; '.join(robots) or 'nothing requested'})")
     return EXIT_OK

@@ -195,6 +195,9 @@ check_fleet() {
     case "$name" in
       "$NS")  expect+=(--arm "$NS") ;;
       so101)  expect+=(--arm so101) ;;
+      # A walking robot is not a mobile base: it has no cmd_vel and no odometry, so
+      # checking it as one demanded two topics no AiNex has ever published.
+      ainex)  expect+=(--humanoid ainex) ;;
       *)      expect+=(--base "$name") ;;
     esac
   done
