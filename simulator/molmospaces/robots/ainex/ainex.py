@@ -176,13 +176,21 @@ class AiNexRobot(Robot):
         robot_config = cast("AiNexRobotConfig", robot_config)
         pos = list(pos) + [0.0] if len(pos) == 2 else list(pos)
 
-        # World-aligned slide joints, so the robot is grafted in at the origin and driven
-        # to its spawn pose (`robot_view.base.pose = ...`), exactly as myagv is. Attaching
-        # it anywhere else would silently give it a wrong "forward".
-        if not np.allclose(pos, [0.0, 0.0, 0.0]) or not np.allclose(quat, [1.0, 0.0, 0.0, 0.0]):
+        # World-aligned slide joints, so the robot is grafted in over the origin and
+        # driven to its spawn pose (`robot_view.base.pose = ...`), exactly as myagv is.
+        # Attaching it at an x/y offset or a rotation would silently give it a wrong
+        # "forward".
+        #
+        # z is the exception, and it is what lets this robot stand on something: the slide
+        # joints are x/y/yaw only, so lifting the graft cannot rotate or shift the axes the
+        # base drives along. A caller mounting it on a worktop passes that worktop's height
+        # here, and the ride height below is added to it -- the same rule
+        # `mujoco_bridge.PlanarJointBase` enforces on the other engine.
+        if not np.allclose(pos[:2], [0.0, 0.0]) or not np.allclose(quat, [1.0, 0.0, 0.0, 0.0]):
             raise ValueError(
-                "AiNex must be attached at the origin with identity rotation; set its "
-                f"pose via robot_view.base.pose instead (got pos={pos}, quat={quat})"
+                "AiNex must be attached over the origin with identity rotation -- a z "
+                "offset is fine, and is how it is stood on a worktop; set its x/y pose "
+                f"via robot_view.base.pose instead (got pos={pos}, quat={quat})"
             )
 
         # The gains assume an implicit integrator, and every MolmoSpaces house already
@@ -200,6 +208,8 @@ class AiNexRobot(Robot):
 
         # A pure z offset is safe: the virtual joints are x/y/yaw only, so lifting cannot
         # rotate or shift the axes the base drives along.
-        spec.worldbody.add_frame(pos=[0.0, 0.0, cls.ride_height(robot_spec)]).attach_body(
+        spec.worldbody.add_frame(
+            pos=[0.0, 0.0, float(pos[2]) + cls.ride_height(robot_spec)]
+        ).attach_body(
             robot_root, prefix, ""
         )

@@ -98,20 +98,29 @@ HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
 
 # Arms: no base of their own, so they are bolted to a work surface rather than stood on
 # the floor. A robot with both an arm and wheels places as a mobile base.
-TABLETOP_ROBOTS = {"so101", "rebot_b601"}
+TABLETOP_ROBOTS = {"so101", "rebot_b601", "ainex"}
 
 # The annulus on that surface the arm can comfortably work in. The SO-101 is a ~0.4 m
 # tabletop arm (robots/so101/so101_config.py:41); the B601 has 767 mm of reach
 # (robots/rebot_b601/b601_config.py:32). Both are kept short of the full figure: the last
 # few centimetres of reach are a straight-out arm with no usable orientation left.
-ARM_REACH = {"so101": (0.15, 0.35), "rebot_b601": (0.25, 0.60)}
+# The AiNex's numbers below are measured off the compiled model at its init pose, not
+# read off a datasheet: standing height 0.4581 m, footprint radius 0.1901 m from the base,
+# ride height 0.2541 m, and a claw tip that sweeps 0.010-0.289 m horizontally from the
+# base across both arms' full joint ranges (p90 0.249). See shared/ainex_model.py, which
+# is where all of those come from.
+#
+# The AiNex is a humanoid and "reach annulus" is a stretch for it, but the mount
+# search needs one and this is the honest one: the same fraction of full extension
+# the SO-101's (0.15, 0.35) is of its ~0.40 m arm, applied to the measured 0.289.
+ARM_REACH = {"so101": (0.15, 0.35), "rebot_b601": (0.25, 0.60), "ainex": (0.11, 0.25)}
 
 # Room the arm itself needs around its mount, and how far up it needs it. Not the same as
 # the base it stands on: a counter is against a wall, and it is the arm -- not the riser --
 # that hits it. The height bounds which geometry counts as in the way at all, so that a
 # wall does and the ceiling above it does not.
-ARM_BODY_RADIUS = {"so101": 0.20, "rebot_b601": 0.35}
-ARM_BODY_HEIGHT = {"so101": 0.45, "rebot_b601": 0.90}
+ARM_BODY_RADIUS = {"so101": 0.20, "rebot_b601": 0.35, "ainex": 0.19}
+ARM_BODY_HEIGHT = {"so101": 0.45, "rebot_b601": 0.90, "ainex": 0.46}
 
 # Replaces the floor pedestal (`base_size`) once the arm stands on the table itself: just
 # enough to read as a mount, not enough to matter to the workspace.
@@ -1291,7 +1300,13 @@ def main() -> int:
             prefix=inst.mjcf,
             # A holonomic base has to be grafted in at the origin; it is driven to its
             # spawn pose below instead.
-            pos=[0.0, 0.0, 0.0] if inst.holonomic else inst.attach_pos,
+            # A holonomic base is grafted over the origin and driven to its spawn pose;
+            # its slide joints are world-aligned and mean nothing anywhere else. Except in
+            # z, which those joints do not touch: a robot that stands on a worktop is
+            # grafted at that worktop's height, and one on the floor at 0 -- which is what
+            # attach_pos[2] already holds for both.
+            pos=([0.0, 0.0, float(inst.attach_pos[2])] if inst.holonomic
+                 else inst.attach_pos),
             quat=[1.0, 0.0, 0.0, 0.0] if inst.holonomic else inst_quat,
         )
 

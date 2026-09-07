@@ -106,11 +106,12 @@ TABLETOP_ROBOTS = {"so101", "ainex"}
 # Footprint radius used when searching for somewhere to stand. The myAGV chassis is
 # 311 x 230 mm, so its half-diagonal is 0.193 m; the margin is what keeps a spawn from
 # touching a cabinet door it would then have to unstick itself from.
-# Footprint radius used when searching for somewhere to stand or to be bolted.
-# The AiNex is 2.35 kg and about 0.21 m across the shoulders standing; 0.16 m is that
-# half-width plus room for the arms, measured off the compiled model's torso hull rather
-# than typed from the datasheet.
-ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.16}
+# The AiNex's numbers below are measured off the compiled model at its init pose, not
+# read off a datasheet: standing height 0.4581 m, footprint radius 0.1901 m from the base,
+# ride height 0.2541 m, and a claw tip that sweeps 0.010-0.289 m horizontally from the
+# base across both arms' full joint ranges (p90 0.249). See shared/ainex_model.py, which
+# is where all of those come from.
+ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.19}
 SPAWN_MARGIN_M = 0.12
 
 # The height band a driving robot sweeps through. The floor sits at z=0 and RoboCasa
