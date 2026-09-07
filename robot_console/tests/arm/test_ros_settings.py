@@ -105,23 +105,37 @@ def test_the_default_cameras_are_the_only_published_pair() -> None:
     # when INTERFACE.md was written; the simulator changed it, and the upstream
     # adapter validates the first frame against this, so it must track.
     #
-    # overhead+side are the only cameras the simulator still publishes, so the
-    # default is the only pair that can be subscribed at all. Order is
-    # load-bearing: MolmoAct2 consumes views positionally.
-    # Topics come out under the arm's namespace, which is on by default; the view
+    # overhead+side are the worktop rig, and the default pair a policy is handed.
+    # Order is load-bearing: MolmoAct2 consumes views positionally.
+    # They come out under the *scene's* namespace, not the arm's: they watch the
+    # work surface and would still be there with the arm unbolted. The view
     # *names* are slot labels a policy matches on and are never prefixed.
     assert rs.RosSettings().cameras() == {
-        "overhead": ("/so101/overhead/color/compressed", 480, 640),
-        "side": ("/so101/side/color/compressed", 480, 640),
-    }
-    # And `namespace=""` is exactly the bare single-robot wire, unchanged.
-    assert rs.RosSettings(namespace="").cameras() == {
-        "overhead": ("/overhead/color/compressed", 480, 640),
-        "side": ("/side/color/compressed", 480, 640),
+        "overhead": ("/scene/overhead/color/compressed", 480, 640),
+        "side": ("/scene/side/color/compressed", 480, 640),
     }
     cameras = rs.RosSettings().cameras()
     assert list(cameras) == ["overhead", "side"]
     assert rs.RosSettings().base_kwargs()["cameras"] == cameras
+
+
+def test_the_scene_rig_keeps_its_namespace_whatever_the_robot_is_called() -> None:
+    """The rig is not the robot's, so the robot's namespace does not reach it.
+
+    This is the half that would fail silently: a scene camera composed under the arm's
+    name subscribes to a topic nobody publishes, and rosbridge answers a subscription to
+    a topic nobody publishes by simply never sending anything.
+    """
+    for namespace in ("so101", "", "robot_2"):
+        cameras = rs.settings_for_views(
+            ("overhead", "side", "wrist"), namespace=namespace
+        ).cameras()
+        assert cameras["overhead"][0] == "/scene/overhead/color/compressed"
+        assert cameras["side"][0] == "/scene/side/color/compressed"
+        # ...while the arm's own camera follows the arm, wherever it is.
+        assert cameras["wrist"][0] == rs.namespaced(
+            rs.WRIST_CAMERA_TOPIC, namespace
+        )
 
 
 def test_the_overhead_side_pair_is_wirable_explicitly() -> None:
@@ -133,7 +147,7 @@ def test_the_overhead_side_pair_is_wirable_explicitly() -> None:
         extra_cameras=((rs.SIDE_CAMERA_NAME, rs.SIDE_CAMERA_TOPIC, 640, 480),),
     )
     assert list(settings.cameras()) == ["overhead", "side"]
-    assert settings.cameras()["side"] == ("/so101/side/color/compressed", 480, 640)
+    assert settings.cameras()["side"] == ("/scene/side/color/compressed", 480, 640)
 
 
 def test_extra_cameras_append_in_declaration_order() -> None:

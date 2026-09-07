@@ -56,6 +56,7 @@ from robot_console.arm.kinematics import ik_position
 from robot_console.arm.ros_settings import (
     APPLE_BODY,
     CAMERA_SPECS,
+    camera_topic,
     DEFAULT_URL,
     FREE_JOINT_STATES_TOPIC,
     FREE_JOINT_STATES_TYPE,
@@ -101,7 +102,11 @@ def _view_publishes(client: RosbridgeClient, view: str, settings: RosSettings,
     when several are enabled.
     """
     try:
-        topic = settings.topic(CAMERA_SPECS[view][0])
+        # Not `settings.topic`: the scene rig is not under the robot's namespace, and
+        # asking for it there subscribes to a topic nobody publishes -- which arrives as
+        # this function's own 8 s timeout, blaming the simulator for a name the console
+        # composed.
+        topic = camera_topic(view, CAMERA_SPECS[view][0], settings.namespace)
     except KeyError:
         print(f"unknown camera view {view!r}; known: {sorted(CAMERA_SPECS)}")
         return False

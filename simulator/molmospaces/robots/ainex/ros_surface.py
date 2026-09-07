@@ -228,14 +228,24 @@ def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: 
 
     # ---------------------------------------------------------------- streams
 
+    # The bus, not the server: this surface was left holding a name that stopped
+    # existing when robots got namespaces, and since nothing loaded an AiNex afterwards
+    # it stayed a NameError at attach time -- `--robots so101,ainex` died before the
+    # kitchen finished compiling. The frames come from the bus for the same reason the
+    # myAGV's do: two robots on one graph both reporting `camera_link` give a tf tree one
+    # frame with two parents.
     sensors = SensorStreams(
-        server, model, camera, camera_size, jpeg_quality, scan, depth,
+        bus, model, camera, camera_size, jpeg_quality, scan, depth,
         SensorTopics(
             topics.TOPIC_CAMERA,
             topics.TOPIC_SCAN,
             "/camera/depth/image_raw",
             "/camera/rgb/camera_info",
+            camera_frame=bus.frame(topics.FRAME_CAMERA),
+            scan_frame=bus.frame(topics.FRAME_LASER),
         ),
+        scene_option=scene_option,
+        camera_period=camera_period,
     )
     setpoint = PlanarSetpoint()
 

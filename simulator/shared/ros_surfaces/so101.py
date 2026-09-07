@@ -86,15 +86,27 @@ TOPIC_FREE_JOINT_STATES = "/free_joint_publisher/free_joint_states"
 SERVICE_RESET = "/reset"
 SERVICE_RESET_WORLD = "/mujoco_ros2_control_node/reset_world"
 
-#: Camera topic -> the name the MJCF gives that camera, and the frame size to render.
+#: The work surface's fixed camera rig: topic -> the name the MJCF gives that camera,
+#: and the frame size to render. **These are not the robot's topics and are published
+#: without its namespace** -- the rig watches the worktop, not the arm, and on real
+#: hardware it is a camera driver launched outside any robot's namespace. `/so101/*` is
+#: reserved for what the SO-101 itself presents, which of the cameras is the wrist alone.
+#:
 #: Sizes are contract terms: the two scene views are 640x480 because the VLA's
 #: preprocessor stretches to 4:3 without preserving aspect, so a 16:9 frame arrives
-#: distorted relative to everything it was trained on; the wrist view is 256x256 so a
-#: policy resizing to 224 downsamples rather than upsamples.
-DEFAULT_CAMERAS: dict[str, tuple[str, int, int]] = {
+#: distorted relative to everything it was trained on.
+SCENE_CAMERA_TOPICS: dict[str, tuple[str, int, int]] = {
     "/overhead/color/compressed": ("overhead", 640, 480),
     "/side/color/compressed": ("side", 640, 480),
 }
+#: The namespace those two go out under. Not a robot's -- a robot's namespace holds what
+#: that robot presents -- so the rig gets its own, and `/so101/*` is left meaning the
+#: SO-101 alone. The console owns a copy of this name (`arm/ros_settings.py`), and the
+#: cross-project test holds the two equal, because the console cannot import this file.
+SCENE_NAMESPACE = "scene"
+#: The arm's own camera, and so the one that *is* namespaced: it rides the gripper and
+#: goes out on `/<ns>/wrist/color/compressed`.
+#:
 #: The wrist view renders `wrist_cam` -- mujoco_menagerie's own camera, at its published
 #: pose and intrinsics, because the SO-101 here is exclusively menagerie's model. It used
 #: to render a project-added camera 119 mm and 53.7 degrees away, sited by ray-casting to
@@ -131,6 +143,7 @@ def attach_ros(
     task=None,
     *,
     cameras: dict[str, tuple[str, int, int]] | None = None,
+    scene_cameras: dict[str, tuple[str, int, int]] | None = None,
     jpeg_quality: int = 70,
     control_hz: float = 10.0,
     scene_option=None,
@@ -145,6 +158,13 @@ def attach_ros(
     The topic constants above stay bare and the `bus` applies the namespace, so
     `/joint_states` reaches the wire as `/so101/joint_states` without a prefix being
     spelled out anywhere in this file.
+
+    `cameras` is what this *robot* carries -- the wrist view, or nothing -- and goes out
+    under its namespace. `scene_cameras` is the worktop's fixed rig and goes out under
+    `SCENE_NAMESPACE`, because `/so101/*` is reserved for what the SO-101 presents and an
+    overhead view of the room is not that. Two arguments rather than one dict this file
+    splits by name: the engines know which is which, and neither this module nor a client
+    should have to infer it from a topic that happens to look scenic.
     """
     from contracts.rosbridge_server import (
         TYPE_FLOAT64_MULTI_ARRAY,
@@ -234,9 +254,22 @@ def attach_ros(
     bus.service(SERVICE_RESET, do_reset)
     bus.service(SERVICE_RESET_WORLD, do_reset)
 
+    # Two streams because they have two different publishers. The split costs no
+    # renderer: `CameraStreams` keys one per frame size, and the rig's views are 640x480
+    # where the wrist is 640x360, so they would never have shared one anyway.
+    scene_bus = bus.sibling(SCENE_NAMESPACE)
     streams = CameraStreams(
-        model, DEFAULT_CAMERAS if cameras is None else cameras, jpeg_quality, scene_option,
-        frame_of=bus.frame,
+        model, dict(cameras or {}), jpeg_quality, scene_option, frame_of=bus.frame,
+    )
+    scene_streams = CameraStreams(
+        model,
+        SCENE_CAMERA_TOPICS if scene_cameras is None else scene_cameras,
+        jpeg_quality,
+        scene_option,
+        # The scene's frames too, for the same reason: a fixed rig is not a link on the
+        # arm, so `scene/overhead` is what a `frame_id` should read and `so101/overhead`
+        # is a tf tree nothing will connect.
+        frame_of=scene_bus.frame,
     )
 
     # `do_reset` runs on a websocket thread and needs the MjData the step loop owns.
@@ -262,6 +295,7 @@ def attach_ros(
     def step(data):
         if data is None:
             streams.close()
+            scene_streams.close()
             return
 
         _live[0] = data
@@ -318,6 +352,7 @@ def attach_ros(
             )
 
         streams.publish(bus, data, seq, stamp)
+        scene_streams.publish(scene_bus, data, seq, stamp)
 
         if contact_debug:
             n = 0
@@ -343,6 +378,7 @@ def serve_ros(
     task=None,
     *,
     cameras: dict[str, tuple[str, int, int]] | None = None,
+    scene_cameras: dict[str, tuple[str, int, int]] | None = None,
     jpeg_quality: int = 70,
     control_hz: float = 10.0,
     scene_option=None,
@@ -359,7 +395,8 @@ def serve_ros(
 
     fleet = RobotFleet(port=port, host=host)
     fleet.attach(namespace, attach_ros, view=view, model=model, task=task,
-                 cameras=cameras, jpeg_quality=jpeg_quality, control_hz=control_hz,
+                 cameras=cameras, scene_cameras=scene_cameras,
+                 jpeg_quality=jpeg_quality, control_hz=control_hz,
                  scene_option=scene_option)
     fleet.start()
     print(f"SO-101 on ws://{host}:{port} under namespace {namespace or '<bare>'}",

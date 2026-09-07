@@ -173,6 +173,20 @@ WRIST_CAMERA_HEIGHT = 360
 #:
 #: Only names in here are wirable, so this map is also what stops
 #: ``settings_for_views`` accepting a camera the simulator does not publish.
+#: The worktop's fixed camera rig is not the robot's, so the robot's namespace is not
+#: its own: it publishes under this one. `/so101/*` holds what the SO-101 presents, which
+#: among the cameras is the wrist alone -- the overhead and side views watch the room and
+#: would still be there with the arm unbolted. The simulator owns the matching constant
+#: (`shared/ros_surfaces/so101.py`); `tests/arm/test_ros_contract.py` holds the two equal,
+#: because this project cannot import that one.
+SCENE_NAMESPACE = "scene"
+
+#: Which views belong to the rig rather than to the arm. `cameras()` and the preflight's
+#: reachability check both read this instead of naming the two views again: they disagreed
+#: once already, and a camera under the wrong namespace fails as a timeout that blames the
+#: simulator.
+SCENE_CAMERA_NAMES: frozenset[str] = frozenset()  # filled in below, after the names exist
+
 CAMERA_SPECS: dict[str, tuple[str, int, int]] = {
     OVERHEAD_CAMERA_NAME: (
         OVERHEAD_CAMERA_TOPIC,
@@ -185,6 +199,18 @@ CAMERA_SPECS: dict[str, tuple[str, int, int]] = {
     #: eval changes behaviour by its presence here.
     WRIST_CAMERA_NAME: (WRIST_CAMERA_TOPIC, WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT),
 }
+
+SCENE_CAMERA_NAMES = frozenset({OVERHEAD_CAMERA_NAME, SIDE_CAMERA_NAME})
+
+
+def camera_topic(name: str, topic: str, namespace: str) -> str:
+    """`topic` under whichever namespace owns that camera.
+
+    The one place the answer is decided, so a subscriber and a reachability check cannot
+    end up on different topics for the same view -- which is exactly how this would fail
+    if the rule were spelled out twice: silently, as a camera that never delivers a frame.
+    """
+    return namespaced(topic, SCENE_NAMESPACE if name in SCENE_CAMERA_NAMES else namespace)
 
 
 #: ``mujoco_ros2_control``'s own reset, which restores the state captured at
@@ -330,16 +356,23 @@ class RosSettings:
         Insertion order is the declaration order, which is what a policy taking
         views positionally depends on. Topics come out namespaced; the *names* do not --
         they are slot labels a policy matches on, not addresses.
+
+        Which namespace depends on whose camera it is: the wrist is the robot's, the
+        overhead and side views are the worktop rig's. See `camera_topic`.
         """
         out: dict[str, tuple[str, int, int]] = {}
         if self.camera_topic is not None:
             out[self.camera_name] = (
-                self.topic(self.camera_topic), self.camera_height, self.camera_width
+                camera_topic(self.camera_name, self.camera_topic, self.namespace),
+                self.camera_height,
+                self.camera_width,
             )
         for name, topic, width, height in self.extra_cameras:
             if name in out:
                 raise ValueError(f"duplicate camera name {name!r}")
-            out[name] = (self.topic(topic), int(height), int(width))
+            out[name] = (
+                camera_topic(name, topic, self.namespace), int(height), int(width)
+            )
         return out
 
     def base_kwargs(self) -> dict[str, Any]:

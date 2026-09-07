@@ -43,9 +43,11 @@
 #   --port 9090            rosbridge port
 #
 #   what is on the wire:
-#   --cameras SET          which views the arm streams (default `scene`):
-#                            scene  the contract's two: /overhead and /side
-#                            both   those plus the eye-in-hand /wrist
+#   --cameras SET          which views are rendered (default `scene`):
+#                            scene  the worktop rig's two, on /scene/overhead and
+#                                   /scene/side -- not under a robot's namespace,
+#                                   because the rig is not a robot's
+#                            both   those plus the arm's own /<robot>/wrist
 #                            wrist  the eye-in-hand view ALONE
 #                          `wrist` takes the two scene topics off the wire, so the
 #                          console will not find the camera set it expects -- it is for

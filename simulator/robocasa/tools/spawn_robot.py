@@ -835,13 +835,19 @@ def _surface_kwargs(args, inst, model, task, scene_option):
     """
     prefix = inst.mjcf
     if inst.name in ARM_ROS_SURFACES:
-        from ros_surfaces.so101 import DEFAULT_CAMERAS, WRIST_CAMERA
+        from ros_surfaces.so101 import SCENE_CAMERA_TOPICS, WRIST_CAMERA
 
-        cameras = dict(DEFAULT_CAMERAS) if args.scene_cameras else {}
-        if args.wrist_camera:
-            cameras.update({t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()})
+        # The same two sets, split the same way, as the MolmoSpaces engine -- see the
+        # longer note there. The wrist is the robot's and carries its MJCF prefix; the
+        # worktop rig is the scene's and goes out under the scene's namespace.
+        cameras = (
+            {t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()}
+            if args.wrist_camera else {}
+        )
+        scene_cameras = dict(SCENE_CAMERA_TOPICS) if args.scene_cameras else {}
         return {
-            "view": inst.groups, "model": model, "task": task, "cameras": cameras,
+            "view": inst.groups, "model": model, "task": task,
+            "cameras": cameras, "scene_cameras": scene_cameras,
             "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
             "scene_option": scene_option,
         }
@@ -1037,13 +1043,14 @@ def main() -> int:
             "staging one with nothing to publish it would silently score nothing."
         )
 
-    # An arm surface with an empty camera set advertises no images at all: the topics are
-    # simply absent, and a client waiting for a frame waits forever with nothing to read
-    # the reason off. --no-scene-cameras is for *narrowing* the set, never for emptying it.
+    # With both sets empty nothing renders at all: the topics are simply absent, and a
+    # client waiting for a frame waits forever with nothing to read the reason off. The
+    # arm alone streaming nothing is fine -- the worktop rig is not its, and publishes
+    # either way -- so this refuses the empty scene, not the empty robot.
     if not args.scene_cameras and not args.wrist_camera:
         raise SystemExit(
-            "--no-scene-cameras leaves the arm with no cameras at all; pass --wrist-camera "
-            "as well if the eye-in-hand view is the one you want on its own."
+            "--no-scene-cameras leaves nothing rendering at all; pass --wrist-camera as "
+            "well if the eye-in-hand view is the one you want on its own."
         )
 
 

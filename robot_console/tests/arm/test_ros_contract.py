@@ -27,8 +27,11 @@ from robot_console.arm.ros_settings import (
     GRIPPER_COMMAND_TOPIC,
     JOINT_STATES_TOPIC,
     OVERHEAD_CAMERA_TOPIC,
+    SCENE_NAMESPACE,
+    SIDE_CAMERA_NAME,
     SIDE_CAMERA_TOPIC,
     TASK_MANAGER_RESET_SERVICE,
+    WRIST_CAMERA_NAME,
     WRIST_CAMERA_TOPIC,
 )
 
@@ -85,7 +88,7 @@ def test_the_simulators_publish_no_success_topic() -> None:
 
 def test_the_camera_topics_and_sizes_match() -> None:
     s = _surface()
-    published = {**s.DEFAULT_CAMERAS, **s.WRIST_CAMERA}
+    published = {**s.SCENE_CAMERA_TOPICS, **s.WRIST_CAMERA}
     assert set(published) == {OVERHEAD_CAMERA_TOPIC, SIDE_CAMERA_TOPIC, WRIST_CAMERA_TOPIC}
     # The sizes are contract terms: the VLA's preprocessor stretches to 4:3 without
     # preserving aspect, which is why the two scene cameras are 640x480.
@@ -192,6 +195,36 @@ def test_the_simulator_prefixes_frames_without_a_leading_slash() -> None:
     assert sim.ns_frame("so101", "") == ""
 
 
+def test_both_sides_agree_the_scene_rig_is_not_the_robot_s() -> None:
+    """`/so101/*` holds what the SO-101 presents, and an overhead view of the room is not.
+
+    The two projects each own a copy of the scene namespace -- the console cannot import
+    the simulator -- so this is where they are held equal, the same way the composition
+    rule is. Drift here is a client subscribing to a topic nobody publishes, which
+    rosbridge reports by sending nothing at all.
+    """
+    s, ns = _surface(), _namespace()
+    assert s.SCENE_NAMESPACE == SCENE_NAMESPACE
+
+    from robot_console.arm.ros_settings import RosSettings
+
+    published = {
+        ns.ns_topic(s.SCENE_NAMESPACE, t) for t in s.SCENE_CAMERA_TOPICS
+    } | {ns.ns_topic("so101", t) for t in s.WRIST_CAMERA}
+    subscribed = {
+        spec[0]
+        for spec in RosSettings(
+            namespace="so101",
+            extra_cameras=(
+                (SIDE_CAMERA_NAME, SIDE_CAMERA_TOPIC, 640, 480),
+                (WRIST_CAMERA_NAME, WRIST_CAMERA_TOPIC, 640, 360),
+            ),
+        ).cameras().values()
+    }
+    assert subscribed == published
+    assert not any(t.startswith("/so101/") for t in published if "wrist" not in t)
+
+
 def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     """What the embodiment actually subscribes and publishes, end to end.
 
@@ -209,7 +242,8 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     assert kwargs["gripper_topic"] == "/so101/gripper_controller/commands"
     assert kwargs["reset_service"] == "/so101/reset"
     assert set(kwargs["cameras"]) == {"overhead", "side"}
-    assert kwargs["cameras"]["overhead"][0] == "/so101/overhead/color/compressed"
+    # The rig's own namespace, not the arm's -- see the test below.
+    assert kwargs["cameras"]["overhead"][0] == "/scene/overhead/color/compressed"
 
     # Stripping the namespace back off must reproduce the container's own names exactly.
     bare = RosSettings(namespace="").base_kwargs()

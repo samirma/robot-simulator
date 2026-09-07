@@ -140,9 +140,16 @@ Three rules, in `shared/contracts/namespace.py`, each of them a test:
 - **An empty namespace is the identity**, so the bare single-robot contract -- the tables
   further down, the thing this simulator claims to be indistinguishable from -- stays
   expressible and therefore testable. `--ros-namespace ''` on either engine, and
-  `namespace=""` on `RosSettings`, reproduce it exactly.
+  `namespace=""` on `RosSettings`, reproduce it exactly for everything the *robot*
+  presents. The worktop's camera rig is not that and sits at `/scene/…` either way: it is
+  not a robot, so no robot's namespace -- empty or otherwise -- is its.
 - **Composition is idempotent**, which is what lets a client pass a namespace *and* name a
   topic explicitly without being prefixed twice.
+
+A namespace holds what that robot presents, and nothing else: the worktop's camera rig
+is published under `scene` rather than under whichever robot's surface happens to render
+it (see the SO-101 table below). `NamespacedBus.sibling(ns)` is how a surface reaches a
+name that is not its own — one server, one graph, and a name that belongs to the scene.
 
 The namespace defaults to the robot's own name and is **on even for one robot**, so a
 lone SO-101 is on `/so101/*`. The topic constants in `ros_surfaces/` and in the console
@@ -662,15 +669,34 @@ make it *less* like the real robot are regressions even when nothing fails.
 | console → robot | `/gripper_controller/commands` | `std_msgs/msg/Float64MultiArray` |
 | robot → console | `/joint_states` | `sensor_msgs/msg/JointState` |
 | robot → console | `/free_joint_publisher/free_joint_states` | `mujoco_ros2_control_msgs/msg/FreeJointStateArray` |
-| robot → console | `/overhead/color/compressed`, `/side/color/compressed`, `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
+| robot → console | `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
+| scene → console | `/overhead/color/compressed`, `/side/color/compressed` | `sensor_msgs/msg/CompressedImage` |
 | console → robot | `/reset`, `/mujoco_ros2_control_node/reset_world` | Trigger-shaped `{success, message}` |
 
 Namespaced: `/<ns>/joint_states`, `/<ns>/reset` and the rest, `so101` by default.
-`JointState.frame_id` is the one exception and stays **empty** — a real
-`joint_state_broadcaster` publishes no frame there, and inventing `so101/` would be a
-difference from hardware rather than a fidelity to it. `-E namespace=so101` is how
-`inspect-robot` is pointed at it; `arm/ros_settings.py` applies the prefix in
-`base_kwargs()` and `cameras()`, never to the fields.
+`-E namespace=so101` is how `inspect-robot` is pointed at it; `arm/ros_settings.py`
+applies the prefix in `base_kwargs()` and `cameras()`, never to the fields.
+
+**The last row is not the robot's, and does not take its namespace.** The overhead and
+side views are the worktop's fixed camera rig: they watch the work surface, they would
+still be there with the arm unbolted, and on real hardware they are a camera driver
+launched outside any robot's namespace. They go out under `scene` —
+`/scene/overhead/color/compressed`, frame `scene/overhead` — while the eye-in-hand view,
+which really is the arm's, stays at `/<ns>/wrist/color/compressed`. Putting them under
+`/so101` said the arm owned a view of itself, and with a second robot around the same
+worktop it is worse than untidy: whichever robot happened to be asked to render would
+lend the scene its name. `SCENE_NAMESPACE` is defined once on each side
+(`shared/ros_surfaces/so101.py`, `arm/ros_settings.py`) and a contract test holds the two
+equal. The console composes it in one place, `ros_settings.camera_topic` — the preflight's
+reachability check reads that too, because a camera under the wrong namespace fails as an
+eight-second timeout that blames the simulator.
+
+Two exceptions that look like this one and are not. `JointState.frame_id` stays **empty**:
+a real `joint_state_broadcaster` publishes no frame there, and inventing `so101/` would be
+a difference from hardware rather than a fidelity to it. And
+`/<ns>/free_joint_publisher/free_joint_states` carries the *task objects'* poses but keeps
+the robot's namespace, because that is where the publishing plugin puts it on the
+reference rig — the name is the contract, not a claim about ownership.
 
 ROS 2 `pkg/msg/Type` strings and a `sec`/`nanosec` stamp. Joint order is fixed everywhere
 (`shoulder_pan`, `shoulder_lift`, `elbow_flex`, `wrist_flex`, `wrist_roll`, then the
@@ -940,8 +966,9 @@ coin toss at n = 6, and the wire is the one variable that can be held fixed exac
 Images were the one path the scripted policy did **not** exercise -- a blind waypoint
 plan passes 3/3 with a broken camera stream while the VLA quietly starves -- which is why
 both views are checked directly and still are, now that only the VLA runs: present,
-distinct, 640x480, and framed `so101/overhead` / `so101/side` with no MJCF prefix
-leaking through.
+distinct, 640x480, and framed `scene/overhead` / `scene/side` with no MJCF prefix
+leaking through. (They were `so101/overhead` / `so101/side` when that was measured; the
+rig has since moved out of the robot's namespace, which is where it never belonged.)
 
 So the policy went from mostly *not attempting* the task to mostly attempting it and
 missing. The pass counts are not distinguishable at this sample size and should not be

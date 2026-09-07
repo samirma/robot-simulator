@@ -660,6 +660,21 @@ class NamespacedBus:
     def frame(self, frame_id: str) -> str:
         return self.ns.frame(frame_id)
 
+    def sibling(self, namespace: str) -> "NamespacedBus":
+        """The same server under a different namespace: for what is not this robot's.
+
+        A robot's namespace is for what the robot presents. The work surface's fixed
+        camera rig is not that -- it watches the room and would still be there with the
+        arm unbolted, so on real hardware it is a camera driver launched outside any
+        robot's namespace, and putting it inside one says the arm owns a view of itself.
+        With two robots around one worktop it is also simply wrong: whichever of them was
+        asked to render would lend the scene its name.
+
+        The surface that renders a thing is not always the thing's owner, and this is how
+        it says so: one server, one graph, and a name that belongs to the scene.
+        """
+        return NamespacedBus(self.server, namespace)
+
     # -- the server's surface, namespaced ----------------------------------------
 
     def on(self, topic: str, callback: Callable[[dict], None],

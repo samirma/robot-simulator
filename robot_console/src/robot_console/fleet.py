@@ -47,6 +47,9 @@ def arm_topics() -> tuple[str, ...]:
 
     Imported lazily and tolerantly: `ros_settings` pulls in the arm's kinematics, which is
     part of the optional extra. A console without it can still check a base.
+
+    The two scene cameras used to be in here, and were checked under the arm's namespace
+    with everything else. They are the worktop rig's, not the arm's -- see `scene_topics`.
     """
     from robot_console.arm import ros_settings as rs
 
@@ -55,9 +58,20 @@ def arm_topics() -> tuple[str, ...]:
         rs.GRIPPER_COMMAND_TOPIC,
         rs.JOINT_STATES_TOPIC,
         rs.FREE_JOINT_STATES_TOPIC,
-        rs.OVERHEAD_CAMERA_TOPIC,
-        rs.SIDE_CAMERA_TOPIC,
     )
+
+
+def scene_topics() -> tuple[str, ...]:
+    """What the worktop's fixed camera rig presents, under its own namespace.
+
+    Not a robot, and so not `--arm`'s or `--base`'s business: the rig watches the work
+    surface and would still be there with every robot unbolted. An arm task needs it on
+    the wire all the same -- the verdict is read off the overhead frame -- so it is
+    checked whenever an arm is.
+    """
+    from robot_console.arm import ros_settings as rs
+
+    return (rs.OVERHEAD_CAMERA_TOPIC, rs.SIDE_CAMERA_TOPIC)
 
 
 def list_topics(url: str, timeout_s: float = 10.0) -> dict[str, str]:
@@ -91,7 +105,9 @@ def main() -> int:
     parser.add_argument("--url", default="ws://127.0.0.1:9090")
     parser.add_argument("--arm", action="append", default=[], metavar="NS",
                         help="an SO-101 is expected under this namespace; repeatable. "
-                             "Pass an empty string for the bare, unnamespaced contract.")
+                             "Pass an empty string for the bare, unnamespaced contract. "
+                             "The worktop's camera rig is checked too, under its own "
+                             "namespace rather than the arm's -- it is not the arm's.")
     parser.add_argument("--base", action="append", default=[], metavar="NS",
                         help="a mobile base is expected under this namespace; repeatable")
     parser.add_argument("--dump", action="store_true",
@@ -118,6 +134,10 @@ def main() -> int:
         missing += missing_for(present, namespace, BASE_TOPICS)
     for namespace in args.arm:
         missing += missing_for(present, namespace, arm_topics())
+    if args.arm:
+        from robot_console.arm import ros_settings as rs
+
+        missing += missing_for(present, rs.SCENE_NAMESPACE, scene_topics())
 
     if missing:
         print(f"{args.url} is missing {len(missing)} expected topic(s):")
