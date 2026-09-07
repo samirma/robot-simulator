@@ -1493,10 +1493,11 @@ def main() -> int:
     # resolves `front_camera` against its own MJCF prefix, and a single `camera` variable
     # here would have handed the second robot the first one's view.
 
-    if args.task and not args.ros_port and not args.render:
+    if args.task and not args.ros_port and not args.render and args.headless:
         raise SystemExit(
-            "--task needs --ros-port: the task publishes its objects and cameras there, and "
-            "staging one with nothing to publish it would silently score nothing."
+            "--task needs --ros-port, --render or a viewer: the task publishes its objects "
+            "and cameras there, and staging one into a headless run with nothing to publish "
+            "it and nobody to see it would silently score nothing."
         )
 
     # With both sets empty nothing renders at all: the topics are simply absent, and a
