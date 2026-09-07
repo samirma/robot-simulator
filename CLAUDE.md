@@ -344,12 +344,9 @@ world; the console runs the task against it. From `simulator/`:
 ./kitchen.sh serve --engine robocasa       # the other engine (one engine per run)
 ./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
 ./kitchen.sh serve --cameras both          # ...with the eye-in-hand view as well
-./kitchen.sh view                          # the same world, with the window and the
-                                           # camera page both open (--mujoco / --live
-                                           # each pick just one of the two)
-./kitchen.sh view --live                   # ...and on a port that is already serving,
-                                           # this watches that instead of starting a
-                                           # second engine
+./kitchen.sh serve --mujoco --live         # ...and open both the window and the page
+./kitchen.sh view                          # the camera page on whatever is serving,
+                                           # from a second terminal
 ```
 
 and from `robot_console/`:
@@ -360,16 +357,24 @@ and from `robot_console/`:
 ./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
 ```
 
-`view` and `serve` are one implementation: both stage the task and put it on rosbridge,
-and they differ only in what they open by default and in what they print. `--cameras`
-chooses what the arm streams -- `scene` (the contract's `/overhead` and `/side`), `both`
-(those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which takes the two scene
-topics *off* the wire and is for isolating what a policy sees, not for running the task).
+**`serve` hosts the world and `view` looks at it, and they do not overlap.** `serve` is
+the only command that starts anything, so every flag that configures a simulator is its:
+the engine, the kitchen, the robots, the camera set, what the task stages. `view` takes
+`--port` and `--http-port` and refuses the rest, naming the command they belong to --
+which is what keeps "view is exclusively the view" from being a rule to remember.
+`--mujoco` is a `serve` flag for a reason worth knowing: MuJoCo renders the window inside
+the process holding the model, so a window belongs to the run that owns the physics and
+cannot be opened onto one already under way. `--live` opens the page from inside a
+`serve`, saving the second terminal that `view` is.
+
+`--cameras` chooses what the arm streams -- `scene` (the contract's `/overhead` and
+`/side`), `both` (those plus `/wrist`) or `wrist` (the eye-in-hand view alone, which
+takes the two scene topics *off* the wire and is for isolating what a policy sees, not
+for running the task, since the console checks for the set it expects).
+
 `shot`, `inspect` and `cameras` used to be commands here and are gone: `shot` rendered a
 screenshot per engine back when two could run at once, grading is the console's half of
-the split, and `cameras` -- the page against somebody else's `serve` -- is what
-`view --live` does when it finds the port already busy, which is also the one case where
-this script starts no engine.
+the split, and `cameras` is what `view` now is.
 
 
 **The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA

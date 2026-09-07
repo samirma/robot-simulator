@@ -1,37 +1,38 @@
 #!/usr/bin/env bash
 # The SO-101 on a kitchen work surface, in one engine at a time.
 #
-#   ./kitchen.sh view            look at the world: the MuJoCo window and the live
-#                                camera page, both by default. The default command.
-#   ./kitchen.sh serve           host the world for the console, windowless by default
+#   ./kitchen.sh serve           host the world: the engine, the kitchen, the robots and
+#                                the cameras. The default command, and the only one that
+#                                starts anything.
+#   ./kitchen.sh view            open the live camera page on a simulator that is
+#                                already serving. Takes --port and --http-port, and
+#                                none of the flags that configure a simulator.
 #   ./kitchen.sh help
 #
-# `view` and `serve` stage the same task into the same kitchen and put it on the same
-# rosbridge; they differ only in what they open by default and in what they print. This
-# script hosts the world either way. Running a task against it is the console's job:
+# One command hosts the world and one looks at it, and they do not overlap: `view` does
+# not stage a task, choose an engine or pick a camera set, because it does not start the
+# process those would configure. Running a task against a `serve` is a third thing again,
+# and it is the console's:
 #
 #   cd ../robot_console && ./run_task.sh [--episodes N]
 #
-# `shot` and `inspect` used to live here and no longer do. `inspect` graded episodes,
-# which is the console's half of the split; `shot` rendered a screenshot per engine back
-# when the two could be started together, and comparing engines is now done by running
-# each in turn against the same client, which is the comparison that matters.
+# `shot`, `inspect` and `cameras` used to live here and no longer do. `inspect` graded
+# episodes, which is the console's half of the split; `shot` rendered a screenshot per
+# engine back when the two could be started together, and comparing engines is now done
+# by running each in turn against the same client; `cameras` is what `view` is now.
 #
-#   what is shown:
-#   --mujoco               open the engine's own MuJoCo window. One process, so the
-#                          window shows exactly the state on the wire. It costs camera
-#                          rate -- measured on MolmoSpaces with three cameras, 7.6 Hz
-#                          headless against 5.0 Hz with the window -- and the loop still
-#                          holds real time at that price.
-#   --live                 open the live camera page in a browser, served over HTTP.
-#                          `view --live` on a port something is *already* serving
-#                          attaches to that instead of starting a second engine, which
-#                          is how a `serve` running in another terminal gets watched --
-#                          the `cameras` command used to be exactly this and no longer
-#                          exists. `serve` never attaches: its whole job is to host, so
-#                          a port it cannot have is an error rather than a surprise.
-#                          `view` turns both of these on unless one is named explicitly;
-#                          `serve` turns neither on unless asked.
+#   what a serve also opens (both off by default):
+#   --mujoco               the engine's own MuJoCo window. It has to be a `serve` flag
+#                          and cannot be a `view` one: MuJoCo renders the window inside
+#                          the process holding the model, so a window belongs to the run
+#                          that owns the physics and cannot be attached to one already
+#                          under way. One process is also what makes the window show
+#                          exactly the state on the wire. It costs camera rate --
+#                          measured on MolmoSpaces with three cameras, 7.6 Hz headless
+#                          against 5.0 Hz with the window -- and the loop still holds
+#                          real time at that price.
+#   --live                 the live camera page, in a browser, served over HTTP. Saves
+#                          the second terminal; `./kitchen.sh view` is that terminal.
 #
 #   what is on the wire:
 #   --cameras SET          which views the arm streams (default `scene`):
@@ -156,10 +157,9 @@ HTTP_PORT=8791
 ROBOTS="so101"
 ENGINE="molmospaces"
 CAMERAS="scene"
-# "auto" until the command is known: `view` opens both windows and `serve` opens neither,
-# unless one of the two flags is named, which then speaks for both.
-MUJOCO="auto"
-LIVE="auto"
+# What a `serve` opens for itself, beyond the wire. Neither, unless asked.
+MUJOCO=0
+LIVE=0
 declare -a STAGE_FLAGS=()
 declare -a CAMERA_FLAGS=()
 REFERENCE_TABLE=0
@@ -174,94 +174,98 @@ say() { printf '\033[1m%s\033[0m\n' "$*"; }
 
 # ---------------------------------------------------------------- arguments
 
-cmd="view"
+cmd="serve"
 case "${1:-}" in
   view|serve|help|-h|--help) cmd="$1"; shift || true ;;
 esac
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --objects)  OBJECTS="$2"; shift 2 ;;
-    --scene)    SCENE="$2";   shift 2 ;;
-    --layout)   LAYOUT="$2";  shift 2 ;;
-    --style)    STYLE="$2";   shift 2 ;;
-    --port)     PORT="$2";    shift 2 ;;
-    --http-port) HTTP_PORT="$2"; shift 2 ;;
-    --engine)   ENGINE="$2";  shift 2 ;;
-    --robots)   ROBOTS="$2";  shift 2 ;;
-    --cameras)  CAMERAS="$2"; shift 2 ;;
-    --mujoco)   MUJOCO=1; [ "$LIVE" = auto ] && LIVE=0; shift ;;
-    --live)     LIVE=1; [ "$MUJOCO" = auto ] && MUJOCO=0; shift ;;
-    --reference-table)    REFERENCE_TABLE=1; shift ;;
-    --no-reference-table) REFERENCE_TABLE=0; shift ;;
-    --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
-    --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
-    --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
-    --swap-objects)       SWAP=1; shift ;;
-    --no-swap-objects)    SWAP=0; shift ;;
-    --task-objects)       STAGE_FLAGS+=(--task-objects);       shift ;;
-    --side-camera-mirror) STAGE_FLAGS+=(--side-camera-mirror); shift ;;
-    *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
-  esac
-done
 
 if [ "$cmd" = "help" ] || [ "$cmd" = "-h" ] || [ "$cmd" = "--help" ]; then
   awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
   exit 0
 fi
 
-case "$ENGINE" in
-  molmospaces|robocasa) ;;
-  *) die "--engine: expected molmospaces or robocasa" ;;
-esac
+# Two commands, two argument lists, kept apart rather than one list filtered afterwards.
+# `view` starts no process, so every flag that configures one is a `serve` flag, and
+# refusing them here is what makes "view is exclusively the view" structural instead of
+# a rule someone has to remember.
+if [ "$cmd" = view ]; then
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port)      PORT="$2";      shift 2 ;;
+      --http-port) HTTP_PORT="$2"; shift 2 ;;
+      # Exactly what `view` is. Accepted because it is what a `serve --live` habit types,
+      # and there is nothing else this command could be asked for.
+      --live)      shift ;;
+      --mujoco)    die "a MuJoCo window renders inside the process that holds the model, so it
+    cannot be opened onto a simulator that is already running. It is a serve flag:
+      ./kitchen.sh serve --mujoco" ;;
+      *) die "'$1' configures a simulator and \`view\` starts none - it opens the camera
+    page on one that is already serving. Configure it where it is started:
+      ./kitchen.sh serve $1 ..." ;;
+    esac
+  done
+else
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --objects)  OBJECTS="$2"; shift 2 ;;
+      --scene)    SCENE="$2";   shift 2 ;;
+      --layout)   LAYOUT="$2";  shift 2 ;;
+      --style)    STYLE="$2";   shift 2 ;;
+      --port)     PORT="$2";    shift 2 ;;
+      --http-port) HTTP_PORT="$2"; shift 2 ;;
+      --engine)   ENGINE="$2";  shift 2 ;;
+      --robots)   ROBOTS="$2";  shift 2 ;;
+      --cameras)  CAMERAS="$2"; shift 2 ;;
+      --mujoco)   MUJOCO=1; shift ;;
+      --live)     LIVE=1;   shift ;;
+      --reference-table)    REFERENCE_TABLE=1; shift ;;
+      --no-reference-table) REFERENCE_TABLE=0; shift ;;
+      --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
+      --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
+      --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
+      --swap-objects)       SWAP=1; shift ;;
+      --no-swap-objects)    SWAP=0; shift ;;
+      --task-objects)       STAGE_FLAGS+=(--task-objects);       shift ;;
+      --side-camera-mirror) STAGE_FLAGS+=(--side-camera-mirror); shift ;;
+      *) die "unknown flag '$1' (try: ./kitchen.sh help)" ;;
+    esac
+  done
 
-# `view` shows everything it can, `serve` shows nothing, and naming either flag speaks
-# for both -- which is what makes `view --live` mean the page *without* the window rather
-# than the page as well as it.
-if [ "$MUJOCO" = auto ]; then [ "$cmd" = view ] && MUJOCO=1 || MUJOCO=0; fi
-if [ "$LIVE" = auto ];   then [ "$cmd" = view ] && LIVE=1   || LIVE=0;   fi
+  case "$ENGINE" in
+    molmospaces|robocasa) ;;
+    *) die "--engine: expected molmospaces or robocasa" ;;
+  esac
 
-# The wrist view is a topic on top of the contract's two; `wrist` alone takes those two
-# away, which is the one setting the console cannot run against. Both are engine flags
-# and both engines take them, so the camera set is not somewhere the two can drift apart.
-case "$CAMERAS" in
-  scene) ;;
-  both)  CAMERA_FLAGS=(--wrist-camera) ;;
-  wrist) CAMERA_FLAGS=(--wrist-camera --no-scene-cameras) ;;
-  *)     die "--cameras: expected scene, both or wrist" ;;
-esac
+  # The wrist view is a topic on top of the contract's two; `wrist` alone takes those two
+  # away, which is the one setting the console cannot run against. Both are engine flags
+  # and both engines take them, so the camera set is not somewhere the two can drift apart.
+  case "$CAMERAS" in
+    scene) ;;
+    both)  CAMERA_FLAGS=(--wrist-camera) ;;
+    wrist) CAMERA_FLAGS=(--wrist-camera --no-scene-cameras) ;;
+    *)     die "--cameras: expected scene, both or wrist" ;;
+  esac
 
-[ "$REFERENCE_TABLE" -eq 1 ] || STAGE_FLAGS+=(--no-reference-table)
+  [ "$REFERENCE_TABLE" -eq 1 ] || STAGE_FLAGS+=(--no-reference-table)
 
-# The swap resolves per engine only once the engine is known -- see SWAP above.
-if [ "$SWAP" = auto ]; then
-  [ "$ENGINE" = robocasa ] && SWAP=1 || SWAP=0
+  # The swap resolves per engine only once the engine is known -- see SWAP above.
+  if [ "$SWAP" = auto ]; then
+    [ "$ENGINE" = robocasa ] && SWAP=1 || SWAP=0
+  fi
+  [ "$SWAP" -eq 0 ] || STAGE_FLAGS+=(--swap-objects)
+
 fi
-[ "$SWAP" -eq 0 ] || STAGE_FLAGS+=(--swap-objects)
 
-# Defined here rather than beside the other engine helpers below, because `need_engine`
-# calls it before that point and bash binds a function only when it executes the
-# definition. It used to live below, and every run that started an engine died on
-# `engine_root: command not found` with an empty engine name in the message.
 engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
 
+# Only the engine actually being run has to be installed. Setting up the other is a large
+# download, and requiring it in order to use this one is a barrier with nothing behind it.
+# `view` reaches neither: it starts no engine, so watching another terminal's RoboCasa
+# does not require this checkout to have one.
 need_engine() {
   [ -x "$1/.venv/bin/python" ] \
     || die "$(basename "$1") is not set up yet - run: cd $1 && ./run.sh setup"
 }
-
-# `view --live` with something already on the port watches *that*, rather than failing
-# the port check on its way to starting a kitchen nobody asked for. It is the one case
-# where this script starts no engine, which is also why the setup check comes after it:
-# watching another terminal's RoboCasa should not require this engine to be installed.
-# A window cannot attach to someone else's process, so --mujoco excludes it, and so does
-# `serve`, which exists to host.
-ATTACH=0
-if [ "$cmd" = view ] && [ "$LIVE" -eq 1 ] && [ "$MUJOCO" -eq 0 ] \
-   && nc -z 127.0.0.1 "$PORT" 2>/dev/null; then
-  ATTACH=1
-fi
-[ "$ATTACH" -eq 1 ] || need_engine "$(engine_root "$ENGINE")"
 
 # ---------------------------------------------------------------- engines
 #
@@ -378,22 +382,25 @@ serve_page() {
 }
 
 # ---------------------------------------------------------------- run
-#
-# `help` has already exited and `cameras` is now `view --live`, so two paths are left:
-# watch a rosbridge somebody else is serving, or serve one.
 
-if [ "$ATTACH" -eq 1 ]; then
+if [ "$cmd" = view ]; then
+  # The page discovers what is on the wire, so it needs the wire and not an engine of its
+  # own. Nothing there is the one thing it cannot work around, and it says so rather than
+  # opening a browser onto an empty grid.
+  nc -z 127.0.0.1 "$PORT" 2>/dev/null \
+    || die "nothing is serving on ws://127.0.0.1:$PORT - start one with: ./kitchen.sh serve"
   trap cleanup INT TERM EXIT
-  echo ">> attaching to the rosbridge already on ws://127.0.0.1:$PORT"
+  echo ">> the camera page on the simulator already at ws://127.0.0.1:$PORT"
   serve_page
   echo "  Ctrl-C stops serving the page; the simulator keeps running"
   wait "$http_pid"
   exit 0
 fi
 
+need_engine "$(engine_root "$ENGINE")"
 # Checked up front, because the failure otherwise arrives as a websockets traceback
 # from an engine that has already spent a minute compiling a kitchen.
-port_free "$PORT" "pick another with --port PORT, or watch the one that is there: ./kitchen.sh view --live"
+port_free "$PORT" "pick another with --port PORT, or watch the one that is there: ./kitchen.sh view"
 [ "$LIVE" -eq 1 ] && port_free "$HTTP_PORT" "pick another with --http-port PORT"
 # EXIT as well as INT/TERM: without it a `die` anywhere below leaves the engine
 # holding its port, and the next run fails the port check for no visible reason.
@@ -411,5 +418,5 @@ echo
 echo "run the task against it from robot_console/:"
 echo "  ./run_task.sh --label $ENGINE$([ "$PORT" = 9090 ] || echo " --url ws://127.0.0.1:$PORT") --episodes 6"
 echo "  (layout: $([ "$SWAP" -eq 1 ] && echo 'swapped -- plate at the apple spawn' || echo 'standard'); the console reads it off the wire)"
-[ "$LIVE" -eq 1 ] || echo "watch it:  ./kitchen.sh view --live$([ "$PORT" = 9090 ] || echo " --port $PORT")"
+[ "$LIVE" -eq 1 ] || echo "watch it:  ./kitchen.sh view$([ "$PORT" = 9090 ] || echo " --port $PORT")"
 wait "$sim_pid"
