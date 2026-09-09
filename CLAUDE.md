@@ -100,6 +100,13 @@ set up around *specific* objects rather than whatever `find_grasp_targets` liked
 ranks rather than filters: a surface holding one of the two is still better than one
 holding neither, and filtering would turn a near miss into an error.
 
+**The vendor topics are served on 9090 unless told otherwise, on both engines.** A robot
+spawned with no wire is a robot nothing can drive or watch, and having to remember
+`--ros-port 9090` to get the thing every client here already assumes made the default the
+wrong way round; `--ros-port 0` is how a run that wants no server — a render, a placement
+check — says so. The port is busy if something else is already serving on it, and that now
+fails a second `view` where it used to be silently portless.
+
 `--ros-port PORT` puts a robot on its own vendor topics; `--task NAME` additionally
 stages a task's objects, cameras and success predicate into the scene (see
 `shared/tasks/`), and `--wrist-camera` adds the eye-in-hand stream. Cameras are rendered
@@ -114,6 +121,24 @@ python robots/myagv/test_attach.py [--scene /path/to/house.xml]
 python tools/render_robots.py --outdir /tmp/robots   # render/load test for every robot
 python tools/test_placement.py                       # where a tabletop arm gets bolted
 ```
+
+The shared ones run under either engine's venv, from `simulator/`, and the AiNex's three
+are the only checks on a robot whose feet do not collide and whose description carries no
+licence:
+
+```bash
+molmospaces/.venv/bin/python shared/tests/ainex_ground_check.py       # or robocasa/.venv
+molmospaces/.venv/bin/python shared/tests/ainex_grasp_check.py
+molmospaces/.venv/bin/python shared/tests/tf_frames_check.py  # every robot's tf vs its URDF
+python shared/tests/ainex_provenance_check.py    # the vendor files are still the vendor's
+```
+
+`ainex_provenance_check.py` recomputes the git blob hash of all 25 STLs and the xacro
+sources against the table in `shared/robots/ainex/urdf/PROVENANCE.md`, which used to name
+the upstream commit in prose and verify nothing. This robot is where that matters most:
+`Hiwonder/ainex` states no licence, so "verbatim" is the entire basis on which its
+description is vendored, and a re-export or a nudged mesh would be indistinguishable from
+the vendor's own file afterwards.
 
 ### One bridge, N robots, one namespace each
 
@@ -148,9 +173,12 @@ Three rules, in `shared/contracts/namespace.py`, each of them a test:
   topic explicitly without being prefixed twice.
 
 A namespace holds what that robot presents, and nothing else: the worktop's camera rig
-is published under `scene` rather than under whichever robot's surface happens to render
-it (see the SO-101 table below). `NamespacedBus.sibling(ns)` is how a surface reaches a
-name that is not its own — one server, one graph, and a name that belongs to the scene.
+is published under `scene` (see the SO-101 table below), and it is a **fleet member of
+its own** — `shared/ros_surfaces/scene.py`, attached by the engine under `SCENE_NAMESPACE`
+whenever the task's cameras are in the model. It used to be rendered inside the SO-101's
+surface loop through a `NamespacedBus.sibling(ns)`, which meant a kitchen with no arm in
+it compiled both cameras and published neither; `sibling` is gone with that. One server,
+one graph, and the rig's name belongs to the scene because the rig does.
 
 The namespace defaults to the robot's own name and is **on even for one robot**, so a
 lone SO-101 is on `/so101/*`. The topic constants in `ros_surfaces/` and in the console
@@ -211,6 +239,46 @@ it; answering from publications alone left the two command topics invisible and 
 looking like a sensor. `topics_for_type` still answers from publications alone, on
 purpose: its one caller asks what publishes CompressedImage and subscribes to the answer,
 so a subscription in that list could only ever be a topic to wait on that nothing sends.
+
+**Those two used to be the whole of `rosapi` here, and a client could tell.** Asked
+`/rosapi/message_details` for `ainex_interfaces/HeadState`, or `topic_type` for any topic,
+the bridge answered `no service` -- not an empty list, a refusal -- which is the largest
+single way this simulator could be told apart from the robot it claims to be
+indistinguishable from. A real rosbridge ships `rosapi_node` beside the websocket server;
+a real AiNex's launch (`UruBots/ainex-robot-code`,
+`ros_ws_src/ainex_app/launch/rosbridge.launch`) starts it unconditionally with every glob
+`[*]`. `serve_rosapi()` now answers all sixteen, from the most honest source each has:
+
+- `topics`, `topic_type`, `topics_for_type`, `services`, `service_type` -- the server's own
+  tables. `service()` takes a type now, as `on()` did first and for the same reason.
+- `message_details`, `service_{request,response}_details` -- `contracts/message_schemas.py`,
+  **transcribed from each manufacturer's definition files** with the source recorded in its
+  `PROVENANCE` block: Hiwonder's `ainex_interfaces`/`ros_robot_controller`, the
+  `mujoco_ros2_control_msgs` plugin for the SO-101's free-joint stream, the ROS
+  distributions' own files for the standard packages. Both dialects resolve to one
+  definition; `typedefs()` returns the transitive closure, as `rosapi` does.
+- `publishers`, `subscribers`, `nodes`, `node_details` -- the **namespace** that declared
+  the name (`NamespacedBus` claims every name it composes). A real robot returns node names
+  (`/ainex_controller`); there are no nodes here, and a namespace -- one robot's surface --
+  is the closest true statement. No client in this project uses node names.
+- `get_param_names`, `get_param` -- the parameters a surface set, which in practice means
+  one `robot_description` per robot (see "The transform tree", below). Values come back
+  **JSON-encoded**, as the real `rosapi_node` returns them, because roslibpy's `Param.get`
+  runs the answer through `json.loads`; handing back raw XML makes a robot's description
+  arrive at the client as a parse error. A real parameter server holds a great deal more
+  than one URDF per robot and none of the rest is here -- a difference, stated.
+- `action_servers` -- empty, which is true of this simulator: none, by design.
+- `get_ros_version` -- 1, the dialect of the rosapi surface itself. The graph carries two
+  dialects by design; a client reads per-topic types from `topics` and never infers them.
+
+`contracts/test_fleet.py` calls every one over the wire and checks the ones with structure
+for content -- the closure on `sensor_msgs/Imu`, `HeadState` as `float64 position` /
+`float64 duration`, ownership kept apart on a two-robot fleet -- plus a **drift** check
+that every message a builder produces matches its declared schema field for field. That
+check is what found `get_bus_servos_position` returning `{position}` where the vendor's
+`.srv` says `bool success, BusServoPosition[] position`; it carries `success` now. Two
+things the same comparison turned up and did not fix: the real robot publishes
+`/ros_robot_controller/battery` and `bus_servo/{get,set}_state`, which this contract lacks.
 
 **The SO-101 used to speak a bespoke msgpack protocol (`molmospaces-control-v1`) on its
 own port, and no longer does.** The rationale for that choice was that a real SO-101 does
@@ -329,6 +397,172 @@ Three traps, all of which produce results that look like bugs somewhere else:
 - **Clearance is measured to geom surfaces, not centres** (`world_boxes`). A kitchen is
   four long wall boxes; the centre of a 5 m wall is metres from a robot pressed against
   it, so a centre-distance search parks the robot inside the wall.
+- **`find_counter_mount`'s height is not the worktop.** It returns the surface plus
+  `SO101_BASE_LIFT`, 4 mm of clearance for the arm's base-plate meshes, which hang below
+  its body origin. That is a fact about one robot's meshes. A legged robot whose ride
+  height is measured to the *sole* has to stand on the surface itself, and inheriting the
+  arm's clearance left the AiNex 4 mm in the air. MolmoSpaces mounts on the chosen
+  support's own top face and never had the offset to take back off — the two engines
+  disagreed about what "the mount height" meant, and only one of them was wrong.
+
+**The AiNex's feet do not collide, and its height is the ground's to decide.** The torso
+rides five position-actuated joints (`ainex_model`, step 2, in the load-bearing order
+x, y, theta, z, pitch). Colliding feet would grip the surface at default friction and
+fight the x/y actuators — measured as a base that undershoots and picks up yaw it was
+never commanded — so the feet are decorative in precisely the sense the myAGV's wheels
+are. What keeps them on the surface is `ros_surfaces/ainex/ground.py`: every control tick
+it ray-casts straight down from the lowest sole, and drives `base_z` so the stance sole
+sits exactly on whatever it finds — a worktop, an uneven iTHOR counter, the floor — for
+whatever the legs and the lean are doing. A crouch lowers the body because the legs fold
+and the sole stays put. **When no sole finds a surface within reach, the robot falls**:
+the z setpoint integrates g and lands the tick a sole would cross the surface below. It
+is a fall of the setpoint, not gravity on the torso — `gravcomp` stays at 1 and the limbs
+hold their pose on the way down — and it is what turns "walked off the worktop" from a
+robot hanging in the air where it left into a robot standing on the floor beneath.
+`shared/tests/ainex_ground_check.py` measures all four on a plane: standing at 0.00 mm,
+holding that height over 40 consecutive ticks to 0.0174 mm, a crouch that drops the torso
+26.7 mm with the sole still on the table, and a robot teleported past the edge landing on
+the floor at exactly its ride height (0.2023 m).
+
+**The probe walks through the robot's own foot, and how far it steps to do that is the
+whole robot's stability.** `RECAST_STEP_M` is 1 µm because the sole's lowest geom stands
+**26 µm** above the surface it rests on: a step over that face restarts the ray *inside*
+the worktop and `mj_ray` returns the box's underside, which is exactly the trap `PROBE_M`
+is written against, reintroduced by the skip meant to clear the foot. It was 1 mm, so a
+standing robot read its surface 100 mm below its sole on every tick a foot geom poked
+above it — a gap wider than `SUPPORT_GAP_M`, so "walked off the edge", so a 67 mm fall and
+four ticks climbing back. Measured: a permanent **69 mm bob at 2 Hz**, which on the wire is
+0.97° of torso pitch and 2.9° of shoulder swing and in the viewer is a robot juddering
+where it stands. An infinite ground plane is immune — no far face, and the next surface is
+0.2 m down — so it bit only on worktops, counters and iTHOR floor boxes, which is
+everywhere this robot is staged. `MAX_RECAST` went 4 → 12 with it: a 1 µm step costs up to
+two casts per own geom, and the measured worst case is 5 while walking against a budget of
+five.
+
+**And the check passed the whole time, at "gap +0.02 mm".** The cycle's period is 5 control
+ticks, `tick(30)` is 30 ≡ 0 (mod 5), and that phase is the one where the sole is right — so
+a single sample after a settle read the one good tick in five. This is the file's own rule
+about a check sharing its measurement's method, in its third form: **a settled reading is
+not a stable one, and only consecutive ticks tell them apart.** The standing check now
+asserts the span over 40 of them, which reads 66.44 mm on the old constant and 0.0174 mm
+on this one.
+
+**An apple is not a floor, and the probe used to think it was.** `_surface_below` accepted
+any geom that was not the robot, so the tick a sole's probe point crossed the task's 20 mm
+apple the surface came back as its crown — measured 0.5392 against the worktop's 0.5000 —
+and the robot was lifted 39 mm onto it, while the apple itself did not move by a
+millimetre. It climbed the fruit. The rule now is `mujoco_bridge.is_loose`: **a body is
+loose iff its weld root hangs off the world on a free joint**, and loose geoms are skipped
+exactly as the robot's own are.
+
+`body_weldid == 0` — "is this welded to the world" — is *not* that test, and it is the
+obvious wrong answer: iTHOR hinges every cabinet door and slides every oven drawer, so it
+calls **1608 of FloorPlan1's 2116 geoms** movable and a robot obeying it falls through a
+third of the kitchen. The free joint puts the island the AiNex mounts on
+(`standardislandheight_…`) with the floor, and the 37 things actually lying about — apple,
+bowl, cup, bread, bottle, book, pan, knife — on the other side.
+
+That budget then had to grow, and the give-up warning is what said so, from the island edge
+of a real kitchen: an iTHOR object is a decomposed hull, ~30 convex pieces each, and every
+piece in the column costs a cast. Sweeping 62 500 downward columns of FloorPlan1, 94 %
+reach ground in one cast and the worst needs **37**; `MAX_RECAST` is 64.
+
+**And the feet meet what they walk into, which they did not.** Every geom but the hands and
+the torso hull was made non-colliding because contact with the *ground* fights the base —
+true of the floor, applied to everything, so the robot passed through an apple without
+disturbing it. `ainex_model.enable_foot_contacts` gives the feet a class of their own:
+they meet loose bodies and pass through the world. Measured on the check rig, the apple
+goes from 0.00 mm to 1571 mm, peaking at 0.76 m/s off a 0.2 m/s walk — about what an
+elastic rebound from a servo-held swing foot gives.
+
+Three traps in that, each of which produced a foot that touched nothing while every mask
+read correctly:
+
+- **MuJoCo builds a mesh's convex hull only for meshes some collidable geom uses.** A foot
+  compiled at contype/conaffinity 0 comes out with `mesh_graphadr == -1` and can never
+  collide, whatever the masks are set to afterwards. So `build_spec` gives the feet
+  `FOOT_CONTACT_BIT` at build time and `enable_foot_contacts` only re-points it.
+- **`body_contype`/`body_conaffinity` are computed once at compile and prune whole bodies
+  in broadphase.** Edit the geom masks at runtime without recomputing them and the pair is
+  discarded before any geom-level test: measured, with the apple at the exact centroid of a
+  foot mesh, MuJoCo reported it touching the table and nothing else.
+- **The bit lives on the feet's `conaffinity` and the scene's `contype`, not the reverse.**
+  A contact needs the bit in one side's `contype`; iTHOR's `contype` values are only 0, 1
+  and 8, so a robot grafted by some path that never calls the function has inert feet.
+  Mirrored, the untagged case is the dangerous one — and the bit must be *cleared* from
+  everything not loose, because iTHOR writes `conaffinity` 7 and 15 and 892 of FloorPlan1's
+  geoms already carry the first free one.
+
+**And the sole is the whole sole, which it was not.** The vendor's `init_pose` leg chain
+sums to **−14.95°** rather than to zero — that is their `hip_pitch_offset`, and on the
+real robot it tips the *body* forward over feet that stay flat, because the hips carry the
+body. Our torso is on planar joints, so with `base_pitch` at zero those 14.95° landed on
+the feet instead: both soles toe-up, **the toe 37.6 mm off the surface**, the robot
+balanced on two heel corners with 5 of 426 foot vertices touching. `gait.py` had predicted
+it in as many words — "the robot would walk on its heels" — and corrected it only for the
+walking gait, which solves its own flat-sole IK. Standing had nothing.
+
+`ainex_model.stance_lean` measures that angle off the compiled model and `rest_pose()`
+gives it to `base_pitch`, so the vendor's joint values stay exactly as shipped and the
+lean goes where the hardware puts it; `gait.leg_joint_targets` states `base_pitch = 0`
+explicitly, because a sole solved flat against a leaning torso would tilt the other way.
+`ainex_model.stand()` is what both engines apply at spawn — one function, so a client
+cannot tell them apart by the pose of a robot's legs — and the ride height it stands at
+fell from 0.2114 m (a heel corner) to 0.2023 m (a sole).
+
+**Every check agreed it was standing perfectly, and every check was measuring the heel.**
+`ride_height`, `sole_z`, `report_sole_contact` and `test_attach.py`'s "feet rest on the
+floor" all take the single lowest vertex, which really was on the surface. That is the
+same rule this file records two sections down — *a check of a measurement must not share
+its method* — broken a second time in the same file, so the checks now assert the sole's
+**tilt** (from `xmat`, a frame reading) *and* its heel-to-toe span (from the mesh, an
+independent one): 0.00° and 34.3 mm flat against 14.95° and 53.1 mm on its heels.
+
+Before z existed a robot grafted at the wrong height did not fall, did not warn and
+produced no wrong number anywhere — it simply hung there, and at 4 mm that read as a
+rendering artefact. `report_sole_contact` still prints the spawn-time gap on both engines
+(`soles on the worktop at z 0.9200 (gap +0.00 mm)` on RoboCasa, `z 1.1000` on
+MolmoSpaces), and it is now the record of the *graft arithmetic*: the follow would
+correct a bad graft on the first tick, so the printed number is what catches the
+arithmetic going wrong, not the robot.
+
+**`base_pitch` is the torso's lean, and it exists because the base rides the torso.**
+Measured with the legs folded flat and the torso level, the claw tip is still 72 mm above
+the sole; a 20° lean brings it to 20 mm. On the real robot the hip chain tips the body
+over planted feet when it crawls; here folding the hips alone lifts the legs, so the lean
+is a joint of its own, authored as a 25th channel in action-group YAML — and it is what
+the standing pose leans by too, which is the section above. `crawl_left`/`crawl_right` — the vendor's names for its bend-down grasp
+— are solved by `shared/tools/author_ainex_crawl.py` rather than typed, and
+`shared/tests/ainex_grasp_check.py` stages the task's apple where their `reach:` says
+and asserts a hand geom touches it and it moves (measured: 46 and 51 mm).
+
+**That check reported 0.00 mm while the robot floated 42.7 mm, and the reason is the most
+useful thing in this section.** `ainex_model._mesh_points` offset each mesh's vertices by
+`geom_pos` and never rotated them by `geom_quat` -- and every one of the URDF's 25 mesh
+geoms carries one, because MuJoCo folds a mesh's principal-axes re-orientation into it at
+compile. So `ride_height` came out 0.2541 m against a true 0.2114, the robot was grafted
+that much too high on both engines, and the sole check -- which went through the same
+function -- measured the same wrong number and agreed. So did `test_attach.py`, whose
+`mesh_world_z` had copied the shortcut. Three measurements, one method, unanimous and
+wrong. The rule that fell out: **a check of a measurement must not share its method.**
+`sole_z` and the test now go through MuJoCo's own `geom_xpos`/`geom_xmat`, which is the
+independent frame; `_mesh_points` is fixed too, and the 0.4581 / 0.1901 / 0.2541 figures
+both engines quoted in comments were all wrong the same way and are re-measured.
+
+**The side camera is 1.233 m from its look-at, not 0.733 m,** moved back along its own
+axis on 2026-09-08 with orientation unchanged so the whole robot is in the side view: at
+0.733 m the crown projected at 1.68x the frame height and the robot ran off one edge. It
+is not a grading camera -- `vision_success` reads the overhead frame alone -- so the
+verdict does not move; it *is* one of the two views the VLA sees, so it is a scene change
+of the kind the lighting section warns about and wants a pass count beside it. The pose
+is mirrored in `ros_settings.SCENE_CAMERA_POSES` with the contract test holding the two
+copies equal. The rig publishes whenever its cameras are in the model, arm or no arm:
+`--robots ainex --cameras both` puts `/scene/overhead`, `/scene/side` and the head camera
+on the wire, and the console's fleet check asks for the rig behind `--humanoid` as well
+as `--arm`. Measured on both engines with `--robots so101,myagv,ainex`: **54 topics,
+byte-identical `--dump`s**, and the same three `robot_description` parameters at the same
+three sizes (43654 / 16231 / 1380 chars). That was 37 before every robot grew a transform
+tree; the count is only worth quoting beside the pair of engines it was equal across.
 
 A RoboCasa kitchen contains no loose objects at all — everything is a fixture — so an arm
 has nothing to reach for until `--objects` spawns some from RoboCasa's own registry. That
@@ -352,9 +586,10 @@ world; the console runs the task against it. From `simulator/`:
 ./kitchen.sh serve --robots so101,myagv    # ...with a myAGV in the same kitchen, one port
 ./kitchen.sh serve --robots so101,ainex    # ...or the humanoid, on /ainex/*
 ./kitchen.sh serve --cameras robot         # each robot's own camera and nothing else
-./kitchen.sh serve --engine robocasa --robots ainex --cameras robot
-./kitchen.sh view --live                   # the camera page on whatever is serving
-./kitchen.sh view                          # ...and a MuJoCo window on a world of its own
+./kitchen.sh serve --mujoco                # ...and a MuJoCo window on the world it serves
+./kitchen.sh serve --engine robocasa --robots ainex --cameras robot --mujoco
+./kitchen.sh view                          # the camera page on whatever is serving
+./kitchen.sh view --port 9091              # ...on the serve there instead
 ./kitchen.sh serve --help                  # per-command help; `view --help` too
 ```
 
@@ -366,21 +601,30 @@ and from `robot_console/`:
 ./run_task.sh --instruction "..."          # a different instruction (scorers unchanged)
 ```
 
-**`serve` loads a world and serves it; `view` looks at one.** `serve` is headless,
-always -- a run is watched through the cameras the robots present, and a window costs
-control rate for every client on the port. `view` opens both a MuJoCo window and the live
-camera page, with `--mujoco` or `--live` narrowing to one. Each command refuses the
-other's flags by name, and each `--help` prints the shared header plus its own section,
-cut out of that header by `#:` markers, so neither can drift from what it parses.
+**`serve` loads a world, serves it, and optionally shows it; `view` is the camera page and
+nothing else.** Each command refuses the other's flags by name, and each `--help` prints
+the shared header plus its own section, cut out of that header by `#:` markers, so neither
+can drift from what it parses.
 
-**The two halves of `view` are not the same kind of thing, and the help says so.**
-`--live` really does attach: it is a websocket client, so it shows what a `serve` in
-another terminal is publishing. `--mujoco` cannot -- `mujoco.viewer` offers `launch`,
-`launch_from_path` and `launch_passive` and no `connect` (checked on 3.5.0 and 3.3.1, the
-two engines' versions), so a viewer is built from the model and data objects in memory and
-belongs to the process holding the physics. `view --mujoco` therefore opens a world of its
-own, served to nobody, and takes the same `--engine`/`--scene`/`--layout`/`--robots` flags
-`serve` does because it has to be told which world.
+**The window belongs to `serve` because the physics does.** `mujoco.viewer` offers
+`launch`, `launch_from_path` and `launch_passive` and no `connect` (checked on 3.5.0 and
+3.3.1, the two engines' versions), so a viewer is built from the model and data objects in
+memory and can only exist inside the process holding them. There is therefore no way to
+open a window onto an engine already running, and a `view` in a second terminal that
+claimed to was either erroring on a busy port or quietly compiling a *second* kitchen and
+showing you that one instead. `--mujoco` is a `serve` flag for that reason: it is the run
+that owns the world, so it is the run that can draw it. `serve` is still headless without
+it -- a window costs control rate for every client on the port, and closing the window
+ends the run, because the two are one process. A serve already running cannot grow a
+window; restart it with `--mujoco`.
+
+**`view` holds nothing.** It is a websocket client on `--port`, so it shows whatever a
+`serve` is publishing there, and it takes none of the flags that shape a world --
+`--engine`, `--robots`, `--scene`, `--cameras` and the staging flags are all refused by
+name, because a view has no world to apply them to and `view --engine robocasa` used to be
+accepted and change nothing. It is not told what is on the port either: the page asks
+`rosapi` (see the live page, below). `--live` still names what `view` already is and is
+accepted for that alone.
 
 `--cameras` chooses what renders: `both` (default -- the worktop rig and every robot's
 own), `scene` (the rig alone) or `robot` (each robot's own official camera alone: the
@@ -391,14 +635,100 @@ topics off the wire that something expects -- `robot` drops the rig the arm task
 from, `scene` drops a base's camera, which is one of the four rows of its vendor
 contract -- so the console's fleet check refuses them by name.
 
-**`apple_on_plate` is the arm's task and is staged only when an arm is in `--robots`.**
-It lays its objects out in the arm's base frame and its arbiter grades a jaw closing on an
-apple; a kitchen with no arm has nothing for that to be about, and staging it anyway bound
-the task to whichever robot happened to be first in the list.
+**`apple_on_plate` is staged for the robots that stand at a worktop -- the SO-101 bolted
+to one and the AiNex standing on one -- and for no others.** A myAGV takes the floor and
+has neither a work surface nor a gripper, so a kitchen holding only bases gets the room,
+the robots and their cameras and no task; staging it anyway bound the task to whichever
+robot happened to be first in the list. The objects land in front of whichever robot got
+mounted because the staging transform is built from the mount point and the worktop
+height, not from the robot, so it is the same apple and the same plate on the same counter
+either way.
+
+Three places assumed that robot was the arm, and each says so now rather than failing:
+
+- The arbiter finds the robot's **root body by name**, given by the engine. The SO-101's
+  is `base`; the AiNex roots at `body_link`, the torso its vendor URDF roots at. Guessing
+  from a list would work until two robots in one scene had different roots.
+- The task's **start pose is the SO-101's** and is applied only to it. `START_ARM_QPOS`
+  exists because MolmoAct2 bins measured joint state into 256 buckets and clips silently,
+  so an arm outside the trained band is not conditioned at all -- a statement about five
+  named joints on one robot. Another robot has no such pose, and its engine has already
+  stood it up in the vendor's `init_pose`. The flag is explicit rather than "skip joints
+  that are missing", which for the arm would fail invisibly in exactly that way.
+- The **contact check** finds the gripper by geom name (`fixed_jaw`/`moving_jaw`) for the
+  arm and by owning body for the AiNex, whose hands carry URDF mesh geoms with generated
+  names and are the only bodies `ainex_model` leaves collidable at all. Measured: 16 jaw
+  geoms for the SO-101 on either engine, 4 hand geoms for the AiNex, all colliding with
+  the task's objects.
+
+What this does **not** do is make the AiNex an SO-101. The reach report still prints the
+arm's annulus, and at ~0.32 m the objects sit outside the AiNex's own 0.11-0.25 m; the
+success predicate is still written around a jaw closing on an apple. The objects are on
+the counter in front of it, which is what was asked for.
 
 `shot`, `inspect` and `cameras` used to be commands here and are gone: `shot` rendered a
 screenshot per engine back when two could run at once, grading is the console's half of
-the split, and `cameras` is what `view --live` now is.
+the split, and `cameras` is what `view` now is.
+
+### The live page reads the wire, and is told nothing
+
+`live_cameras.html` is one static file served by a stdlib `http.server`; it speaks the
+rosbridge JSON protocol by hand and has no build step. It used to be handed `?ns=so101` by
+the launcher and drew that arm's sliders whatever was actually running. Both halves are
+discovered now, and both had to be:
+
+- **Cameras come from `topics_for_type`, asked twice** -- once for
+  `sensor_msgs/msg/CompressedImage` and once for `sensor_msgs/CompressedImage`. Two
+  dialects share one graph: the SO-101 is a ROS 2 bringup and the myAGV and AiNex are
+  ROS 1 stacks, and `topics_for_type` matches the string exactly. Asking once found one
+  dialect, so `--robots ainex` or `--robots myagv` showed an **empty grid** -- which reads
+  as a simulator that failed to render rather than as a client asking the wrong question.
+  Tile names come off the topic, which is `/color/compressed` behind a RealSense-style
+  node and `/image_raw/compressed` behind `usb_cam`; both shapes are stripped.
+- **Robots come from `/rosapi/topics`**, grouped by namespace and identified by a
+  signature *command* topic -- `joint_trajectory_controller/joint_trajectory` for the
+  SO-101, `walking/set_param` for the AiNex, `cmd_vel` for the myAGV. Command topics
+  because a robot whose first camera frame has not been encoded is still identifiable, and
+  because `rosapi` keeps declared subscriptions in that answer precisely so a client can
+  discover how to *drive* a robot. `scene` is not a robot and gets no panel. `?ns=` is a
+  filter to one robot, not the setting it used to be.
+
+Each robot found gets its own **Enable control** switch and publishes nothing until it is
+ticked; that is per robot, so arming the arm cannot start the humanoid walking. The AiNex
+panel is the vendor's shape rather than a drive pad, because the robot has no `/cmd_vel`:
+walk state machine, gait parameter block, action groups, head. Two traps in it, both
+measured against `shared/ros_surfaces/ainex/surface.py` rather than assumed:
+
+- **`enable`, `start` and `stop` are ignored unless the robot considers itself
+  initialised, and only `enable_control` sets that.** The enable button sends both, in
+  that order, as the vendor's app layer does. Without it every button on the panel does
+  nothing, with no error anywhere.
+- **The gait block on the wire is not the one `gait.py` holds.** `period_time` is
+  milliseconds there and seconds inside; the yaw amplitude is degrees on the wire and
+  radians inside; and the fields are the vendor's `x_move_amplitude`/`y_move_amplitude`/
+  `angle_move_amplitude`. Every slider republishes the whole block, because the handler
+  defaults any field it is not given and sending one would silently reset the other three.
+  The forward slider shows `4A/T` beside it -- an amplitude is half a foot's sweep and
+  does not read as a speed.
+
+The AiNex panel also carries **one slider per joint, in the body's groups** — left arm,
+right arm, each hand, head, legs — publishing to the manufacturer's own per-joint
+controllers, `/<joint>_controller/command` for all 24 (`ainex_gazebo`'s
+`position_controller.yaml` layout; the head pair were already two of them). The head
+takes `ainex_interfaces/HeadState`, the rest `std_msgs/Float64`, and the surface accepts
+either shape on any of them. The console's `ainex_topics.py` lists the same 24 in
+`CONTRACT_TOPICS`, held equal to the simulator's table by its contract test, so the
+fleet check requires them.
+
+`myagv` is identified and labelled but deliberately gets no drive pad: the base has no
+watchdog on real hardware, so anything driving it must publish continuously *and*
+guarantee a zero Twist on every exit path, and a browser tab cannot promise the second
+half. `robot_console/bin/teleop.sh` does both and is the tested path.
+
+The page also re-sends every panel's `subscribe` and `advertise` after a reconnect.
+rosbridge keeps no state across a dropped websocket, and without that a reconnected page
+looks entirely alive -- cameras stream, sliders move -- while no readout updates and no
+command lands.
 
 
 **The scripted `so101_waypoint` policy is gone**, deleted rather than deprecated: the VLA
@@ -492,7 +822,9 @@ to pass every attempt is gone; every figure below that cites it is history.)
 The rest of the console, from `robot_console/`:
 
 ```bash
-./bin/teleop.sh                         # first run creates .venv and installs
+./bin/teleop.sh                         # drive whatever robot is on ws://127.0.0.1:9090
+./bin/teleop.sh --namespace myagv       # ...the one on /myagv/*, without asking
+./bin/teleop.sh --namespace ''          # ...the bare contract, on purpose
 ./bin/teleop.sh --host 192.168.1.42     # a real myAGV
 ./bin/teleop.sh --record runs/drive1    # feed.mp4 + commands.jsonl
 ./bin/teleop.sh --no-preflight          # skip the reachability check
@@ -512,6 +844,96 @@ uv pip install -e '.[dev]'
 `bin/teleop.sh` reinstalls itself when `pyproject.toml` is newer than the venv stamp.
 The default pytest run is `-m 'not live'`; no test may call `cv2.imshow`/`namedWindow`.
 
+### The launchers ask the wire which robot is on it
+
+Two defaults that are each right and did not meet. The simulator names every robot after
+itself, so a lone myAGV is on `/myagv/*`; the console's constants are the **bare** vendor
+contract, `/cmd_vel` and `/odom`, because that is what one real bringup presents. Run
+`./run.sh view --robot myagv --ros-port 9090` and then `bin/teleop.sh` and the console
+published into a void and subscribed to topics nobody fed — and **nothing errored**.
+roslibpy subscribes happily to a name that does not exist and the bridge acks nothing, so
+it read as a black camera window and a robot ignoring every key. The TCP preflight cannot
+see it: it never reads a topic name.
+
+So `--robot` and `--namespace` now default to *not given*, which means "ask", and
+`discovery.py` asks — `/rosapi/topics`, grouped by the namespace that composes a signature
+**command** topic: `/cmd_vel` for the myAGV, `/walking/set_param` for the AiNex. Command
+topics because a robot whose first frame has not been encoded is still identifiable, and
+because rosapi keeps declared subscriptions in that answer precisely so a client can
+discover how to *drive* something. It is the same table and the same question
+`live_cameras.html` uses, duplicated rather than shared because the console must install
+with no simulator checkout. `bin/slam.sh` does the same, always wanting the myAGV: it maps
+`/scan` and dead-reckons `/odom`, and a walking robot has neither.
+
+Four things worth knowing before touching it:
+
+- **`--namespace ''` is still how the bare contract is asked for**, and it is a decision
+  rather than a gap. Those two were the same thing when the default was `''`, which is the
+  whole bug.
+- **Discovery must `close()` and never `terminate()`.** roslibpy's Twisted reactor is
+  process-global and single-shot, and the link that drives the robot connects *after* the
+  discovery pass, in the same process. `fleet.list_topics` already had this right;
+  `test_link_roundtrip.py` now pins it, because it is the one part of this a pure test
+  cannot reach.
+- **A wire that cannot be asked is not an error.** No rosapi node, an old bridge, a
+  timeout: the console says so and falls back to the myAGV on the bare contract, which is
+  what it assumed before it could ask. Two robots of the same kind, or a named robot that
+  is not there, *is* an error — those are questions only the user can answer.
+- **The signature is a command topic, so the worktop rig is not a robot.** `/scene/*` has
+  two cameras and nothing to drive, and an SO-101 has a signature of its own and no place
+  in teleop; a `so101,myagv` fleet resolves to the base. Measured on both.
+- **Every name a link uses takes the namespace, not just the camera.** `AiNexLink`
+  composed the camera under the discovered namespace and left `/walking/set_param` and
+  `/walking/command` bare, so on either engine — both namespace every robot after itself —
+  the view streamed at 20 Hz while every walk and turn command went to a topic nobody
+  subscribed to. A robot that shows you its camera and ignores the keyboard reads as a
+  broken gait, not as a naming bug.
+
+**The AiNex is driven through a service, and the vendor's handshake comes first.** There
+is no `/cmd_vel` here: `publish_cmd_vel` writes a `WalkingParam` block to
+`/walking/set_param` and calls `/walking/command` with `start`/`stop` on the *transitions*
+only, because the vendor node restarts its gait phase on every `start`. `connect()` sends
+`enable_control` then `enable`, in that order, as the vendor's app layer and the browser
+panel do — the simulator seeds `initialised = True`, so their absence was invisible here,
+while on hardware every command this link sends would be accepted and ignored, silently,
+with the rejection discarded by a fire-and-forget service call.
+
+`tests/test_ainex_live.py` (`-m live`) is what joins the two halves, and nothing did
+before: the console's gait arithmetic was tested with no wire, the simulator's
+`robots/ainex/test_ros.py` drives the *other* command topic
+(`/app/set_walking_param`, the tiered preset one), so the topic teleop actually publishes
+to had no end-to-end check at all. It holds a Q, an E and a W and reads yaw back off
+`/imu` — the only pose this robot's vendor contract carries. Measured, identically on both
+engines: **+68.75° and −68.76°** for a three-second turn, 0.01° of drift walking forward.
+
+**The arrow keys point the AiNex's head, over the vendor's own per-joint controllers.**
+`publish_head` writes `ainex_interfaces/HeadState` to `/<ns>/head_pan_controller/command`
+and `/<ns>/head_tilt_controller/command` — two of the 24 the contract already lists, not a
+topic of teleop's own — and only when the pose changes, because a head is a position with
+no watchdog to feed where the base's Twist needs re-sending at 20 Hz. `RobotProfile` gains
+`has_head` beside `has_odom`, so the myAGV neither grows the keys nor needs a method to
+ignore them, and the camera really is on the head (`ainex_model` step 4 moved it there),
+which is what the arrows are for.
+
+Two things that are wrong in a way no error reports:
+
+- **An arrow's low byte is a letter.** `action_for_key` masks to the low byte on purpose,
+  and GTK/Qt reports Left as `0xFF51`, whose low byte is `0x51` → `q` → `ROT_LEFT`: the
+  left arrow would *turn the robot*. So the full code is matched first, against all three
+  backends' tables (Cocoa `63232-63235`, GTK/Qt `65361-65364`, Win32), and `app.py` reads
+  keys with `cv2.waitKeyEx`, which returns the value untruncated and is identical for ASCII.
+- **`head_pan`'s axis is `[0, 0, -1]`, so +pan looks *right*** — the opposite of the base's
+  `+z` counter-clockwise yaw, while `head_tilt`'s `[0, -1, 0]` does give +tilt = up. Written
+  the intuitive way round, the left arrow pointed the camera right. Measured off the
+  compiled model and then confirmed on the wire by phase-correlating the head camera's own
+  frames: ← moves the scene +67.6 px right, → −67.7 px left, ↑ +65.6 px down, ↓ −65.6 px up.
+  The HUD badge reads `head 8L 8U` rather than signed degrees for exactly this reason.
+
+That confirmation is also a lesson about the method: the same check at a 33° swing reported
+tilt *inverted*, because phase correlation loses lock when two frames of a cluttered
+kitchen barely overlap. The small step is the trustworthy one, and the offline render
+agreed with the vector all along.
+
 ### Structure
 
 Behaviour lives in pure, directly testable modules; `app.py` is wiring:
@@ -521,6 +943,10 @@ Behaviour lives in pure, directly testable modules; `app.py` is wiring:
 - `camera.py` — CompressedImage decode + `LatestFrame`, the thread hand-off
 - `bridge.py` — `RobotLink` (roslibpy) and pure `parse_odom`
 - `hud.py`, `recorder.py`, `preflight.py`, `cli.py`, `smoke.py`
+- `discovery.py` — "which robot is on this rosbridge, and under what name?" Pure over the
+  `{topic: type}` dict rosapi answers with, so what the console concludes about a wire is
+  tested with no wire; the transport is `fleet.list_topics`, so there is one
+  `/rosapi/topics` implementation and not two. See the section above for why it exists.
 - `fleet.py` — "which robots are on this rosbridge, and are they the ones expected?" One
   `/rosapi/topics` call, checked against the console's **own** contract constants rather
   than a list typed into a shell script, which would drift from both sides. Built on
@@ -626,6 +1052,106 @@ is under the robot's namespace, `myagv` and `so101` by default: `/myagv/cmd_vel`
 `/so101/joint_states`, and frames `myagv/odom → myagv/base_footprint`. See "One bridge, N
 robots" above for the rule and why the constants stay bare on both sides.
 
+### The transform tree, and the description it is read against
+
+**Every robot publishes `/tf`, `/tf_static` and a `robot_description`, and until it did,
+every `frame_id` in these tables named a node of a tree that was never published.** A real
+bringup runs `robot_state_publisher` beside whatever produces `/joint_states`: it reads
+the URDF out of the `robot_description` parameter and turns joint angles into frames, and
+that is what lets a client put a scan in the base frame, ask where the gripper is, or draw
+the robot at all. This contract emitted the labels and not the substance -- and the
+absence went unnoticed for so long precisely because nothing here consumes it: `slam/`
+dead-reckons `/odom` and hardcodes the lidar's 65 mm mount rather than looking a transform
+up.
+
+Where each number comes from, in `contracts/tf.py`, `mujoco_bridge.TransformTree` and
+`ros_surfaces/tf_stream.py` — one copy of the loop, three robots, both engines:
+
+- **Moving links come from MuJoCo's own `xpos`/`xmat`**, not from composing joint angles.
+  A second kinematics implementation is a second thing to keep in step, and this file
+  already records what that costs.
+- **Frames are the *description's* names, through a per-robot map.** They differ on every
+  link of the SO-101 — menagerie's MJCF says `shoulder`, TheRobotStudio's URDF says
+  `shoulder_link`, and a client renders from the URDF. Menagerie's `camera_mount` has no
+  link at all and is deliberately dropped: publishing it would put an engine's model
+  layout into a client's tf tree, the same rule that keeps a camera's `frame_id` off its
+  MJCF camera name. A skipped body's children reattach to its nearest named ancestor, so
+  dropping one cannot break the chain.
+- **Links MuJoCo merged away come from the URDF's fixed joints.** A fixed-jointed link
+  carries no body, so `imu_link` and `gripper_frame_link` exist in no compiled model. A
+  real `robot_state_publisher` reads those out of the URDF too.
+- **A camera frame is converted back to the link convention.** MuJoCo cameras look down
+  `-z` with `+y` up; a URDF camera link is `+x` forward. Publishing the MuJoCo frame raw
+  is the failure that looks like a working system: every transform resolves and the camera
+  is drawn on its side. The AiNex is the case that pins it — the vendor bolts `camera_link`
+  to the torso, `ainex_model` step 4 moves it to the head where the hardware's camera is,
+  and the tree follows the model; `shared/tests/tf_frames_check.py` composes the published
+  head-relative frame back into the torso and gets the vendor's own `(0.043, 0, 0.1524)`
+  to 0.00e+00.
+- **The root's own transform is never published**, because a robot's root has no parent
+  inside the robot. The myAGV's `odom → base_footprint` is supplied by the surface from
+  the same x/y/yaw that just went out on `/odom`, and it is the only transform in any of
+  these trees that is a measurement rather than a reading of the robot's own geometry.
+  **On real hardware it is `robot_pose_ekf`'s, not the odometry node's**: `myAGV.cpp:317`
+  builds the transform and then does not send it — `//odomBroadcaster.sendTransform(...)
+  // robot_pose_ekf ros package instead` — so the real robot emits it only once the EKF
+  has odom *and* IMU and its filter has updated, where this one emits from the first tick.
+  A difference in *when*. The SO-101 and the AiNex have no root parent at all, which is
+  what a real bringup of either presents.
+- **`/tf_static` is a ROS 2 topic, and only the SO-101 has one.** The myAGV's three static
+  transforms come from `pkg="tf"` publishers, and tf1's node re-publishes onto `/tf` on a
+  period; its `robot_state_publisher` has nothing for `/tf_static` either, because the
+  vendor URDF's only joint (`base_up`) is `continuous` and there are no fixed joints at
+  all. So the ROS 1 robots put their static half on `/tf` and never advertise
+  `/tf_static`, and `fleet.py` requires it of an arm and not of a base.
+- **The static half is repeated at 1 Hz, because rosbridge has no latching.** For the
+  SO-101 that is a departure — on hardware `/tf_static` is latched and a client that
+  connects an hour later still receives it. For the ROS 1 robots it is not one: repeating
+  on a period is what tf1's own publisher does, at 10–50 ms rather than 1 s.
+- **`/tf` takes the namespace, like every other topic.** The tf topic is a *relative* name
+  in ROS, so `<group ns="myagv">` publishes `/myagv/tf` with the matching `tf_prefix` on
+  the frames — and `--ros-namespace ''` gives back the bare `/tf` a single-robot bringup
+  presents.
+
+`shared/tests/tf_frames_check.py` is the check, and it is deliberately made a *different*
+way than the tree is: the tree reads MuJoCo's forward kinematics, the check reads the
+URDF's own joint origins through an independent rpy conversion — the rule about a check
+not sharing its measurement's method, applied in advance for once. Measured: all 26 AiNex
+link transforms agree to 2.86e-17 m, all 7 SO-101 ones to 9e-09 m and 2.6e-06 of
+quaternion (the MJCF writes its quaternions as decimal text; a tolerance tighter than the
+file format is a check nobody can act on).
+
+Two frames are **not** links of any description and are not meant to be: a camera driver
+names its own frame (`camera`, `wrist`), and the lidar's mount is a
+`static_transform_publisher` line in `myagv_active.launch` rather than a joint in the
+chassis URDF.
+
+**The meshes are not served and cannot be.** rosbridge is a JSON websocket; a real client
+resolves `package://` against its own filesystem or an out-of-band web server, and that is
+true of real rosbridge too — so this is not a divergence from hardware. A client with no
+copy of the meshes still gets every frame, every joint limit and the whole link tree.
+
+**Three robots, three different true answers, and the console must not average them.**
+Each was checked against the vendor's own source rather than against ROS convention:
+
+| | real robot | required by `fleet.py`? |
+|---|---|---|
+| myAGV | `myagv_active.launch` starts `robot_state_publisher`, `joint_state_publisher`, `robot_pose_ekf` and 3 tf1 static publishers, and loads the URDF by `textfile` | `/tf` yes, `/tf_static` no |
+| SO-101 | **no vendor ROS package exists at all** — `TheRobotStudio/SO-ARM100` ships description files and points at LeRobot. Every ROS 2 bringup is third-party, and all three that ship a launch run `robot_state_publisher` beside the controller manager | both yes |
+| AiNex | the vendor's own `display.launch` and `ainex_gazebo/position_controller.launch` run one off this same URDF; the **shipped boot chain** (`start_app_node.service` → `bringup.launch`) starts neither | neither |
+
+The AiNex line is the one that was written wrong first. The claim used to be "a sweep of
+`Hiwonder/ainex` finds no `robot_state_publisher` and no `/tf` anywhere", and an exhaustive
+sweep of both that repo (485 paths) and `UruBots/ainex-robot-code` (1299) finds three
+launch files running one, plus `ainex_peripherals/scripts/tf_broadcaster_imu.py` behind a
+`debug` flag that defaults false, plus `/tf` from the apriltag demos on the physical robot
+(`ainex_example/config/settings.yaml`: `publish_tf: true`). So giving a simulated AiNex a
+tree **matches the vendor's own simulation bringups**, off the vendor's own description; it
+differs only from what the shipped robot exposes over rosbridge at boot. Those are two
+claims, and conflating them is what made a narrow difference look like an invention.
+`robot_console/ainex_topics.py` still leaves the pair out of `CONTRACT_TOPICS`, because the
+boot chain is what a client actually meets.
+
 ### The myAGV — a ROS 1 mobile base
 
 | Direction | Topic | Type | Fields used |
@@ -634,10 +1160,13 @@ robots" above for the rule and why the constants stay bare on both sides.
 | robot → console | `/odom` | `nav_msgs/Odometry` | pose, twist; `odom` → `base_footprint` |
 | robot → console | `/camera/image_raw/compressed` | `sensor_msgs/CompressedImage` | base64 JPEG |
 | robot → console | `/scan` | `sensor_msgs/LaserScan` | `ranges`, angles, range limits |
+| robot → console | `/tf` | `tf2_msgs/TFMessage` | `odom → base_footprint`, the lidar and camera mounts |
 
 Namespaced: `/<ns>/cmd_vel` and friends, with `<ns>/odom → <ns>/base_footprint` and the
 lidar on `<ns>/laser_frame`. `--namespace myagv` on `bin/teleop.sh`, `bin/slam.sh` and
 `robot_console.smoke` sets all four topics at once; naming a topic explicitly still wins.
+On the first two the flag is optional — left out, the namespace is read off the wire (see
+"The launchers ask the wire", above); `robot_console.smoke` still defaults to bare.
 **`smoke.py` is the only code anywhere that reads a `frame_id`,** so its odom-frame check
 is what keeps the frame half of this verified rather than merely emitted.
 
@@ -648,9 +1177,21 @@ is holonomic (the myAGV is Mecanum), so `linear.y` is a real strafe.
 `laser_frame`, 0.1–12.0 m, 10 Hz, CCW from `-pi`, mounted at
 `base_footprint + (0.065, 0, 0.08)` per `myagv_active.launch`'s static transform. Both
 sides encode that mount offset; 65 mm is more than a map cell at 5 cm, and dropping it
-smears every wall by a cell. The driver's `inverted: true` and the transform's roll of
-π cancel, so no sign flip is needed anywhere — changing one without the other is the
-easy mistake. `ranges` is a plain JSON float array; only `uint8[]` is base64.
+smears every wall by a cell. `ranges` is a plain JSON float array; only `uint8[]` is
+base64.
+
+**The π in that static transform is on yaw, not roll, and this paragraph used to say
+otherwise.** The line is `args="0.065 0.0 0.08 3.14159265 0.0 0.0"`, and `tf`'s nine-
+argument form is `x y z yaw pitch roll` — so it is a half-turn about z, not an
+upside-down mount. The old claim here was that the driver's `inverted: true` and "the
+transform's roll of π" cancel so no sign flip is needed anywhere; roll π reverses a scan's
+angular direction and yaw π shifts it by 180° while preserving direction, so whatever is
+true of the real robot, that *reasoning* is not. The simulated lidar is a ray-cast that
+starts in the base frame and sweeps CCW from `-pi` with no mount rotation, so its own
+`base_footprint → laser_frame` transform is identity and its ranges are consistent with
+it. **The open question is the real robot**, and it wants a scan captured off hardware
+rather than another argument from the launch file — nothing here consumes the tree, so
+nothing has been forced to answer it.
 
 Bridge quirks that clients must not rely on: no status handshake on connect, `id` fields
 ignored and never echoed, no loopback of published topics, `advertise`/`unadvertise` are
@@ -681,12 +1222,27 @@ make it *less* like the real robot are regressions even when nothing fails.
 | robot → console | `/joint_states` | `sensor_msgs/msg/JointState` |
 | robot → console | `/free_joint_publisher/free_joint_states` | `mujoco_ros2_control_msgs/msg/FreeJointStateArray` |
 | robot → console | `/wrist/color/compressed` | `sensor_msgs/msg/CompressedImage` |
+| robot → console | `/tf`, `/tf_static` | `tf2_msgs/msg/TFMessage` |
 | scene → console | `/overhead/color/compressed`, `/side/color/compressed` | `sensor_msgs/msg/CompressedImage` |
 | console → robot | `/reset`, `/mujoco_ros2_control_node/reset_world` | Trigger-shaped `{success, message}` |
 
 Namespaced: `/<ns>/joint_states`, `/<ns>/reset` and the rest, `so101` by default.
 `-E namespace=so101` is how `inspect-robot` is pointed at it; `arm/ros_settings.py`
 applies the prefix in `base_kwargs()` and `cameras()`, never to the fields.
+
+**"A real ros2_control bringup for this arm" means a community one — there is no vendor
+ROS package.** `TheRobotStudio/SO-ARM100` has no `package.xml` and no `launch/` anywhere;
+`Simulation/SO101/` is description files and the README points at LeRobot, which is a
+Python/Feetech-serial stack. The reference this contract is written against is
+`ros-physical-ai/ros2_so_arm`, which is also where `JOINT_LIMITS` was found narrowing two
+channels and which carries a `mujoco_ros2_control` backend of its own — the closest thing
+to a canonical answer, and still third-party. Two consequences worth holding: its
+`ros2_controllers.yaml` declares the gripper as a
+`parallel_gripper_action_controller/GripperActionController`, which is the action-vs-topic
+constraint recorded below arrived at independently; and **the vendor URDF's joints carry
+no `_joint` suffix** (`shoulder_pan`, not `shoulder_pan_joint`) — the suffixed order in
+this contract is `ros2_so_arm`'s, so anyone diffing against TheRobotStudio's file directly
+will find a mismatch that is not a bug.
 
 **The last row is not the robot's, and does not take its namespace.** The overhead and
 side views are the worktop's fixed camera rig: they watch the work surface, they would

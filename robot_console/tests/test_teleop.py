@@ -1,6 +1,7 @@
 import pytest
 
 from robot_console.teleop import (
+    HEAD_STEP_MAX_S,
     HOLD_TIMEOUT,
     KEY_ESC,
     KEY_SPACE,
@@ -11,6 +12,7 @@ from robot_console.teleop import (
     TURN_RATIO,
     Action,
     Command,
+    HeadPose,
     TeleopState,
     action_for_key,
     clamp_speed,
@@ -247,4 +249,94 @@ def test_none_action_leaves_state_alone():
     state.apply(Action.FORWARD)
     before = state.command()
     state.apply(Action.NONE)
+    assert state.command() == before
+
+
+# --- the head, and the arrows that point it -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "key, expected",
+    [
+        (63232, Action.HEAD_UP), (63233, Action.HEAD_DOWN),      # Cocoa
+        (63234, Action.HEAD_LEFT), (63235, Action.HEAD_RIGHT),
+        (65362, Action.HEAD_UP), (65364, Action.HEAD_DOWN),      # GTK / Qt
+        (65361, Action.HEAD_LEFT), (65363, Action.HEAD_RIGHT),
+        (2490368, Action.HEAD_UP), (2621440, Action.HEAD_DOWN),  # Win32
+        (2424832, Action.HEAD_LEFT), (2555904, Action.HEAD_RIGHT),
+        (ord("0"), Action.HEAD_CENTRE),
+    ],
+)
+def test_arrow_keys_decode_on_every_backend(key, expected):
+    assert action_for_key(key) is expected
+
+
+def test_an_arrow_is_never_mistaken_for_the_letter_in_its_low_byte():
+    """The whole reason `action_for_key` looks at the full code before masking.
+
+    GTK reports Left as 0xFF51, whose low byte is 0x51 -> 'Q' -> ROT_LEFT. Masked first,
+    pressing left-arrow would turn the robot instead of the head -- a wrong action, not a
+    missing one, which is the kind that gets blamed on the gait.
+    """
+    assert action_for_key(65361) is Action.HEAD_LEFT
+    assert action_for_key(0xFF51 & 0xFF) is Action.ROT_LEFT  # the trap, when unmasked
+
+
+def test_head_turns_while_a_key_is_held_and_stops_at_its_limit():
+    head = HeadPose(pan_limit=0.5, tilt_limit=0.5, rate=1.0)
+    assert head.apply(Action.HEAD_LEFT, 0.1)
+    assert head.pan == pytest.approx(-0.1)
+    for _ in range(20):
+        head.apply(Action.HEAD_LEFT, 0.1)
+    assert head.pan == pytest.approx(-0.5)
+    # At the limit nothing moves, so nothing is published -- the point of the return value.
+    assert not head.apply(Action.HEAD_LEFT, 0.1)
+
+
+def test_head_signs_are_the_vendors_joint_signs_not_the_bases():
+    """Measured off the compiled model: `head_pan`'s axis is [0, 0, -1], so **+pan looks
+    right** -- the opposite of the base's `+z` counter-clockwise yaw. `head_tilt`'s is
+    [0, -1, 0] and +tilt looks up. Written the intuitive way round (left positive, like
+    `Q`), the left arrow pointed the camera right: a wrong direction, not a dead key.
+    """
+    head = HeadPose(pan_limit=2.0, tilt_limit=2.0, rate=1.0)
+    head.apply(Action.HEAD_LEFT, 0.1)
+    assert head.pan < 0
+    head.apply(Action.HEAD_CENTRE, 0.0)
+    head.apply(Action.HEAD_RIGHT, 0.1)
+    assert head.pan > 0
+    head.apply(Action.HEAD_CENTRE, 0.0)
+    head.apply(Action.HEAD_UP, 0.1)
+    assert head.tilt > 0
+    head.apply(Action.HEAD_CENTRE, 0.0)
+    head.apply(Action.HEAD_DOWN, 0.1)
+    assert head.tilt < 0
+
+
+def test_a_long_pause_does_not_swing_the_head_across_its_travel():
+    """`dt` is wall time since the last arrow, so it has to be capped.
+
+    Without the cap, an arrow pressed a minute after the last one would ask for 60 s of
+    travel in a single step and slam the head into its stop.
+    """
+    head = HeadPose(pan_limit=2.0, tilt_limit=2.0, rate=1.0)
+    head.apply(Action.HEAD_LEFT, 60.0)
+    assert head.pan == pytest.approx(-HEAD_STEP_MAX_S)
+
+
+def test_centring_reports_movement_only_when_there_was_some():
+    head = HeadPose(pan_limit=1.0, tilt_limit=1.0, rate=1.0)
+    assert not head.apply(Action.HEAD_CENTRE, 0.1)
+    head.apply(Action.HEAD_UP, 0.1)
+    assert head.apply(Action.HEAD_CENTRE, 0.1)
+    assert (head.pan, head.tilt) == (0.0, 0.0)
+
+
+def test_head_actions_do_not_drive_the_base():
+    """The arrows point a camera; they must not arm motion or disarm what is armed."""
+    state = TeleopState(speed=0.2)
+    state.apply(Action.FORWARD)
+    before = state.command()
+    for action in (Action.HEAD_LEFT, Action.HEAD_UP, Action.HEAD_CENTRE):
+        state.apply(action)
     assert state.command() == before

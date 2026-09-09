@@ -61,6 +61,16 @@ JOINT_STATES_TOPIC = "/joint_states"
 GRIPPER_COMMAND_TOPIC = "/gripper_controller/commands"
 GRIPPER_COMMAND_TYPE = "std_msgs/msg/Float64MultiArray"
 
+#: ``robot_state_publisher`` runs beside the broadcaster in every ros2_control bringup
+#: for this arm, turning those joint angles into frames. ROS 2 spelling of the message,
+#: because this robot is a ROS 2 stack and the myAGV beside it on the same graph is not.
+#: Nothing here consumes the tree -- ``kinematics.py`` does its own FK against the same
+#: description -- but an arm that publishes joint angles and no frames is an arm a
+#: standard client cannot draw, so the fleet check requires it.
+TF_TOPIC = "/tf"
+TF_STATIC_TOPIC = "/tf_static"
+TF_TYPE = "tf2_msgs/msg/TFMessage"
+
 #: ``task_manager`` publishes its verdict here on every free-joint message.
 
 #: ``FreeJointStatePublisherPlugin`` publishes the pose and twist of every body
@@ -83,13 +93,15 @@ APPLE_BODY = "apple"
 #: `SCENE_CAMERAS`. It went stale once already -- the overhead camera was re-posed from
 #: (0.500, 0.051, 0.614) to (0.795, 0.000, 1.110) and the prose kept the old number for
 #: weeks, which is 0.5 m of height for anything unprojecting pixels from that text.
-#: Re-posed again 2026-09-06: both cameras 20 % closer along their own optical axes,
-#: orientation unchanged (overhead 1.257 -> 1.006 m from its look-at point, side
-#: 0.916 -> 0.733 m). `vision_success` back-projects through this table, so a stale copy
-#: here is not a documentation error, it is a wrong verdict.
+#: Re-posed 2026-09-06: overhead 20 % closer along its own optical axis, orientation
+#: unchanged (1.257 -> 1.006 m from its look-at point). Re-posed again 2026-09-08: side
+#: moved *back* along its axis, 0.733 -> 1.233 m, so the whole robot is in the side view
+#: -- see the note on SCENE_CAMERAS in the simulator's apple_on_plate.py. `vision_success`
+#: back-projects through the overhead entry, so a stale copy of it here is not a
+#: documentation error, it is a wrong verdict; the side entry is not graded from.
 SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
     "overhead": (0.677, 0.000, 0.888),
-    "side": (0.288, 0.618, 0.112),
+    "side": (0.265, 1.110, 0.161),
 }
 #: Down-tilt of each scene camera, degrees below horizontal, for the same text.
 SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}

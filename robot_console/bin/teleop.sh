@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # Keyboard teleoperation for a mobile robot, simulated or real.
 #
-#   ./bin/teleop.sh                        drive a myAGV on ws://127.0.0.1:9090
+#   ./bin/teleop.sh                        drive whatever robot is on ws://127.0.0.1:9090
 #   ./bin/teleop.sh --robot ainex          ...an AiNex, which walks rather than rolls
+#   ./bin/teleop.sh --namespace myagv      ...the robot on /myagv/*, without asking
+#   ./bin/teleop.sh --namespace ''         ...the bare contract a real bringup presents
 #   ./bin/teleop.sh --host 192.168.1.42    ...a real myAGV on the network
 #   ./bin/teleop.sh --record runs/drive1   ...writing feed.mp4 + commands.jsonl
 #   ./bin/teleop.sh --no-preflight         skip the "is anything listening" check
 #   ./bin/teleop.sh --help                 every flag
+#
+# With neither --robot nor --namespace given, both are read off the wire: /rosapi/topics
+# says which robots are on that rosbridge and what each one is called. It has to be asked,
+# because the simulator names every robot after itself (/myagv/cmd_vel) while these
+# constants are the bare vendor contract (/cmd_vel) -- and a client subscribed to the
+# wrong one gets no error, just a black window and a robot that ignores every key.
 #
 # --robot picks the speed envelope, the on-screen wording and the wire contract: the
 # myAGV is driven by a Twist on /cmd_vel and reports /odom back; the AiNex has neither,

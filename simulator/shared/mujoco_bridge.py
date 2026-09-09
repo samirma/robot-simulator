@@ -36,6 +36,31 @@ TARGET_LEAD_M = 0.12
 TARGET_LEAD_RAD = 0.15
 
 
+def is_loose(model, bodyid: int) -> bool:
+    """Is this body a thing lying in the world, rather than part of the world?
+
+    Loose means its weld root hangs off the world on a **free joint**: an apple, a mug, a
+    bowl, a plate -- something a robot pushes and does not stand on. Everything else is
+    furniture, including a cabinet door and an oven drawer, which really are standable.
+
+    The obvious test, "is this body welded to the world" (`body_weldid == 0`), is the wrong
+    one and fails in a way that only a real scene shows: iTHOR hangs every cabinet door on
+    a hinge and every oven drawer on a slide, so on FloorPlan1 it calls **1608 of 2116
+    geoms** movable and a robot obeying it would fall through a third of the kitchen. The
+    free joint is what separates the two, and it puts the island the AiNex stands on
+    (`standardislandheight_...`, weld root 0) on the same side as the floor while leaving
+    the 37 things actually lying about -- apple, bowl, cup, bread, bottle, book, pan,
+    knife -- on the other.
+    """
+    root = int(model.body_weldid[bodyid])
+    if root == 0:
+        return False
+    adr, num = int(model.body_jntadr[root]), int(model.body_jntnum[root])
+    return any(
+        model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE for j in range(adr, adr + num)
+    )
+
+
 def laser_scan_ranges(
     model,
     data,
@@ -794,3 +819,178 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
                 time.sleep(min(slack, control_period / 4))
     except KeyboardInterrupt:
         pass
+
+
+# ------------------------------------------------------------------ the transform tree
+
+
+def _rel_pose(model, data, child: int, parent: int):
+    """`child`'s pose in `parent`'s frame, as `(pos, quat)` with quat `(w, x, y, z)`.
+
+    Read off `xpos`/`xmat` -- MuJoCo's own forward kinematics -- rather than composed out
+    of joint angles. Composing them here would be a second kinematics implementation to
+    keep in step with the first, and this project already has one lesson about a check
+    that shared its measurement's method.
+    """
+    del model  # signature symmetry with the rest of this module; data carries it all
+    parent_rot = data.xmat[parent].reshape(3, 3)
+    pos = parent_rot.T @ (data.xpos[child] - data.xpos[parent])
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(
+        quat, np.ascontiguousarray(parent_rot.T @ data.xmat[child].reshape(3, 3)).flatten()
+    )
+    return pos, quat
+
+
+def camera_link_pose(model, cam_id: int):
+    """A MuJoCo camera's pose in its parent body, in the URDF link convention.
+
+    MuJoCo cameras look down their own `-z` with `+y` up; a URDF camera link is the usual
+    robot convention of `+x` forward, `+y` left, `+z` up. `ainex_model._reparent_camera`
+    builds the camera's MuJoCo frame out of the link's axes that way round, and this is
+    the exact inverse -- so a camera frame published here lands where the description says
+    the camera is, and `shared/tests/tf_frames_check.py` holds the round trip to the
+    vendor's own numbers.
+
+    Publishing the MuJoCo frame raw instead is the failure that looks like a working
+    system: every transform resolves, nothing errors, and the camera is drawn on its side.
+    """
+    cam_rot = np.zeros(9)
+    mujoco.mju_quat2Mat(cam_rot, model.cam_quat[cam_id])
+    cam_rot = cam_rot.reshape(3, 3)
+    link_rot = np.column_stack([-cam_rot[:, 2], -cam_rot[:, 0], cam_rot[:, 1]])
+    quat = np.zeros(4)
+    mujoco.mju_mat2Quat(quat, np.ascontiguousarray(link_rot).flatten())
+    return np.asarray(model.cam_pos[cam_id], dtype=np.float64), quat
+
+
+class TransformTree:
+    """One robot's `/tf` and `/tf_static` content, read off the compiled model.
+
+    A robot's frames come from three sources here, each the most honest one available for
+    what it covers:
+
+    * **the model's bodies**, for every link the arm or the legs actually move. MuJoCo's
+      forward kinematics is what the simulation is stepping, so a transform read off
+      `xpos`/`xmat` cannot disagree with the robot in the viewer.
+    * **the model's cameras**, for the frames images are stamped with. The AiNex's camera
+      is on the head in this model and on the torso in the vendor description (see
+      `ainex_model` step 4), and it is the model that is right about the hardware -- so
+      the frame follows the model, converted back to the link convention.
+    * **the description's fixed joints**, passed in as `extra_static`, for links MuJoCo
+      merged away. A fixed-jointed link carries no body, so `imu_link` and
+      `gripper_frame_link` exist nowhere in the compiled model; a real
+      `robot_state_publisher` reads those out of the URDF too.
+
+    Frames are returned **bare**, without a namespace: `ros_surfaces/tf_stream.py` applies
+    `bus.frame()` at the one point they reach the wire, exactly as topic names are handled.
+
+    `frames` maps an MJCF body name -- with the engine's `robot_0/` prefix already
+    stripped -- to the name the contract gives that frame. It is a map rather than the
+    identity because the two genuinely differ on the SO-101 (`shoulder` in menagerie's
+    MJCF, `shoulder_link` in the description a client renders from), and because a body
+    the description does not have must not reach the wire at all: publishing menagerie's
+    `camera_mount` would leak this engine's model layout into a client's tf tree, which is
+    the rule that already keeps a camera's `frame_id` off its MJCF camera name.
+
+    The root's own transform is never published. A robot's root has no parent inside the
+    robot: the myAGV's comes from its odometry (`odom -> base_footprint`, which is what a
+    real `myagv_odometry_node` publishes), and the SO-101 and the AiNex have none at all,
+    which is what a real bringup of either presents.
+    """
+
+    def __init__(self, model, *, root_body: str, frames: dict[str, str], prefix: str = "",
+                 cameras: dict[str, str] | None = None, extra_static=()) -> None:
+        self._model = model
+        root = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, root_body)
+        if root < 0:
+            raise ValueError(f"tf: no body {root_body!r} in this model")
+        self._root = root
+
+        # body id -> frame, for the bodies this contract names. Anything else is skipped,
+        # and a skipped body's children attach to its nearest *named* ancestor rather than
+        # vanishing with it: that is what keeps the tree connected when a model carries a
+        # body the description does not.
+        self._frame_of: dict[int, str] = {}
+        for body in range(model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body) or ""
+            if not name.startswith(prefix):
+                continue
+            bare = name[len(prefix):]
+            if bare in frames and self._descends_from_root(body):
+                self._frame_of[body] = frames[bare]
+        if root not in self._frame_of:
+            raise ValueError(f"tf: {root_body!r} is the root but `frames` does not name it")
+
+        static: list[tuple[str, str, np.ndarray, np.ndarray]] = []
+        self._moving: list[tuple[int, int, str, str]] = []
+        for body, frame in sorted(self._frame_of.items()):
+            if body == root:
+                continue
+            parent = self._named_ancestor(body)
+            if parent is None:
+                continue
+            if parent == model.body_parentid[body] and model.body_jntnum[body] == 0:
+                # Welded straight to its named parent: the relative transform is in the
+                # model itself, so it needs no MjData and can never change.
+                static.append(
+                    (self._frame_of[parent], frame,
+                     np.asarray(model.body_pos[body], dtype=np.float64),
+                     np.asarray(model.body_quat[body], dtype=np.float64))
+                )
+            else:
+                self._moving.append((body, parent, self._frame_of[parent], frame))
+
+        for cam_name, frame in (cameras or {}).items():
+            cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, f"{prefix}{cam_name}")
+            if cam < 0:
+                continue  # an engine that did not compile this camera; not an error
+            parent = int(model.cam_bodyid[cam])
+            if parent not in self._frame_of:
+                continue  # a camera on a body this contract does not name
+            pos, quat = camera_link_pose(model, cam)
+            static.append((self._frame_of[parent], frame, pos, quat))
+
+        for parent_frame, child_frame, pos, quat in extra_static:
+            static.append((parent_frame, child_frame,
+                           np.asarray(pos, dtype=np.float64),
+                           np.asarray(quat, dtype=np.float64)))
+        self._static = static
+
+    def _descends_from_root(self, body: int) -> bool:
+        while body > 0:
+            if body == self._root:
+                return True
+            body = int(self._model.body_parentid[body])
+        return body == self._root
+
+    def _named_ancestor(self, body: int) -> int | None:
+        parent = int(self._model.body_parentid[body])
+        while parent > 0 and parent not in self._frame_of:
+            parent = int(self._model.body_parentid[parent])
+        return parent if parent in self._frame_of else None
+
+    @property
+    def root_frame(self) -> str:
+        return self._frame_of[self._root]
+
+    @property
+    def frames(self) -> tuple[str, ...]:
+        """Every frame this tree mentions, parents included. For tests and reports."""
+        names = {self.root_frame}
+        for parent, child, _, _ in self._static:
+            names.update((parent, child))
+        for _, _, parent, child in self._moving:
+            names.update((parent, child))
+        return tuple(sorted(names))
+
+    def static(self):
+        """The fixed transforms, computed once, as `(parent, child, pos, quat)`."""
+        return list(self._static)
+
+    def dynamic(self, data):
+        """The transforms a joint can change, this tick."""
+        return [
+            (parent_frame, frame) + _rel_pose(self._model, data, body, parent)
+            for body, parent, parent_frame, frame in self._moving
+        ]

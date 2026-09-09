@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
-# The SO-101, the myAGV and the AiNex on a kitchen work surface, one engine at a time.
+# The SO-101 and the myAGV on a kitchen work surface, one engine at a time.
 #
-#   ./kitchen.sh serve    load a world and serve it on rosbridge. Headless, always.
-#   ./kitchen.sh view     look at a world: a MuJoCo window, the live camera page, or both.
+#   ./kitchen.sh serve    load a world, serve it on rosbridge, optionally show it
+#   ./kitchen.sh view     the live camera page, on whatever is being served
 #
 #   ./kitchen.sh serve --help        ./kitchen.sh view --help
 #
-# Serving is `serve`'s alone and it never opens a window: a run is watched through the
-# cameras the robots actually present, and a window costs control rate for every client
-# on the port. Grading an episode is neither command's -- that is the console's:
+# `serve` owns the world, so it owns the window: MuJoCo builds a viewer from the model and
+# data objects in memory -- there is launch, launch_from_path and launch_passive, and no
+# connect -- so a window can only exist inside the process holding the physics. That is
+# why `--mujoco` is a `serve` flag and `view` has none. `view` is a websocket client and
+# nothing else: it attaches to a port and shows what is on it. Grading an episode is
+# neither command's -- that is the console's:
 #
 #   cd ../robot_console && ./run_task.sh [--episodes N]
 #
@@ -16,22 +19,22 @@
 # usage: ./kitchen.sh serve [flags]
 #
 # Loads an engine, stages shared/tasks/apple_on_plate.py into the kitchen it compiled, and
-# serves the robots on rosbridge. No window, ever -- that is `view`.
+# serves the robots on rosbridge. Headless unless --mujoco asks for a window.
 #
-#   --robots so101        which robots share the kitchen and the port: any of `so101`,
-#                         `myagv`, `ainex`, comma-separated. Each gets its own namespace
-#                         on one rosbridge -- /so101/*, /myagv/*, /ainex/* -- which is one
-#                         ROS graph with a namespace per robot, as a real bringup is.
-#                         The arm is bolted to a worktop and the AiNex stands on one; a
-#                         myAGV takes the floor of the same room. apple_on_plate is the
-#                         arm's task and is staged only when an arm is in the list -- so
-#                         without one you get the kitchen, the robots and their cameras,
-#                         and no /scene rig.
+#   --robots so101        which robots share the kitchen and the port: `so101`, `myagv`,
+#                         comma-separated. Each gets its own namespace on one rosbridge
+#                         -- /so101/*, /myagv/* -- which is one ROS graph with a
+#                         namespace per robot, as a real bringup is. The arm is bolted
+#                         to a worktop; a myAGV takes the floor of the same room.
+#                         apple_on_plate is staged when the arm is in the list, and with
+#                         it the worktop's camera rig on /scene/* -- the rig is the
+#                         scene's, published by the fleet, not by any robot. A kitchen
+#                         holding only a base gets the room, the robot and its camera.
 #   --cameras both        which cameras render:
 #                           both   the worktop rig and every robot's own
 #                           scene  the rig alone, on /scene/overhead and /scene/side
 #                           robot  each robot's own alone -- the SO-101's wrist_cam,
-#                                  a myAGV's or an AiNex's front_camera
+#                                  a myAGV's front_camera
 #                         Each one renders inside the physics loop, so each one costs
 #                         control rate for everyone on the port: one SO-101 publishes at
 #                         9.8 Hz and adding a camera-bearing myAGV takes it to 5.7. Both
@@ -39,6 +42,14 @@
 #                         expects -- `robot` drops the rig the arm task is graded from,
 #                         `scene` drops a base's camera, part of its vendor contract -- so
 #                         the console's fleet check refuses them, by name.
+#   --mujoco              open a MuJoCo window on the world being served. The window is
+#                         built from the model and data objects in memory -- MuJoCo has
+#                         launch, launch_from_path and launch_passive and no connect -- so
+#                         it belongs to the process holding the physics, which is this
+#                         one. That is why the flag is here and not on `view`, and why a
+#                         serve already running cannot grow a window: restart it with
+#                         --mujoco. Rendering it costs control rate for every client on
+#                         the port, and closing the window ends the run.
 #   --engine molmospaces  molmospaces | robocasa. One per run; only that one need be set up.
 #   --scene ithor:1       MolmoSpaces scene
 #   --layout 1 --style 1  RoboCasa kitchen, both 1-60
@@ -63,31 +74,25 @@
 # Examples:
 #   ./kitchen.sh serve
 #   ./kitchen.sh serve --robots so101,myagv --engine robocasa
-#   ./kitchen.sh serve --engine robocasa --robots ainex --cameras robot
+#   ./kitchen.sh serve --engine robocasa --robots myagv --cameras robot --mujoco
 #
 #: view
-# usage: ./kitchen.sh view [--mujoco] [--live] [world flags]
+# usage: ./kitchen.sh view [--port PORT] [--http-port PORT]
 #
-# Both by default; naming one gives that one alone.
+# Opens the live camera page in a browser on the rosbridge at --port. That is all `view`
+# is and all it can be: a websocket client. It holds no physics, compiles no kitchen and
+# takes none of the flags that shape a world -- it shows whatever is already on that port,
+# discovering the robots and their cameras from the wire, so it works against a serve in
+# another terminal without being told what that serve was started with. A window belongs
+# to the run that owns the world; ask `serve` for one with --mujoco.
 #
-#   --mujoco      a MuJoCo window, on a world of its own. It has to be its own: MuJoCo
-#                 builds a viewer from the model and data objects in memory -- there is
-#                 launch, launch_from_path and launch_passive, and no connect -- so a
-#                 window belongs to the process holding the physics and cannot be opened
-#                 onto one already running. This world is served to nobody: no rosbridge,
-#                 no robot on the wire. Say which world with the same --engine / --scene /
-#                 --layout / --robots flags `serve` takes; they default the same way.
-#   --live        the live camera page, in a browser, on the rosbridge at --port. This
-#                 half really does attach -- it is a websocket client -- so it shows what
-#                 a `serve` in another terminal is publishing and needs no world of its
-#                 own. Nothing serving there is an error.
-#   --port 9090       the rosbridge --live watches
+#   --live            names what `view` already is, and is accepted for that reason alone
+#   --port 9090       the rosbridge to watch. Nothing serving there is an error.
 #   --http-port 8791  the port the page itself is served on
 #
 # Examples:
-#   ./kitchen.sh view --live                      # watch a serve running elsewhere
-#   ./kitchen.sh view --mujoco --engine robocasa  # just the window, own world
-#   ./kitchen.sh view --engine robocasa           # both
+#   ./kitchen.sh view                 # watch the serve on 9090
+#   ./kitchen.sh view --port 9091     # ...or the one on 9091
 #
 set -euo pipefail
 
@@ -117,10 +122,15 @@ HTTP_PORT=8791
 ROBOTS="so101"
 ENGINE="molmospaces"
 CAMERAS="both"
-# What `view` opens. "auto" is both, which is what it means unless one of them is named.
-MUJOCO="auto"
-LIVE="auto"
+# Whether `serve` also opens a window on the world it is serving.
+MUJOCO=0
+# Whether --live was typed. It names what `view` already is, so it changes nothing there;
+# it exists so that `serve --live` can be refused by name rather than as "unknown flag".
+LIVE=0
 declare -a STAGE_FLAGS=()
+# Flags typed on the command line that shape a world. `view` shapes none, so it names
+# these back rather than accepting them and doing nothing with them.
+declare -a WORLD_FLAGS=()
 declare -a CAMERA_FLAGS=()
 REFERENCE_TABLE=0
 # Whether the plate and the apple trade places. Resolved per engine below: on for
@@ -152,51 +162,61 @@ case "${1:-}" in
 esac
 case "$cmd" in help|-h|--help) usage; exit 0 ;; esac
 
-# One list, because both commands shape a world the same way and differ only in what they
-# then do with it. What belongs to one command alone is refused for the other, by name.
+# One list, because the two commands share the ports and the help machinery. Everything
+# that describes a world belongs to `serve` alone now that `view` builds none, and is
+# collected into WORLD_FLAGS so a view can name back exactly what was typed.
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help)  usage "$cmd"; exit 0 ;;
-    --objects)  OBJECTS="$2"; shift 2 ;;
-    --scene)    SCENE="$2";   shift 2 ;;
-    --layout)   LAYOUT="$2";  shift 2 ;;
-    --style)    STYLE="$2";   shift 2 ;;
+    --objects)  OBJECTS="$2"; WORLD_FLAGS+=("$1"); shift 2 ;;
+    --scene)    SCENE="$2";   WORLD_FLAGS+=("$1"); shift 2 ;;
+    --layout)   LAYOUT="$2";  WORLD_FLAGS+=("$1"); shift 2 ;;
+    --style)    STYLE="$2";   WORLD_FLAGS+=("$1"); shift 2 ;;
     --port)     PORT="$2";    shift 2 ;;
     --http-port) HTTP_PORT="$2"; shift 2 ;;
-    --engine)   ENGINE="$2";  shift 2 ;;
-    --robots)   ROBOTS="$2";  shift 2 ;;
-    --cameras)  CAMERAS="$2"; shift 2 ;;
-    --mujoco)   MUJOCO=1; [ "$LIVE" = auto ] && LIVE=0; shift ;;
-    --live)     LIVE=1; [ "$MUJOCO" = auto ] && MUJOCO=0; shift ;;
-    --reference-table)    REFERENCE_TABLE=1; shift ;;
-    --no-reference-table) REFERENCE_TABLE=0; shift ;;
-    --no-dressing)        STAGE_FLAGS+=(--no-dressing);        shift ;;
-    --reference-lighting) STAGE_FLAGS+=(--reference-lighting); shift ;;
-    --extra-lights)       STAGE_FLAGS+=(--extra-lights);       shift ;;
-    --swap-objects)       SWAP=1; shift ;;
-    --no-swap-objects)    SWAP=0; shift ;;
-    --task-objects)       STAGE_FLAGS+=(--task-objects);       shift ;;
-    --side-camera-mirror) STAGE_FLAGS+=(--side-camera-mirror); shift ;;
+    --engine)   ENGINE="$2";  WORLD_FLAGS+=("$1"); shift 2 ;;
+    --robots)   ROBOTS="$2";  WORLD_FLAGS+=("$1"); shift 2 ;;
+    --cameras)  CAMERAS="$2"; WORLD_FLAGS+=("$1"); shift 2 ;;
+    --mujoco)   MUJOCO=1; shift ;;
+    # `view` is the page and only the page, so this names what it already does. Kept
+    # because it is what `serve` prints as the way to watch a run, and what a decade of
+    # muscle memory and every example types.
+    --live)     LIVE=1; shift ;;
+    --reference-table)    REFERENCE_TABLE=1; WORLD_FLAGS+=("$1"); shift ;;
+    --no-reference-table) REFERENCE_TABLE=0; WORLD_FLAGS+=("$1"); shift ;;
+    --no-dressing)        STAGE_FLAGS+=(--no-dressing);        WORLD_FLAGS+=("$1"); shift ;;
+    --reference-lighting) STAGE_FLAGS+=(--reference-lighting); WORLD_FLAGS+=("$1"); shift ;;
+    --extra-lights)       STAGE_FLAGS+=(--extra-lights);       WORLD_FLAGS+=("$1"); shift ;;
+    --swap-objects)       SWAP=1; WORLD_FLAGS+=("$1"); shift ;;
+    --no-swap-objects)    SWAP=0; WORLD_FLAGS+=("$1"); shift ;;
+    --task-objects)       STAGE_FLAGS+=(--task-objects);       WORLD_FLAGS+=("$1"); shift ;;
+    --side-camera-mirror) STAGE_FLAGS+=(--side-camera-mirror); WORLD_FLAGS+=("$1"); shift ;;
     *) die "unknown flag '$1' (try: ./kitchen.sh $cmd --help)" ;;
   esac
 done
 
 # Refused by name rather than accepted and ignored: silently doing nothing with a flag
-# somebody typed on purpose is worse than saying where it went.
+# somebody typed on purpose is worse than saying where it went. `view` compiles nothing,
+# so every flag that describes a world is one of these -- `view --engine robocasa` used to
+# be accepted and change nothing, which reads as the page showing the wrong engine.
 if [ "$cmd" = serve ]; then
-  { [ "$MUJOCO" = auto ] && [ "$LIVE" = auto ]; } \
-    || die "--mujoco and --live belong to \`view\`: a serve is headless, always.
-    ./kitchen.sh view --help"
+  [ "$LIVE" -eq 0 ] \
+    || die "--live belongs to \`view\`: it names the camera page, and a serve opens none.
+    ./kitchen.sh serve [flags] then ./kitchen.sh view"
 else
-  [ "$CAMERAS" = both ] \
-    || die "--cameras belongs to \`serve\`: it chooses what goes on the wire, and a view
-    puts nothing there.  ./kitchen.sh serve --help"
+  [ "$MUJOCO" -eq 0 ] \
+    || die "--mujoco belongs to \`serve\`: a window is built from the model and data
+    objects in memory, so it belongs to the process holding the physics -- there is no way
+    to open one onto an engine already running. Ask the run that owns the world:
+    ./kitchen.sh serve --mujoco [flags]"
+  if [ "${#WORLD_FLAGS[@]}" -gt 0 ]; then
+    named="$(printf '%s, ' "${WORLD_FLAGS[@]}")"; named="${named%, }"
+    [ "${#WORLD_FLAGS[@]}" -eq 1 ] && verb="belongs" || verb="belong"
+    die "$named $verb to \`serve\`: a view builds no world and shows whatever is on
+    --port, discovering the robots and their cameras from the wire.
+    ./kitchen.sh serve --help"
+  fi
 fi
-
-# Naming either one speaks for both, which is what makes `view --live` the page *without*
-# a window rather than the page as well as one.
-if [ "$MUJOCO" = auto ]; then [ "$cmd" = view ] && MUJOCO=1 || MUJOCO=0; fi
-if [ "$LIVE" = auto ];   then [ "$cmd" = view ] && LIVE=1   || LIVE=0;   fi
 
 case "$ENGINE" in
   molmospaces|robocasa) ;;
@@ -218,9 +238,10 @@ esac
 [ "$REFERENCE_TABLE" -eq 1 ] || STAGE_FLAGS+=(--no-reference-table)
 
 # apple_on_plate is the SO-101's task: it stages its objects in the arm's base frame and
-# its arbiter grades a jaw closing on an apple. A kitchen with no arm in it has nothing
-# for that to be about, so it gets the room and the robots and no task -- which is also
-# what stops the staging from binding to whichever robot happened to be first.
+# its arbiter grades a jaw closing on an apple. A myAGV takes the floor and has no work
+# surface and no gripper, so a kitchen holding only a base gets the room, the robot and
+# its camera and no task -- which is also what stops the staging from binding to
+# whichever robot happened to be first in the list.
 declare -a TASK_FLAGS=()
 case ",$ROBOTS," in
   *,so101,*) TASK_FLAGS=(--task apple_on_plate) ;;
@@ -313,7 +334,6 @@ stop_engine() {
 
 cleanup() {
   if [ -n "${http_pid:-}" ]; then kill "$http_pid" 2>/dev/null || true; fi
-  if [ -n "${view_pid:-}" ]; then stop_engine "$view_pid" ""; fi
   if [ -n "${sim_pid:-}" ]; then stop_engine "$sim_pid" "$PORT"; fi
 }
 
@@ -325,10 +345,11 @@ serve_page() {
   port_free "$HTTP_PORT" "pick another with --http-port PORT"
   python3 -m http.server "$HTTP_PORT" --directory "$ROOT" --bind 127.0.0.1 >/dev/null 2>&1 &
   http_pid=$!
-  # `ns` tells the page which robot's state and command topics the sliders drive. The
-  # camera grid does not need it -- it discovers streams from rosapi, so every robot on
-  # the port shows up regardless.
-  local url="http://127.0.0.1:$HTTP_PORT/live_cameras.html?url=ws://127.0.0.1:$PORT&ns=so101"
+  # Only the websocket address. The page asks rosapi what is on the graph and builds a
+  # panel per robot it finds, so it needs no `ns=` and no --robots echoed at it -- which
+  # it could not be given anyway when it is watching a serve in another terminal. `?ns=`
+  # is still honoured, as a filter to one robot.
+  local url="http://127.0.0.1:$HTTP_PORT/live_cameras.html?url=ws://127.0.0.1:$PORT"
   say "camera page: $url"
   command -v open >/dev/null && open "$url" || true
 }
@@ -338,26 +359,13 @@ serve_page() {
 if [ "$cmd" = view ]; then
   trap cleanup INT TERM EXIT
 
-  if [ "$MUJOCO" -eq 1 ]; then
-    need_engine "$(engine_root "$ENGINE")"
-    echo ">> $ENGINE $ROBOTS in a window (its own world; nothing is served)"
-    # No --ros-port: this world is looked at, not served. The task is still staged when
-    # there is an arm, so the window shows the apple and the plate, not a bare counter.
-    "$ENGINE" "$(engine_python viewer)" --control-hz 10 \
-      ${TASK_FLAGS[@]+"${TASK_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
-    view_pid=$!
-  fi
-
-  if [ "$LIVE" -eq 1 ]; then
-    nc -z 127.0.0.1 "$PORT" 2>/dev/null \
-      || die "nothing is serving on ws://127.0.0.1:$PORT - start one with:
-    ./kitchen.sh serve"
-    serve_page
-    echo "  the page shows what that simulator was started with; Ctrl-C stops serving it"
-  fi
-
-  if [ -n "${view_pid:-}" ]; then wait "$view_pid"; fi
-  if [ -n "${http_pid:-}" ]; then wait "$http_pid"; fi
+  nc -z 127.0.0.1 "$PORT" 2>/dev/null \
+    || die "nothing is serving on ws://127.0.0.1:$PORT - start one with:
+    ./kitchen.sh serve$([ "$PORT" = 9090 ] || echo " --port $PORT")
+    add --mujoco there if you also want a window on it"
+  serve_page
+  echo "  Ctrl-C stops the page; whatever serves ws://127.0.0.1:$PORT keeps running"
+  wait "$http_pid"
   exit 0
 fi
 
@@ -368,8 +376,19 @@ port_free "$PORT" "pick another with --port PORT"
 # EXIT as well as INT/TERM: without it a `die` anywhere below leaves the engine holding
 # its port, and the next run fails the port check for no visible reason.
 trap cleanup INT TERM EXIT
-echo ">> $ENGINE $ROBOTS on ws://127.0.0.1:$PORT (cameras: $CAMERAS)"
-"$ENGINE" "$(engine_python headless)" --headless --ros-port "$PORT" --control-hz 10 \
+# The window, if one was asked for, is opened by this process because the physics is here:
+# `launch_passive` builds a viewer from the model and data objects in memory. mjpython is
+# the macOS main-thread requirement that comes with it, which is the whole of the
+# difference between the two branches -- same engine, same flags, same wire.
+declare -a HEADLESS=(--headless)
+window=""
+if [ "$MUJOCO" -eq 1 ]; then
+  HEADLESS=()
+  window=" in a window"
+fi
+echo ">> $ENGINE $ROBOTS$window on ws://127.0.0.1:$PORT (cameras: $CAMERAS)"
+"$ENGINE" "$(engine_python "$([ "$MUJOCO" -eq 1 ] && echo viewer || echo headless)")" \
+  ${HEADLESS[@]+"${HEADLESS[@]}"} --ros-port "$PORT" --control-hz 10 \
   ${TASK_FLAGS[@]+"${TASK_FLAGS[@]}"} ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} \
   ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
 sim_pid=$!

@@ -7,6 +7,7 @@ in would be useless as a record of what the camera saw.
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Sequence, Tuple
 
 import cv2
@@ -61,12 +62,17 @@ def draw_overlay(
     speed_max: Optional[float] = None,
     moving: bool = False,
     hints: Optional[Sequence[Tuple[str, str]]] = None,
+    head: Optional[Tuple[float, float]] = None,
 ) -> np.ndarray:
     """Return a copy of `frame` with the key hints drawn on it.
 
     `hints` overrides the myAGV wording. The keys are the same for every robot but what
     they do is not -- one rolls and one walks -- and a legend that says "forward" to
     something that sidesteps is worse than no legend.
+
+    `head` is (pan, tilt) in radians for a robot that has one. It earns a badge because
+    the arrows are otherwise invisible: the camera is *on* the head, so the view moves and
+    nothing says whether that was the robot turning or the operator looking.
     """
     hints = HINTS if hints is None else hints
     canvas = frame.copy()
@@ -76,6 +82,7 @@ def draw_overlay(
         _badge(canvas, COLLAPSED, 12, 12)
         if speed is not None:
             _speed_badge(canvas, width, speed, speed_max, moving)
+        _head_badge(canvas, width, head)
         return canvas
 
     scale = 0.44 if width < 520 else 0.5
@@ -96,6 +103,7 @@ def draw_overlay(
 
     if speed is not None:
         _speed_badge(canvas, width, speed, speed_max, moving)
+    _head_badge(canvas, width, head)
     return canvas
 
 
@@ -115,3 +123,20 @@ def _speed_badge(
     colour = (140, 240, 140) if moving else (200, 200, 200)
     size = cv2.getTextSize(text, FONT, 0.44, 1)[0]
     _badge(frame, text, width - size[0] - 28, 12, colour)
+
+
+def _head_badge(frame: np.ndarray, width: int, head: Optional[Tuple[float, float]]) -> None:
+    """Where the head is pointed, under the speed badge. Degrees, because the operator is
+    aiming a camera and nobody aims one in radians."""
+    if head is None:
+        return
+    pan, tilt = head
+    # Direction words, not signs: these are the vendor's joint angles, and +pan is *right*
+    # because `head_pan`'s axis is -z -- the opposite of the base's yaw. A badge reading
+    # "+30" would be read as left by anyone who knows the ROS convention.
+    text = (f"head {abs(math.degrees(pan)):.0f}{'R' if pan > 0 else 'L'} "
+            f"{abs(math.degrees(tilt)):.0f}{'U' if tilt >= 0 else 'D'}")
+    # Dimmed when centred, so "the view is off-axis" is visible at a glance.
+    colour = (200, 200, 200) if (pan or tilt) else (140, 140, 140)
+    size = cv2.getTextSize(text, FONT, 0.44, 1)[0]
+    _badge(frame, text, width - size[0] - 28, 52, colour)

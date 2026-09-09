@@ -1,10 +1,11 @@
 <meta charset="utf-8">
-<title>SO-101 — live cameras</title>
+<title>simulator — live cameras</title>
 <!--
-  Live view of the simulator's own rendered cameras, straight off rosbridge.
+  Live view of the simulator's own rendered cameras, straight off rosbridge, and a
+  control panel for each robot found on the graph.
 
   Open it directly, or serve it if the browser refuses a websocket from file://:
-      python3 -m http.server 8791          # from robot_control/scripts/
+      python3 -m http.server 8791          # from simulator/
       http://127.0.0.1:8791/live_cameras.html
 
   There is no build step and no Python behind this page. rosbridge speaks plain
@@ -12,16 +13,22 @@
   `subscribe` ops and reads the same topics any other client would. That makes
   this an independent witness rather than a view of something an eval reported.
 
-  IT CAN COMMAND THE ARM, but only once you tick "Enable control". Until then it
-  subscribes and never publishes, so it cannot disturb a run. This is also the
-  answer to "why can't I drag the arm in the MuJoCo window?" -- that window is a
-  passive mirror of measured state; these sliders are the control surface, and
-  they move the real simulator, which both views then reflect.
+  NOTHING IS TOLD TO THIS PAGE. It used to be handed `?ns=so101` by the launcher and
+  drew one arm's sliders whatever was actually running -- so an AiNex-only kitchen got
+  five dead SO-101 sliders and an empty camera grid. Both halves are now read off the
+  wire: `/rosapi/topics` says which robots are on the graph and `topics_for_type` says
+  which cameras are publishing. A `view` attached to a `serve` in another terminal has
+  no way to be told what that serve was started with, so discovering it is not tidiness.
 
-  The frame rate you see (~3.9 Hz per camera) is the simulator's real publish
-  rate, measured on the container, not a limit of this page. The MuJoCo
-  CameraPlugin renders every <camera> in the scene and the republish nodes
-  compress them; that is what it costs.
+  IT CAN COMMAND A ROBOT, but only once you tick that robot's "Enable control". Until
+  then it subscribes and never publishes, so it cannot disturb a run. This is also the
+  answer to "why can't I drag the arm in the MuJoCo window?" -- that window is a passive
+  mirror of measured state; these panels are the control surface, and they move the real
+  simulator, which both views then reflect.
+
+  The frame rate you see is the simulator's real publish rate, not a limit of this
+  page: every camera renders inside the physics loop, so each one costs control rate
+  for everyone on the port.
 -->
 <style>
 :root{--bg:#f7f6f3;--panel:#fff;--ink:#1b1a17;--muted:#6b6862;--line:#e3e0d9;
@@ -41,10 +48,14 @@ h1{font-size:26px;margin:0 0 4px;letter-spacing:-.02em}
 /* auto-fit, so the grid follows however many cameras the simulator publishes
    rather than assuming two. One camera fills the row; three wrap on their own. */
 .views{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin:22px 0}
+/* A lone camera -- which is what `--cameras robot` on a single robot gives -- would
+   otherwise stretch to the full column and render a 640x480 stream at nearly a
+   megapixel of upscaled blur. Cap it near its native width instead. */
+.views:has(.view:only-child){grid-template-columns:minmax(280px,640px)}
 @media (max-width:820px){.views{grid-template-columns:1fr}}
 .view{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 /* object-fit:contain, not a stretched fill: the scene cameras are 640x480 but the
-   wrist camera is square, and forcing every frame into a 4:3 box would silently
+   wrist camera is 16:9, and forcing every frame into a 4:3 box would silently
    distort it -- which on a camera view reads as a lens property, not a bug. */
 .view img{width:100%;display:block;background:#000;aspect-ratio:4/3;object-fit:contain}
 .views .empty{grid-column:1/-1;padding:18px 20px;border:1px dashed var(--line);
@@ -64,33 +75,42 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
 .control.armed{border-color:var(--accent)}
 .arm{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;cursor:pointer;user-select:none}
 .arm input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
-.warn{font-size:12px;color:var(--muted);margin-left:auto;font-family:var(--mono)}
+.who{font-family:var(--mono);font-size:13px;color:var(--accent);margin-right:auto}
+.who .kind{color:var(--muted);font-weight:400}
+.warn{font-size:12px;color:var(--muted);font-family:var(--mono)}
 .control.armed .warn{color:var(--accent)}
-.sliders{margin-top:14px;display:grid;gap:9px}
-.sliders[aria-disabled=true]{opacity:.45;pointer-events:none}
-.row{display:grid;grid-template-columns:130px 1fr 76px;align-items:center;gap:12px}
-.scenery{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:14px 0 0}
-.scenery .k{margin:0}
-.scenery .obj{font:13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:#9aa4b2}
-.scenery .obj b{font-weight:600;color:#c9d1d9}
-.scenery .obj.moved{color:#e5c07b}
-.scenery .obj.moved b{color:#e5c07b}
+.body{margin-top:14px;display:grid;gap:12px}
+.body[aria-disabled=true]{opacity:.45;pointer-events:none}
+.sliders{display:grid;gap:9px}
+.row{display:grid;grid-template-columns:130px 1fr 96px;align-items:center;gap:12px}
 .row label{font-size:12.5px;font-family:var(--mono);color:var(--muted)}
 .row input[type=range]{width:100%;accent-color:var(--accent)}
 .row .val{font-family:var(--mono);font-size:12.5px;text-align:right}
 .row .val.far{color:var(--accent)}
-.ctlfoot{margin-top:12px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.ctlfoot button{font:inherit;font-size:13px;padding:6px 14px;border-radius:8px;
+.sect{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;
+ margin-top:4px;border-top:1px solid var(--line);padding-top:10px}
+.btns{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-size:13px;padding:6px 14px;border-radius:8px;
  border:1px solid var(--line);background:var(--bg);color:var(--ink);cursor:pointer}
-.ctlfoot button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
-.ctlfoot button:disabled{opacity:.45;cursor:default}
-.ctlfoot .sent{font-size:12px;color:var(--muted);font-family:var(--mono);margin-left:auto}
+button:hover:not(:disabled){border-color:var(--accent);color:var(--accent)}
+button:disabled{opacity:.45;cursor:default}
+.sent{font-size:12px;color:var(--muted);font-family:var(--mono);margin-left:auto}
+.readout{display:flex;flex-wrap:wrap;gap:8px 20px;font-family:var(--mono);font-size:12.5px;
+ color:var(--muted);border-top:1px solid var(--line);padding-top:10px}
+.readout b{color:var(--ink);font-weight:600}
+.readout b.ok{color:var(--ok)}
+.scenery{display:flex;flex-wrap:wrap;align-items:center;gap:10px 18px;margin:14px 0 0}
+.scenery .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0}
+.scenery .obj{font:13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--muted)}
+.scenery .obj b{font-weight:600;color:var(--ink)}
+.scenery .obj.moved,.scenery .obj.moved b{color:#e5c07b}
+[hidden]{display:none!important}
 </style>
 
 <div class="wrap">
-  <h1>SO-101 — live cameras</h1>
-  <p class="sub">The simulator's own rendered views, read directly off rosbridge. Display only —
-  this page subscribes and never publishes.</p>
+  <h1 id="title">live cameras</h1>
+  <p class="sub">The simulator's own rendered views, read directly off rosbridge, with a
+  control panel for every robot on the graph. It publishes only where you arm it.</p>
   <span class="status"><span class="dot" id="dot"></span><span id="conn">connecting…</span></span>
 
   <!-- Filled at runtime from whatever the simulator is publishing. Empty here on
@@ -100,67 +120,696 @@ code{font-family:var(--mono);font-size:12px;background:rgba(128,128,128,.14);pad
     <div class="empty" id="views-empty">looking for cameras…</div>
   </div>
 
-  <div class="grid">
-    <div class="card"><div class="k">Apple position</div><div class="v" id="pos">—</div>
-      <div class="n">arm base frame, metres</div></div>
-    <div class="card"><div class="k">Apple speed</div><div class="v" id="spd">—</div>
-      <div class="n">gate &lt; 0.010 m/s</div></div>
-    <div class="card"><div class="k">Distance to plate</div><div class="v" id="dist">—</div>
-      <div class="n">gate &lt; 0.080 m</div></div>
-    <div class="card"><div class="k">On the plate</div><div class="v" id="succ">—</div>
-      <div class="n">read from the overhead frame, as the grader does</div></div>
-  </div>
+  <!-- The arm's task, and only shown when the arm's task is on the wire. A kitchen with
+       no arm in it stages no apple_on_plate (kitchen.sh only passes --task when so101 is
+       among --robots), so these four gauges would otherwise sit at "—" all run, which
+       reads as a broken feed rather than as a task that is not being played. -->
+  <div id="task" hidden>
+    <div class="grid">
+      <div class="card"><div class="k">Apple position</div><div class="v" id="pos">—</div>
+        <div class="n">arm base frame, metres</div></div>
+      <div class="card"><div class="k">Apple speed</div><div class="v" id="spd">—</div>
+        <div class="n">gate &lt; 0.010 m/s</div></div>
+      <div class="card"><div class="k">Distance to plate</div><div class="v" id="dist">—</div>
+        <div class="n">gate &lt; 0.080 m</div></div>
+      <div class="card"><div class="k">On the plate</div><div class="v" id="succ">—</div>
+        <div class="n">the contract's gate, as the grader applies it</div></div>
+    </div>
 
-  <!-- The wire carries six free bodies, not one. The other five get a strip rather than
-       five more cards, because their absolute positions are staged constants that never
-       change and would be five readouts of the same numbers all episode. What is worth
-       seeing is the moment one of them stops being a constant, so each shows how far it
-       has drifted from where this page first saw it: a jaw that clipped the mug on its
-       way past is otherwise invisible until the episode inexplicably fails. -->
-  <div class="scenery" id="scenery">
-    <span class="k">Also on the surface</span>
-    <span class="empty" id="scenery-empty">waiting for free-joint states…</span>
-  </div>
-
-  <div class="control" id="control">
-    <label class="arm"><input type="checkbox" id="enable"> Enable control
-      <span class="warn" id="warn">observing only — publishes nothing</span></label>
-    <div class="sliders" id="sliders" aria-disabled="true"></div>
-    <div class="ctlfoot">
-      <button id="sync" disabled>Sync to measured</button>
-      <button id="open" disabled>Open jaw</button>
-      <button id="close" disabled>Close jaw</button>
-      <span class="sent" id="sent">0 commands sent</span>
+    <!-- The wire carries six free bodies, not one. The other five get a strip rather than
+         five more cards, because their absolute positions are staged constants that never
+         change and would be five readouts of the same numbers all episode. What is worth
+         seeing is the moment one of them stops being a constant, so each shows how far it
+         has drifted from where this page first saw it: a jaw that clipped the mug on its
+         way past is otherwise invisible until the episode inexplicably fails. -->
+    <div class="scenery" id="scenery">
+      <span class="k">Also on the surface</span>
+      <span id="scenery-empty">waiting for free-joint states…</span>
     </div>
   </div>
 
+  <div id="robots"></div>
+
   <footer>Showing <span id="cam-count">no cameras</span> — <span id="cam-list">discovering…</span>
-  — found by asking <code>rosapi/topics_for_type</code> for everything publishing
-  <code>CompressedImage</code>, rechecked every few seconds, so a simulator restarted with
-  <code>--wrist</code> appears here without a reload. Also subscribed to
-  <code>/free_joint_publisher/free_joint_states</code> and
-  <code>/joint_states</code>. Camera rate is the simulator's, not this page's, and it falls as
-  more cameras are enabled: measured on MolmoSpaces, ~9.7 Hz with two and ~7.6 Hz with three,
-  roughly halving again when both engines share one GPU. While disarmed the sliders
-  follow the measured pose, so enabling control never jumps the arm.</footer>
+  — found by asking <code>rosapi/topics_for_type</code> for everything publishing a
+  CompressedImage, in <em>both</em> dialects, rechecked every few seconds so a simulator
+  restarted with one more camera appears here without a reload. The robots and their
+  control panels come from <code>rosapi/topics</code> the same way. While a panel is
+  disarmed its sliders follow the measured state, so enabling control never jumps a
+  robot.</footer>
 </div>
 
 <script>
+// ---------------------------------------------------------------- wiring ---
+
+const PARAMS = new URLSearchParams(location.search);
+const URL_WS = PARAMS.get('url') || 'ws://127.0.0.1:9090';
+// A filter, not a setting. Left off -- which is how kitchen.sh opens this page -- every
+// robot on the graph gets a panel. Given, only that namespace does, which is the way to
+// watch a fleet without six panels on screen.
+const ONLY_NS = PARAMS.has('ns') ? PARAMS.get('ns').replace(/^\/+|\/+$/g, '') : null;
+
+const el = id => document.getElementById(id);
+let socket = null, discoverTimer = null, sent = 0;
+
+// topic -> handler, so one onmessage can route to whichever robot owns the topic
+// without every panel re-testing every message.
+const routes = new Map();
+// The subscribe/advertise ops that must survive a reconnect. rosbridge keeps no state
+// across a dropped websocket, so a panel built on the first connection goes silently deaf
+// on the second -- its sliders still move and nothing arrives. Cameras are NOT in here:
+// they are rediscovered on every reconnect, and replaying a stale one would resubscribe
+// to a camera the simulator no longer renders.
+const wireOps = [];
+
+function setStatus(text, cls) {
+  el('conn').textContent = text;
+  el('dot').className = 'dot' + (cls ? ' ' + cls : '');
+}
+
+function send(op) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+  socket.send(JSON.stringify(op));
+  return true;
+}
+
+function subscribe(topic, type, handler, extra, persist) {
+  routes.set(topic, handler);
+  // queue_length 1 keeps the newest message rather than a backlog: on a live view a
+  // stale queued frame is worse than a dropped one.
+  const op = Object.assign({ op: 'subscribe', topic, type, queue_length: 1 }, extra || {});
+  if (persist) wireOps.push(op);
+  send(op);
+}
+
+function advertise(topic, type) {
+  const op = { op: 'advertise', topic, type };
+  wireOps.push(op);
+  send(op);
+}
+
+function publish(topic, msg) {
+  if (!send({ op: 'publish', topic, msg })) return false;
+  sent++;
+  for (const node of document.querySelectorAll('.sent')) {
+    node.textContent = sent + (sent === 1 ? ' command sent' : ' commands sent');
+  }
+  return true;
+}
+
+function callService(service, args) {
+  // Fire and forget: these are Trigger-shaped and the panel's own subscriptions are what
+  // report the result (`is_walking` for the walk commands, `joint_states` for the rest).
+  send({ op: 'call_service', service, args: args || {} });
+  sent++;
+  for (const node of document.querySelectorAll('.sent')) {
+    node.textContent = sent + (sent === 1 ? ' command sent' : ' commands sent');
+  }
+}
+
+// ---------------------------------------------------------------- cameras ---
+//
+// Cameras are DISCOVERED, not listed. rosbridge exposes rosapi, whose topics_for_type
+// answers "what is publishing a CompressedImage right now" -- so the page shows exactly
+// the cameras that exist, however many that is. The eye-in-hand view is off unless the
+// simulator was started with `--cameras both`, so the count legitimately differs between
+// runs, and a hardcoded pair is wrong in both directions at once.
+//
+// TWO type strings, because two dialects share one graph. The SO-101 is a ROS 2
+// ros2_control bringup and its cameras are `sensor_msgs/msg/CompressedImage`; the myAGV
+// and the AiNex are ROS 1 stacks and theirs are `sensor_msgs/CompressedImage`
+// (shared/ros_surfaces/ainex/topics.py, shared/ros_surfaces/myagv.py). `topics_for_type`
+// matches the string exactly (shared/contracts/rosbridge_server.py), so asking for one
+// dialect finds one dialect -- which is why a myAGV or AiNex run showed an empty grid and
+// looked like a simulator that had failed to render anything.
+const CAMERA_TYPES = ['sensor_msgs/msg/CompressedImage', 'sensor_msgs/CompressedImage'];
+const CAMERA_ID = 'camera-discovery';
+const TOPICS_ID = 'robot-discovery';
+// Re-poll so a simulator restarted with another camera, or another robot, picks it up
+// instead of needing a reload.
+const DISCOVER_EVERY_MS = 5000;
+
+//: topic -> {name, img, frames, count} for every camera currently on screen.
+const cameras = new Map();
+
+// '/scene/overhead/color/compressed' -> 'scene/overhead'
+// '/ainex/camera/image_raw/compressed' -> 'ainex/camera'
+// image_transport appends a suffix to the camera's own name, and which suffix depends on
+// the driver the contract mirrors: `/color/compressed` behind a RealSense-style node,
+// `/image_raw/compressed` behind usb_cam. Anything matching neither falls back to the
+// full topic, which is ugly but never wrong.
+const CAMERA_NAME_SHAPES = [
+  /^\/(.+)\/color\/compressed$/,
+  /^\/(.+)\/image_raw\/compressed$/,
+];
+
+function cameraName(topic) {
+  for (const shape of CAMERA_NAME_SHAPES) {
+    const m = topic.match(shape);
+    if (m) return m[1];
+  }
+  return topic.replace(/^\//, '');
+}
+
+function clearCameras() {
+  for (const topic of cameras.keys()) routes.delete(topic);
+  cameras.clear();
+  el('views').innerHTML = '<div class="empty" id="views-empty">looking for cameras…</div>';
+  updateFooter();
+}
+
+function addCamera(topic, type) {
+  if (cameras.has(topic)) return;
+  const name = cameraName(topic);
+  const view = document.createElement('div');
+  view.className = 'view';
+  const img = document.createElement('img');
+  img.alt = name;
+  const cap = document.createElement('div');
+  cap.className = 'cap';
+  const label = document.createElement('span');
+  label.textContent = name;
+  const frames = document.createElement('span');
+  frames.textContent = '— frames';
+  cap.append(label, frames);
+  view.append(img, cap);
+  el('views').append(view);
+  const cam = { name, img, frames, count: 0 };
+  cameras.set(topic, cam);
+  el('views-empty')?.remove();
+  // Subscribed with the type it was found under, not with a guess: the two dialects want
+  // their own string and rosbridge is the one routing on it.
+  subscribe(topic, type, msg => {
+    const fmt = (msg.format || 'jpeg').toLowerCase();
+    cam.img.src = 'data:' + (fmt.includes('png') ? 'image/png' : 'image/jpeg')
+                + ';base64,' + msg.data;
+    cam.frames.textContent = ++cam.count + ' frames';
+  });
+}
+
+function updateFooter() {
+  const names = [...cameras.values()].map(c => c.name);
+  el('cam-list').innerHTML = names.length
+    ? names.map(n => '<code>' + n + '</code>').join(', ')
+    : '<em>none found</em>';
+  el('cam-count').textContent = names.length === 1 ? '1 camera' : names.length + ' cameras';
+  const empty = el('views-empty');
+  if (empty && names.length === 0) {
+    empty.textContent = 'No camera is publishing. Check the simulator is running, and '
+      + 'note that --cameras scene turns a base’s own camera off and --cameras robot '
+      + 'turns the worktop rig off.';
+  }
+}
+
+function discover() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  for (const type of CAMERA_TYPES) {
+    send({ op: 'call_service', service: '/rosapi/topics_for_type',
+           id: CAMERA_ID + ':' + type, args: { type } });
+  }
+  send({ op: 'call_service', service: '/rosapi/topics', id: TOPICS_ID, args: {} });
+}
+
+// ---------------------------------------------------------------- robots ---
+//
+// Which robots are on the graph, read off the graph. `/rosapi/topics` answers from what
+// has been published PLUS what each surface declared to `on()` -- rosbridge_server.py
+// keeps subscriptions in that answer precisely so a client can discover how to *command*
+// a robot rather than only how to watch it, which is what makes this possible at all.
+//
+// A namespace is identified by a topic only that robot's vendor stack has. They are all
+// command topics for that reason: a robot that publishes nothing yet -- one whose first
+// camera frame has not been encoded -- is still identifiable the moment it is attached.
+const SIGNATURES = [
+  ['so101', '/joint_trajectory_controller/joint_trajectory'],
+  ['ainex', '/walking/set_param'],
+  ['myagv', '/cmd_vel'],
+];
+// Not a robot: the worktop's fixed camera rig watches the room and would still be there
+// with the arm unbolted, so it has a namespace of its own and no control panel. Its
+// cameras are already in the grid above.
+const NOT_A_ROBOT = new Set(['scene', 'rosapi']);
+
+//: namespace -> {kind, panel}
+const robots = new Map();
+
+function classify(topics) {
+  const found = new Map();
+  const set = new Set(topics);
+  for (const topic of topics) {
+    const m = topic.match(/^\/([^/]+)\//);
+    if (!m) continue;
+    const ns = m[1];
+    if (NOT_A_ROBOT.has(ns) || found.has(ns)) continue;
+    if (ONLY_NS !== null && ns !== ONLY_NS) continue;
+    for (const [kind, signature] of SIGNATURES) {
+      if (set.has('/' + ns + signature)) { found.set(ns, kind); break; }
+    }
+  }
+  return found;
+}
+
+function onTopics(topics) {
+  const found = classify(topics);
+  for (const [ns, kind] of found) {
+    if (robots.has(ns)) continue;
+    const build = PANELS[kind];
+    if (!build) continue;
+    const panel = makePanel(ns, kind);
+    build(ns, panel);
+    robots.set(ns, { kind, panel });
+  }
+  updateTitle();
+}
+
+function updateTitle() {
+  const names = [...robots.keys()];
+  const label = names.length ? names.join(', ') : 'simulator';
+  el('title').textContent = label + ' — live cameras';
+  document.title = label + ' — live cameras';
+}
+
+// The shell every panel shares: the arm switch, and a body that publishes nothing until
+// it is ticked. One switch per robot, so arming the arm cannot start the humanoid walking.
+function makePanel(ns, kind) {
+  const box = document.createElement('div');
+  box.className = 'control';
+  const head = document.createElement('label');
+  head.className = 'arm';
+  head.innerHTML =
+    '<input type="checkbox">' +
+    '<span class="who">' + ns + ' <span class="kind">' + kind + '</span></span>' +
+    '<span class="warn">observing only — publishes nothing</span>';
+  const body = document.createElement('div');
+  body.className = 'body';
+  body.setAttribute('aria-disabled', 'true');
+  box.append(head, body);
+  el('robots').append(box);
+
+  const panel = {
+    ns, kind, box, body, armed: false,
+    topic: t => '/' + ns + t,
+    // Every command path goes through these two, so one `armed` test covers the panel.
+    publish: (t, msg) => panel.armed && publish(panel.topic(t), msg),
+    call: (s, a) => { if (panel.armed) callService(panel.topic(s), a); },
+    onArm: () => {},
+  };
+  head.querySelector('input').addEventListener('change', e => {
+    panel.armed = e.target.checked;
+    body.setAttribute('aria-disabled', String(!panel.armed));
+    box.className = 'control' + (panel.armed ? ' armed' : '');
+    head.querySelector('.warn').textContent = panel.armed
+      ? '⚠ publishing to the simulator' : 'observing only — publishes nothing';
+    panel.onArm(panel.armed);
+  });
+  return panel;
+}
+
+// ---------------------------------------------------------------- widgets ---
+
+function section(panel, label) {
+  const node = document.createElement('div');
+  node.className = 'sect';
+  node.textContent = label;
+  panel.body.append(node);
+}
+
+// `format` is handed the output element as well as the value, because a formatter that
+// closed over the row it is being built for would read it inside its own initialiser.
+function sliderRow({label, min, max, step, value, format, onInput}) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  const out = document.createElement('span');
+  out.className = 'val';
+  const input = document.createElement('input');
+  Object.assign(input, { type: 'range', min, max, step, value });
+  const name = document.createElement('label');
+  name.textContent = label;
+  row.append(name, input, out);
+  const show = () => { out.textContent = format(+input.value, out); };
+  input.addEventListener('input', () => { show(); onInput(+input.value); });
+  show();
+  return { row, input, out, show };
+}
+
+function buttonRow(buttons) {
+  const row = document.createElement('div');
+  row.className = 'btns';
+  for (const [label, fn] of buttons) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    row.append(b);
+  }
+  return row;
+}
+
+function sentCounter() {
+  const s = document.createElement('span');
+  s.className = 'sent';
+  s.textContent = sent + (sent === 1 ? ' command sent' : ' commands sent');
+  return s;
+}
+
+// ---------------------------------------------------------------- SO-101 ---
+//
+// The arm only moves if the JointTrajectory carries a `header`. Without one the message
+// is accepted by rosbridge and then does nothing at all: joint_trajectory_controller
+// holds its pose and reports zero error, silently. Measured on this simulator, +0.25 rad
+// tracks exactly with a header and travels +0.00000 without. stamp 0 means "start now".
+// None of the other robots' commands is a JointTrajectory, so none of them needs this.
+const ZERO_HEADER = { stamp: { sec: 0, nanosec: 0 }, frame_id: '' };
+//: Matches the eval's 10 Hz control period; the controller ignores the exact value
+//: (0.1 s to 3.0 s made no measurable difference) but it must be present.
+const TIME_FROM_START = { sec: 0, nanosec: 100000000 };
+
+// MJCF ranges, mirroring kinematics.JOINT_LIMITS. The five arm joints go on the
+// trajectory controller; gripper_joint is a separate ForwardCommandController.
+const ARM_JOINTS = [
+  ['shoulder_pan_joint',  -1.9199,  1.9199],
+  ['shoulder_lift_joint', -1.7453,  1.7453],
+  ['elbow_flex_joint',    -1.69,    1.54  ],
+  ['wrist_flex_joint',    -1.6,     1.6   ],
+  ['wrist_roll_joint',    -2.3,     2.3   ],
+];
+const GRIPPER = ['gripper_joint', 0.0, 1.0];   // 0 = closed
+
+function buildSo101(ns, panel) {
+  const ARM_CMD = '/joint_trajectory_controller/joint_trajectory';
+  const GRIP_CMD = '/gripper_controller/commands';
+  advertise(panel.topic(ARM_CMD), 'trajectory_msgs/msg/JointTrajectory');
+  advertise(panel.topic(GRIP_CMD), 'std_msgs/msg/Float64MultiArray');
+
+  const measured = {};
+  const rows = new Map();
+
+  const sendArm = () => panel.publish(ARM_CMD, {
+    header: ZERO_HEADER,
+    joint_names: ARM_JOINTS.map(j => j[0]),
+    points: [{
+      positions: ARM_JOINTS.map(j => +rows.get(j[0]).input.value),
+      time_from_start: TIME_FROM_START,
+    }],
+  });
+  const sendGripper = () =>
+    // A topic, not an action: ForwardCommandController on gripper_joint, and it needs no
+    // header -- which is exactly why a headerless arm command can look fine while the arm
+    // never moves.
+    panel.publish(GRIP_CMD, { data: [+rows.get(GRIPPER[0]).input.value] });
+
+  const sliders = document.createElement('div');
+  sliders.className = 'sliders';
+  for (const [name, lo, hi] of [...ARM_JOINTS, GRIPPER]) {
+    const row = sliderRow({
+      label: name.replace('_joint', ''), min: lo, max: hi, step: 0.001, value: 0,
+      format: (v, out) => {
+        const m = measured[name];
+        // Highlight while the arm is still travelling to a commanded pose.
+        out.className = 'val' + (m !== undefined && Math.abs(m - v) > 0.02 ? ' far' : '');
+        return v.toFixed(3);
+      },
+      onInput: () => { name === GRIPPER[0] ? sendGripper() : sendArm(); },
+    });
+    rows.set(name, row);
+    sliders.append(row.row);
+  }
+  panel.body.append(sliders);
+
+  const syncSliders = () => {
+    for (const [name, row] of rows) {
+      const v = measured[name];
+      if (v === undefined) continue;
+      row.input.value = v;
+      row.show();
+    }
+  };
+  panel.onArm = on => { if (!on) syncSliders(); };
+
+  const foot = buttonRow([
+    ['Sync to measured', () => { syncSliders(); sendArm(); sendGripper(); }],
+    ['Open jaw',  () => { rows.get(GRIPPER[0]).input.value = GRIPPER[2];
+                          rows.get(GRIPPER[0]).show(); sendGripper(); }],
+    ['Close jaw', () => { rows.get(GRIPPER[0]).input.value = GRIPPER[1];
+                          rows.get(GRIPPER[0]).show(); sendGripper(); }],
+  ]);
+  foot.append(sentCounter());
+  panel.body.append(foot);
+
+  // /joint_states runs at ~156 Hz; nothing here needs more than ~20 Hz.
+  subscribe(panel.topic('/joint_states'), 'sensor_msgs/msg/JointState', msg => {
+    // The `name` array is ALPHABETICALLY sorted, not in contract joint order. Index by
+    // name or the sliders end up driving the wrong joints.
+    const names = msg.name || [], pos = msg.position || [];
+    names.forEach((n, i) => { measured[n] = pos[i]; });
+    if (!panel.armed) syncSliders();
+  }, { throttle_rate: 50 }, true);
+
+  // The task's objects, and the only robot that has any: apple_on_plate is staged only
+  // when an arm is in --robots.
+  subscribe(panel.topic('/free_joint_publisher/free_joint_states'),
+            'mujoco_ros2_control_msgs/msg/FreeJointStateArray', onFreeJoints, null, true);
+}
+
+// ---------------------------------------------------------------- AiNex ---
+//
+// The AiNex has no /cmd_vel, no /odom and no /tf, and that is not an omission: a sweep of
+// the vendor's own nodes finds none of the three. It is driven as a walking state machine
+// plus a parameter block, and everything it does with its hands is a recorded servo
+// trajectory replayed open-loop. So this panel is that shape and not a drive pad.
+//
+// Field names and units below are the wire's, read off `on_walking_param` in
+// shared/ros_surfaces/ainex/surface.py -- they are NOT the names gait.WalkingParam holds:
+// period_time is milliseconds there and seconds inside, and the yaw amplitude is degrees
+// on the wire and radians inside. The envelope is gait.py's.
+const AINEX_GAIT = [
+  // label, wire field, min, max, step, unit shown
+  ['fwd',    'x_move_amplitude',     -0.02,  0.02,  0.001, 'm'],
+  ['strafe', 'y_move_amplitude',     -0.02,  0.02,  0.001, 'm'],
+  ['turn',   'angle_move_amplitude', -10.0,  10.0,  0.5,   '°'],
+  ['period', 'period_time',          150,    1000,  10,    'ms'],
+];
+// Body advance per gait cycle in units of x_move_amplitude, and the one calibrated
+// constant in gait.py: 4*0.02/0.400 = 0.200 m/s against Hiwonder's published 0.21.
+const STRIDE_FACTOR = 4.0;
+// The action groups shipped in shared/ros_surfaces/ainex/action_groups/. There is no
+// discovery service for these, so the list is copied; that directory is the authority.
+// A name the robot does not have is logged and ignored server-side, so a stale button
+// costs a line on the simulator's stderr and nothing else.
+const AINEX_ACTIONS = [
+  'stand', 'walk_ready', 'wave', 'greet', 'clamp_left', 'clamp_right',
+  'crawl_left', 'crawl_right', 'hand_open', 'hand_back', 'place_block', 'put_down',
+];
+// Every joint individually, grouped the way the body is. These are the manufacturer's
+// own per-joint controllers: `/<joint>_controller/command` for each of the 24, the
+// layout ainex_gazebo/config/position_controller.yaml declares. The head pair take
+// `ainex_interfaces/HeadState` ({position, duration}), the rest `std_msgs/Float64`
+// ({data}); the surface accepts either on any of them. Sliders span the servo's full
+// ±2.09 rad; the four asymmetric joints (knees, shoulder pitches) are clamped
+// server-side to their real range, so a slider past it simply stops moving the joint.
+const AINEX_JOINT_GROUPS = [
+  ['left arm',   ['l_sho_pitch', 'l_sho_roll', 'l_el_pitch', 'l_el_yaw']],
+  ['right arm',  ['r_sho_pitch', 'r_sho_roll', 'r_el_pitch', 'r_el_yaw']],
+  ['left hand',  ['l_gripper']],
+  ['right hand', ['r_gripper']],
+  ['head',       ['head_pan', 'head_tilt']],
+  ['legs',       ['l_hip_yaw', 'l_hip_roll', 'l_hip_pitch', 'l_knee', 'l_ank_pitch', 'l_ank_roll',
+                  'r_hip_yaw', 'r_hip_roll', 'r_hip_pitch', 'r_knee', 'r_ank_pitch', 'r_ank_roll']],
+];
+const AINEX_JOINT_LIMIT = 2.09;
+const ainexJointTopic = joint => '/' + joint + '_controller/command';
+const ainexJointType = joint =>
+  joint.startsWith('head_') ? 'ainex_interfaces/HeadState' : 'std_msgs/Float64';
+const ainexJointMsg = (joint, v) =>
+  joint.startsWith('head_') ? { position: v, duration: 0.1 } : { data: v };
+
+function buildAinex(ns, panel) {
+  const SET_PARAM = '/walking/set_param';
+  const SET_ACTION = '/app/set_action';
+  advertise(panel.topic(SET_PARAM), 'ainex_interfaces/WalkingParam');
+  advertise(panel.topic(SET_ACTION), 'std_msgs/String');
+  for (const [, joints] of AINEX_JOINT_GROUPS) {
+    for (const joint of joints) advertise(panel.topic(ainexJointTopic(joint)), ainexJointType(joint));
+  }
+
+  section(panel, 'walk');
+  // `enable`, `start` and `stop` are IGNORED unless the robot considers itself
+  // initialised, and only `enable_control` sets that flag (walking_command in
+  // surface.py). Skip it and every button here does nothing, with no error anywhere --
+  // so the enable button sends both, in that order, the way the vendor's app layer does.
+  panel.body.append(buttonRow([
+    ['enable',  () => { panel.call('/walking/command', { command: 'enable_control' });
+                        panel.call('/walking/command', { command: 'enable' }); }],
+    ['start',   () => panel.call('/walking/command', { command: 'start' })],
+    ['stop',    () => panel.call('/walking/command', { command: 'stop' })],
+    ['disable', () => panel.call('/walking/command', { command: 'disable' })],
+    ['init pose', () => panel.call('/walking/init_pose', {})],
+  ]));
+
+  // Seeded before any row is built, because the forward row's readout divides by the
+  // period and would otherwise render NaN on the one pass that happens before the period
+  // slider exists. These are the vendor's walking_param.yaml defaults.
+  const gait = {};
+  for (const [, field] of AINEX_GAIT.map(g => [g[0], g[1]])) gait[field] = 0;
+  gait.period_time = 400;
+
+  const sliders = document.createElement('div');
+  sliders.className = 'sliders';
+  const sendGait = () => panel.publish(SET_PARAM, Object.assign({}, gait));
+  const decimals = { m: 3, '°': 1, ms: 0 };
+  let fwd = null;
+  for (const [label, field, min, max, step, unit] of AINEX_GAIT) {
+    const row = sliderRow({
+      label, min, max, step, value: gait[field],
+      format: v => {
+        if (field !== 'x_move_amplitude') return v.toFixed(decimals[unit]) + ' ' + unit;
+        // The amplitude is half a foot's body-frame sweep, which is not a speed and does
+        // not read as one. 4A/T is what it means for the body, so show that beside it.
+        const speed = STRIDE_FACTOR * Math.abs(v) / (gait.period_time / 1000);
+        return v.toFixed(3) + ' → ' + speed.toFixed(2) + ' m/s';
+      },
+      // Every slider republishes the whole block: the handler defaults any field it is
+      // not given, so sending one would quietly reset the other three.
+      onInput: v => { gait[field] = v; sendGait(); fwd?.show(); },
+    });
+    sliders.append(row.row);
+    if (field === 'x_move_amplitude') fwd = row;
+  }
+  panel.body.append(sliders);
+
+  section(panel, 'action groups');
+  panel.body.append(buttonRow(
+    AINEX_ACTIONS.map(name => [name, () => panel.publish(SET_ACTION, { data: name })])));
+
+  // One slider per joint, in the body's groups. No header on any of these: none is a
+  // JointTrajectory, and the surface reads `position` or `data` straight off the dict.
+  const jointRows = {};
+  for (const [group, joints] of AINEX_JOINT_GROUPS) {
+    section(panel, group);
+    const box = document.createElement('div');
+    box.className = 'sliders';
+    for (const joint of joints) {
+      jointRows[joint] = sliderRow({
+        label: joint,
+        min: -AINEX_JOINT_LIMIT, max: AINEX_JOINT_LIMIT, step: 0.01, value: 0,
+        format: v => v.toFixed(2) + ' rad',
+        onInput: v => panel.publish(ainexJointTopic(joint), ainexJointMsg(joint, v)),
+      });
+      box.append(jointRows[joint].row);
+    }
+    panel.body.append(box);
+  }
+
+  const foot = document.createElement('div');
+  foot.className = 'btns';
+  foot.append(sentCounter());
+  panel.body.append(foot);
+
+  const readout = document.createElement('div');
+  readout.className = 'readout';
+  readout.innerHTML = '<span>walking <b id="walk-' + ns + '">—</b></span>'
+                    + '<span><b id="joints-' + ns + '">—</b> joints tracking</span>';
+  panel.body.append(readout);
+
+  subscribe(panel.topic('/walking/is_walking'), 'std_msgs/Bool', msg => {
+    const on = !!msg.data;
+    const node = el('walk-' + ns);
+    node.textContent = on ? 'YES' : 'no';
+    node.className = on ? 'ok' : '';
+  }, null, true);
+
+  const measured = {};
+  subscribe(panel.topic('/joint_states'), 'sensor_msgs/JointState', msg => {
+    // Same hazard as the arm's: index by name, never by position.
+    const names = msg.name || [], pos = msg.position || [];
+    names.forEach((n, i) => { measured[n] = pos[i]; });
+    el('joints-' + ns).textContent = names.length;
+    if (panel.armed) return;
+    // Disarmed, every slider follows the robot, so arming never snaps a limb anywhere.
+    for (const [joint, row] of Object.entries(jointRows)) {
+      if (measured[joint] === undefined) continue;
+      row.input.value = measured[joint];
+      row.show();
+    }
+  }, { throttle_rate: 100 }, true);
+}
+
+// ---------------------------------------------------------------- myAGV ---
+
+function buildMyagv(ns, panel) {
+  // Deliberately not a drive pad. The base has no watchdog on real hardware -- the
+  // vendor's odometry node stores the last Twist and writes it to the motors at 100 Hz
+  // forever -- while this simulator's bridge stops it after 0.5 s, so anything driving it
+  // has to publish continuously AND guarantee a zero Twist on every exit path. A browser
+  // tab cannot guarantee the second half. robot_console/bin/teleop.sh does both, and is
+  // the tested path.
+  const note = document.createElement('div');
+  note.className = 'readout';
+  note.innerHTML = 'drive it from <code>robot_console/bin/teleop.sh --namespace ' + ns
+    + '</code> — a Twist stream needs a guaranteed zero on exit, which a browser tab '
+    + 'cannot promise. Its camera and lidar are on the wire above.';
+  panel.body.append(note);
+  panel.box.querySelector('.arm input').disabled = true;
+  panel.box.querySelector('.warn').textContent = 'observing only';
+}
+
+const PANELS = { so101: buildSo101, ainex: buildAinex, myagv: buildMyagv };
+
+// ---------------------------------------------------------------- the task ---
+//
 // The plate's position in the ARM BASE frame, which is the frame every pose on the wire
 // is in: shared/tasks/apple_on_plate.py stages the objects relative to wherever the arm
 // got mounted, and publishes them back in the same frame, so these gauges read the same
 // numbers whether the arm is bolted to a kitchen island or standing on a bare table.
-// That module is the authority for this constant.
-const PLATE = [0.226, -0.226];
+// Only the fallback: robocasa swaps the plate and the apple by default, so a constant is
+// the wrong answer half the time and the plate's own pose is on the same message.
+const PLATE_FALLBACK = [0.226, -0.226];
+// There is no success topic any more: the simulator stopped answering its own question so
+// that nothing could be graded on state a camera cannot see. This page therefore does what
+// the grader does -- decides from the geometry it can measure -- and applies the
+// contract's own gate rather than pretending to re-run the detector in JavaScript.
+// arm/vision_success.py is the authority; this gauge is a convenience beside the views.
+const GATE_M = 0.080;
 
 // Where each non-apple body was the first time this page saw it. Captured rather than
 // hard-coded: the staged poses are the task's to change, and a strip that quietly
 // measured drift against a stale copy of them would report every object as displaced.
 const sceneryOrigin = new Map();
-
 // Movement worth flagging, in metres. Loose enough to ignore the millimetre of settling
 // a resting mesh does against the surface, tight enough that a knock shows up.
 const SCENERY_MOVED = 0.005;
+
+function onFreeJoints(msg) {
+  // The array is `free_joints`, not `states`, and each entry wraps a PoseStamped -- so
+  // the position sits at pose.pose.position.
+  const bodies = msg.free_joints || [];
+  if (!bodies.length) return;
+  el('task').hidden = false;
+  updateScenery(bodies);
+
+  const plateBody = bodies.find(b => b.name === 'plate');
+  const plate = plateBody?.pose?.pose?.position
+    ? [plateBody.pose.pose.position.x, plateBody.pose.pose.position.y]
+    : PLATE_FALLBACK;
+
+  const entry = bodies.find(b => b.name === 'apple');
+  const p = entry?.pose?.pose?.position;
+  if (!p) return;
+  const v = entry.twist?.twist?.linear;
+  el('pos').textContent = p.x.toFixed(3) + ', ' + p.y.toFixed(3) + ', ' + p.z.toFixed(3);
+  const speed = v ? Math.hypot(v.x, v.y, v.z) : NaN;
+  if (v) {
+    el('spd').textContent = speed.toFixed(4);
+    el('spd').className = 'v ' + (speed < 0.01 ? 'ok' : '');
+  }
+  const d = Math.hypot(p.x - plate[0], p.y - plate[1]);
+  el('dist').textContent = d.toFixed(4);
+  el('dist').className = 'v ' + (d < GATE_M ? 'ok' : '');
+  // The gate the grader applies, minus the hold: this reads instantaneously, while a
+  // scored episode also needs the apple to stay put for a second of simulated time.
+  const on = d < GATE_M && (v ? speed : 1) < 0.01;
+  el('succ').textContent = on ? 'YES' : 'NO';
+  el('succ').className = 'v ' + (on ? 'ok' : 'bad');
+}
 
 function updateScenery(bodies) {
   const parts = [];
@@ -177,332 +826,60 @@ function updateScenery(bodies) {
                '</b> ' + (moved ? '+' + d.toFixed(3) + ' m' : 'in place') + '</span>');
   }
   if (!parts.length) return;
-  el('scenery').innerHTML =
-    '<span class="k">Also on the surface</span>' + parts.join('');
-}
-const PARAMS = new URLSearchParams(location.search);
-const URL = PARAMS.get('url') || 'ws://127.0.0.1:9090';
-// Which robot on the graph this page drives. Several robots share one rosbridge, each
-// under its own namespace, so the arm's state and command topics below have to carry it.
-// The camera grid needs nothing: it discovers streams from rosapi and so picks up every
-// robot's views automatically, whatever they are called. `?ns=` overrides; the default
-// matches the simulator's, which names a namespace after its robot.
-const NS = PARAMS.has('ns') ? PARAMS.get('ns').replace(/^\/+|\/+$/g, '') : 'so101';
-const nsTopic = (t) => (NS ? '/' + NS + (t.startsWith('/') ? t : '/' + t) : t);
-
-// Cameras are DISCOVERED, not listed. rosbridge exposes rosapi, whose
-// topics_for_type answers "what is publishing CompressedImage right now" -- so
-// the page shows exactly the cameras that exist, however many that is.
-//
-// Why this matters here rather than being tidiness: the eye-in-hand camera is
-// off unless the simulator was started with `--cameras both`, so the
-// camera count legitimately differs between runs. A hardcoded pair is wrong in
-// both directions at once -- it hides a camera that is publishing, and it shows
-// a dead black tile for one that is not.
-const CAMERA_TYPE = 'sensor_msgs/msg/CompressedImage';
-const DISCOVER_SERVICE = '/rosapi/topics_for_type';
-const DISCOVER_ID = 'camera-discovery';
-// Re-poll so a simulator restarted with --wrist while this page is open picks up
-// the new camera instead of needing a reload.
-const DISCOVER_EVERY_MS = 5000;
-
-//: topic -> {name, img, count} for every camera currently on screen.
-const cameras = new Map();
-
-// '/overhead/color/compressed' -> 'overhead'. image_transport appends
-// /color/compressed to the camera's own name, so stripping that suffix recovers
-// it; anything not matching that shape falls back to the full topic, which is
-// ugly but never wrong.
-function cameraName(topic) {
-  const m = topic.match(/^\/(.+)\/color\/compressed$/);
-  return m ? m[1] : topic.replace(/^\//, '');
+  el('scenery').innerHTML = '<span class="k">Also on the surface</span>' + parts.join('');
 }
 
-function clearCameras() {
-  cameras.clear();
-  const views = el('views');
-  views.innerHTML = '<div class="empty" id="views-empty">looking for cameras…</div>';
-  updateFooter();
-}
-
-function addCamera(topic) {
-  if (cameras.has(topic)) return false;
-  const name = cameraName(topic);
-  const view = document.createElement('div');
-  view.className = 'view';
-  const img = document.createElement('img');
-  img.alt = name;
-  const cap = document.createElement('div');
-  cap.className = 'cap';
-  const label = document.createElement('span');
-  label.textContent = name;
-  const frames = document.createElement('span');
-  frames.textContent = '— frames';
-  cap.append(label, frames);
-  view.append(img, cap);
-  el('views').append(view);
-  cameras.set(topic, { name, img, frames, count: 0 });
-  el('views-empty')?.remove();
-  return true;
-}
-
-const APPLE = nsTopic('/free_joint_publisher/free_joint_states');
-// There is no success topic any more: the simulator stopped answering its own question
-// so that nothing could be graded on state a camera cannot see. This page therefore does
-// what the grader does -- decides from the geometry it can measure. It has the plate's
-// staged position and the apple's pose on the wire, so it applies the contract's own gate
-// rather than pretending to re-run the detector in JavaScript; `arm/vision_success.py` is
-// the authority, and this gauge is a convenience beside the live views.
-const GATE_M = 0.080;
-const JOINTS = nsTopic('/joint_states');
-const ARM_CMD = nsTopic('/joint_trajectory_controller/joint_trajectory');
-const GRIP_CMD = nsTopic('/gripper_controller/commands');
-
-// MJCF ranges, mirroring kinematics.JOINT_LIMITS. The five arm joints go on the
-// trajectory controller; gripper_joint is a separate ForwardCommandController.
-const ARM_JOINTS = [
-  ['shoulder_pan_joint',  -1.9199,  1.9199],
-  ['shoulder_lift_joint', -1.7453,  1.7453],
-  ['elbow_flex_joint',    -1.69,    1.54  ],
-  ['wrist_flex_joint',    -1.6,     1.6   ],
-  ['wrist_roll_joint',    -2.3,     2.3   ],
-];
-const GRIPPER = ['gripper_joint', 0.0, 1.0];   // 0 = closed
-
-const el = id => document.getElementById(id);
-
-function setStatus(text, cls) {
-  el('conn').textContent = text;
-  el('dot').className = 'dot' + (cls ? ' ' + cls : '');
-}
-
-// Ask rosapi what is publishing CompressedImage. Fire-and-forget: the reply is
-// handled in onmessage by its id, and a failure just means no new cameras this
-// round -- the next poll tries again.
-function discover(ws) {
-  if (ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({
-    op: 'call_service', service: DISCOVER_SERVICE, id: DISCOVER_ID,
-    args: { type: CAMERA_TYPE },
-  }));
-}
-
-function updateFooter() {
-  const names = [...cameras.values()].map(c => c.name);
-  const list = names.length
-    ? names.map(n => '<code>' + n + '</code>').join(', ')
-    : '<em>none found</em>';
-  el('cam-list').innerHTML = list;
-  el('cam-count').textContent = names.length === 1 ? '1 camera' : names.length + ' cameras';
-  const empty = el('views-empty');
-  if (empty && names.length === 0) {
-    empty.textContent = 'No camera is publishing. The eye-in-hand view needs '
-      + './kitchen.sh serve --cameras both; if none appear at all, check the simulator is running.';
-  }
-}
+// ---------------------------------------------------------------- connect ---
 
 function connect() {
-  setStatus('connecting to ' + URL + ' …');
-  const ws = new WebSocket(URL);
+  setStatus('connecting to ' + URL_WS + ' …');
+  const ws = new WebSocket(URL_WS);
 
   ws.onopen = () => {
-    setStatus('live — ' + URL, 'up');
-    const subs = [
-      [APPLE, 'mujoco_ros2_control_msgs/msg/FreeJointStateArray'],
-      [JOINTS, 'sensor_msgs/msg/JointState'],
-    ];
-    // queue_length 1 keeps the newest frame rather than a backlog: on a live
-    // view a stale queued frame is worse than a dropped one.
-    for (const [topic, type] of subs) {
-      ws.send(JSON.stringify({ op: 'subscribe', topic, type, queue_length: 1 }));
-    }
-    // /joint_states runs at ~156 Hz; nothing here needs more than ~20 Hz.
-    ws.send(JSON.stringify({ op: 'subscribe', topic: JOINTS,
-                             type: 'sensor_msgs/msg/JointState', throttle_rate: 50,
-                             queue_length: 1 }));
-    for (const topic of [ARM_CMD, GRIP_CMD]) {
-      ws.send(JSON.stringify({ op: 'advertise', topic,
-        type: topic === ARM_CMD ? 'trajectory_msgs/msg/JointTrajectory'
-                                : 'std_msgs/msg/Float64MultiArray' }));
-    }
+    setStatus('live — ' + URL_WS, 'up');
     socket = ws;
-    discover(ws);
-    discoverTimer = setInterval(() => discover(ws), DISCOVER_EVERY_MS);
+    // rosbridge keeps no state across a dropped websocket, so every panel built on the
+    // previous connection has to say again what it subscribes to and what it publishes.
+    // Without this a reconnected page looks entirely alive -- cameras stream, sliders
+    // move -- while no robot readout ever updates and no command lands.
+    for (const op of wireOps) send(op);
+    discover();
+    discoverTimer = setInterval(discover, DISCOVER_EVERY_MS);
   };
 
   ws.onmessage = ev => {
     const m = JSON.parse(ev.data);
 
-    // The discovery reply: subscribe to anything new, leave existing tiles alone.
-    if (m.op === 'service_response' && m.id === DISCOVER_ID) {
-      const topics = (m.values && m.values.topics) || [];
-      for (const topic of topics.slice().sort()) {
-        if (addCamera(topic)) {
-          ws.send(JSON.stringify({ op: 'subscribe', topic, type: CAMERA_TYPE,
-                                   queue_length: 1 }));
+    if (m.op === 'service_response' && typeof m.id === 'string') {
+      if (m.id.startsWith(CAMERA_ID + ':')) {
+        const type = m.id.slice(CAMERA_ID.length + 1);
+        for (const topic of ((m.values && m.values.topics) || []).slice().sort()) {
+          addCamera(topic, type);
         }
+        updateFooter();
+      } else if (m.id === TOPICS_ID) {
+        onTopics((m.values && m.values.topics) || []);
       }
-      updateFooter();
       return;
     }
     if (m.op !== 'publish') return;
-
-    const cam = cameras.get(m.topic);
-    if (cam) {
-      const fmt = (m.msg.format || 'jpeg').toLowerCase();
-      const mime = fmt.includes('png') ? 'image/png' : 'image/jpeg';
-      cam.img.src = 'data:' + mime + ';base64,' + m.msg.data;
-      cam.frames.textContent = ++cam.count + ' frames';
-      return;
-    }
-
-    if (m.topic === APPLE) {
-      // The array is `free_joints`, not `states`, and each entry wraps a
-      // PoseStamped -- so the position sits at pose.pose.position.
-      const bodies = m.msg.free_joints || [];
-      updateScenery(bodies);
-      const entry = bodies.find(f => f.name === 'apple');
-      if (!entry) return;
-      const p = entry.pose?.pose?.position;
-      const v = entry.twist?.twist?.linear;
-      if (!p) return;
-      el('pos').textContent =
-        p.x.toFixed(3) + ', ' + p.y.toFixed(3) + ', ' + p.z.toFixed(3);
-      if (v) {
-        const speed = Math.hypot(v.x, v.y, v.z);
-        el('spd').textContent = speed.toFixed(4);
-        el('spd').className = 'v ' + (speed < 0.01 ? 'ok' : '');
-      }
-      const d = Math.hypot(p.x - PLATE[0], p.y - PLATE[1]);
-      el('dist').textContent = d.toFixed(4);
-      el('dist').className = 'v ' + (d < GATE_M ? 'ok' : '');
-      // The gate the grader applies, minus the hold: this reads instantaneously, while a
-      // scored episode also needs the apple to stay put for a second of simulated time.
-      const on = d < GATE_M && Math.hypot(v ? v.x : 0, v ? v.y : 0, v ? v.z : 0) < 0.01;
-      el('succ').textContent = on ? 'YES' : 'NO';
-      el('succ').className = 'v ' + (on ? 'ok' : 'bad');
-      return;
-    }
-
-    if (m.topic === JOINTS) {
-      // The `name` array is ALPHABETICALLY sorted, not in contract joint order.
-      // Index by name or the sliders end up driving the wrong joints.
-      const names = m.msg.name || [], pos = m.msg.position || [];
-      measured = {};
-      names.forEach((n, i) => { measured[n] = pos[i]; });
-      if (!armed) syncSliders();
-    }
+    routes.get(m.topic)?.(m.msg);
   };
 
   ws.onclose = () => {
     socket = null;
     clearInterval(discoverTimer);
-    // Drop the tiles rather than leaving them frozen on their last frame. The
-    // reconnect rediscovers, so a camera that is still there comes straight
-    // back -- and one that is gone (a sim restarted without --wrist) correctly
-    // does not, instead of lingering as a still image that looks live.
+    // Drop the tiles rather than leaving them frozen on their last frame. The reconnect
+    // rediscovers, so a camera that is still there comes straight back -- and one that is
+    // gone (a sim restarted with fewer cameras) correctly does not, instead of lingering
+    // as a still image that looks live. The panels stay: their sliders hold the pose you
+    // set, and onopen replays their subscriptions.
     clearCameras();
     setStatus('disconnected — retrying in 2 s', 'down');
     setTimeout(connect, 2000);
   };
-  ws.onerror = () => setStatus('cannot reach ' + URL + ' — is the container up?', 'down');
+  ws.onerror = () => setStatus('cannot reach ' + URL_WS + ' — is the simulator up?', 'down');
 }
-
-// ---------------------------------------------------------------- control ---
-// The arm only moves if the JointTrajectory carries a `header`. Without one the
-// message is accepted by rosbridge and then does nothing at all: the controller
-// holds its pose and reports zero error, silently. Measured on this simulator,
-// +0.25 rad tracks exactly with a header and travels +0.00000 without.
-// stamp 0 means "start now". See robot_control/ros_client.py for the full table.
-const ZERO_HEADER = { stamp: { sec: 0, nanosec: 0 }, frame_id: '' };
-//: Matches the eval's 10 Hz control period; the controller ignores the exact
-//: value (0.1 s to 3.0 s made no measurable difference) but it must be present.
-const TIME_FROM_START = { sec: 0, nanosec: 100000000 };
-
-let socket = null, armed = false, measured = {}, sent = 0, discoverTimer = null;
-
-function publish(topic, msg) {
-  if (!socket || socket.readyState !== WebSocket.OPEN) return false;
-  socket.send(JSON.stringify({ op: 'publish', topic, msg }));
-  el('sent').textContent = ++sent + (sent === 1 ? ' command sent' : ' commands sent');
-  return true;
-}
-
-function sendArm() {
-  if (!armed) return;
-  publish(ARM_CMD, {
-    header: ZERO_HEADER,
-    joint_names: ARM_JOINTS.map(j => j[0]),
-    points: [{
-      positions: ARM_JOINTS.map(j => +el('s-' + j[0]).value),
-      time_from_start: TIME_FROM_START,
-    }],
-  });
-}
-
-function sendGripper() {
-  if (!armed) return;
-  // A topic, not an action: ForwardCommandController on gripper_joint, and it
-  // needs no header -- which is exactly why a headerless arm command can look
-  // fine while the arm never moves.
-  publish(GRIP_CMD, { data: [+el('s-' + GRIPPER[0]).value] });
-}
-
-function syncSliders() {
-  for (const [name] of [...ARM_JOINTS, [GRIPPER[0]]]) {
-    const v = measured[name];
-    if (v === undefined) continue;
-    const slider = el('s-' + name);
-    if (slider) { slider.value = v; showValue(name); }
-  }
-}
-
-function showValue(name) {
-  const commanded = +el('s-' + name).value;
-  const m = measured[name];
-  const out = el('v-' + name);
-  out.textContent = commanded.toFixed(3);
-  // Highlight while the arm is still travelling to a commanded pose.
-  out.className = 'val' + (m !== undefined && Math.abs(m - commanded) > 0.02 ? ' far' : '');
-}
-
-function buildSliders() {
-  const host = el('sliders');
-  for (const [name, lo, hi] of [...ARM_JOINTS, GRIPPER]) {
-    const row = document.createElement('div');
-    row.className = 'row';
-    row.innerHTML =
-      `<label for="s-${name}">${name.replace('_joint', '')}</label>` +
-      `<input type="range" id="s-${name}" min="${lo}" max="${hi}" step="0.001" value="0">` +
-      `<span class="val" id="v-${name}">0.000</span>`;
-    host.appendChild(row);
-    const slider = row.querySelector('input');
-    slider.addEventListener('input', () => {
-      showValue(name);
-      if (name === GRIPPER[0]) sendGripper(); else sendArm();
-    });
-  }
-}
-
-function setArmed(on) {
-  armed = on;
-  el('sliders').setAttribute('aria-disabled', String(!on));
-  el('control').className = 'control' + (on ? ' armed' : '');
-  el('warn').textContent = on ? '⚠ publishing to the simulator'
-                              : 'observing only — publishes nothing';
-  for (const id of ['sync', 'open', 'close']) el(id).disabled = !on;
-  if (!on) syncSliders();   // fall back to following the measured pose
-}
-
-buildSliders();
-el('enable').addEventListener('change', e => setArmed(e.target.checked));
-el('sync').addEventListener('click', () => { syncSliders(); sendArm(); sendGripper(); });
-el('open').addEventListener('click', () => {
-  el('s-' + GRIPPER[0]).value = GRIPPER[2]; showValue(GRIPPER[0]); sendGripper();
-});
-el('close').addEventListener('click', () => {
-  el('s-' + GRIPPER[0]).value = GRIPPER[1]; showValue(GRIPPER[0]); sendGripper();
-});
 
 connect();
 </script>

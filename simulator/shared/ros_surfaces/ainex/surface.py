@@ -24,6 +24,7 @@ from __future__ import annotations
 import math
 import sys
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -33,7 +34,10 @@ if str(SIM_ROOT) not in sys.path:
     sys.path.insert(0, str(SIM_ROOT))
 
 from ros_surfaces.ainex import gait, servos, topics  # noqa: E402
-from ros_surfaces.ainex.actions import ActionPlayer, load_action_dir  # noqa: E402
+from ros_surfaces.ainex.actions import (  # noqa: E402
+    BASE_PITCH, ActionPlayer, load_action_dir, rest_pose,
+)
+from ros_surfaces.ainex.ground import GroundFollow  # noqa: E402
 
 
 class _State:
@@ -96,8 +100,19 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     joint_ids = {n: model.joint(f"{namespace}{n}").id for n in servos.SERVOS}
     actuator_ids = {n: model.actuator(f"{namespace}{n}").id for n in servos.SERVOS}
     qpos_adr = {n: model.jnt_qposadr[joint_ids[n]] for n in servos.SERVOS}
+    # The torso's lean is a 25th channel beside the servos: it is not a servo on the
+    # robot, it is what the vendor's hip chain does to the body when it bends to pick
+    # something up, and with the base riding the torso it has to be a joint of its own.
+    # Action groups author it; everything else holds it at zero. It never reaches
+    # `/joint_states`, which lists the 24 servos and nothing the robot does not have.
+    actuator_ids[BASE_PITCH] = model.actuator(f"{namespace}base_pitch_act").id
+    qpos_adr[BASE_PITCH] = model.jnt_qposadr[model.joint(f"{namespace}base_pitch").id]
+    pitch_dof = model.jnt_dofadr[model.joint(f"{namespace}base_pitch").id]
 
     state = _State()
+    # The MjData the step loop owns, for a service answered on a websocket thread. Read
+    # only, one float per servo; a torn read here is a count one tick stale, not a crash.
+    live: list = [None]
 
     # ---------------------------------------------------------------- subscribers
 
@@ -162,10 +177,12 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
                     name, servos.count_to_angle(name, float(entry.get("position", 500)))
                 )
 
-    def head_setter(joint: str):
+    def joint_setter(joint: str):
         def handler(msg: dict) -> None:
-            # ainex_interfaces/HeadState is {position, duration}; the Float64 form is the
-            # vendor's Gazebo-only path, so accept `data` too rather than drop the message.
+            # ainex_interfaces/HeadState is {position, duration} and std_msgs/Float64 is
+            # {data}: the vendor drives the head through the first and every Gazebo joint
+            # controller through the second, so both shapes are accepted on every topic
+            # rather than dropping a message for using the other dialect's field name.
             value = msg.get("position", msg.get("data", 0.0))
             with state.lock:
                 state.servo_writes[joint] = servos.clamp(joint, float(value))
@@ -182,8 +199,12 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     bus.on(topics.TOPIC_APP_ACTION, on_set_action, topics.TYPE_STRING)
     bus.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set,
            topics.TYPE_SET_BUS_SERVOS_POSITION)
-    bus.on(topics.TOPIC_HEAD_PAN, head_setter("head_pan"), topics.TYPE_HEAD_STATE)
-    bus.on(topics.TOPIC_HEAD_TILT, head_setter("head_tilt"), topics.TYPE_HEAD_STATE)
+    # One command topic per joint, the vendor's ros_control layout: `/<joint>_controller/
+    # command` for all 24, of which the head pair are the two the real controller drives.
+    # This is what lets a client -- or the live page -- move one arm or hand joint at a
+    # time, where `bus_servo/set_position` writes raw counts to the whole bus.
+    for joint, topic in topics.JOINT_COMMAND_TOPICS.items():
+        bus.on(topic, joint_setter(joint), topics.joint_command_type(joint))
 
     # ---------------------------------------------------------------- services
 
@@ -236,10 +257,40 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
             state.init_pose_requested = True
         return {}
 
-    bus.service(topics.SRV_WALKING_COMMAND, walking_command)
-    bus.service(topics.SRV_GET_WALKING_PARAM, get_walking_param)
-    bus.service(topics.SRV_IS_WALKING, is_walking)
-    bus.service(topics.SRV_INIT_POSE, init_pose)
+    def get_bus_servos_position(args: dict) -> dict:
+        """`ros_robot_controller/GetBusServosPosition`: raw counts by servo id.
+
+        The read-back half of the bus, answered from the compiled model through the same
+        count<->radian table the write half uses, so a pose read here and written back
+        through `set_position` lands where it was. Asks for every servo when given no
+        ids, as the vendor's node does.
+        """
+        wanted = [int(i) for i in (args.get("id") or args.get("ids") or [])] \
+            or list(range(1, len(servos.BY_ID) + 1))
+        by_id = {sid: name for name, (sid, _, _) in servos.SERVOS.items()}
+        data = live[0]
+        positions = []
+        for sid in wanted:
+            name = by_id.get(sid)
+            if name is None or data is None:
+                continue
+            angle = float(data.qpos[qpos_adr[name]])
+            positions.append({"id": sid, "position": servos.angle_to_count(name, angle)})
+        # `success` is the vendor's first response field (`GetBusServosPosition.srv`:
+        # `bool success`, `BusServoPosition[] position`); it was missing, and the schema
+        # drift check in test_fleet.py is what would have said so.
+        return {"success": True, "position": positions}
+
+    # Typed, like the topics above: the type is what makes a service discoverable through
+    # `/rosapi/services` and `/rosapi/service_type`, and what resolves its schema.
+    bus.service(topics.SRV_WALKING_COMMAND, walking_command,
+                topics.SRV_TYPE_SET_WALKING_COMMAND)
+    bus.service(topics.SRV_GET_WALKING_PARAM, get_walking_param,
+                topics.SRV_TYPE_GET_WALKING_PARAM)
+    bus.service(topics.SRV_BUS_SERVO_GET, get_bus_servos_position,
+                topics.SRV_TYPE_GET_BUS_SERVOS_POSITION)
+    bus.service(topics.SRV_IS_WALKING, is_walking, topics.SRV_TYPE_GET_WALKING_STATE)
+    bus.service(topics.SRV_INIT_POSE, init_pose, topics.SRV_TYPE_EMPTY)
 
     # ---------------------------------------------------------------- streams
 
@@ -264,18 +315,61 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     )
     setpoint = PlanarSetpoint()
 
+    # The transform tree and the description, built from `topics.TF_*`. A DEPARTURE from
+    # the *shipped robot*, which runs neither at boot, and a match to the vendor's own
+    # Gazebo and RViz launches, which run both off this same URDF -- see the module
+    # docstring in `topics.py`, which states the split and corrects the claim that used
+    # to be here. `/tf_static` is not published: this is a ROS 1 stack, and tf1's static
+    # publisher writes to `/tf`.
+    from contracts.tf import TOPIC_TF, urdf_fixed_joints
+    from mujoco_bridge import TransformTree
+    from ros_surfaces.tf_stream import attach_tf, read_description
+
+    description = read_description(topics.URDF_PATH)
+    statics = [
+        # The vendor bolts `camera_link` to the torso; `ainex_model` step 4 moves it to
+        # the head, where the hardware's 2-DOF camera actually is, and the tree follows
+        # the model for exactly that reason -- so the URDF's own camera joint is dropped
+        # here and the frame comes off the compiled camera instead. Keeping both would
+        # give one frame two parents, which is the one thing a tf tree cannot have.
+        (parent, child, pos, quat)
+        for parent, child, pos, quat in urdf_fixed_joints(description)
+        if child != topics.FRAME_CAMERA
+    ]
+    if scan is not None:
+        # Invented along with the virtual lidar itself, at the mount the ray-cast uses.
+        statics.append(
+            (topics.TF_ROOT_FRAME, topics.FRAME_LASER,
+             (scan["offset_x"], 0.0, scan["offset_z"]), (1.0, 0.0, 0.0, 0.0))
+        )
+    tf = attach_tf(
+        bus,
+        TransformTree(model, root_body=f"{namespace}{topics.TF_ROOT_BODY}",
+                      frames=topics.TF_FRAMES, prefix=namespace,
+                      cameras=topics.TF_CAMERAS, extra_static=statics),
+        description,
+    )
+
+    # The ground under the soles, solved every tick; see ground.py. It is what keeps a
+    # standing robot standing on an uneven counter, lowers the body when the legs fold,
+    # and drops the robot to the floor when it walks off the edge.
+    ground = GroundFollow(model, namespace)
+
     if world_reset is not None:
         # Same reason as the myAGV surface: a whole-world reset restores this robot's
         # joints and actuator targets but not the setpoint integrating its gait, so the
-        # torso would drive for a pose it no longer occupies.
+        # torso would drive for a pose it no longer occupies. The fall integrator too: a
+        # robot reset mid-air onto its spawn must not keep the speed it was falling at.
         world_reset.on_reset(setpoint.reset)
+        world_reset.on_reset(ground.reset)
 
     subscribed = [
         topics.TOPIC_APP_WALKING_PARAM, topics.TOPIC_SET_WALKING_PARAM,
         topics.TOPIC_APP_ACTION, topics.TOPIC_BUS_SERVO_SET,
-        topics.TOPIC_HEAD_PAN, topics.TOPIC_HEAD_TILT,
+        *topics.JOINT_COMMAND_TOPICS.values(),
     ]
-    published = [topics.TOPIC_IS_WALKING, topics.TOPIC_JOINT_STATES, topics.TOPIC_IMU]
+    published = [topics.TOPIC_IS_WALKING, topics.TOPIC_JOINT_STATES, topics.TOPIC_IMU,
+                 TOPIC_TF]
     # The port belongs to the fleet, not to this robot: several surfaces may be sharing
     # it, and each printing its own address would suggest otherwise.
     print(
@@ -290,12 +384,18 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     phase = {"at": 0.0}
     player: dict[str, ActionPlayer | None] = {"at": None}
     # Whatever the limbs should hold when nothing else is driving them.
-    held = dict(servos.INIT_POSE)
+    rest = rest_pose()
+    held = dict(rest)
+    # Ground-follow transitions are printed once each, not per tick: a robot walking
+    # off a worktop is a thing worth one line on the terminal, and the same line ten
+    # times a second is noise that hides the next one.
+    was = {"falling": False, "supported": True, "fall_started": 0.0}
 
     def step(data):
         if data is None:
             sensors.close()
             return
+        live[0] = data
 
         with state.lock:
             param = state.param
@@ -323,13 +423,13 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
 
         if wants_init:
             player["at"] = None
-            held.update(servos.INIT_POSE)
+            held.update(rest)
             phase["at"] = 0.0
 
         if pending is not None:
-            current = {
-                n: float(data.qpos[qpos_adr[n]]) for n in servos.SERVOS
-            }
+            # The torso's lean is snapshotted with the servos, so a group that starts
+            # from a leaning robot eases out of the lean rather than snapping upright.
+            current = {n: float(data.qpos[qpos_adr[n]]) for n in qpos_adr}
             player["at"] = ActionPlayer(actions[pending], current)
 
         # An action group owns the whole body while it runs -- as on the real robot, which
@@ -349,8 +449,8 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
             # Ease the legs back to the rest pose rather than snapping: `stop` on the real
             # robot finishes the step it is in.
             phase["at"] = 0.0
-            for name in servos.LEG_JOINTS:
-                held[name] += (servos.INIT_POSE[name] - held[name]) * min(4.0 * dt, 1.0)
+            for name in (*servos.LEG_JOINTS, BASE_PITCH):
+                held[name] += (rest[name] - held[name]) * min(4.0 * dt, 1.0)
 
         # Raw bus-servo writes win over everything: they are a direct command to a servo,
         # which is exactly what they are on the robot.
@@ -363,6 +463,18 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
         x, y = float(pose[0, 3]), float(pose[1, 3])
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
+
+        # z is the ground's to decide, after the legs and the lean have been commanded
+        # for this tick so the sole it measures is the sole the servos are driving to.
+        gs = ground.step(data, dt)
+        if gs.falling and not was["falling"]:
+            was["fall_started"] = float(data.time)
+            print(f"ainex: no surface under either sole at ({x:.2f}, {y:.2f}) -- falling",
+                  file=sys.stderr)
+        elif was["falling"] and not gs.falling:
+            print(f"ainex: landed on z {gs.surface_z:.4f} after "
+                  f"{float(data.time) - was['fall_started']:.2f} s", file=sys.stderr)
+        was["falling"] = gs.falling
 
         seq = bus.next_seq()
         positions = [float(data.qpos[qpos_adr[n]]) for n in servos.BY_ID]
@@ -378,7 +490,13 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
             topics.TYPE_JOINT_STATE,
         )
         bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)}, topics.TYPE_BOOL)
-        bus.publish(topics.TOPIC_IMU, _imu_msg(seq, yaw, wz), topics.TYPE_IMU)
+        bus.publish(
+            topics.TOPIC_IMU,
+            _imu_msg(seq, yaw, wz, float(data.qpos[qpos_adr[BASE_PITCH]]),
+                     float(data.qvel[pitch_dof])),
+            topics.TYPE_IMU,
+        )
+        tf.publish(data, seq, time.time())
         sensors.publish(data, seq, x, y, yaw)
 
     return step
@@ -424,25 +542,26 @@ def _to_walking_param_msg(param: gait.WalkingParam) -> dict:
     }
 
 
-def _imu_msg(seq: int, yaw: float, wz: float) -> dict:
-    """A `sensor_msgs/Imu` carrying real yaw and yaw rate.
+def _imu_msg(seq: int, yaw: float, wz: float, pitch: float = 0.0, wy: float = 0.0) -> dict:
+    """A `sensor_msgs/Imu` carrying real yaw, pitch and their rates.
 
-    DEPARTURE, documented in robots/README.md: roll and pitch are identically zero,
-    because the base has no roll or pitch degree of freedom. The topic exists so a client
-    written against the hardware connects and reads a heading; it is not a substitute for
-    the real 9-axis IMU. Covariance of -1 in the first element is the ROS convention for
-    "this quantity is not reported", which is the honest thing to say about the rest.
+    DEPARTURE, documented in robots/README.md: roll is identically zero, because the base
+    has no roll degree of freedom. Pitch is the torso's lean (`base_pitch`), so a robot
+    bent over to pick something up reads as bent over. The topic exists so a client
+    written against the hardware connects and reads an attitude; it is not a substitute
+    for the real 9-axis IMU. Covariance of -1 in the first element is the ROS convention
+    for "this quantity is not reported", which is the honest thing to say about the rest.
     """
     from contracts.rosbridge_server import header as make_header
 
+    # yaw about world z, then pitch about the body's y: q = q_yaw * q_pitch.
+    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
+    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
     return {
         "header": make_header(seq, topics.FRAME_IMU),
-        "orientation": {
-            "x": 0.0, "y": 0.0,
-            "z": math.sin(yaw / 2.0), "w": math.cos(yaw / 2.0),
-        },
+        "orientation": {"x": -sy * sp, "y": cy * sp, "z": sy * cp, "w": cy * cp},
         "orientation_covariance": [-1.0] + [0.0] * 8,
-        "angular_velocity": {"x": 0.0, "y": 0.0, "z": wz},
+        "angular_velocity": {"x": 0.0, "y": wy, "z": wz},
         "angular_velocity_covariance": [-1.0] + [0.0] * 8,
         "linear_acceleration": {"x": 0.0, "y": 0.0, "z": 0.0},
         "linear_acceleration_covariance": [-1.0] + [0.0] * 8,

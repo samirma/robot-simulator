@@ -97,8 +97,10 @@ class RobotFleet:
         # myAGV-only run had no topic discovery whatsoever.
         self.server.serve_rosapi()
         self.server.start()
+        # "surface(s)", not "robot(s)": the worktop's camera rig is a member too, under
+        # its own namespace, and it is not a robot.
         print(f"ROS fleet on ws://{self.host}:{self.port} — "
-              f"{len(self._members)} robot(s)", file=sys.stderr)
+              f"{len(self._members)} surface(s)", file=sys.stderr)
         for name, bus, _ in self._members:
             print(f"  {name}: sub {', '.join(bus.subscribed) or '-'}", file=sys.stderr)
 

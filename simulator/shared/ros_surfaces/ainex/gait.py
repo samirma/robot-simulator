@@ -48,6 +48,12 @@ from dataclasses import dataclass, replace
 
 from .servos import INIT_POSE, clamp
 
+#: The torso's lean joint, by the name `actions` gives it. Named there because an action
+#: group authors it as a 25th channel; used here because a walking robot has to state
+#: that it stands up straight -- see `leg_joint_targets`. Imported rather than re-typed:
+#: two spellings of a joint name is a target that lands on nothing.
+from .actions import BASE_PITCH  # noqa: E402
+
 # --- the envelope, from gait_manager.py's own comments and range lists ----------------
 
 PERIOD_RANGE = (0.150, 1.000)  # s; gait_manager only forbids negative, presets span .3-.6
@@ -286,10 +292,12 @@ def leg_joint_targets(param: WalkingParam, phase: float, geom: LegGeometry
         # The vendor's `hip_pitch_offset` (15 degrees) does *not* appear here, and that is
         # deliberate. On the real robot it leans the torso forward over the feet, which is
         # visible in init_pose.yaml as a leg chain whose rotations sum to -14.95 degrees
-        # rather than to zero. Our torso is bolted to three planar joints and cannot
-        # pitch, so applying the offset here would rotate the *feet* by 15 degrees instead
-        # of the body -- the robot would walk on its heels. It joins the balance gains as
-        # a parameter accepted on the wire with nothing to act on.
+        # rather than to zero. Applying the offset to the chain here would rotate the
+        # *feet* by 15 degrees instead of the body -- the robot would walk on its heels,
+        # which is precisely what standing did until `base_pitch` was given the lean
+        # (`ainex_model.stance_lean`). The lean belongs to the torso; this solves a flat
+        # sole relative to it, and the target below keeps the torso upright while walking
+        # so that the two agree.
         ankle = -(hip + knee)
 
         out[f"{side}_hip_pitch"] = PITCH_SIGN[f"{side}_hip_pitch"] * hip
@@ -310,12 +318,24 @@ def leg_joint_targets(param: WalkingParam, phase: float, geom: LegGeometry
             YAW_SIGN[f"{side}_hip_yaw"] * param.angle_amplitude * math.cos(2 * math.pi * p)
         )
 
+    # Walking stands the torso up. The sole is solved flat *relative to the torso*, so a
+    # torso still carrying the standing lean would tilt both feet by it -- the heel-stand
+    # again, in motion. Stated here rather than left to whatever the surface was holding,
+    # because a target that depends on the previous pose is not a target.
+    out[BASE_PITCH] = 0.0
+
     # The envelope's corners are reachable individually but not together: the deepest
     # crouch (body_height 0.06) plus the highest lift (step_height 0.04) shortens a
     # 0.186 m leg by 0.10 m, which folds the knee past the servo's own travel. A real
     # servo simply stops at its limit, so clamping here matches it -- and stops the model
     # driving an actuator into a joint limit it can only fight.
-    return {name: clamp(name, value) for name, value in out.items()}
+    #
+    # `base_pitch` is not a servo and has no entry in the servo table, so it is passed
+    # through: its range is the model's, applied by `actions._clamp_pitch`.
+    return {
+        name: value if name == BASE_PITCH else clamp(name, value)
+        for name, value in out.items()
+    }
 
 
 def _sweep(p: float) -> float:

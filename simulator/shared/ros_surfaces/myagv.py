@@ -7,6 +7,7 @@ simulated or the real myAGV without changing a line:
     robot -> console   /odom                           nav_msgs/Odometry
     robot -> console   /camera/image_raw/compressed    sensor_msgs/CompressedImage
     robot -> console   /scan                           sensor_msgs/LaserScan
+    robot -> console   /tf, /tf_static                 tf2_msgs/TFMessage
 
 Those names are the *bare* contract, and they stay bare here because they are the record
 of what the vendor stack actually publishes. When several robots share one graph each one
@@ -32,14 +33,26 @@ from __future__ import annotations
 
 import sys
 import time
+from pathlib import Path
 
 import numpy as np
+
+#: The vendor description, `myagv_urdf/urdf/myAGV.urdf`, served as `robot_description`.
+URDF_PATH = Path(__file__).resolve().parents[1] / "robots/myagv/urdf/myAGV.urdf"
+
+#: This robot's root body in a compiled model, and the frame the contract calls it. The
+#: MJCF says `base` and the description says `base_footprint`; the description wins on the
+#: wire, which is also what `/odom`'s `child_frame_id` has always said.
+TF_ROOT_BODY = "base"
+TF_FRAMES = {TF_ROOT_BODY: "base_footprint"}
+#: The one camera a myAGV carries, under the frame its images are already stamped with.
+TF_CAMERAS = {"front_camera": "camera"}
 
 
 def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: int,
                control_hz: float, watchdog_s: float, scan: dict | None = None,
                depth: dict | None = None, scene_option=None, camera_period: float = 0.0,
-               world_reset=None):
+               world_reset=None, prefix: str = ""):
     """Wire this robot onto an already-built bus and return a per-step callback.
 
     The base integrates the commanded `cmd_vel` here rather than in the client: that is
@@ -84,6 +97,57 @@ def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: 
     setpoint = PlanarSetpoint()
     odom_frame, base_frame = bus.frame("odom"), bus.frame("base_footprint")
 
+    # The transform tree. A real myAGV has one: `myagv_active.launch` starts
+    # `robot_state_publisher`, `joint_state_publisher`, `robot_pose_ekf` and three
+    # `static_transform_publisher` nodes, and loads the URDF with
+    # `<param name="robot_description" textfile="$(find myagv_urdf)/urdf/myAGV.urdf"/>`.
+    # Without it `/scan`'s `laser_frame` and `/odom`'s frames named nodes of a tree
+    # nothing ever published, and no client could put a scan in the base frame -- the
+    # first thing a mapping stack does. `slam/` here dead-reckons and hardcodes the 65 mm
+    # mount instead, which is why the absence went unnoticed for so long.
+    #
+    # **`odom -> base_footprint` is the EKF's on real hardware, not the odometry node's.**
+    # `myagv_odometry/src/myAGV.cpp` builds the transform and then does not send it --
+    # `//odomBroadcaster.sendTransform(odom_trans); // robot_pose_ekf ros package instead`
+    # -- leaving the broadcaster member as dead code. So the real robot emits that
+    # transform only once `robot_pose_ekf` has odom *and* IMU and its filter has updated,
+    # while this one emits it from the first tick. A difference in *when*, not in what.
+    tf = None
+    if model is not None:
+        from mujoco_bridge import TransformTree
+        from ros_surfaces.tf_stream import attach_tf, read_description
+
+        statics = []
+        if scan is not None:
+            # The same mount the ray-cast uses, so the tree cannot disagree with the scan
+            # it explains. The offset is the vendor's: `myagv_active.launch` puts the X2
+            # at (0.065, 0, 0.08) off `base_footprint`.
+            #
+            # **The rotation is deliberately identity, and the vendor's is not.** That
+            # line reads `args="0.065 0.0 0.08 3.14159265 0.0 0.0"`, and `tf`'s nine-
+            # argument form is `x y z yaw pitch roll` -- so the real robot's lidar frame
+            # is turned a half-turn about z, because the X2 is physically mounted that way
+            # and the driver's `inverted: true` is the other half of the same fact. Ours
+            # is a ray-cast that starts in the base frame and sweeps CCW from -pi with no
+            # mount rotation at all, so identity is the true statement about *these*
+            # ranges. Copying the vendor's quaternion onto data that was never rotated
+            # would put every scan 180 degrees out in any client that used the tree.
+            statics.append(
+                ("base_footprint", "laser_frame",
+                 (scan["offset_x"], 0.0, scan["offset_z"]), (1.0, 0.0, 0.0, 0.0))
+            )
+        tf = attach_tf(
+            bus,
+            TransformTree(model, root_body=f"{prefix}{TF_ROOT_BODY}", frames=TF_FRAMES,
+                          prefix=prefix, cameras=TF_CAMERAS, extra_static=statics),
+            read_description(URDF_PATH),
+        )
+    # The vendor declares `base_up` -- the chassis's top shell -- on a *continuous* joint
+    # with no transmission, no controller and no entry in any joint state. A real
+    # `robot_state_publisher` therefore holds it at zero and publishes it on `/tf` like
+    # any other movable joint, which is exactly this constant on exactly that topic.
+    TOP_SHELL = ("base_footprint", "base_up", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+
     if world_reset is not None:
         # A world reset -- the arm's `/reset`, on a shared scene -- restores every joint
         # and every actuator target, this base's included. The integrated setpoint is the
@@ -123,6 +187,16 @@ def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: 
                      frame_id=odom_frame, child_frame_id=base_frame),
             TYPE_ODOM,
         )
+        if tf is not None:
+            # `odom -> base_footprint` is the odometry node's transform on real hardware,
+            # and the only one in this tree that is a measurement rather than a reading of
+            # the robot's own geometry -- so it is built from the same x/y/yaw that just
+            # went out on `/odom` and cannot drift from it.
+            quat = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
+            tf.publish(data, seq, time.time(),
+                       extra=[(odom_frame, base_frame, (x, y, 0.0), quat),
+                              (bus.frame(TOP_SHELL[0]), bus.frame(TOP_SHELL[1]),
+                               TOP_SHELL[2], TOP_SHELL[3])])
         sensors.publish(data, seq, x, y, yaw)
 
     return step
@@ -131,7 +205,7 @@ def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: 
 def serve_ros(port: int, base, model, camera: str | None, camera_size, jpeg_quality: int,
               control_hz: float, watchdog_s: float, scan: dict | None = None,
               depth: dict | None = None, scene_option=None, host: str = "0.0.0.0",
-              namespace: str = ""):
+              namespace: str = "", prefix: str = ""):
     """The single-robot path: own a server on `port`, put one myAGV on it, start it.
 
     Kept as a thin wrapper over `attach_ros` so the callers that only ever want one robot
@@ -145,7 +219,7 @@ def serve_ros(port: int, base, model, camera: str | None, camera_size, jpeg_qual
     fleet.attach(namespace, attach_ros, base=base, model=model, camera=camera,
                  camera_size=camera_size, jpeg_quality=jpeg_quality,
                  control_hz=control_hz, watchdog_s=watchdog_s, scan=scan, depth=depth,
-                 scene_option=scene_option)
+                 scene_option=scene_option, prefix=prefix)
     fleet.start()
     print(f"myAGV on ws://{host}:{port} under namespace {namespace or '<bare>'}",
           file=sys.stderr)

@@ -13,11 +13,62 @@ def test_defaults():
     assert options.record is None
     assert options.preflight is True
     assert options.publish_hz == 20.0
-    assert (options.cmd_topic, options.odom_topic, options.camera_topic) == (
-        TOPIC_CMD_VEL,
-        TOPIC_ODOM,
-        TOPIC_CAMERA,
-    )
+    # Nothing named means nothing assumed: which robot, under which namespace, and so
+    # which topics, is the wire's answer -- see `app.resolve`. Assuming a bare myAGV here
+    # is what published into a void against a simulator that namespaces its robots, with
+    # no error anywhere.
+    assert options.needs_discovery
+    assert (options.robot, options.namespace) == (None, None)
+    assert (options.cmd_topic, options.odom_topic, options.camera_topic) == (None, None, None)
+    # And the fallback, for a wire that cannot be asked, is what it always was.
+    assert options.resolved().cmd_topic == TOPIC_CMD_VEL
+    assert options.resolved().odom_topic == TOPIC_ODOM
+    assert options.resolved().camera_topic == TOPIC_CAMERA
+
+
+def test_an_explicitly_empty_namespace_is_the_bare_contract():
+    """`--namespace ''` is a decision, not a gap: it names the wire a real vendor bringup
+    presents, and the topics settle at parse time from it alone."""
+    options = parse_args(["--namespace", ""])
+    assert options.namespace == ""
+    assert options.cmd_topic == TOPIC_CMD_VEL
+    assert options.camera_topic == TOPIC_CAMERA
+
+
+def test_naming_the_namespace_settles_the_topics_but_not_which_robot():
+    """Which names a robot is on depends on the namespace alone, so those settle here.
+    Which *robot* is under that namespace is still worth asking the wire, and `--robot`
+    is what says it without asking."""
+    options = parse_args(["--namespace", "myagv"])
+    assert options.needs_discovery and options.robot is None
+    assert not parse_args(["--namespace", "myagv", "--robot", "myagv"]).needs_discovery
+    assert options.cmd_topic == "/myagv/cmd_vel"
+    assert options.camera_topic == "/myagv/camera/image_raw/compressed"
+
+    explicit = parse_args(["--namespace", "myagv", "--odom-topic", "/elsewhere/odom"])
+    assert explicit.odom_topic == "/elsewhere/odom"
+    assert explicit.cmd_topic == "/myagv/cmd_vel"
+
+
+def test_a_discovered_camera_fills_in_only_where_the_user_named_none():
+    """Discovery reports what it *saw*, which is a weaker claim than a flag."""
+    seen = "/myagv/color/compressed"
+    assert parse_args([]).resolved("myagv", "myagv", camera_topic=seen).camera_topic == seen
+    named = parse_args(["--camera-topic", "/mine/compressed"])
+    assert named.resolved("myagv", "myagv", camera_topic=seen).camera_topic == "/mine/compressed"
+
+
+def test_speeds_are_reclamped_into_the_robot_the_wire_named():
+    """The envelope belongs to the robot, and the robot can arrive after the flags do.
+
+    Clamping `--speed` once against the fallback and keeping that number would hand an
+    AiNex a myAGV's limit, which is a statement about different hardware.
+    """
+    import robot_console.ainex_link as ainex
+
+    options = parse_args(["--speed", "99"])
+    assert options.speed == pytest.approx(SPEED_MAX)  # the fallback's, until told
+    assert options.resolved("ainex", "ainex").speed == pytest.approx(ainex.SPEED_MAX)
 
 
 def test_publish_rate_beats_the_watchdog():
@@ -165,10 +216,17 @@ def test_an_unknown_robot_is_a_keyerror_naming_the_known_ones():
 # ------------------------------------------------------------------ --robot
 
 
-def test_robot_defaults_to_the_myagv():
+def test_no_robot_named_is_a_question_for_the_wire_not_a_myagv():
+    """`--robot` unset asks what is on the rosbridge; the myAGV is only the fallback.
+
+    Defaulting to it outright meant a rosbridge serving one AiNex was driven as a myAGV:
+    the console published a Twist nothing subscribed to and subscribed to odometry that
+    robot does not have, and nothing errored.
+    """
     from robot_console.robots import DEFAULT_ROBOT
 
-    assert parse_args([]).robot == DEFAULT_ROBOT == "myagv"
+    assert parse_args([]).robot is None
+    assert parse_args([]).resolved().robot == DEFAULT_ROBOT == "myagv"
 
 
 @pytest.mark.parametrize("robot", ["myagv", "ainex"])

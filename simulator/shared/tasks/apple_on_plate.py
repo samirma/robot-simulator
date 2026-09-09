@@ -235,13 +235,27 @@ MIN_DISPLACEMENT = 0.25  # it genuinely travelled, rather than being nudged
 #: standing on the other side of the table: near-horizontal at 5.6 deg, which is the view
 #: that resolves height and the one an overhead camera cannot supply.
 SCENE_CAMERAS: tuple[tuple[str, tuple, tuple, float, tuple[int, int]], ...] = (
-    # Both cameras sit 20 % closer than the reference rig's along their own optical axes,
-    # orientation unchanged: `overhead` keeps looking at (0.205, 0, 0) on the work plane,
-    # from 1.006 m instead of 1.257 m; `side` keeps its look-at on the plane at
-    # (0.322, -0.111), from 0.733 m instead of 0.916 m. The reference poses were
-    # (0.795, 0.000, 1.110) and (0.28, 0.80, 0.13). The console mirrors these in
-    # `ros_settings.SCENE_CAMERA_POSES` -- its grader back-projects through them -- and
-    # a test holds the two copies together.
+    # `overhead` sits 20 % closer than the reference rig's along its own optical axis,
+    # orientation unchanged: it keeps looking at (0.205, 0, 0) on the work plane, from
+    # 1.006 m instead of 1.257 m (reference pose (0.795, 0.000, 1.110)). It is the camera
+    # the verdict is read from, so its pose is grading calibration and stays put.
+    #
+    # `side` is further back than the reference, not closer: 1.233 m from its look-at on
+    # the plane at (0.322, -0.111), against the reference's 0.916 m and the 0.733 m it
+    # was at until 2026-09-08. Orientation is the reference's, unchanged. The distance was
+    # chosen by projecting the robot's standing volume through the calibrated axes --
+    # base at the origin, crown at 0.45 m, shoulders 0.20 m either side -- and walking
+    # the camera back along its own axis until all of it, the plate and apple in both
+    # layouts, and the far dressing land inside 90 % of the frame. At 0.733 m the crown
+    # projected at 1.68x the frame height and the robot's back at 1.58x its width: the
+    # side view showed the worktop with a robot cut off at one edge, and could not frame
+    # an AiNex standing on it at all. This camera is not graded from -- `vision_success`
+    # reads the overhead frame alone -- so the move costs the verdict nothing. It IS one
+    # of the two views the VLA is handed, so it is a scene change of the kind the
+    # lighting section warns about: read a pass count beside it, not a frame.
+    #
+    # The console mirrors both poses in `ros_settings.SCENE_CAMERA_POSES` -- its grader
+    # back-projects through the overhead one -- and a test holds the two copies together.
     (
         "overhead",
         (0.677, 0.000, 0.888),
@@ -251,7 +265,7 @@ SCENE_CAMERAS: tuple[tuple[str, tuple, tuple, float, tuple[int, int]], ...] = (
     ),
     (
         "side",
-        (0.288, 0.618, 0.112),
+        (0.265, 1.110, 0.161),
         (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
         45.0,
         (640, 480),
@@ -814,11 +828,18 @@ class AppleOnPlate:
     simulated time is what separates a placement from a fly-past.
     """
 
-    def __init__(self, model, data, *, prefix: str = "") -> None:
-        # `prefix` names the ARM this task is about -- `robot_0/` and friends, the MJCF
+    def __init__(self, model, data, *, prefix: str = "", root: str = "base",
+                 start_pose: bool = True) -> None:
+        # `prefix` names the ROBOT this task is about -- `robot_0/` and friends, the MJCF
         # name prefix, not the ROS namespace. It is optional so a single-robot caller
         # needs no change, and load-bearing the moment the scene holds a second robot:
         # see `_find_body`.
+        #
+        # `root` is that robot's root body, and it is a parameter because a robot's
+        # description names its own: the SO-101's is `base` and the AiNex's is the torso
+        # its vendor URDF roots at, `body_link`. Guessing from a list would work until
+        # two robots in one scene had different roots and the wrong one won; the engine
+        # already knows which robot it mounted, so it says.
         self._model = model
         self._prefix = prefix
         self._apple = model.body(APPLE_BODY).id
@@ -855,7 +876,7 @@ class AppleOnPlate:
         # not raise: it would silently leave the transform as identity and publish every
         # pose in the engine's world frame, which for an arm mounted on a kitchen island
         # is a metre and a rotation away from what the console expects.
-        base_id = _find_body(model, "base", prefix)
+        base_id = _find_body(model, root, prefix)
         self._world_from_base = np.eye(4)
         if base_id is not None:
             mujoco.mj_forward(model, data)
@@ -863,12 +884,22 @@ class AppleOnPlate:
             self._world_from_base[:3, 3] = data.body(base_id).xpos
         else:
             raise SystemExit(
-                "apple_on_plate: no arm root body found (looked for one named 'base' or "
-                "'<prefix>base'). Every pose would otherwise go out in the wrong frame."
+                f"apple_on_plate: no robot root body found (looked for one named {root!r} "
+                f"or '<prefix>{root}'). Every pose would otherwise go out in the wrong "
+                "frame."
             )
         self._base_from_world = np.linalg.inv(self._world_from_base)
 
-        self._apply_start_pose(data)
+        # START_ARM_QPOS is the SO-101's, and it is not a tidy default: it exists because
+        # MolmoAct2 bins measured joint state into 256 buckets and clips silently, so an
+        # arm starting outside the trained band is not conditioned at all. That is a
+        # statement about five named joints on one robot. A scene staged around a robot
+        # that does not have them -- the AiNex standing at the same worktop -- has no such
+        # pose to apply, and its own engine has already stood it up in the vendor's
+        # init_pose. Hence a flag the caller sets, rather than skipping missing joints
+        # quietly, which for the arm would fail invisibly in exactly the way above.
+        if start_pose:
+            self._apply_start_pose(data)
 
         self._spawn_qpos = data.qpos.copy()
         self._spawn_qvel = data.qvel.copy()
@@ -1059,11 +1090,12 @@ def _find_joint(model, suffix: str, prefix: str = "") -> int:
 def _find_body(model, suffix: str, prefix: str = "") -> int | None:
     """The id of the body called `suffix`, under `prefix` if one is given.
 
-    Naming the prefix is how a multi-robot scene stays unambiguous. Every robot's root
-    body is called `base`, so the uniqueness rule below -- "exactly one body ends in
-    /base" -- answers `None` the moment a second robot is in the scene, and the caller
-    then refuses to build the task at all. The rule stays as the fallback, because a
-    single-robot caller has no prefix to give and this is what has always worked for it.
+    Naming the prefix is how a multi-robot scene stays unambiguous. Robots that share a
+    root body name -- `base`, for every wheeled base and the arm -- make the uniqueness
+    rule below ("exactly one body ends in /base") answer `None` the moment a second one
+    is in the scene, and the caller then refuses to build the task at all. The rule stays
+    as the fallback, because a single-robot caller has no prefix to give and this is what
+    has always worked for it.
     """
     if prefix:
         direct = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}{suffix}")

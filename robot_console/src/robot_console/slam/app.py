@@ -106,6 +106,36 @@ class _Budget:
                 )
 
 
+def resolve(options: SlamOptions, stream=sys.stderr) -> Optional[SlamOptions]:
+    """Find the namespace the base is under, unless `--namespace` already said.
+
+    The teleop half of this is `app.resolve`, and the reasoning is there: the simulator
+    names every robot after itself and the console's constants are the bare hardware
+    contract, so the two only meet if somebody asks. SLAM wants the myAGV specifically --
+    it maps `/scan` and dead-reckons `/odom`, neither of which a walking robot has.
+    """
+    if not options.needs_discovery:
+        return options
+
+    from robot_console.discovery import DiscoveryError, discover
+
+    try:
+        found = discover(options.url, "myagv", options.namespace)
+    except DiscoveryError as exc:
+        print(f"error: {exc}", file=stream)
+        return None
+    except Exception as exc:  # noqa: BLE001 - every transport failure means the same thing
+        print(
+            f"warning: could not ask {options.url} what is on it ({exc}); assuming a myagv "
+            "on the bare contract. Name its namespace with --namespace.",
+            file=stream,
+        )
+        return options.namespaced_by("")
+
+    print(f"discovered {found.describe()}")
+    return options.namespaced_by(found.namespace, camera_topic=found.camera_topic)
+
+
 def run(options: SlamOptions) -> int:
     quiet_roslibpy_logging()
 
@@ -113,6 +143,11 @@ def run(options: SlamOptions) -> int:
         options.host, options.port, timeout=options.preflight_timeout
     ):
         return 2
+
+    resolved = resolve(options)
+    if resolved is None:
+        return 2
+    options = resolved
 
     grid = _initial_grid(options)
     tracker = PoseTracker(match_enabled=not options.no_match, min_interval=1.0 / options.slam_hz)

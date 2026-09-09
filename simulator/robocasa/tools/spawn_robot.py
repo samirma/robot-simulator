@@ -64,6 +64,10 @@ ROBOTS = ("myagv", "so101", "ainex")
 
 # name -> (module, function) presenting that robot's own vendor ROS topics. Only mobile
 # bases have one; an arm is served over the control protocol instead.
+#: Where the wire is, when nobody says otherwise -- the same number and the same reason as
+#: the MolmoSpaces engine's, equal to `contracts.rosbridge_server.DEFAULT_PORT`.
+DEFAULT_ROS_PORT = 9090
+
 ROS_SURFACES = {
     "myagv": ("ros_surfaces.myagv", "attach_ros"),
     # The same shared surface the other engine uses. That is the point: the arm's topic
@@ -107,10 +111,19 @@ TABLETOP_ROBOTS = {"so101", "ainex"}
 # 311 x 230 mm, so its half-diagonal is 0.193 m; the margin is what keeps a spawn from
 # touching a cabinet door it would then have to unstick itself from.
 # The AiNex's numbers below are measured off the compiled model at its init pose, not
-# read off a datasheet: standing height 0.4581 m, footprint radius 0.1901 m from the base,
-# ride height 0.2541 m, and a claw tip that sweeps 0.010-0.289 m horizontally from the
-# base across both arms' full joint ranges (p90 0.249). See shared/ainex_model.py, which
-# is where all of those come from.
+# read off a datasheet: standing height 0.4027 m (sole to crown), footprint radius
+# 0.1711 m from the base, ride height 0.2114 m, and a claw tip that sweeps horizontally
+# from the base across both arms' full joint ranges. See shared/ainex_model.py, which is
+# where all of those come from.
+#
+# They were 0.4581 / 0.1901 / 0.2541 until 2026-09-08, and every one of those was wrong
+# the same way: `_mesh_points` offset each mesh's vertices by `geom_pos` without rotating
+# them by `geom_quat`, and all 25 of this URDF's mesh geoms carry one. The ride height was
+# the expensive one -- 42.7 mm too tall, so the robot stood that far off the worktop on
+# both engines, which is a very visible float. The radii below are deliberately NOT
+# retightened to the new figures: they are clearances, 0.19 is still a margin over
+# 0.1711, and shrinking them would move where robots get placed for no reason connected
+# to this fix.
 ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.19}
 SPAWN_MARGIN_M = 0.12
 
@@ -687,6 +700,48 @@ def robot_spec(robot: str):
     return mujoco.MjSpec.from_file(str(model_xml(robot))), "base"
 
 
+def gripper_bodies(robot: str) -> tuple[str, ...]:
+    """The bodies carrying a robot's gripper geoms, for the task's contact check.
+
+    Empty for the SO-101, whose jaw geoms are named in its MJCF and are found by that
+    name instead. The AiNex's hands come from a URDF with generated geom names, and are
+    also the only bodies `ainex_model` leaves collidable at all, so the body is the
+    handle there. A robot with no gripper answers empty and the check then reports
+    finding none, which is the right answer rather than a crash.
+    """
+    if robot == "ainex":
+        import ainex_model
+
+        return tuple(sorted(ainex_model.HAND_BODIES))
+    return ()
+
+
+def report_sole_contact(model, data, instances) -> None:
+    """Say where a legged robot's soles ended up against the surface it stands on.
+
+    The feet do not collide, on purpose -- colliding feet fight the planar actuators that
+    move this robot -- so a graft that leaves it hovering produces no fall, no warning and
+    no wrong number anywhere: it simply looks like a robot in the air. Measuring the sole
+    against the surface is the only thing that notices, so it is printed on every spawn
+    rather than left to be checked by eye in a window nobody may open.
+    """
+    import ainex_model
+
+    for inst in instances:
+        if inst.name != "ainex":
+            continue
+        surface = (inst.mount_z - SO101_BASE_LIFT) if inst.tabletop else 0.0
+        gap = ainex_model.sole_z(model, data, inst.mjcf) - surface
+        where = "the worktop" if inst.tabletop else "the floor"
+        if abs(gap) <= ainex_model.SOLE_TOLERANCE:
+            print(f"{inst.name}: soles on {where} at z {surface:.4f} (gap {gap * 1000:+.2f} mm)",
+                  file=sys.stderr)
+        else:
+            print(f"warning: {inst.name} soles are {gap * 1000:+.1f} mm from {where} at "
+                  f"z {surface:.4f} -- it will look like it is {'hovering' if gap > 0 else 'sunk into the surface'}",
+                  file=sys.stderr)
+
+
 def attach_robot(spec: mujoco.MjSpec, robot: str, prefix: str, pos, quat) -> None:
     """Graft a shared robot into the kitchen spec under `prefix`."""
     robot_spec_, root_name = robot_spec(robot)
@@ -771,7 +826,7 @@ class JointGroup:
 # drift apart. See ../../shared/ros_surfaces/so101.py.
 
 
-def check_task_contacts(model, namespace: str, task) -> None:
+def check_task_contacts(model, namespace: str, task, hand_bodies=()) -> None:
     """Refuse to serve a task whose objects the gripper cannot physically touch.
 
     MuJoCo pairs two geoms only if `(contype_a & conaffinity_b) or (contype_b &
@@ -782,14 +837,23 @@ def check_task_contacts(model, namespace: str, task) -> None:
     exactly like a policy that missed by a centimetre. This was found the slow way; the
     check exists so it is found the fast way.
     """
-    jaw_prefixes = (f"{namespace}fixed_jaw", f"{namespace}moving_jaw")
-    jaw = [g for g in range(model.ngeom)
-           if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(jaw_prefixes)]
+    if hand_bodies:
+        # A robot whose gripper geoms come from a URDF and so have generated names: the
+        # AiNex's hands are the only bodies its model leaves collidable at all, which
+        # makes the body the reliable handle where a geom name prefix is not.
+        wanted = {f"{namespace}{b}" for b in hand_bodies}
+        jaw = [g for g in range(model.ngeom)
+               if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
+                                     model.geom_bodyid[g]) or "") in wanted]
+    else:
+        jaw_prefixes = (f"{namespace}fixed_jaw", f"{namespace}moving_jaw")
+        jaw = [g for g in range(model.ngeom)
+               if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(jaw_prefixes)]
     objects = [g for g in range(model.ngeom)
                if model.geom_bodyid[g] in task.contact_bodies()
                and (model.geom_contype[g] or model.geom_conaffinity[g])]
     if not jaw or not objects:
-        raise SystemExit(f"task contact check: found {len(jaw)} jaw geoms and "
+        raise SystemExit(f"task contact check: found {len(jaw)} gripper geoms and "
                          f"{len(objects)} collidable task geoms; expected both non-empty")
 
     def pairs(a: int, b: int) -> bool:
@@ -798,17 +862,17 @@ def check_task_contacts(model, namespace: str, task) -> None:
 
     touchable = sum(1 for j in jaw for o in objects if pairs(j, o))
     print(
-        f"task contacts: {len(jaw)} jaw geoms x {len(objects)} task geoms, "
+        f"task contacts: {len(jaw)} gripper geoms x {len(objects)} task geoms, "
         f"{touchable} pairs collide "
-        f"(jaw contype/conaffinity {sorted({(int(model.geom_contype[j]), int(model.geom_conaffinity[j])) for j in jaw})}, "
+        f"(gripper contype/conaffinity {sorted({(int(model.geom_contype[j]), int(model.geom_conaffinity[j])) for j in jaw})}, "
         f"objects {sorted({(int(model.geom_contype[o]), int(model.geom_conaffinity[o])) for o in objects})})",
         file=sys.stderr,
     )
     if touchable == 0:
         raise SystemExit(
-            "task contact check FAILED: no jaw geom can collide with any task object. "
-            "The jaws would close straight through the apple and the run would score zero "
-            "while looking like a near miss."
+            "task contact check FAILED: no gripper geom can collide with any task "
+            "object. The gripper would close straight through the apple and the run "
+            "would score zero while looking like a near miss."
         )
 
 
@@ -870,7 +934,7 @@ def _surface_kwargs(args, inst, model, task, scene_option):
     """
     prefix = inst.mjcf
     if inst.name in ARM_ROS_SURFACES:
-        from ros_surfaces.so101 import SCENE_CAMERA_TOPICS, WRIST_CAMERA
+        from ros_surfaces.so101 import WRIST_CAMERA
 
         # The same two sets, split the same way, as the MolmoSpaces engine -- see the
         # longer note there. The wrist is the robot's and carries its MJCF prefix; the
@@ -879,12 +943,16 @@ def _surface_kwargs(args, inst, model, task, scene_option):
             {t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()}
             if args.wrist_camera else {}
         )
-        scene_cameras = dict(SCENE_CAMERA_TOPICS) if args.scene_cameras else {}
+        # No scene cameras here: the rig is the scene's and is attached to the fleet
+        # below, whether or not an arm is in the kitchen.
         return {
             "view": inst.groups, "model": model, "task": task,
-            "cameras": cameras, "scene_cameras": scene_cameras,
+            "cameras": cameras,
             "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
             "scene_option": scene_option,
+            # The MJCF prefix, for the transform tree's body names only. Same key, same
+            # value as the other engine passes: the two topic lists must stay identical.
+            "prefix": prefix,
         }
 
     camera = _pick_camera(args, model, prefix)
@@ -927,12 +995,15 @@ def _surface_kwargs(args, inst, model, task, scene_option):
         "control_hz": args.control_hz, "watchdog_s": args.watchdog,
         "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
         "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
+        # Both bases take this now: it is what names the bodies their transform trees
+        # read, and the myAGV's shared surface grew the same keyword the AiNex's had.
+        "prefix": prefix,
     }
     if inst.name == "ainex":
-        # A per-robot tail rather than two more keys in the common bag: the myAGV's
+        # A per-robot tail rather than one more key in the common bag: the myAGV's
         # shared surface is called from here with no adapter in between, so anything
         # extra in the bag every base gets is a TypeError on that one.
-        bag |= {"prefix": inst.mjcf, "extra": {"action_dir": args.action_dir}}
+        bag |= {"extra": {"action_dir": args.action_dir}}
     return bag
 
 
@@ -1020,8 +1091,11 @@ def main() -> int:
     ap.add_argument("--azimuth", type=float, default=None)
     ap.add_argument("--elevation", type=float, default=-20.0)
 
-    ap.add_argument("--ros-port", type=int, default=None, dest="ros_port",
-                    help="serve this robot's vendor ROS topics on PORT (mobile bases)")
+    # On by default, on the port every client here already assumes -- see the same
+    # argument in the MolmoSpaces engine's spawn_robot.py. `--ros-port 0` serves nothing.
+    ap.add_argument("--ros-port", type=int, default=DEFAULT_ROS_PORT, dest="ros_port",
+                    help="serve each robot's vendor ROS topics on PORT "
+                         "(default %(default)s; 0 serves nothing)")
     ap.add_argument(
         "--no-reference-table", action="store_false", dest="reference_table",
         help="stage the task's objects on the kitchen's own worktop instead of on the "
@@ -1105,14 +1179,15 @@ def main() -> int:
             "it and nobody to see it would silently score nothing."
         )
 
-    # With both sets empty nothing renders at all: the topics are simply absent, and a
-    # client waiting for a frame waits forever with nothing to read the reason off. The
-    # arm alone streaming nothing is fine -- the worktop rig is not its, and publishes
-    # either way -- so this refuses the empty scene, not the empty robot.
-    if not args.scene_cameras and not args.wrist_camera:
+    # With the rig off and no wrist, an arm-only kitchen renders nothing at all: the
+    # topics are simply absent, and a client waiting for a frame waits forever with
+    # nothing to read the reason off. A base or a humanoid carries its own camera and is
+    # fine without the rig, so this refuses only the kitchen that would go dark.
+    if (not args.scene_cameras and not args.wrist_camera
+            and all(n in ARM_ROS_SURFACES for n in names)):
         raise SystemExit(
-            "--no-scene-cameras leaves nothing rendering at all; pass --wrist-camera as "
-            "well if the eye-in-hand view is the one you want on its own."
+            "--no-scene-cameras with only an arm leaves nothing rendering at all; pass "
+            "--wrist-camera as well if the eye-in-hand view is the one you want on its own."
         )
 
 
@@ -1292,7 +1367,16 @@ def main() -> int:
             return 0.0
         import ainex_model
 
-        floor = inst.mount_z if inst.tabletop else 0.0
+        # `mount_z` is not the worktop: `find_counter_mount` returns the surface plus
+        # SO101_BASE_LIFT, which exists because the arm's base-plate meshes hang 2.4 mm
+        # below its body origin. That is a fact about one robot's meshes, and a legged
+        # robot whose ride height is measured to the sole must stand on the surface
+        # itself. Inheriting the arm's clearance left the AiNex 4 mm in the air -- which
+        # nothing catches, because its feet do not collide (they cannot: colliding feet
+        # fight the planar actuators, see the collision surgery in ainex_model), so it
+        # neither falls nor complains and simply reads as hovering. MolmoSpaces mounts on
+        # the support's own top face and never had the offset to remove.
+        floor = (inst.mount_z - SO101_BASE_LIFT) if inst.tabletop else 0.0
         return float(floor + ainex_model.ride_height(robot_spec(inst.name)[0]))
 
     for inst in instances:
@@ -1389,26 +1473,19 @@ def main() -> int:
             inst.base.teleport(float(inst.xy[0]), float(inst.xy[1]), float(inst.yaw))
             if inst.name == "ainex":
                 # The one thing MolmoSpaces supplies that this engine has no object for:
-                # a robot config carrying an initial pose. Imported from the shared servo
-                # table rather than copied, unlike the SO-101's constants above -- that
-                # table is shared precisely so the two engines stand this robot up the
-                # same way. Joint *and* ctrl: these are position actuators, so a ctrl left
-                # at 0 would snap all 24 limbs out of the pose on the first step.
-                from ros_surfaces.ainex import servos
+                # a robot config carrying an initial pose. `ainex_model.stand` is shared
+                # precisely so the two engines stand this robot up the same way, down to
+                # the torso's lean -- a client that could tell the engines apart by the
+                # pose of a robot's legs is the invariant broken.
+                import ainex_model
 
-                for joint, angle in servos.INIT_POSE.items():
-                    jid = mujoco.mj_name2id(
-                        model, mujoco.mjtObj.mjOBJ_JOINT, f"{inst.mjcf}{joint}"
-                    )
-                    aid = mujoco.mj_name2id(
-                        model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{inst.mjcf}{joint}"
-                    )
-                    if jid < 0 or aid < 0:
-                        raise SystemExit(
-                            f"ainex joint/actuator {inst.mjcf}{joint!r} missing from the model"
-                        )
-                    data.qpos[model.jnt_qposadr[jid]] = angle
-                    data.ctrl[aid] = angle
+                try:
+                    ainex_model.stand(model, data, inst.mjcf)
+                except ValueError as exc:
+                    raise SystemExit(str(exc)) from exc
+                # ...and let its feet meet the things lying on the floor, by the same
+                # shared function and for the same reason.
+                ainex_model.enable_foot_contacts(model, inst.mjcf)
         else:
             inst.groups = {
                 # An empty group, and deliberately so. MolmoSpaces gives its SO-101 a `base`
@@ -1437,15 +1514,20 @@ def main() -> int:
     task = None
     if stage_task is not None:
         # After the rest pose is applied: the arbiter snapshots this state as the one
-        # /reset restores. The arm's prefix is passed rather than inferred -- every
-        # robot's root body is called `base`, so the arbiter's "find the one body ending
-        # in /base" rule resolves nothing once a second robot is in the kitchen.
-        task = stage_task[1](model, data, prefix=arm_instance.mjcf)
+        # /reset restores. The prefix is passed rather than inferred -- the arm and both
+        # wheeled bases root at a body called `base`, so the arbiter's "find the one body
+        # ending in /base" rule resolves nothing once a second robot is in the kitchen --
+        # and so is the root's own name, because the AiNex's is the torso its vendor URDF
+        # roots at instead.
+        task = stage_task[1](model, data, prefix=arm_instance.mjcf,
+                             root=robot_spec(arm_instance.name)[1],
+                             start_pose=arm_instance.name == "so101")
         placed, reason = task.instantaneous(data)
         print(f"task {args.task}: staged; success predicate reads "
               f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
         print(f"task {args.task}: {task.reach_report(data, ARM_REACH)}", file=sys.stderr)
-        check_task_contacts(model, arm_instance.mjcf, task)
+        check_task_contacts(model, arm_instance.mjcf, task,
+                            hand_bodies=gripper_bodies(arm_instance.name))
         from mujoco_bridge import report_slab_fit
         report_slab_fit(model, data)
     print(
@@ -1453,6 +1535,7 @@ def main() -> int:
         f"{model.nu} actuators",
         file=sys.stderr,
     )
+    report_sole_contact(model, data, instances)
 
     # Camera selection moved into `_pick_camera`, because it is per robot: each base
     # resolves `front_camera` against its own MJCF prefix, and one `camera` variable here
@@ -1552,6 +1635,20 @@ def main() -> int:
             attach_ros = getattr(importlib.import_module(module_name), func_name)
             fleet.attach(inst.ns, attach_ros,
                          **_surface_kwargs(args, inst, model, task, scene_option))
+        # The worktop's camera rig, under its own namespace, after the robots so they
+        # step first. Attached by the engine rather than by the arm's surface: the rig
+        # watches the surface, not the arm, and an AiNex alone at that worktop used to
+        # compile both cameras and publish neither. Probed rather than assumed, because
+        # a kitchen with no task staged has no rig and that is not an error. Identical
+        # to the MolmoSpaces engine's block on purpose: same member, same namespace.
+        from ros_surfaces.scene import (
+            SCENE_CAMERA_TOPICS, SCENE_NAMESPACE, attach_scene_rig, probe_scene_cameras,
+        )
+
+        rig = probe_scene_cameras(model, SCENE_CAMERA_TOPICS) if args.scene_cameras else {}
+        if rig:
+            fleet.attach(SCENE_NAMESPACE, attach_scene_rig, model=model, cameras=rig,
+                         jpeg_quality=args.jpeg_quality, scene_option=scene_option)
         fleet.start()
         controller = fleet
 

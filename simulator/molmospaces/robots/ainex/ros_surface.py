@@ -36,15 +36,20 @@ def _base_of(view):
 def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: int,
                control_hz: float, watchdog_s: float, scan: dict | None = None,
                depth: dict | None = None, extra: dict | None = None, scene_option=None,
-               camera_period: float = 0.0, world_reset=None):
-    """Wire this engine's AiNex onto a bus, via the shared contract."""
+               camera_period: float = 0.0, world_reset=None, prefix: str = ""):
+    """Wire this engine's AiNex onto a bus, via the shared contract.
+
+    `prefix` is the MJCF one, passed by the launcher now that it also names the transform
+    tree's bodies. It falls back to the `RobotView` attribute for `serve_ros`'s callers,
+    which is where it used to come from for every caller -- see the module docstring.
+    """
     from ros_surfaces.ainex import attach_ros as shared_attach_ros
 
     return shared_attach_ros(
         bus,
         _base_of(view),
         model,
-        getattr(view, "_namespace", "") or "",
+        prefix or getattr(view, "_namespace", "") or "",
         camera,
         camera_size,
         jpeg_quality,

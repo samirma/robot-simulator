@@ -8,7 +8,9 @@
 #                                        layout 1-60, style 1-60
 #                 [--robot myagv|so101]  ...with a shared robot in it instead, on the
 #                                        real hardware's interface:
-#                 [--ros-port 9090]      myagv -> cmd_vel in, odom + camera + /scan out
+#                 [--ros-port 9090]      the port the vendor ROS topics are served on --
+#                                        9090 unless you say otherwise, 0 for none;
+#                                        myagv -> cmd_vel in, odom + camera + /scan out
 #                 [--task apple_on_plate]  stage a task into the kitchen
 #                 [--headless]           ...with no window (displayless hosts, checks)
 #                 [--render out.png]     ...or just write a PNG and exit

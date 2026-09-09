@@ -11,7 +11,9 @@ topic names normalised to absolute. The one exception to the id rule is
 is never retired; the real bridge behaves the same way for the same reason.
 
 `call_service` is here for the AiNex, which is commanded by a service rather than a
-Twist: without it the walking link cannot be exercised offline at all.
+Twist: without it the walking link cannot be exercised offline at all. `/rosapi/topics`
+is answered too, from a topic table the test sets, because discovering which robot is on
+a wire is now part of what the console does before it drives anything.
 """
 
 from __future__ import annotations
@@ -37,6 +39,10 @@ class FakeBridge:
         self._clients: Dict[object, Set[str]] = {}
         self._received: List[Tuple[str, dict]] = []
         self._service_calls: List[Tuple[str, dict]] = []
+        # What `/rosapi/topics` answers with: `{topic: type}`, as the real rosapi shim
+        # reports it. Empty unless a test says otherwise, which is a wire with nothing
+        # discoverable on it -- itself a case worth being able to reproduce.
+        self.topics: Dict[str, str] = {}
         self._event = threading.Event()
 
     # ---------------------------------------------------------------- lifecycle
@@ -100,18 +106,25 @@ class FakeBridge:
     def _serve(self, connection, message: dict) -> None:
         """Record a service call and answer it successfully.
 
-        Every service this double is asked about -- the AiNex's `/walking/command` is the
-        only one so far -- takes a request and returns nothing interesting, so a blanket
-        `result: true` with empty values is the whole behaviour. `id` is echoed here and
-        only here: rosbridge drops ids everywhere else, but a service response without
-        one leaves the client's callback registered forever.
+        Most services this double is asked about -- the AiNex's `/walking/command` among
+        them -- take a request and return nothing interesting, so a blanket `result: true`
+        with empty values is the whole behaviour. `/rosapi/topics` is the exception: it has
+        an answer a client acts on, and `self.topics` is it. `id` is echoed here and only
+        here: rosbridge drops ids everywhere else, but a service response without one
+        leaves the client's callback registered forever.
         """
         name = message.get("service")
         name = normalise(name) if isinstance(name, str) and name else ""
         with self._lock:
             self._service_calls.append((name, message.get("args") or {}))
+            topics = dict(self.topics)
         self._event.set()
-        response = {"op": "service_response", "service": name, "values": {}, "result": True}
+        values: dict = {}
+        if name == "/rosapi/topics":
+            # `types` is positional against `topics`, which is the shape the real rosapi
+            # answers in and the shape the console pads against.
+            values = {"topics": list(topics), "types": [topics[t] for t in topics]}
+        response = {"op": "service_response", "service": name, "values": values, "result": True}
         if message.get("id") is not None:
             response["id"] = message["id"]
         try:

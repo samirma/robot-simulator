@@ -1,0 +1,33 @@
+# Bend down and close the left claw on whatever is on the
+# surface in front of the feet -- the vendor's `crawl_left`, which its pick-up demo runs
+# between `hand_back` and `place_block`. Solved by shared/tools/author_ainex_crawl.py, not
+# typed: measured in the robot's frame with the sole on the surface, the TCP arrives
+# 27 mm above the surface, 65 mm ahead of the base and +92 mm
+# to the side, with a torso lean of 0.83 rad. Standing upright it is
+# 379 mm up and cannot get lower than 72 mm without the lean; see README.md.
+#
+# `base_pitch` is the lean -- the 25th channel beside the servos. The ground-follow keeps
+# the stance sole on the surface while the legs fold under it, which is what lets the
+# body come down.
+#
+# `reach` is where the TCP lands, in the base frame with the surface at z = 0: what an
+# object has to be at for this group to close on it. shared/tests/ainex_grasp_check.py
+# reads it to put the apple there.
+reach: {x: 0.065, y: 0.092, z: 0.027}
+frames:
+  - duration: 0.5          # open the claw first, so it arrives ready
+    servos: {l_gripper: 0.690}
+  - duration: 1.0          # lean and fold: the body comes down over the feet
+    base_pitch: 0.830
+    servos: {l_hip_pitch: 0.720, r_hip_pitch: -0.720, l_knee: 0.480, r_knee: -0.480, l_ank_pitch: 0.900, r_ank_pitch: -0.900}
+  - duration: 0.7          # arm to just above the target
+    servos: {l_sho_pitch: 0.000, l_sho_roll: -0.600, l_el_pitch: -1.600, l_el_yaw: -1.926}
+  - duration: 0.6          # down onto it
+    servos: {l_sho_pitch: 0.750, l_sho_roll: -0.750, l_el_pitch: -1.400, l_el_yaw: -2.090}
+  - duration: 0.5          # close
+    servos: {l_gripper: -1.810}
+  - duration: 0.6          # lift, holding
+    servos: {l_sho_pitch: 0.000, l_sho_roll: -0.600, l_el_pitch: -1.600, l_el_yaw: -1.926}
+  - duration: 1.0          # stand back up, still holding
+    base_pitch: 0.0
+    servos: {l_hip_pitch: -0.828, r_hip_pitch: 0.828, l_knee: 1.192, r_knee: -1.192, l_ank_pitch: 0.625, r_ank_pitch: -0.625, l_sho_pitch: 0.000, l_sho_roll: 1.293, l_el_pitch: -0.100, l_el_yaw: -1.926}

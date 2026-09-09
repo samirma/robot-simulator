@@ -116,11 +116,136 @@ def test_routing_and_discovery() -> None:
         server.stop()
 
 
+def test_rosapi_surface() -> None:
+    """A rosapi client can ask this bridge what a real one answers.
+
+    It used to answer two queries and refuse the rest with `no service` -- a client asking
+    what type a topic was got nothing, which is the largest way it could tell this bridge
+    from the robot it stands in for. Every query a real `rosapi_node` ships is called here
+    over the wire, and the ones whose answers carry structure are checked for content, not
+    just for answering.
+    """
+    print("rosapi introspection, over the wire")
+    import websockets.sync.client as ws_client
+
+    from contracts import message_schemas as schemas
+    from contracts.rosbridge_server import (
+        SRV_TYPE_TRIGGER, TYPE_JOINT_STATE, joint_state, odometry,
+    )
+    from contracts.tf import TYPE_TF_MESSAGE, tf_message
+
+    server = RosBridgeServer(port=PORT + 1)
+    a, b = NamespacedBus(server, "a"), NamespacedBus(server, "b")
+    a.set_param("/robot_description", "<robot name='a'/>")
+    b.set_param("/robot_description", "<robot name='b'/>")
+    a.on("/cmd_vel", lambda m: None, TYPE_TWIST)
+    b.on("/cmd_vel", lambda m: None, TYPE_TWIST)
+    a.publish("/odom", odometry(1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0), TYPE_ODOM)
+    b.publish("/joint_states", joint_state(["j"], [0.0], [0.0], 0.0), TYPE_JOINT_STATE)
+    a.service("/reset", lambda args: {"success": True, "message": ""}, SRV_TYPE_TRIGGER)
+    server.serve_rosapi()
+    server.start()
+    try:
+        with ws_client.connect(f"ws://127.0.0.1:{PORT + 1}") as conn:
+            counter = {"n": 0}
+
+            def call(service: str, args: dict | None = None) -> tuple[bool, dict]:
+                counter["n"] += 1
+                conn.send(json.dumps({"op": "call_service", "service": service,
+                                      "id": f"q{counter['n']}", "args": args or {}}))
+                reply = json.loads(conn.recv(timeout=5))
+                return bool(reply.get("result")), reply.get("values") or {}
+
+            real_rosapi = [
+                "/rosapi/topics", "/rosapi/topics_for_type", "/rosapi/topic_type",
+                "/rosapi/services", "/rosapi/service_type", "/rosapi/publishers",
+                "/rosapi/subscribers", "/rosapi/nodes", "/rosapi/node_details",
+                "/rosapi/message_details", "/rosapi/service_request_details",
+                "/rosapi/service_response_details", "/rosapi/get_param_names",
+                "/rosapi/get_param", "/rosapi/action_servers", "/rosapi/get_ros_version",
+            ]
+            refused = [s for s in real_rosapi if not call(s, {"type": "", "topic": "",
+                                                           "service": "", "node": ""})[0]]
+            check("every service a real rosapi ships answers", not refused, str(refused))
+
+            ok, v = call("/rosapi/topic_type", {"topic": "/a/cmd_vel"})
+            check("topic_type answers for a subscribe-only command topic",
+                  ok and v.get("type") == TYPE_TWIST, str(v))
+
+            ok, v = call("/rosapi/subscribers", {"topic": "/a/cmd_vel"})
+            check("subscribers names the robot that owns the topic, and only it",
+                  v.get("subscribers") == ["/a"], str(v))
+            ok, v = call("/rosapi/publishers", {"topic": "/b/joint_states"})
+            check("publishers likewise", v.get("publishers") == ["/b"], str(v))
+
+            ok, v = call("/rosapi/nodes")
+            check("nodes are the namespaces", set(v.get("nodes", [])) == {"/a", "/b"}, str(v))
+            ok, v = call("/rosapi/node_details", {"node": "/a"})
+            check("node_details keeps one robot's names apart from the other's",
+                  v.get("subscribing") == ["/a/cmd_vel"] and v.get("publishing") == ["/a/odom"]
+                  and v.get("services") == ["/a/reset"], str(v))
+
+            ok, v = call("/rosapi/services")
+            check("services lists the robot's own beside rosapi's",
+                  "/a/reset" in v.get("services", []) and "/rosapi/topics" in v["services"])
+            ok, v = call("/rosapi/service_type", {"service": "/a/reset"})
+            check("service_type answers", v.get("type") == SRV_TYPE_TRIGGER, str(v))
+
+            ok, v = call("/rosapi/message_details", {"type": "sensor_msgs/msg/Imu"})
+            names = [t["type"] for t in v.get("typedefs", [])]
+            check("message_details returns the nested typedefs, not just the top level",
+                  names[:1] == ["sensor_msgs/Imu"]
+                  and {"std_msgs/Header", "geometry_msgs/Quaternion", "geometry_msgs/Vector3"}
+                  <= set(names), str(names))
+            ok, v = call("/rosapi/message_details", {"type": "ainex_interfaces/HeadState"})
+            td = (v.get("typedefs") or [{}])[0]
+            check("the vendor's HeadState comes back as the vendor defines it",
+                  td.get("fieldnames") == ["position", "duration"]
+                  and td.get("fieldtypes") == ["float64", "float64"], str(td))
+            ok, v = call("/rosapi/service_response_details",
+                         {"type": "ros_robot_controller/GetBusServosPosition"})
+            td = (v.get("typedefs") or [{}])[0]
+            check("a service response schema resolves, including its nested type",
+                  td.get("fieldnames") == ["success", "position"]
+                  and len(v.get("typedefs", [])) == 2, str(td.get("fieldnames")))
+
+            # The description, and the parameter that carries it. `get_param` answered
+            # the empty string for every name until the transform tree went in, so a
+            # client could read a robot's joint angles and never learn what its body is.
+            ok, v = call("/rosapi/get_param_names")
+            check("get_param_names lists each robot's description, namespaced",
+                  set(v.get("names", [])) == {"/a/robot_description", "/b/robot_description"},
+                  str(v))
+            ok, v = call("/rosapi/get_param", {"name": "/a/robot_description"})
+            check("get_param returns the description JSON-encoded, as rosapi does",
+                  json.loads(v.get("value", '""')) == "<robot name='a'/>", str(v)[:80])
+            ok, v = call("/rosapi/get_param", {"name": "/nope", "default": "fallback"})
+            check("an unset parameter comes back as the caller's own default",
+                  v.get("value") == "fallback", str(v))
+
+            # Drift: the table must describe what this bridge actually sends. Every
+            # message a builder produced here is compared, key for key, with its schema.
+            tf_msg = tf_message([("odom", "base_footprint", (0, 0, 0), (1, 0, 0, 0))],
+                                stamp_s=0.0)
+            for label, msg, mtype in (("Odometry", odometry(1, 0, 0, 0, 0, 0, 0), TYPE_ODOM),
+                                      ("JointState", joint_state(["j"], [0.0], [0.0], 0.0),
+                                       TYPE_JOINT_STATE),
+                                      ("TFMessage", tf_msg, TYPE_TF_MESSAGE),
+                                      ("TransformStamped", tf_msg["transforms"][0],
+                                       "geometry_msgs/TransformStamped")):
+                declared = [f[0] for f in schemas.fields_of(mtype) or []]
+                check(f"{label} as built matches its declared schema, field for field",
+                      sorted(declared) == sorted(msg), f"{sorted(declared)} vs {sorted(msg)}")
+    finally:
+        server.stop()
+
+
 def main() -> int:
     print(f"fleet transport check ({threading.active_count()} threads at start)\n")
     test_naming()
     test_collisions()
     test_routing_and_discovery()
+    test_rosapi_surface()
     print()
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")

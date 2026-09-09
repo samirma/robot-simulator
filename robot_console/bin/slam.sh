@@ -6,7 +6,13 @@
 #   ./bin/slam.sh navigate --map runs/house     click a point, robot drives there
 #
 #   ./bin/slam.sh explore --host 192.168.1.42   ...against a real myAGV
+#   ./bin/slam.sh map --namespace myagv         ...the base on /myagv/*, without asking
 #   ./bin/slam.sh <mode> --help                 every flag for that mode
+#
+# The namespace the base is under is read off the wire when --namespace is not given: the
+# simulator names every robot after itself while these constants are the bare vendor
+# contract, and subscribing to the wrong one maps nothing without erroring. `--namespace ''`
+# asks for the bare contract on purpose.
 #
 # Keys (the map window must have focus):
 #   W/S forward-back   A/D strafe   Q/E rotate   Space stop/pause

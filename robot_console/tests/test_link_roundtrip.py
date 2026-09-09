@@ -268,3 +268,37 @@ def test_stop_is_unconditional(server, walker):
     calls_before = len(_await_calls(server, 0, timeout=0.0))
     walker.stop()
     assert _await_calls(server, calls_before + 1)[calls_before:] == ["stop"]
+
+
+# ------------------------------------------------------- discovery, then the link
+
+def test_discovery_leaves_the_reactor_alive_for_the_link_that_follows(server, link):
+    """The console asks the wire which robot is on it, and then connects to drive it.
+
+    Both halves are roslibpy, in one process, and roslibpy's Twisted reactor is
+    process-global and single-shot: a discovery pass that called `terminate()` instead of
+    `close()` would leave the link unable to start, with nothing to say why. This is the
+    one part of discovery a pure test cannot cover, so it is pinned against the double.
+
+    The `link` fixture is connected before this runs, and asserted alive after, so the
+    order the two happen in either way round is covered.
+    """
+    from robot_console.discovery import discover
+    from robot_console.topics import TYPE_COMPRESSED_IMAGE
+
+    server.topics = {
+        "/myagv/cmd_vel": "geometry_msgs/Twist",
+        "/myagv/odom": "nav_msgs/Odometry",
+        "/myagv/camera/image_raw/compressed": TYPE_COMPRESSED_IMAGE,
+    }
+    found = discover(f"ws://127.0.0.1:{server.port}", timeout=10.0)
+    assert (found.robot, found.namespace) == ("myagv", "myagv")
+    assert found.camera_topic == "/myagv/camera/image_raw/compressed"
+
+    assert link.is_connected
+    after = RobotLink("127.0.0.1", server.port)
+    after.connect(timeout=10.0)
+    try:
+        assert after.is_connected
+    finally:
+        after.close(hard_exit_after=None)

@@ -32,11 +32,13 @@ from robot_console.bridge import Odom, quiet_roslibpy_logging
 from robot_console.camera import LatestFrame, decode_compressed_image, header_seq
 from robot_console.cli import Options
 from robot_console.hud import draw_overlay, placeholder
-from robot_console.preflight import preflight
+from robot_console.preflight import preflight, startup_instructions_any
 from robot_console.recorder import Recorder
-from robot_console.robots import PROFILES, RobotProfile
+from robot_console.robots import DEFAULT_ROBOT, PROFILES, RobotProfile
 from robot_console.teleop import (
+    HEAD_ACTIONS,
     Action,
+    HeadPose,
     TeleopState,
     action_for_key,
     key_label,
@@ -58,18 +60,64 @@ def _banner_keys(profile: RobotProfile) -> str:
     return "\n".join(f"  {key:<7s} {text}" for key, text in profile.hints)
 
 
+def resolve(options: Options, stream=sys.stderr) -> Optional[Options]:
+    """Settle which robot is being driven, and under which names, before connecting.
+
+    With `--robot` and `--namespace` both given there is nothing to ask and nothing is
+    asked. Otherwise the wire is: `/rosapi/topics` says which robots are on this rosbridge
+    and what each one is called, which is the same question `live_cameras.html` asks and
+    the same way. Returns None when the answer is one the user has to give.
+
+    A wire that cannot be asked -- no rosapi node, an old bridge, a timeout -- is not an
+    error: a real vendor bringup presents the bare contract, which is what the console
+    assumed before it could ask, so that assumption is what it falls back to. It says so,
+    because the alternative is the silent black window this whole path exists to remove.
+    """
+    if not options.needs_discovery:
+        return options
+
+    from robot_console.discovery import DiscoveryError, discover
+
+    try:
+        found = discover(options.url, options.robot, options.namespace)
+    except DiscoveryError as exc:
+        print(f"error: {exc}", file=stream)
+        return None
+    except Exception as exc:  # noqa: BLE001 - every transport failure means the same thing
+        print(
+            f"warning: could not ask {options.url} what is on it ({exc}); "
+            f"assuming a {options.robot or DEFAULT_ROBOT} on the bare contract. "
+            "Name the robot with --robot and its namespace with --namespace.",
+            file=stream,
+        )
+        return options.resolved(options.robot or DEFAULT_ROBOT, "")
+
+    print(f"discovered {found.describe()}")
+    return options.resolved(found.robot, found.namespace, camera_topic=found.camera_topic)
+
+
 def run(options: Options) -> int:
     quiet_roslibpy_logging()
-
-    profile = PROFILES[options.robot]
 
     if options.preflight and not preflight(
         options.host,
         options.port,
         timeout=options.preflight_timeout,
-        instructions=profile.startup_instructions,
+        # Before discovery the robot is not known, and telling someone to start a myAGV
+        # when they meant something else is worse than saying nothing specific.
+        instructions=(
+            PROFILES[options.robot].startup_instructions
+            if options.robot
+            else startup_instructions_any
+        ),
     ):
         return 2
+
+    resolved = resolve(options)
+    if resolved is None:
+        return 2
+    options = resolved
+    profile = PROFILES[options.robot]
 
     link = profile.make_link(options)
     try:
@@ -102,6 +150,18 @@ def run(options: Options) -> int:
         turn_ratio=profile.turn_ratio,
         turn_max=profile.turn_max,
     )
+    # None for a robot with nothing to point, which is what makes the arrow keys inert
+    # there and spares `RobotLink` a `publish_head` it would only ever ignore.
+    head: Optional[HeadPose] = None
+    if profile.has_head:
+        from robot_console import ainex_topics
+        from robot_console.ainex_link import HEAD_RATE
+
+        head = HeadPose(
+            pan_limit=ainex_topics.HEAD_PAN_LIMIT,
+            tilt_limit=ainex_topics.HEAD_TILT_LIMIT,
+            rate=HEAD_RATE,
+        )
     recorder: Optional[Recorder] = None
     t0 = time.monotonic()
 
@@ -158,7 +218,8 @@ def run(options: Options) -> int:
     frame = placeholder(message=f"waiting for {options.camera_topic} ...")
     cv2.imshow(
         window,
-        draw_overlay(frame, show_help=state.show_help, speed=state.speed, hints=profile.hints),
+        draw_overlay(frame, show_help=state.show_help, speed=state.speed, hints=profile.hints,
+                     head=None if head is None else (head.pan, head.tilt)),
     )
 
     tick_ms = max(1, int(1000.0 / options.loop_hz))
@@ -166,11 +227,15 @@ def run(options: Options) -> int:
     next_publish = time.monotonic()
     last_odom_logged = -1
     last_status = 0.0
+    last_head_key = time.monotonic()
     exit_reason = "esc"
 
     try:
         while state.running:
-            key = cv2.waitKey(tick_ms)
+            # waitKeyEx, not waitKey: the arrows need the untruncated code, because their
+            # low byte collides with a letter (see teleop.KEYMAP_EXTENDED). Identical to
+            # waitKey for every ASCII key, so nothing else changes.
+            key = cv2.waitKeyEx(tick_ms)
             action = action_for_key(key)
             now = time.monotonic()
             if action is not Action.NONE:
@@ -179,6 +244,16 @@ def run(options: Options) -> int:
                     exit_reason = "esc"
                 if recorder and action in (Action.FASTER, Action.SLOWER):
                     recorder.add_event("speed", speed=round(state.speed, 4), t=now)
+                # The head is a position and has no watchdog, so it goes out on change
+                # rather than on the publish clock. `head` is None for a robot without
+                # one, which is why `RobotLink` needs no `publish_head` at all.
+                if head is not None and action in HEAD_ACTIONS:
+                    if head.apply(action, now - last_head_key):
+                        link.publish_head(head.pan, head.tilt)
+                        if recorder:
+                            recorder.add_event("head", pan=round(head.pan, 4),
+                                               tilt=round(head.tilt, 4), t=now)
+                    last_head_key = now
 
             # No key-up event exists, so a held key is recognised by its OS auto-repeat
             # and the motion is dropped once the repeats stop.
@@ -234,6 +309,7 @@ def run(options: Options) -> int:
                     speed_max=state.speed_max,
                     moving=state.is_moving,
                     hints=profile.hints,
+                    head=None if head is None else (head.pan, head.tilt),
                 ),
             )
 

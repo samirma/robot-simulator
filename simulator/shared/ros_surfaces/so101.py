@@ -33,6 +33,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+from pathlib import Path
 
 import numpy as np
 
@@ -92,6 +93,12 @@ SERVICE_RESET_WORLD = "/mujoco_ros2_control_node/reset_world"
 #: hardware it is a camera driver launched outside any robot's namespace. `/so101/*` is
 #: reserved for what the SO-101 itself presents, which of the cameras is the wrist alone.
 #:
+#: The rig is no longer *rendered* here -- it is a fleet member of its own, see
+#: `ros_surfaces/scene.py`, which imports these two names from this module. They stay
+#: defined here rather than there because the console's contract test reads this file
+#: by path, with no package on its path and no MuJoCo installed, and holds its own copy
+#: of the names equal to these.
+#:
 #: Sizes are contract terms: the two scene views are 640x480 because the VLA's
 #: preprocessor stretches to 4:3 without preserving aspect, so a 16:9 frame arrives
 #: distorted relative to everything it was trained on.
@@ -123,6 +130,36 @@ WRIST_CAMERA: dict[str, tuple[str, int, int]] = {
     "/wrist/color/compressed": ("wrist_cam", 640, 360),
 }
 
+#: The description a real bringup loads into `robot_description` and a client draws the
+#: arm from: TheRobotStudio's own `SO-ARM100/Simulation/SO101`, vendored verbatim beside
+#: the MJCF and verified against upstream by blob SHA (see `robots/README.md`).
+URDF_PATH = Path(__file__).resolve().parents[1] / "robots/so101/urdf/so101_new_calib.urdf"
+
+#: MJCF body -> the frame the description calls it. **The two names differ on every link
+#: of this arm**, because the model is mujoco_menagerie's and the description is
+#: TheRobotStudio's: `shoulder` against `shoulder_link`, and so on. A client renders from
+#: the description, so the description's names are what go on the wire.
+#:
+#: `camera_mount` is deliberately absent. It is a menagerie body with no link in the
+#: description, so publishing it would put this engine's model layout into a client's tf
+#: tree -- the same rule that keeps a camera's `frame_id` off its MJCF camera name.
+#: `mujoco_bridge.TransformTree` reattaches a skipped body's children to its nearest named
+#: ancestor, so leaving it out cannot break the chain.
+TF_ROOT_BODY = "base"
+TF_FRAMES = {
+    "base": "base_link",
+    "shoulder": "shoulder_link",
+    "upper_arm": "upper_arm_link",
+    "lower_arm": "lower_arm_link",
+    "wrist": "wrist_link",
+    "gripper": "gripper_link",
+    "moving_jaw_so101_v1": "moving_jaw_so101_v1_link",
+}
+#: The eye-in-hand view, under the frame its images are already stamped with -- `wrist`,
+#: derived from the topic by `mujoco_bridge._camera_frame`. Not a link of the
+#: description: a camera driver names its own frame, and this one is the simulator's.
+TF_CAMERAS = {"wrist_cam": "wrist"}
+
 
 def to_contract_gripper(mjcf_rad: float) -> float:
     """MJCF jaw angle (rad) -> contract 0..1."""
@@ -143,11 +180,11 @@ def attach_ros(
     task=None,
     *,
     cameras: dict[str, tuple[str, int, int]] | None = None,
-    scene_cameras: dict[str, tuple[str, int, int]] | None = None,
     jpeg_quality: int = 70,
     control_hz: float = 10.0,
     scene_option=None,
     world_reset=None,
+    prefix: str = "",
 ):
     """Wire the arm onto an already-built bus and return a per-step callback.
 
@@ -160,13 +197,12 @@ def attach_ros(
     spelled out anywhere in this file.
 
     `cameras` is what this *robot* carries -- the wrist view, or nothing -- and goes out
-    under its namespace. `scene_cameras` is the worktop's fixed rig and goes out under
-    `SCENE_NAMESPACE`, because `/so101/*` is reserved for what the SO-101 presents and an
-    overhead view of the room is not that. Two arguments rather than one dict this file
-    splits by name: the engines know which is which, and neither this module nor a client
-    should have to infer it from a topic that happens to look scenic.
+    under its namespace. The worktop's rig is not here: it is the scene's, attached to
+    the fleet by the engine (`ros_surfaces/scene.py`), so that it publishes whether or
+    not an arm is in the kitchen.
     """
     from contracts.rosbridge_server import (
+        SRV_TYPE_TRIGGER,
         TYPE_FLOAT64_MULTI_ARRAY,
         TYPE_FREE_JOINT_STATE_ARRAY,
         TYPE_JOINT_STATE,
@@ -251,25 +287,36 @@ def attach_ros(
             return {"success": False, "message": "reset requested but the simulation loop did not apply it"}
         return {"success": True, "message": "world reset"}
 
-    bus.service(SERVICE_RESET, do_reset)
-    bus.service(SERVICE_RESET_WORLD, do_reset)
+    bus.service(SERVICE_RESET, do_reset, SRV_TYPE_TRIGGER)
+    bus.service(SERVICE_RESET_WORLD, do_reset, SRV_TYPE_TRIGGER)
 
-    # Two streams because they have two different publishers. The split costs no
-    # renderer: `CameraStreams` keys one per frame size, and the rig's views are 640x480
-    # where the wrist is 640x360, so they would never have shared one anyway.
-    scene_bus = bus.sibling(SCENE_NAMESPACE)
+    # The arm's own cameras only. The worktop rig used to be a second stream here, on a
+    # sibling bus under `scene`; it is a fleet member now, so a kitchen with no arm still
+    # publishes it. See `ros_surfaces/scene.py`.
     streams = CameraStreams(
         model, dict(cameras or {}), jpeg_quality, scene_option, frame_of=bus.frame,
     )
-    scene_streams = CameraStreams(
-        model,
-        SCENE_CAMERA_TOPICS if scene_cameras is None else scene_cameras,
-        jpeg_quality,
-        scene_option,
-        # The scene's frames too, for the same reason: a fixed rig is not a link on the
-        # arm, so `scene/overhead` is what a `frame_id` should read and `so101/overhead`
-        # is a tf tree nothing will connect.
-        frame_of=scene_bus.frame,
+
+    # The transform tree, and the description a client reads it against. A real
+    # ros2_control bringup for this arm runs `robot_state_publisher` beside the
+    # broadcaster, which is what turns `/joint_states` into frames a client can ask where
+    # the gripper is; without it this contract published five joint angles and no way to
+    # know what they moved. The static half carries the description's own
+    # `gripper_frame_link`, which MuJoCo merges away because it is fixed-jointed and has
+    # no geometry -- so it exists in no compiled model and has to come from the URDF.
+    from contracts.tf import urdf_fixed_joints
+    from mujoco_bridge import TransformTree
+    from ros_surfaces.tf_stream import attach_tf, read_description
+
+    description = read_description(URDF_PATH)
+    tf = attach_tf(
+        bus,
+        TransformTree(
+            model, root_body=f"{prefix}{TF_ROOT_BODY}", frames=TF_FRAMES, prefix=prefix,
+            cameras=TF_CAMERAS, extra_static=urdf_fixed_joints(description),
+        ),
+        description,
+        ros2=True,  # this arm is a ROS 2 bringup: `tf2_msgs/msg/TFMessage`, `sec`/`nanosec`
     )
 
     # `do_reset` runs on a websocket thread and needs the MjData the step loop owns.
@@ -295,7 +342,6 @@ def attach_ros(
     def step(data):
         if data is None:
             streams.close()
-            scene_streams.close()
             return
 
         _live[0] = data
@@ -343,6 +389,10 @@ def attach_ros(
             joint_state(list(JOINT_ORDER), positions, velocities, stamp),
             TYPE_JOINT_STATE,
         )
+        # Simulated time here too, and for the reason the block above gives: a client that
+        # buffers transforms by stamp and joint states by stamp must get one clock, or
+        # every lookup lands outside the buffer and resolves to nothing.
+        tf.publish(data, seq, stamp)
 
         if task is not None:
             bus.publish(
@@ -352,7 +402,6 @@ def attach_ros(
             )
 
         streams.publish(bus, data, seq, stamp)
-        scene_streams.publish(scene_bus, data, seq, stamp)
 
         if contact_debug:
             n = 0
@@ -378,12 +427,12 @@ def serve_ros(
     task=None,
     *,
     cameras: dict[str, tuple[str, int, int]] | None = None,
-    scene_cameras: dict[str, tuple[str, int, int]] | None = None,
     jpeg_quality: int = 70,
     control_hz: float = 10.0,
     scene_option=None,
     host: str = "0.0.0.0",
     namespace: str = "",
+    prefix: str = "",
 ):
     """The single-robot path: own a server on `port`, put one arm on it, start it.
 
@@ -395,9 +444,17 @@ def serve_ros(
 
     fleet = RobotFleet(port=port, host=host)
     fleet.attach(namespace, attach_ros, view=view, model=model, task=task,
-                 cameras=cameras, scene_cameras=scene_cameras,
-                 jpeg_quality=jpeg_quality, control_hz=control_hz,
-                 scene_option=scene_option)
+                 cameras=cameras, jpeg_quality=jpeg_quality, control_hz=control_hz,
+                 scene_option=scene_option, prefix=prefix)
+    # The rig is the scene's, not this arm's: attach it when the model carries it.
+    from ros_surfaces.scene import (
+        SCENE_CAMERA_TOPICS, SCENE_NAMESPACE, attach_scene_rig, probe_scene_cameras,
+    )
+
+    rig = probe_scene_cameras(model, SCENE_CAMERA_TOPICS)
+    if rig:
+        fleet.attach(SCENE_NAMESPACE, attach_scene_rig, model=model, cameras=rig,
+                     jpeg_quality=jpeg_quality, scene_option=scene_option)
     fleet.start()
     print(f"SO-101 on ws://{host}:{port} under namespace {namespace or '<bare>'}",
           file=sys.stderr)

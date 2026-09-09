@@ -33,18 +33,19 @@ from typing import Callable, Optional
 
 import roslibpy
 
+from robot_console.ainex_topics import (
+    SRV_TYPE_SET_WALKING_COMMAND,
+    SRV_WALKING_COMMAND,
+    TOPIC_CAMERA,
+    TOPIC_HEAD_PAN,
+    TOPIC_HEAD_TILT,
+    TOPIC_SET_WALKING_PARAM,
+    TYPE_COMPRESSED_IMAGE,
+    TYPE_HEAD_STATE,
+    TYPE_WALKING_PARAM,
+)
 from robot_console.teleop import Command
-from robot_console.topics import normalise
-
-# --- the vendor's contract (simulator/robots/ainex/topics.py) ---------------------------
-
-TOPIC_SET_WALKING_PARAM = "/walking/set_param"
-TOPIC_CAMERA = "/camera/image_raw/compressed"
-SRV_WALKING_COMMAND = "/walking/command"
-
-TYPE_WALKING_PARAM = "ainex_interfaces/WalkingParam"
-TYPE_SET_WALKING_COMMAND = "ainex_interfaces/SetWalkingCommand"
-TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
+from robot_console.topics import namespaced, normalise
 
 # --- the gait envelope (simulator/robots/ainex/gait.py, vendor walking_param.yaml) ------
 
@@ -62,6 +63,17 @@ SPEED_MIN = 0.02
 SPEED_MAX = 0.20
 SPEED_STEP = 0.02
 SPEED_DEFAULT = 0.10
+
+# --- the head -------------------------------------------------------------------------
+#: How fast a held arrow turns the head, rad/s. Slower than the servo can travel on
+#: purpose: this is a camera the operator is aiming, and at the gait's own 1.75 rad/s a
+#: tap of the key would swing the view through 20 degrees.
+HEAD_RATE = 0.8
+#: `HeadState.duration` -- how long the vendor's controller takes to reach the commanded
+#: angle. One control period's worth, so a held arrow reads as continuous motion rather
+#: than a series of snaps. The simulator ignores it and drives its position servo; a real
+#: `ainex_controller` interpolates over it.
+HEAD_MOVE_S = 0.1
 
 # Turn scales with the speed setting like the myAGV's does, capped inside the envelope's
 # 4 * 10 deg / 0.4 s ~= 1.75 rad/s. Kept well under it: a biped spinning at its gait
@@ -118,13 +130,28 @@ class AiNexLink:
         port: int = 9090,
         *,
         camera_topic: str = TOPIC_CAMERA,
+        namespace: str = "",
     ) -> None:
         self.host = host
         self.port = int(port)
+        self.namespace = namespace
         self._camera_name = normalise(camera_topic)
+        # The drive names take the namespace too, and that had to be said out loud: the
+        # camera was namespaced and these two were not, so against a simulator serving
+        # `/ainex/*` -- which is every simulator, the namespace defaults to the robot's
+        # own name -- the view streamed while every walk and turn command went to a topic
+        # nobody subscribed to. rosbridge acks nothing, so it read as a robot ignoring
+        # the keyboard. `--namespace ''` reproduces the bare vendor contract.
+        self._param_name = namespaced(TOPIC_SET_WALKING_PARAM, namespace)
+        self._command_name = namespaced(SRV_WALKING_COMMAND, namespace)
+        self._head_names = (
+            namespaced(TOPIC_HEAD_PAN, namespace),
+            namespaced(TOPIC_HEAD_TILT, namespace),
+        )
         self._ros: Optional[roslibpy.Ros] = None
         self._param: Optional[roslibpy.Topic] = None
         self._command_srv: Optional[roslibpy.Service] = None
+        self._head: tuple[Optional[roslibpy.Topic], Optional[roslibpy.Topic]] = (None, None)
         self._camera: Optional[roslibpy.Topic] = None
         self._closed = False
         # Written from the main loop, read in close(); the lock is cheap honesty about
@@ -141,9 +168,24 @@ class AiNexLink:
         if not ros.is_connected:
             raise ConnectionError(f"could not connect to ws://{self.host}:{self.port}")
         self._ros = ros
-        self._param = roslibpy.Topic(ros, TOPIC_SET_WALKING_PARAM, TYPE_WALKING_PARAM)
+        self._param = roslibpy.Topic(ros, self._param_name, TYPE_WALKING_PARAM)
         self._param.advertise()
-        self._command_srv = roslibpy.Service(ros, SRV_WALKING_COMMAND, TYPE_SET_WALKING_COMMAND)
+        self._command_srv = roslibpy.Service(
+            ros, self._command_name, SRV_TYPE_SET_WALKING_COMMAND
+        )
+        self._head = tuple(roslibpy.Topic(ros, name, TYPE_HEAD_STATE)
+                           for name in self._head_names)
+        for topic in self._head:
+            topic.advertise()
+        # The vendor's app layer sends these two, in this order, before anything else --
+        # and `start`/`stop`/`enable` are accepted and ignored until it does, because
+        # `enable_control` is what makes the robot consider itself initialised. On the
+        # simulator the flag is seeded true, so the omission was invisible here; on
+        # hardware every command this link sends would do nothing, with no error, and
+        # `_call_walking` discards the rejection. Sent once, at connect, where the browser
+        # panel's "Enable control" switch sends them.
+        self._call_walking("enable_control")
+        self._call_walking("enable")
 
     @property
     def is_connected(self) -> bool:
@@ -202,6 +244,23 @@ class AiNexLink:
             self._call_walking("start")
         elif not moving and walking_before:
             self._call_walking("stop")
+
+    def publish_head(self, pan: float, tilt: float) -> None:
+        """Point the head. Two `ainex_interfaces/HeadState` messages, one per controller.
+
+        Called only when the pose changes, which is the whole difference from
+        `publish_cmd_vel`: a head is a position and has no watchdog to feed, where the
+        base's Twist has to be re-sent at 20 Hz. `duration` is the vendor's second field
+        and is sent because a real subscriber deserialises the whole message -- the same
+        reason `Command.to_twist` fills in the axes the bridge never reads.
+        """
+        if not self.is_connected:
+            return
+        for topic, value in zip(self._head, (pan, tilt)):
+            if topic is not None:
+                topic.publish(roslibpy.Message(
+                    {"position": float(value), "duration": HEAD_MOVE_S}
+                ))
 
     def stop(self) -> None:
         """Stop stepping, explicitly and regardless of believed state.

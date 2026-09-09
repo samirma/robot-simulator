@@ -37,10 +37,13 @@ class SlamOptions:
     preflight_timeout: float = 1.5
     connect_timeout: float = 10.0
 
-    cmd_topic: str = TOPIC_CMD_VEL
-    odom_topic: str = TOPIC_ODOM
-    camera_topic: str = TOPIC_CAMERA
-    scan_topic: str = TOPIC_SCAN
+    # `None` means "not given", and for the namespace that means "ask the wire" -- see
+    # `Options` in `cli.py` and `namespaced_by` below. Resolved before anything connects.
+    namespace: Optional[str] = None
+    cmd_topic: Optional[str] = None
+    odom_topic: Optional[str] = None
+    camera_topic: Optional[str] = None
+    scan_topic: Optional[str] = None
 
     out: Path = DEFAULT_MAP_DIR
     load: Optional[Path] = None
@@ -69,6 +72,33 @@ class SlamOptions:
     @property
     def url(self) -> str:
         return f"ws://{self.host}:{self.port}"
+
+    @property
+    def needs_discovery(self) -> bool:
+        """True when the namespace the base is under is still the wire's to say."""
+        return self.namespace is None
+
+    def namespaced_by(
+        self, namespace: Optional[str] = None, *, camera_topic: Optional[str] = None
+    ) -> "SlamOptions":
+        """This, with every topic left unnamed resolved under `namespace`.
+
+        The mapping robot is always the myAGV -- SLAM needs `/scan` and `/odom`, and the
+        walking robot has neither -- so unlike teleop there is no robot to settle here,
+        only the name it is under. `camera_topic` is what discovery saw and is the weaker
+        claim: an explicit `--camera-topic` wins. Idempotent.
+        """
+        namespace = self.namespace if namespace is None else namespace
+        namespace = namespace or ""
+        camera = self.camera_topic if self.camera_topic is not None else camera_topic
+        return dataclasses.replace(
+            self,
+            namespace=namespace,
+            cmd_topic=resolve_topic(self.cmd_topic, TOPIC_CMD_VEL, namespace),
+            odom_topic=resolve_topic(self.odom_topic, TOPIC_ODOM, namespace),
+            camera_topic=resolve_topic(camera, TOPIC_CAMERA, namespace),
+            scan_topic=resolve_topic(self.scan_topic, TOPIC_SCAN, namespace),
+        )
 
     @property
     def map_source(self) -> Optional[Path]:
@@ -150,11 +180,15 @@ def build_parser(mode: Optional[str] = None) -> argparse.ArgumentParser:
     # A namespace, not four flags. Several robots on one rosbridge each get one -- the
     # simulator names it after the robot -- so `--namespace myagv` reaches
     # `/myagv/cmd_vel` and friends without spelling any of them out. Applied only to
-    # topics left at their default, so an explicit `--odom-topic` still wins; the default
-    # is empty, which is the bare contract a real myAGV bringup presents.
+    # topics left at their default, so an explicit `--odom-topic` still wins.
+    #
+    # Not given means "ask the wire"; `--namespace ''` asks for the bare contract a real
+    # myAGV bringup presents, on purpose. Those were the same thing when the default was
+    # `''`, and against a namespaced simulator that mapped nothing, silently.
     parser.add_argument(
-        "--namespace", default="", metavar="NAME",
-        help="ROS namespace the robot is under, e.g. `myagv` for /myagv/cmd_vel")
+        "--namespace", default=None, metavar="NAME",
+        help="ROS namespace the robot is under, e.g. `myagv` for /myagv/cmd_vel "
+             "(default: discovered from the wire; pass '' for the bare contract)")
     parser.add_argument("--cmd-topic", default=None)
     parser.add_argument("--odom-topic", default=None)
     parser.add_argument("--camera-topic", default=None)
@@ -178,16 +212,17 @@ def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None)
         )
     max_speed = max(SPEED_MIN, max_speed)
 
-    return SlamOptions(
+    options = SlamOptions(
         mode=mode or args.mode,
         host=host,
         port=port,
         preflight=args.preflight,
         connect_timeout=float(args.connect_timeout),
-        cmd_topic=resolve_topic(args.cmd_topic, TOPIC_CMD_VEL, args.namespace),
-        odom_topic=resolve_topic(args.odom_topic, TOPIC_ODOM, args.namespace),
-        camera_topic=resolve_topic(args.camera_topic, TOPIC_CAMERA, args.namespace),
-        scan_topic=resolve_topic(args.scan_topic, TOPIC_SCAN, args.namespace),
+        namespace=args.namespace,
+        cmd_topic=args.cmd_topic,
+        odom_topic=args.odom_topic,
+        camera_topic=args.camera_topic,
+        scan_topic=args.scan_topic,
         out=Path(args.out),
         load=Path(args.load) if args.load else None,
         record=Path(args.record) if args.record else None,
@@ -208,6 +243,8 @@ def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None)
         distance_bias=max(0.01, float(args.distance_bias)),
         autosave=max(0.0, float(args.autosave)),
     )
+    # A run that named its namespace never touches the network to find one.
+    return options if options.needs_discovery else options.namespaced_by()
 
 
 def main(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None) -> int:

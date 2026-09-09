@@ -15,11 +15,27 @@ TOPIC_CAMERA = "/camera/image_raw/compressed"
 # simulator's ray-cast stand-in. Nothing in the console consumes it since the mapping
 # subsystem was removed, but it is part of the contract and both robots still emit it.
 TOPIC_SCAN = "/scan"
+# The transform tree. On a real myAGV `myagv_active.launch` starts `robot_state_publisher`,
+# `joint_state_publisher`, `robot_pose_ekf` -- which is what actually broadcasts
+# `odom -> base_footprint`, the odometry node's own call being commented out in
+# `myAGV.cpp` -- and three `static_transform_publisher` nodes. They are what make
+# `/odom`'s frames and `/scan`'s `laser_frame` nodes of a tree rather than bare strings.
+# Nothing in this console consumes them: `slam/` dead-reckons and encodes the 65 mm lidar
+# mount itself, which is why their absence went unnoticed for so long.
+TOPIC_TF = "/tf"
+# **A ROS 1 robot has no `/tf_static`**, so `fleet.py` does not require it of a base: the
+# myAGV's static publishers are `pkg="tf"`, which re-publishes on `/tf`, and its URDF has
+# no fixed joint for `robot_state_publisher` to put there. Kept as a constant because the
+# SO-101's ROS 2 bringup does have one and both halves of that name live in one place.
+TOPIC_TF_STATIC = "/tf_static"
+#: The parameter carrying the robot's URDF, which is what a tf tree is read against.
+PARAM_ROBOT_DESCRIPTION = "/robot_description"
 
 TYPE_TWIST = "geometry_msgs/Twist"
 TYPE_ODOM = "nav_msgs/Odometry"
 TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
 TYPE_LASER_SCAN = "sensor_msgs/LaserScan"
+TYPE_TF_MESSAGE = "tf2_msgs/TFMessage"
 
 # The simulator's bridge normalises names itself, but stock rosbridge_suite does not:
 # a relative `cmd_vel` there resolves against the node namespace and silently misses.

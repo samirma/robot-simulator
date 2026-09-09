@@ -64,6 +64,13 @@ class Action(enum.Enum):
     SLOWER = "SLOWER"
     HELP = "HELP"
     QUIT = "QUIT"
+    # The head, on a robot that has one. Not motion: these move a pan/tilt pair rather
+    # than the base, so they are held and integrated rather than armed and expired.
+    HEAD_UP = "HEAD_UP"
+    HEAD_DOWN = "HEAD_DOWN"
+    HEAD_LEFT = "HEAD_LEFT"
+    HEAD_RIGHT = "HEAD_RIGHT"
+    HEAD_CENTRE = "HEAD_CENTRE"
 
 
 # Unit body-frame direction for each motion action: (forward, left, ccw).
@@ -93,7 +100,39 @@ KEYMAP = {
     ord("_"): Action.SLOWER,
     ord("h"): Action.HELP,
     ord("?"): Action.HELP,
+    ord("0"): Action.HEAD_CENTRE,
 }
+
+# The arrows, matched on the **whole** key code and never through `KEYMAP`'s low byte.
+#
+# `action_for_key` masks to the low byte because that is the portable part of an ASCII
+# key, and that is exactly what makes an arrow dangerous: GTK/Qt reports Left as 0xFF51,
+# whose low byte is 0x51, which normalises to `q` -- so a left-arrow press would arrive as
+# ROT_LEFT and turn the robot. Cocoa's 0xF702 would land on 0x02, unmapped today but
+# nothing says it stays that way. So the full value is looked up first, and `app.py` reads
+# keys with `cv2.waitKeyEx`, which returns it untruncated (and is identical for ASCII).
+#
+# Three backends, because opencv-python is built against whichever the platform has:
+# Cocoa on macOS, GTK/Qt on Linux, and the Win32 HighGUI on Windows.
+KEYMAP_EXTENDED = {
+    63232: Action.HEAD_UP, 63233: Action.HEAD_DOWN,        # Cocoa (NS*ArrowFunctionKey)
+    63234: Action.HEAD_LEFT, 63235: Action.HEAD_RIGHT,
+    65362: Action.HEAD_UP, 65364: Action.HEAD_DOWN,        # GTK / Qt (XK_Up ...)
+    65361: Action.HEAD_LEFT, 65363: Action.HEAD_RIGHT,
+    2490368: Action.HEAD_UP, 2621440: Action.HEAD_DOWN,    # Win32 HighGUI
+    2424832: Action.HEAD_LEFT, 2555904: Action.HEAD_RIGHT,
+}
+
+#: The most one arrow press may turn the head, as a time budget. macOS repeats at 90 ms
+#: after a 375 ms initial delay, so this covers the first press of a hold without letting
+#: a key tapped after a long pause jump the view.
+HEAD_STEP_MAX_S = 0.2
+
+#: Holding one of these keeps the head turning; `HEAD_CENTRE` is a one-shot.
+HEAD_ACTIONS = frozenset(
+    {Action.HEAD_UP, Action.HEAD_DOWN, Action.HEAD_LEFT, Action.HEAD_RIGHT,
+     Action.HEAD_CENTRE}
+)
 
 # Holding one of these is what keeps the robot moving; everything else is a one-shot.
 MOTION_ACTIONS = frozenset(
@@ -116,6 +155,9 @@ def action_for_key(key: int) -> Action:
     """
     if key is None or key < 0:
         return Action.NONE
+    # The full value first: an arrow's low byte collides with a letter (see KEYMAP_EXTENDED).
+    if key in KEYMAP_EXTENDED:
+        return KEYMAP_EXTENDED[key]
     code = key & 0xFF
     if 65 <= code <= 90:  # normalise upper case; W and w mean the same thing
         code += 32
@@ -126,6 +168,8 @@ def key_label(key: int) -> str | None:
     """A human-readable name for a key, for the command log. None if unmapped."""
     if key is None or key < 0:
         return None
+    if key in KEYMAP_EXTENDED:
+        return KEYMAP_EXTENDED[key].value.removeprefix("HEAD_").lower()
     code = key & 0xFF
     if 65 <= code <= 90:
         code += 32
@@ -166,6 +210,63 @@ class Command:
             "linear": {"x": float(self.vx), "y": float(self.vy), "z": 0.0},
             "angular": {"x": 0.0, "y": 0.0, "z": float(self.wz)},
         }
+
+
+@dataclasses.dataclass
+class HeadPose:
+    """Where a pan/tilt head is pointed, and what the arrow keys do to it.
+
+    A position, not a velocity: unlike the base there is no watchdog and nothing to keep
+    alive, so the console publishes only when this changes. Holding an arrow turns the
+    head at `rate` through the OS's key repeat, exactly as holding `W` drives the base --
+    which is why a step is `rate * dt` and not a fixed nudge per keypress: on a machine
+    with a slower repeat the head would otherwise creep.
+
+    Limits are the robot's, passed in rather than assumed, so this module keeps knowing
+    nothing about any particular robot's contract.
+    """
+
+    pan: float = 0.0
+    tilt: float = 0.0
+    pan_limit: float = 1.0
+    tilt_limit: float = 1.0
+    rate: float = 1.0  # rad/s while a key is held
+
+    def apply(self, action: Action, dt: float) -> bool:
+        """Fold one key action in. Returns True if the pose moved and needs publishing."""
+        if action is Action.HEAD_CENTRE:
+            moved = bool(self.pan or self.tilt)
+            self.pan = self.tilt = 0.0
+            return moved
+        if action not in HEAD_ACTIONS:
+            return False
+        # `dt` is the gap since the last arrow, so the first press after a pause -- or
+        # after the initial repeat delay -- would otherwise swing the head through
+        # whatever the operator spent thinking. Capped at a couple of repeat intervals.
+        step = self.rate * min(max(dt, 0.0), HEAD_STEP_MAX_S)
+        # These are the **joint angles** the vendor's per-joint controllers take, which is
+        # also what `/joint_states` reads back, so the signs are the vendor's and not this
+        # module's to choose. Measured off the compiled model rather than assumed:
+        #
+        #   head_pan  axis [0, 0, -1]  ->  +pan looks RIGHT (yaw -29.5 deg at +0.5 rad)
+        #   head_tilt axis [0, -1, 0]  ->  +tilt looks UP   (pitch -15.0 -> +13.7 deg)
+        #
+        # Pan is therefore the *opposite* sign to the base's `+z` counter-clockwise yaw,
+        # and writing it the intuitive way round -- left is positive, like `Q` -- pointed
+        # the camera the other way from the key that was pressed.
+        if action is Action.HEAD_LEFT:
+            pan, tilt = self.pan - step, self.tilt
+        elif action is Action.HEAD_RIGHT:
+            pan, tilt = self.pan + step, self.tilt
+        elif action is Action.HEAD_UP:
+            pan, tilt = self.pan, self.tilt + step
+        else:
+            pan, tilt = self.pan, self.tilt - step
+        pan = min(self.pan_limit, max(-self.pan_limit, pan))
+        tilt = min(self.tilt_limit, max(-self.tilt_limit, tilt))
+        moved = (pan, tilt) != (self.pan, self.tilt)
+        self.pan, self.tilt = pan, tilt
+        return moved
 
 
 @dataclasses.dataclass

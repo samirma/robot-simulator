@@ -22,15 +22,20 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import ainex_model  # noqa: E402  (shared/, on the path via env.sh)
+from ros_surfaces.ainex.actions import BASE_PITCH, rest_pose  # noqa: E402
+
 FAIL = []
 
 # Hiwonder publish 415 mm for the assembled robot. Ours measures a little more because
 # the vendor figure is presumably taken in a different pose; a wide band still catches a
 # model that is mis-scaled or standing on the wrong part of itself.
 HEIGHT_RANGE = (0.38, 0.50)
-# The reach band the arms actually cover. See robots/ainex/actions/README.md: the torso
-# cannot pitch, so the hands never get near the floor.
-REACH_RANGE = (0.20, 0.45)
+# The band a standing robot's hands sweep through, sampled through every frame of every
+# group that does not bend down. Measured: `greet`'s swing passes 0.183 m on its way, so
+# the floor of the band is below the 0.25 m the end poses sit at. The crawl groups are
+# the exception and are checked separately -- they exist to leave this band.
+REACH_RANGE = (0.15, 0.45)
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -48,9 +53,15 @@ def drive_to(model, data, view, target, steps: int = 4000) -> np.ndarray:
 
 
 def hold(model, data, pose: dict[str, float], ns: str, steps: int = 400) -> None:
-    """Command a whole-body joint pose and let it settle."""
+    """Command a whole-body joint pose and let it settle.
+
+    The 24 servo actuators are named after their joints; the torso's lean is the one
+    channel whose actuator is not (`base_pitch_act`), because it is a base axis and
+    those all carry the `_act` suffix.
+    """
     for name, value in pose.items():
-        data.ctrl[model.actuator(f"{ns}{name}").id] = value
+        actuator = "base_pitch_act" if name == BASE_PITCH else name
+        data.ctrl[model.actuator(f"{ns}{actuator}").id] = value
     for _ in range(steps):
         mujoco.mj_step(model, data)
 
@@ -61,19 +72,26 @@ def mesh_world_z(model, data, body_names) -> list[float]:
     Vertices rather than `geom_rbound`, which is a bounding-sphere radius and sits several
     centimetres below a foot's sole -- enough to make a robot standing correctly look like
     it is hovering.
+
+    Through each GEOM's own world frame (`geom_xpos`/`geom_xmat`), not the body's. This
+    used to add `geom_pos` and apply the body frame, which drops `geom_quat` -- and every
+    mesh geom on this robot carries one, because MuJoCo folds a mesh's principal-axes
+    re-orientation into it at compile. That was the same shortcut `ainex_model._mesh_points`
+    took, so this check agreed with the builder to the millimetre while both were 42.7 mm
+    wrong and the robot stood that far off every surface. A witness that shares the
+    subject's method is not a witness; MuJoCo's own frames are the independent one.
     """
     out: list[float] = []
     for name in body_names:
         bid = model.body(name).id
-        geoms = [g for g in range(model.ngeom)
-                 if model.geom_bodyid[g] == bid and model.geom_dataid[g] >= 0]
-        if not geoms:
-            continue
-        mesh = model.geom_dataid[geoms[0]]
-        start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
-        pts = model.mesh_vert[start : start + count] + model.geom_pos[geoms[0]]
-        world = pts @ data.xmat[bid].reshape(3, 3).T + data.xpos[bid]
-        out.extend(world[:, 2].tolist())
+        for g in range(model.ngeom):
+            if model.geom_bodyid[g] != bid or model.geom_dataid[g] < 0:
+                continue
+            mesh = model.geom_dataid[g]
+            start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+            pts = model.mesh_vert[start : start + count]
+            world = pts @ data.geom_xmat[g].reshape(3, 3).T + data.geom_xpos[g]
+            out.extend(world[:, 2].tolist())
     return out
 
 
@@ -166,12 +184,18 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
         < gait.from_app_params(1, 0.025, 1, 0, 0).period_time,
     )
     actions = load_action_dir()
+
+    def _limits(joint: str) -> tuple[float, float]:
+        # The torso's lean is the one channel that is not a servo; its range is the
+        # model's (ainex_model.BASE_PITCH_RANGE), not the servo table's.
+        return ainex_model.BASE_PITCH_RANGE if joint == BASE_PITCH else servos.joint_limits(joint)
+
     out_of_range = [
         (name, j)
         for name, frames in actions.items()
         for f in frames
         for j, v in f.angles.items()
-        if not servos.joint_limits(j)[0] - 1e-9 <= v <= servos.joint_limits(j)[1] + 1e-9
+        if not _limits(j)[0] - 1e-9 <= v <= _limits(j)[1] + 1e-9
     ]
     check(f"{len(actions)} action groups load, all frames in range", not out_of_range,
           str(out_of_range[:3]))
@@ -205,7 +229,19 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
         str(sorted(view.move_group_ids())),
     )
     check("3 base actuators", base.n_actuators == 3, f"{base.n_actuators}")
-    check("27 actuators total (24 joints + 3 base)", model.nu == 27, f"{model.nu}")
+    check("29 actuators total (24 joints + 5 base)", model.nu == 29, f"{model.nu}")
+    # The torso's joints in order: x, y, theta are the move group; z is the ground's
+    # and pitch is the lean. The order is load-bearing -- a hinge rotates the axes of
+    # every joint after it, so pitch before z would tilt the axis the ground-follow
+    # drives (ainex_model, step 2).
+    torso = model.body(f"{ns}body_link")
+    torso_joints = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, int(torso.jntadr[0]) + i)
+        for i in range(int(torso.jntnum[0]))
+    ]
+    check("torso joints in order x, y, theta, z, pitch",
+          torso_joints == [f"{ns}base_{a}" for a in ("x", "y", "theta", "z", "pitch")],
+          str(torso_joints))
     # MuJoCo merges a jointless URDF root into the worldbody, and here it would merge two
     # -- leaving five disconnected root bodies and 0.743 kg outside the tree. The virtual
     # joints are what stop that; see PROVENANCE.md.
@@ -229,13 +265,33 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
     check("all 25 link meshes survived the collision surgery", mesh_geoms >= 25,
           f"{mesh_geoms} mesh geoms")
     # Only the robot's own geoms; the scene's floor and furniture collide too, obviously.
-    colliding = [
-        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g)
-        for g in robot_geoms(model, ns)
-        if model.geom_contype[g] or model.geom_conaffinity[g]
-    ]
-    check("only the torso hull and the two hands collide", len(colliding) == 3,
-          f"{len(colliding)}: {colliding}")
+    # Three classes, and the split is the point: the torso hull and the hands meet the
+    # world (contype 1), the two feet meet only what `enable_foot_contacts` tags -- they
+    # carry a conaffinity and no contype, so an untagged scene leaves them inert -- and
+    # everything else is decorative. The feet must be collidable *here*, at compile: MuJoCo
+    # builds a mesh's convex hull only for meshes some collidable geom uses, so a foot
+    # compiled at 0/0 can never collide however the masks are set afterwards.
+    def body_of(g):
+        return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, int(model.geom_bodyid[g]))
+
+    feet = {f"{ns}{f}" for f in ainex_model.FEET}
+    world_colliding = [g for g in robot_geoms(model, ns)
+                       if model.geom_contype[g] and body_of(g) not in feet]
+    foot_colliding = [g for g in robot_geoms(model, ns)
+                      if body_of(g) in feet and model.geom_conaffinity[g]]
+    inert = [g for g in robot_geoms(model, ns)
+             if not (model.geom_contype[g] or model.geom_conaffinity[g])]
+    check("only the torso hull and the two hands meet the world",
+          len(world_colliding) == 3,
+          f"{len(world_colliding)}: "
+          f"{[mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) for g in world_colliding]}")
+    check("and the two feet meet only what is tagged for them",
+          len(foot_colliding) == 2
+          and all(model.geom_contype[g] == 0 for g in foot_colliding),
+          f"{len(foot_colliding)} foot geoms, conaffinity "
+          f"{sorted({int(model.geom_conaffinity[g]) for g in foot_colliding})}, contype "
+          f"{sorted({int(model.geom_contype[g]) for g in foot_colliding})}")
+    check("and everything else is decorative", len(inert) >= 25, f"{len(inert)} inert geoms")
     check("world site present",
           mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, f"{ns}world") >= 0)
 
@@ -268,7 +324,10 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
     parent = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.cam_bodyid[cam_id])
     check("camera rides head_tilt_link", parent == f"{ns}head_tilt_link", str(parent))
 
-    rest = dict(servos.INIT_POSE)
+    # The rest pose, torso lean included: the vendor's init pose leans the body forward
+    # over flat feet, and holding the servos alone puts that 15 degrees on the soles
+    # instead -- see `ainex_model.stance_lean` and the flatness check further down.
+    rest = rest_pose()
     hold(model, data, rest, ns)
     forward_0 = -data.cam_xmat[cam_id].reshape(3, 3)[:, 2].copy()
     hold(model, data, {**rest, "head_pan": 0.5}, ns)
@@ -285,9 +344,31 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
     # ---------------------------------------------------------------- standing
     print("\nstanding:")
     hold(model, data, rest, ns)
-    feet = [f"{ns}l_ank_roll_link", f"{ns}r_ank_roll_link"]
+    feet = [f"{ns}{f}" for f in ainex_model.FEET]
     ground = lowest_point(model, data, feet)
     check("feet rest on the floor", abs(ground) < 0.01, f"lowest foot point z={ground:+.4f}")
+
+    # On the whole sole, and this needed saying separately: the check above is the lowest
+    # single vertex, and it passed at -0.0000 while the robot stood 14.95 degrees toe-up
+    # on two heel corners with its toes 37.6 mm in the air. A tilt is what tells a sole
+    # resting from a sole touching, and neither the gap nor `ride_height` -- which is
+    # measured the same way -- can see the difference.
+    tilts = [
+        math.degrees(math.atan2(*(lambda r: (r[0, 2], r[2, 2]))(
+            data.xmat[model.body(f).id].reshape(3, 3))))
+        for f in feet
+    ]
+    check("and flat on it, not on their heels", max(abs(t) for t in tilts) < 1.0,
+          "sole tilt " + ", ".join(f"{t:+.2f}" for t in tilts) + " deg")
+
+    # Heel *and* toe on the floor, measured from the mesh rather than from the body frame
+    # -- an independent witness to the tilt above, which is a frame reading.
+    for foot in feet:
+        zs = mesh_world_z(model, data, [foot])
+        check(f"{foot.split('/')[-1]}: the whole sole is down",
+              max(zs) - min(zs) < 0.045 and min(zs) - ground < 0.002,
+              f"sole spans {(max(zs) - min(zs)) * 1000:.1f} mm, lowest "
+              f"{(min(zs) - ground) * 1000:+.1f} mm over the floor")
 
     top = max(mesh_world_z(model, data, meshed_bodies(model, ns)))
     check(f"standing height in {HEIGHT_RANGE}", HEIGHT_RANGE[0] <= top - ground <= HEIGHT_RANGE[1],
@@ -383,21 +464,36 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
               f"open {wide * 1000:.1f} mm, closed {shut * 1000:.1f} mm")
 
     # Every reach an action group commands must land in the band the arms can cover.
-    heights = []
+    # Tip height over the lowest sole, sampled through each group's whole replay. In the
+    # robot's own frame, which is what the ground-follow makes true over the worktop at
+    # run time -- so this is the claw's height over the surface it stands on.
+    heights: list[tuple[str, str, float]] = []
     for name, frames in actions.items():
-        player = ActionPlayer(frames, servos.INIT_POSE)
+        player = ActionPlayer(frames, rest_pose())
         while not player.finished:
             pose_now = player.step(0.05)
             hold(model, data, pose_now, ns, steps=1)
-        mujoco.mj_forward(model, data)
-        floor = lowest_point(model, data, feet)
-        for site in ("l_tcp", "r_tcp"):
-            heights.append(
-                (name, float(data.site_xpos[model.site(f"{ns}{site}").id][2] - floor))
-            )
-    outside = [(n, round(h, 3)) for n, h in heights if not REACH_RANGE[0] <= h <= REACH_RANGE[1]]
-    check(f"every action group's hands stay within {REACH_RANGE} m of the floor",
+            mujoco.mj_forward(model, data)
+            floor = lowest_point(model, data, feet)
+            for site in ("l_tcp", "r_tcp"):
+                heights.append(
+                    (name, site, float(data.site_xpos[model.site(f"{ns}{site}").id][2] - floor))
+                )
+    # Two bands. The crawl groups exist to bring a claw to the surface -- the vendor's
+    # `crawl_left`/`crawl_right` bend the robot down over its feet -- so for them the
+    # grasping hand must dip to apple height, where every other group's hands stay in
+    # the standing band.
+    crawl = {"crawl_left": "l_tcp", "crawl_right": "r_tcp"}
+    outside = sorted({
+        (n, round(h, 3)) for n, _, h in heights
+        if n not in crawl and not REACH_RANGE[0] <= h <= REACH_RANGE[1]
+    })
+    check(f"every other action group's hands stay within {REACH_RANGE} m of the floor",
           not outside, str(outside[:3]))
+    for group, site in crawl.items():
+        lowest = min((h for n, s, h in heights if n == group and s == site), default=math.inf)
+        check(f"{group}'s claw dips to the surface", lowest < 0.045,
+              f"lowest {site} {lowest * 1000:.0f} mm over the sole")
 
     if args.render:
         model.vis.global_.offwidth = max(model.vis.global_.offwidth, 1280)

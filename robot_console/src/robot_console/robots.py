@@ -32,11 +32,14 @@ _MISSING_AINEX = (
     "use --robot myagv."
 )
 
-# The AiNex walks; it does not roll. Same keys, honest words.
+# The AiNex walks; it does not roll. Same keys, honest words -- plus the arrows, which
+# only this robot has anything to point.
 AINEX_HINTS: Sequence[Tuple[str, str]] = (
     ("W / S", "walk forward / back"),
     ("A / D", "sidestep left / right"),
     ("Q / E", "turn left / right"),
+    ("Arrows", "look around (the camera is on the head)"),
+    ("0", "centre the head"),
     ("Space", "stop"),
     ("+ / -", "speed"),
     ("H", "hide these hints"),
@@ -63,6 +66,10 @@ class RobotProfile:
     # subscribing would not error, just never deliver, and the status line would claim
     # a stream that cannot exist.
     has_odom: bool
+    # False -> the arrow keys do nothing and no link needs `publish_head`. Gated the same
+    # way `has_odom` is, so the myAGV -- which has no head to point -- neither grows the
+    # keys in its banner nor needs a method to ignore them.
+    has_head: bool
     hints: Sequence[Tuple[str, str]]
     startup_instructions: Callable[[str, int], str]
     # For the --max-speed warning: what the cap is, in the robot's own terms.
@@ -81,10 +88,17 @@ def _make_myagv_link(options: Any) -> RobotLink:
 
 def _make_ainex_link(options: Any):
     # --cmd-topic and --odom-topic are myAGV knobs; the AiNex has no equivalent of
-    # either, so only the camera override applies.
+    # either, so only the camera override applies. The namespace does apply, though, and
+    # dropping it here is what left the walking commands on the bare topics while the
+    # camera came from `/ainex/*`: a robot that showed its view and ignored every key.
     from robot_console.ainex_link import AiNexLink  # noqa: F401  (see _MISSING_AINEX)
 
-    return AiNexLink(options.host, options.port, camera_topic=options.camera_topic)
+    return AiNexLink(
+        options.host,
+        options.port,
+        camera_topic=options.camera_topic,
+        namespace=options.namespace or "",
+    )
 
 
 def _myagv_profile() -> "RobotProfile":
@@ -98,6 +112,7 @@ def _myagv_profile() -> "RobotProfile":
         turn_ratio=teleop.TURN_RATIO,
         turn_max=teleop.TURN_MAX,
         has_odom=True,
+        has_head=False,
         hints=hud.HINTS,
         startup_instructions=preflight.startup_instructions,
         speed_limit_label="the real myAGV limit",
@@ -119,6 +134,7 @@ def _ainex_profile() -> "RobotProfile":
         turn_ratio=ainex_link.TURN_RATIO,
         turn_max=ainex_link.TURN_MAX,
         has_odom=False,
+        has_head=True,
         hints=AINEX_HINTS,
         startup_instructions=getattr(
             preflight, "startup_instructions_ainex", preflight.startup_instructions

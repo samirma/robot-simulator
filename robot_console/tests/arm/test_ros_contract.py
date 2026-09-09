@@ -249,3 +249,50 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     bare = RosSettings(namespace="").base_kwargs()
     for key in ("joint_states_topic", "command_topic", "gripper_topic", "reset_service"):
         assert kwargs[key] == "/so101" + bare[key]
+
+
+def test_both_sides_name_the_transform_tree_the_same_way() -> None:
+    """The tf topics, and the parameter the tree is read against.
+
+    A fourth file loaded by path, for the same reason `namespace.py` is: the simulator
+    keeps `contracts/tf.py` stdlib-only so this test can reach it. The console consumes
+    none of this -- it does its own FK -- but `fleet.py` requires it of a base and of an
+    arm, and a name that drifted would fail as "the simulator did not start" rather than
+    as a rename.
+    """
+    from robot_console import topics as base_topics
+    from robot_console.arm import ros_settings as rs
+
+    tf = _load(_SIMULATOR / "contracts" / "tf.py", "_sim_tf")
+    assert (tf.TOPIC_TF, tf.TOPIC_TF_STATIC) == (base_topics.TOPIC_TF,
+                                                 base_topics.TOPIC_TF_STATIC)
+    assert (tf.TOPIC_TF, tf.TOPIC_TF_STATIC) == (rs.TF_TOPIC, rs.TF_STATIC_TOPIC)
+    assert tf.PARAM_ROBOT_DESCRIPTION == base_topics.PARAM_ROBOT_DESCRIPTION
+    # One graph, two dialects: the base is a ROS 1 stack and the arm is a ROS 2 one, so
+    # the same topic name carries two type strings and a client must read them per topic.
+    assert tf.TYPE_TF_MESSAGE == base_topics.TYPE_TF_MESSAGE
+    assert tf.TYPE_TF_MESSAGE_ROS2 == rs.TF_TYPE
+    assert tf.TYPE_TF_MESSAGE != tf.TYPE_TF_MESSAGE_ROS2
+
+
+def test_only_the_robots_that_boot_with_a_tree_are_required_to_have_one() -> None:
+    """Three robots, three different true answers, and the console must not average them.
+
+    The simulator gives every robot a transform tree. What each *real* robot does differs:
+
+    * the myAGV's bringup starts `robot_state_publisher` and `robot_pose_ekf`, so `/tf` is
+      required of a base -- but its static publishers are tf1 and write to `/tf`, and its
+      URDF has no fixed joint, so `/tf_static` is not;
+    * the SO-101's ROS 2 bringups run `robot_state_publisher` beside the controller
+      manager, so both are required of an arm;
+    * the AiNex's *description package* runs one and its shipped boot chain does not, and
+      the boot chain is what a client meets over rosbridge -- so neither is required.
+    """
+    from robot_console.ainex_topics import CONTRACT_TOPICS
+    from robot_console.arm.ros_settings import TF_STATIC_TOPIC, TF_TOPIC
+    from robot_console.fleet import BASE_TOPICS, arm_topics
+    from robot_console.topics import TOPIC_TF, TOPIC_TF_STATIC
+
+    assert TOPIC_TF not in CONTRACT_TOPICS and TOPIC_TF_STATIC not in CONTRACT_TOPICS
+    assert TOPIC_TF in BASE_TOPICS and TOPIC_TF_STATIC not in BASE_TOPICS
+    assert {TF_TOPIC, TF_STATIC_TOPIC} <= set(arm_topics())

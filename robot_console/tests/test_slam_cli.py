@@ -103,9 +103,13 @@ def test_topics_can_be_overridden():
     # `Options` holds the name that actually goes on the wire. `RobotLink` normalised it
     # anyway, so this is the same topic -- just settled one layer earlier, which is what
     # lets `--namespace` and an explicit topic be combined without guessing.
+    #
+    # Named topics settle only once the namespace does, which with `--namespace` left out
+    # is after the wire has answered; `namespaced_by` is that step, and an explicit name
+    # survives it untouched.
     options = parse_args(["--scan-topic", "/laser", "--odom-topic", "odom2"], mode="map")
-    assert options.scan_topic == "/laser"
-    assert options.odom_topic == "/odom2"
+    assert options.namespaced_by("").scan_topic == "/laser"
+    assert options.namespaced_by("").odom_topic == "/odom2"
 
 
 def test_a_namespace_prefixes_every_topic_but_an_explicit_one_wins():
@@ -127,8 +131,16 @@ def test_a_namespace_prefixes_every_topic_but_an_explicit_one_wins():
     assert explicit.scan_topic == "/myagv/scan"
     assert explicit.cmd_topic == "/myagv/cmd_vel"
 
-    # And no namespace is the bare contract a real myAGV bringup presents.
-    assert parse_args([], mode="map").cmd_topic == "/cmd_vel"
+    # An explicitly empty namespace is the bare contract a real myAGV bringup presents,
+    # and is settled at parse time like any other named namespace.
+    assert parse_args(["--namespace", ""], mode="map").cmd_topic == "/cmd_vel"
+
+    # No namespace at all is a different thing: it is the wire's question to answer, so
+    # the topics are still open here. Defaulting it to bare is what drove nothing at all
+    # against a simulator that namespaces every robot after itself.
+    open_ended = parse_args([], mode="map")
+    assert open_ended.needs_discovery and open_ended.cmd_topic is None
+    assert open_ended.namespaced_by("myagv").cmd_topic == "/myagv/cmd_vel"
 
 
 def test_help_does_not_need_a_display(capsys):

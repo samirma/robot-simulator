@@ -31,6 +31,8 @@ from robot_console.topics import (
     TOPIC_CMD_VEL,
     TOPIC_ODOM,
     TOPIC_SCAN,
+    TOPIC_TF,
+    TOPIC_TF_STATIC,
     namespaced,
 )
 
@@ -39,8 +41,19 @@ EXIT_OK = 0
 EXIT_MISSING = 1
 EXIT_TRANSPORT = 2
 
-#: What a mobile base must present, from `topics.py` -- the myAGV contract.
-BASE_TOPICS: tuple[str, ...] = (TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_CAMERA, TOPIC_SCAN)
+#: What a mobile base must present, from `topics.py` -- the myAGV contract. `/tf` is the
+#: hardware's: `myagv_active.launch` starts `robot_state_publisher`, `robot_pose_ekf` and
+#: three static publishers, so a base with no tree is a base a mapping stack cannot use.
+#:
+#: **`/tf_static` is deliberately not here, and the reason is the vendor's tf version.**
+#: Those three static publishers are `pkg="tf"`, not `tf2_ros`, and tf1's node
+#: re-publishes onto `/tf` on a period. `robot_state_publisher` has nothing for
+#: `/tf_static` either: the vendor URDF's only joint, `base_up`, is `continuous`, so the
+#: description carries no fixed joint at all. A real myAGV therefore publishes nothing to
+#: `/tf_static`, and requiring it would fail a real robot. The SO-101 is a genuine ROS 2
+#: bringup and does have one -- see `arm_topics`.
+BASE_TOPICS: tuple[str, ...] = (TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_CAMERA, TOPIC_SCAN,
+                                TOPIC_TF)
 
 #: What a humanoid must present, from `ainex_topics.py` -- the Hiwonder AiNex contract.
 #: A third kind rather than a second flavour of base: the AiNex is commanded as a walking
@@ -67,6 +80,8 @@ def arm_topics() -> tuple[str, ...]:
         rs.GRIPPER_COMMAND_TOPIC,
         rs.JOINT_STATES_TOPIC,
         rs.FREE_JOINT_STATES_TOPIC,
+        rs.TF_TOPIC,
+        rs.TF_STATIC_TOPIC,
     )
 
 
@@ -83,22 +98,36 @@ def scene_topics() -> tuple[str, ...]:
     return (rs.OVERHEAD_CAMERA_TOPIC, rs.SIDE_CAMERA_TOPIC)
 
 
+def topics_from(client, timeout_s: float = 10.0) -> dict[str, str]:
+    """`{topic: type}` from an already-connected roslibpy client."""
+    import roslibpy
+
+    service = roslibpy.Service(client, "/rosapi/topics", "rosapi/Topics")
+    result = service.call(roslibpy.ServiceRequest(), timeout=timeout_s)
+    names = list(result.get("topics") or [])
+    types = list(result.get("types") or [])
+    # `types` is positional against `names` and a real rosapi can return fewer of
+    # them; pad rather than zip short, so a missing type never hides a topic.
+    types += [""] * (len(names) - len(types))
+    return dict(zip(names, types))
+
+
 def list_topics(url: str, timeout_s: float = 10.0) -> dict[str, str]:
-    """`{topic: type}` as `/rosapi/topics` reports it. Raises on transport failure."""
+    """`{topic: type}` as `/rosapi/topics` reports it. Raises on transport failure.
+
+    Closes the connection and deliberately does **not** terminate it. `close()` sends a
+    websocket close; `terminate()` stops roslibpy's process-global Twisted reactor, which
+    cannot be restarted -- and `discovery.discover` calls this and then hands the process
+    to a `RobotLink` that has to connect afterwards. Adding a `terminate()` here would
+    leave teleop unable to open its own connection, with nothing to say why.
+    """
     import roslibpy
 
     host, _, port = url.removeprefix("ws://").removeprefix("wss://").partition(":")
     client = roslibpy.Ros(host=host or "127.0.0.1", port=int(port or 9090))
     client.run(timeout=timeout_s)
     try:
-        service = roslibpy.Service(client, "/rosapi/topics", "rosapi/Topics")
-        result = service.call(roslibpy.ServiceRequest(), timeout=timeout_s)
-        names = list(result.get("topics") or [])
-        types = list(result.get("types") or [])
-        # `types` is positional against `names` and a real rosapi can return fewer of
-        # them; pad rather than zip short, so a missing type never hides a topic.
-        types += [""] * (len(names) - len(types))
-        return dict(zip(names, types))
+        return topics_from(client, timeout_s)
     finally:
         client.close()
 
@@ -148,7 +177,11 @@ def main() -> int:
         missing += missing_for(present, namespace, HUMANOID_TOPICS)
     for namespace in args.arm:
         missing += missing_for(present, namespace, arm_topics())
-    if args.arm:
+    # The rig is the worktop's, and the simulator stages it for every robot that stands
+    # at one -- the arm bolted to it and the humanoid standing on it. Checking it only
+    # behind --arm let an AiNex-only kitchen that published no rig at all pass, which
+    # agreed with the omission instead of catching it.
+    if args.arm or args.humanoid:
         from robot_console.arm import ros_settings as rs
 
         missing += missing_for(present, rs.SCENE_NAMESPACE, scene_topics())

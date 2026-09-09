@@ -19,6 +19,7 @@ Deliberately free of any engine import: `mujoco`, `numpy`, and the vendor servo 
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -27,6 +28,7 @@ import numpy as np
 from mujoco import MjSpec
 
 import robots_spec
+from mujoco_bridge import is_loose
 from ros_surfaces.ainex import servos
 from ros_surfaces.ainex.gait import LegGeometry
 
@@ -70,6 +72,19 @@ CAMERA_FOVY_DEG = 58.0
 # by a single torso hull; see step 3.
 HAND_BODIES = {"l_gripper_link", "r_gripper_link"}
 
+#: The two bodies whose soles touch the ground -- the vendor's ankle-roll links, which
+#: carry the foot plates. Defined here because the model owns its own body names;
+#: `ros_surfaces/ainex/ground.py` imports these rather than keeping a second list, since
+#: a robot standing on one name and ground-following another is a robot in the air.
+FEET = ("l_ank_roll_link", "r_ank_roll_link")
+#: The feet's `conaffinity` as built. It exists at build time only so the compiler gives
+#: the foot meshes a convex hull -- MuJoCo builds one only for meshes some collidable geom
+#: uses, and a foot compiled at 0/0 can never collide however the masks are set later.
+#: Which bit it is does not matter: `enable_foot_contacts` re-points it against the scene
+#: it is grafted into. Until that runs the feet touch nothing, because nothing else in
+#: either engine's scenes carries this bit in its `contype`.
+FOOT_CONTACT_BIT = 2
+
 # (closed, open) claw angle per hand, in radians.
 #
 # Measured by sweeping each gripper joint over its full servo travel and tracking the gap
@@ -95,10 +110,18 @@ HAND_BODIES = {"l_gripper_link", "r_gripper_link"}
 # joint. The two hands are not exact mirrors because the vendor meshes are not.
 GRIPPER_ANGLES = {"l": (-1.810, 0.690), "r": (1.660, -0.520)}
 
-# Keep the torso hull clear of the floor. The base has no vertical DoF so it cannot fall.
-
-# Keep the torso hull clear of the floor. The base has no vertical DoF so it cannot fall.
+# Keep the torso hull clear of the surface the feet stand on. The hull is the one part of
+# the body that collides with the world, and a crouch -- legs folded, torso lowered by the
+# ground-follow -- brings it within centimetres of the worktop; seated on it, the hull
+# would carry the robot's weight against the z actuator instead of the soles.
 TORSO_CLEARANCE = 0.005
+
+# How far the torso may lean about its lateral axis (`base_pitch`), radians: a little
+# back, most of the way to horizontal forwards. This is the lean the real robot's hip
+# chain produces when it bends to pick something off the ground -- with the base riding
+# the torso, folding the hips alone lifts the legs, so the lean is a joint of its own,
+# authored by action groups (`crawl_left`/`crawl_right`) and zero everywhere else.
+BASE_PITCH_RANGE = (-0.2, 0.9)
 
 # Rated stall torque of the servos, N.m at 11.1 V, from Hiwonder's servo pages: the
 # HX-35H/HX-35HM are quoted at 35 kg.cm and the HX-12H at 12 kg.cm.
@@ -206,18 +229,32 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
         joint.limited = True
         joint.range = [lower, upper]
 
-    # 2. The virtual holonomic base, in the (x, y, theta) order
-    #    HoloJointsRobotBaseGroup requires.
+    # 2. The virtual base: (x, y, theta) first, in the order HoloJointsRobotBaseGroup
+    #    requires, then z and pitch.
     #
     #    Deleting first is unconditional so that this works against a source that
     #    floats the torso on a freejoint as well as against the vendor URDF, which
     #    carries no joint here at all. A body may hold at most 6 DoF, so a freejoint
-    #    and these three cannot coexist.
+    #    and these cannot coexist.
     #
     #    On this robot the joints do something extra: without a DoF, `body_link` is
     #    jointless and MuJoCo merges it into the worldbody exactly as it merges
     #    `base_link`, leaving five disconnected root bodies and dropping 0.743 kg out
     #    of the tree. Adding them is what makes the torso a body at all.
+    #
+    #    **The order is load-bearing.** MuJoCo applies a body's joints in sequence and a
+    #    hinge rotates the axes of every joint after it. z after theta is still world z,
+    #    because yaw leaves the vertical alone; pitch after theta is about the torso's
+    #    own lateral axis, so a leaning robot leans along its heading. Pitch before z
+    #    would tilt the axis the ground-follow drives, and the robot would slide
+    #    forward every time it crouched.
+    #
+    #    z is not a freedom the robot has, it is one the *ground* has: nothing commands
+    #    it directly. `ros_surfaces/ainex/ground.py` solves it every control tick so the
+    #    stance sole sits on whatever a ray-cast finds beneath it, and integrates a fall
+    #    when it finds nothing. Until it existed the torso rode at its graft height for
+    #    ever -- walk it off the worktop and it hung in the air over the floor, and no
+    #    number anywhere said so.
     for joint in list(torso.joints):
         spec.delete(joint)
     torso.add_site(name="base_site", pos=[0, 0, 0], group=3)
@@ -230,6 +267,14 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
     torso.add_joint(
         name="base_theta", type=mujoco.mjtJoint.mjJNT_HINGE, axis=[0, 0, 1], damping=0.5
     )
+    torso.add_joint(
+        name="base_z", type=mujoco.mjtJoint.mjJNT_SLIDE, axis=[0, 0, 1], damping=5
+    )
+    pitch = torso.add_joint(
+        name="base_pitch", type=mujoco.mjtJoint.mjJNT_HINGE, axis=[0, 1, 0], damping=0.5
+    )
+    pitch.limited = True
+    pitch.range = list(BASE_PITCH_RANGE)
 
     # 3. Collision: one torso hull, and the hands.
     #
@@ -241,9 +286,21 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
     #
     #    The hands keep their colliders, because a replayed `clamp_left` has to be able
     #    to touch something. That is the whole point of the arms being real.
+    #
+    #    The feet are the third case, and they have to be settled *here* rather than at
+    #    spawn: MuJoCo builds a mesh's convex-hull graph only for meshes that some
+    #    collidable geom uses, so a foot compiled at contype/conaffinity 0 comes out with
+    #    `mesh_graphadr == -1` and can never collide with anything afterwards, whatever
+    #    the masks are set to. Measured: with the masks flipped post-compile the foot geom
+    #    passed 17 mm from a 20 mm apple, both rbounds overlapping, and MuJoCo reported
+    #    zero contacts. So they are made collidable at build time and given `conaffinity`
+    #    alone -- see `enable_foot_contacts` for why that side and not `contype`.
     for geom in list(spec.geoms):
         body_name = geom.parent.name if geom.parent is not None else ""
-        if body_name not in HAND_BODIES:
+        if body_name in FEET:
+            geom.contype = 0
+            geom.conaffinity = FOOT_CONTACT_BIT
+        elif body_name not in HAND_BODIES:
             geom.contype = 0
             geom.conaffinity = 0
         # ...and into the shared robots' render convention while we are here: group 2 is
@@ -296,17 +353,22 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
     # 5. Grasp markers and TCP frames, placed by measurement.
     _add_gripper_frames(spec)
 
-    # 6. Position actuators: 24 joints plus the 3 base axes.
+    # 6. Position actuators: 24 joints plus the 5 base axes.
     inertias = _joint_inertias(spec)
     for name in servos.SERVOS:
         torque = TORQUE_SMALL if name in SMALL_SERVO_JOINTS else TORQUE_LARGE
         _add_joint_actuator(spec, name, torque, inertias[name])
 
-    mass, izz = _measure_base(spec)
+    mass, izz, iyy = _measure_base(spec)
     _add_base_actuator(spec, "base_x_act", "base_x", kp=600.0 * mass, inertia=mass)
     _add_base_actuator(spec, "base_y_act", "base_y", kp=600.0 * mass, inertia=mass)
     _add_base_actuator(
         spec, "base_theta_act", "base_theta", kp=2000.0 * izz, inertia=izz
+    )
+    _add_base_actuator(spec, "base_z_act", "base_z", kp=600.0 * mass, inertia=mass)
+    _add_base_actuator(
+        spec, "base_pitch_act", "base_pitch", kp=2000.0 * iyy, inertia=iyy,
+        ctrlrange=BASE_PITCH_RANGE,
     )
     return spec
 
@@ -465,6 +527,14 @@ def _mesh_points(model, body_id: int) -> np.ndarray:
     matmul` under one engine's MuJoCo and silently correct numbers under the other's,
     which is the two engines compiling different robots: the thing the shared spec exists
     to make impossible.
+
+    **The geom's rotation counts, not just its offset.** Every one of this URDF's 25 mesh
+    geoms carries a non-identity `geom_quat` -- the vendor orients each link's mesh inside
+    its body -- so vertices offset by `geom_pos` alone are in no frame at all. Dropping it
+    put `ride_height` 42.7 mm too high and stood the robot that far off the worktop on
+    both engines, and it could not be caught by measuring the soles afterwards because
+    that measurement went through here too: the graft and its check were wrong by the same
+    amount and agreed with each other perfectly.
     """
     geoms = [
         g for g in range(model.ngeom)
@@ -476,20 +546,31 @@ def _mesh_points(model, body_id: int) -> np.ndarray:
     geom = geoms[0]
     mesh = model.geom_dataid[geom]
     start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
-    return model.mesh_vert[start : start + count] + model.geom_pos[geom]
+    rot = np.zeros(9)
+    mujoco.mju_quat2Mat(rot, model.geom_quat[geom])
+    return model.mesh_vert[start : start + count] @ rot.reshape(3, 3).T \
+        + model.geom_pos[geom]
 
 
-def _measure(spec: MjSpec) -> dict[str, float]:
+def _measure(spec: MjSpec, lean: float = 0.0) -> dict[str, float]:
     """Torso extent and the standing height, from a throwaway compile at the rest pose.
 
     Measured with the robot in the vendor's `init_pose`, because that -- not the URDF's
     all-zeros straight-legged pose -- is what it actually stands in.
+
+    `lean` is the torso's `base_pitch`, and the two things this returns want different
+    values of it. The hull's `dx`/`dy`/`cx`/`cy` are extents along *world* axes, so they
+    are only the torso's own box while the torso is upright; measure them leaning and the
+    box is a skewed shadow of one. `foot_z` is the opposite: the robot stands leaning (see
+    `stance_lean`), so the height it stands at is the height it has when it does.
     """
     model = spec.copy().compile()
     data = mujoco.MjData(model)
     for name in servos.INIT_POSE:
         joint = model.joint(name)
         data.qpos[model.jnt_qposadr[joint.id]] = servos.INIT_POSE[name]
+    pitch = model.joint("base_pitch")
+    data.qpos[model.jnt_qposadr[pitch.id]] = lean
     mujoco.mj_forward(model, data)
 
     torso_id = model.body(TORSO_BODY).id
@@ -534,9 +615,250 @@ def _measure(spec: MjSpec) -> dict[str, float]:
     }
 
 
+def stance_lean(spec: MjSpec) -> float:
+    """The `base_pitch` that puts the soles flat in the vendor's `init_pose`, radians.
+
+    The vendor's init pose is not a straight-legged stand: its left leg reads
+    hip_pitch -0.828, knee +1.192, ank_pitch +0.625, and on the URDF's axes those sum to
+    **-14.95 degrees** rather than to zero. On the real robot that difference is their
+    `hip_pitch_offset`, and it leans the *torso* forward over feet that stay flat -- the
+    hips carry the body, so a rotation left over in the chain shows up above the ankle.
+
+    Our torso is bolted to planar joints, so with `base_pitch` at zero the same 14.95
+    degrees landed on the feet instead: both soles tilted toe-up, the toe 37.6 mm off the
+    surface, and the robot balanced on two heel corners. `gait.py` predicted exactly this
+    ("the robot would walk on its heels") and corrects it only for the walking gait, which
+    solves its own flat-sole IK. Standing had nothing.
+
+    Nothing here catches that on its own, and that is the point of measuring rather than
+    typing the number: the feet do not collide, so a heel-stand neither falls nor
+    complains, and `ride_height`, `sole_z`, `report_sole_contact` and the attach test all
+    report a perfect 0.00 mm gap because they all measure the same single lowest vertex --
+    which *is* on the surface. It is the heel.
+
+    So: read the foot's own world orientation off the compiled model at `init_pose` and
+    return the lean that cancels it. Derived from the pose, so a vendor pose that changes
+    cannot silently put the robot back on its heels, and measured through MuJoCo's
+    `xmat` -- the independent frame, not the mesh arithmetic `_mesh_points` does.
+    """
+    model = spec.copy().compile()
+    data = mujoco.MjData(model)
+    for name in servos.INIT_POSE:
+        joint = model.joint(name)
+        data.qpos[model.jnt_qposadr[joint.id]] = servos.INIT_POSE[name]
+    mujoco.mj_forward(model, data)
+
+    # Each sole's tilt about the lateral axis: the angle of its own z-axis from world up.
+    # The two are mirror images and must agree; averaging them says so, and a leg table
+    # that made them differ would show up in the assertion below rather than as a robot
+    # standing on one heel.
+    tilts = []
+    for foot in FEET:
+        rot = data.xmat[model.body(foot).id].reshape(3, 3)
+        tilts.append(math.atan2(rot[0, 2], rot[2, 2]))
+    if abs(tilts[0] - tilts[1]) > math.radians(1.0):
+        raise ValueError(
+            f"the two soles disagree about their tilt ({math.degrees(tilts[0]):+.2f} vs "
+            f"{math.degrees(tilts[1]):+.2f} deg); the init pose is not symmetric"
+        )
+    lean = -sum(tilts) / len(tilts)
+    return float(min(max(lean, BASE_PITCH_RANGE[0]), BASE_PITCH_RANGE[1]))
+
+
 def ride_height(spec: MjSpec) -> float:
-    """How far to lift the robot so it stands on the floor in its rest pose."""
-    return -_measure(spec)["foot_z"]
+    """How far to lift the robot so it stands on the floor in its rest pose.
+
+    In the pose it actually holds, which leans: see `stance_lean`. Measured upright this
+    was the height of a heel corner, 0.2114 m, with the rest of the sole above it.
+    """
+    return -_measure(spec, lean=stance_lean(spec))["foot_z"]
+
+
+def stand(model, data, namespace: str = "") -> None:
+    """Put a grafted robot into the pose it stands in: the vendor's init pose, leaning.
+
+    Both engines call this straight after the graft, and it is one function rather than a
+    loop in each because the two must stand this robot up identically -- a client that
+    could tell the engines apart by the pose of a robot's legs is the invariant broken.
+
+    Joint *and* control: these are position actuators, so a ctrl left at zero snaps all 24
+    limbs out of the pose on the first step. `base_pitch` is included and is the reason
+    this exists: `ride_height` is measured with the torso leaning (see `stance_lean`), so
+    a robot grafted at that height and left upright stands 9 mm into the surface until the
+    ROS surface's first tick -- and for ever in a run that serves no surface at all.
+    """
+    from ros_surfaces.ainex.actions import BASE_PITCH, rest_pose  # noqa: PLC0415
+
+    for joint, angle in rest_pose().items():
+        # Every servo's actuator is named after its joint; the base axes carry `_act`,
+        # because they are the model's own and not the vendor's.
+        actuator = f"{joint}_act" if joint == BASE_PITCH else joint
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{namespace}{joint}")
+        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{namespace}{actuator}")
+        if jid < 0 or aid < 0:
+            raise ValueError(
+                f"ainex joint/actuator {namespace}{joint!r} missing from the model"
+            )
+        data.qpos[model.jnt_qposadr[jid]] = angle
+        data.ctrl[aid] = angle
+    mujoco.mj_forward(model, data)
+
+
+def enable_foot_contacts(model, namespace: str = "") -> int:
+    """Let the feet meet what is lying on the floor, and nothing else. Returns the bit used.
+
+    Every geom but the hands and the torso hull was made non-colliding in `build_spec`
+    because contact with the *ground* fights the base: the torso rides world-aligned
+    position actuators, so a foot gripping the floor at default friction shows up as a base
+    that undershoots and picks up yaw it was never commanded. That reasoning is about the
+    floor and was applied to everything, which left a robot that walks straight through an
+    apple without touching it -- and, with the ground probe fixed, over it without touching
+    it. Neither is interaction.
+
+    So the feet get a collision class of their own: they meet **loose** bodies
+    (`mujoco_bridge.is_loose` -- anything on a free joint) and pass through the world.
+
+    1. `FOOT_BIT` is the lowest bit set in no geom's `conaffinity` -- excluding the feet,
+       whose build-time `FOOT_CONTACT_BIT` is what this may be about to move. It is
+       computed rather than chosen because a scene can already be using it: iTHOR writes
+       `conaffinity` 7 and 15, so on FloorPlan1 the first free bit is 16, not 2.
+    2. The feet take that bit as their whole `conaffinity`, with `contype` 0.
+    3. Loose geoms get the bit added to `contype`; every other geom gets it cleared.
+    4. The robot's own geoms are otherwise left alone -- the hands and the torso hull are
+       1/1, and `FOOT_BIT` is never bit 1, so a foot cannot collide with its own robot.
+
+    **The bit lives on the feet's `conaffinity` and the scene's `contype`, not the other
+    way round, and that asymmetry is the safety.** A contact needs the bit in one side's
+    `contype`; iTHOR's `contype` values are only 0, 1 and 8, so a robot grafted into a
+    scene by some path that never calls this function has inert feet rather than feet
+    snagging on 892 kitchen geoms. Mirrored, the untagged case is the dangerous one.
+    """
+    feet = {f"{namespace}{f}" for f in FEET}
+
+    def body_of(gid: int) -> str:
+        return mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
+                                 int(model.geom_bodyid[gid])) or ""
+
+    conaffinity_used = 0
+    for gid in range(model.ngeom):
+        if body_of(gid) not in feet:
+            conaffinity_used |= int(model.geom_conaffinity[gid])
+    bit = 1
+    while bit & conaffinity_used:
+        bit <<= 1
+        if bit > 0x40000000:
+            raise RuntimeError(
+                "no collision bit left for the AiNex's feet: every usable conaffinity bit "
+                f"is taken by this scene (union 0b{conaffinity_used:b})"
+            )
+
+    for gid in range(model.ngeom):
+        name = body_of(gid)
+        if name in feet:
+            model.geom_contype[gid] = 0
+            model.geom_conaffinity[gid] = bit
+            continue
+        if namespace and name.startswith(namespace):
+            continue  # the robot's own hands and hull keep the contacts they were given
+        if is_loose(model, int(model.geom_bodyid[gid])):
+            model.geom_contype[gid] |= bit
+        else:
+            model.geom_contype[gid] &= ~bit
+
+    # `body_contype`/`body_conaffinity` are the OR over a body's geoms, computed once at
+    # compile and used to prune **whole bodies** in broadphase -- so a geom mask edited
+    # afterwards is never reached and the contact silently does not exist. Measured: with
+    # the geom masks correct and the apple placed at the exact centroid of a foot mesh,
+    # MuJoCo reported the apple touching the table and nothing else.
+    for bid in range(model.nbody):
+        adr, num = int(model.body_geomadr[bid]), int(model.body_geomnum[bid])
+        contype = conaffinity = 0
+        for gid in range(adr, adr + num):
+            contype |= int(model.geom_contype[gid])
+            conaffinity |= int(model.geom_conaffinity[gid])
+        model.body_contype[bid] = contype
+        model.body_conaffinity[bid] = conaffinity
+    return bit
+
+
+def sole_z(model, data, namespace: str = "") -> float:
+    """World z of the robot's lowest point, off the compiled scene it was grafted into.
+
+    The check on `ride_height`: that number is measured on a throwaway compile of the
+    robot alone, and grafting it onto a surface is a separate arithmetic that has been
+    wrong -- an engine handing it the *arm's* mount height, which carries the SO-101's
+    base-plate clearance, stands this robot a few millimetres off the worktop. Nothing
+    catches that on its own, because the feet are deliberately non-colliding (see the
+    collision surgery in `build_spec`): a floating AiNex neither falls nor complains, and
+    at 4 mm it reads as a rendering artefact rather than as a placement bug.
+
+    Measured from mesh vertices, and for the same reason `_measure` is: `geom_rbound` is
+    a bounding-sphere radius and on a foot mesh sits centimetres below the sole.
+    """
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        lowest = None
+        for bid in range(1, model.nbody):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+            if namespace and not name.startswith(namespace):
+                continue
+            if not any(model.geom_bodyid[g] == bid
+                       and model.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
+                       for g in range(model.ngeom)):
+                continue
+            pts = _mesh_points(model, bid)
+            z = float((pts @ data.xmat[bid].reshape(3, 3).T + data.xpos[bid])[:, 2].min())
+            lowest = z if lowest is None else min(lowest, z)
+    if lowest is None:
+        raise ValueError(f"no mesh geoms under namespace {namespace!r} to measure")
+    return lowest
+
+
+#: How far off the surface the soles may sit before an engine says so. A tenth of a
+#: millimetre: the graft is exact arithmetic, so anything above rounding is a real error
+#: in it rather than tolerance to be absorbed.
+SOLE_TOLERANCE = 1e-4
+
+
+class LowestPoint:
+    """The lowest mesh vertex of chosen bodies, cheaply, every control tick.
+
+    `sole_z` above scans every body and geom by name on each call, which is fine once at
+    spawn and not fine 10 times a second. This caches, per mesh geom under `namespace`,
+    the geom id and its vertices, and per call does one small matmul per geom through
+    MuJoCo's own `geom_xmat`/`geom_xpos` -- the independent frame the sole check insists
+    on, and the one `ride_height` deliberately does not share.
+    """
+
+    def __init__(self, model, namespace: str = "", bodies: tuple[str, ...] | None = None):
+        self._model = model
+        self._geoms: list[tuple[int, int, np.ndarray]] = []
+        for g in range(model.ngeom):
+            if model.geom_type[g] != mujoco.mjtGeom.mjGEOM_MESH:
+                continue
+            bid = int(model.geom_bodyid[g])
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+            if namespace and not name.startswith(namespace):
+                continue
+            if bodies is not None and name not in bodies:
+                continue
+            mesh = model.geom_dataid[g]
+            start, count = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+            self._geoms.append((g, bid, np.array(model.mesh_vert[start:start + count])))
+        if not self._geoms:
+            raise ValueError(f"no mesh geoms to measure under {namespace!r} for {bodies}")
+
+    def per_body(self, data) -> dict[int, np.ndarray]:
+        """body id -> world xyz of that body's lowest mesh vertex."""
+        out: dict[int, np.ndarray] = {}
+        for g, bid, verts in self._geoms:
+            world = verts @ data.geom_xmat[g].reshape(3, 3).T + data.geom_xpos[g]
+            low = world[int(np.argmin(world[:, 2]))]
+            if bid not in out or low[2] < out[bid][2]:
+                out[bid] = low
+        return out
+
+    def lowest(self, data) -> np.ndarray:
+        return min(self.per_body(data).values(), key=lambda p: p[2])
 
 
 def leg_geometry(model, namespace: str = "") -> LegGeometry:
@@ -565,18 +887,24 @@ def _joint_inertias(spec: MjSpec) -> dict[str, float]:
     }
 
 
-def _measure_base(spec: MjSpec) -> tuple[float, float]:
-    """Total mass and yaw inertia about the torso, from a throwaway compile."""
+def _measure_base(spec: MjSpec) -> tuple[float, float, float]:
+    """Total mass, and the yaw and pitch inertias about the torso, from a throwaway compile.
+
+    Both inertias by the same parallel-axis approximation: each body's own principal
+    inertia about that axis plus its mass times its squared distance from the torso's
+    axis. Pitch is about the torso's y through its origin, so the distance is in x-z.
+    """
     model = spec.copy().compile()
     mass = float(model.body_mass.sum())
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
-    origin = data.xpos[model.body(TORSO_BODY).id][:2]
-    izz = 0.0
+    origin = data.xpos[model.body(TORSO_BODY).id]
+    izz = iyy = 0.0
     for bid in range(1, model.nbody):
-        r = data.xipos[bid][:2] - origin
-        izz += float(model.body_inertia[bid][2] + model.body_mass[bid] * float(r @ r))
-    return mass, max(izz, 1e-4)
+        r = data.xipos[bid] - origin
+        izz += float(model.body_inertia[bid][2] + model.body_mass[bid] * float(r[:2] @ r[:2]))
+        iyy += float(model.body_inertia[bid][1] + model.body_mass[bid] * float(r[[0, 2]] @ r[[0, 2]]))
+    return mass, max(izz, 1e-4), max(iyy, 1e-4)
 
 
 def _add_joint_actuator(spec: MjSpec, joint: str, torque: float, inertia: float) -> None:
@@ -598,8 +926,8 @@ def _add_joint_actuator(spec: MjSpec, joint: str, torque: float, inertia: float)
     act.ctrllimited = True
 
 
-def _add_base_actuator(spec: MjSpec, name: str, joint: str, kp: float, inertia: float
-                       ) -> None:
+def _add_base_actuator(spec: MjSpec, name: str, joint: str, kp: float, inertia: float,
+                       ctrlrange=(-25.0, 25.0)) -> None:
     act = spec.add_actuator()
     act.name = name
     act.target = joint
@@ -609,4 +937,4 @@ def _add_base_actuator(spec: MjSpec, name: str, joint: str, kp: float, inertia: 
     act.biastype = mujoco.mjtBias.mjBIAS_AFFINE
     kv = 2.0 * float(np.sqrt(kp * inertia))
     act.biasprm[0], act.biasprm[1], act.biasprm[2] = 0.0, -kp, -kv
-    act.ctrlrange = np.array([-25.0, 25.0])
+    act.ctrlrange = np.array(ctrlrange, dtype=np.float64)

@@ -13,7 +13,7 @@ a dict a live `/rosapi/topics` would have returned.
 from __future__ import annotations
 
 from robot_console.fleet import BASE_TOPICS, arm_topics, missing_for, scene_topics
-from robot_console.topics import namespaced
+from robot_console.topics import TOPIC_TF, TOPIC_TF_STATIC, namespaced
 
 
 def _wire(*namespaced_topics: str) -> dict[str, str]:
@@ -70,7 +70,12 @@ def test_the_bare_contract_is_expressible() -> None:
 def test_a_base_is_checked_against_the_myagv_contract() -> None:
     present = _wire(*(namespaced(t, "myagv") for t in BASE_TOPICS))
     assert missing_for(present, "myagv", BASE_TOPICS) == []
-    # A base is not an arm: none of the arm's topics are expected of it.
+    # A base is not an arm: every topic that makes an arm an arm is missing from it. `/tf`
+    # is the one exception, because both robots really do publish a tree -- but not
+    # `/tf_static`, which the arm requires and the base does not have: the myAGV's static
+    # transforms come from tf1 publishers that write to `/tf`, and its URDF has no fixed
+    # joint. So a base's wire satisfies exactly one of the arm's two tf topics.
+    assert TOPIC_TF in BASE_TOPICS and TOPIC_TF_STATIC not in BASE_TOPICS
     assert missing_for(present, "myagv", arm_topics()) == [
-        namespaced(t, "myagv") for t in arm_topics()
+        namespaced(t, "myagv") for t in arm_topics() if t != TOPIC_TF
     ]

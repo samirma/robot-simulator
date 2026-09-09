@@ -18,8 +18,25 @@ what lets `clamp_left` say "close the claw" without restating the other 23 joint
 
 ## Reach
 
-The torso rides planar joints and **cannot pitch**, so this robot cannot bend forward.
-Combined with arms that are short relative to its 0.46 m height, that puts the hands
-between roughly **0.25 m and 0.43 m above the floor** — it grasps from a surface at its
-own chest height, never off the ground. `test_attach.py` checks the poses below stay in
-that band. This is a consequence of the planar base; see `robots/README.md`.
+Standing, the hands sweep roughly **0.15 m to 0.45 m above the surface the feet are on**
+— the arms are short relative to a 0.40 m robot, so from its init pose it grasps at
+chest height, never off the ground. Measured: upright, the claw tip is 0.379 m over the
+sole; with the legs folded flat and the torso level it is *still* 0.072 m up. What brings
+it to the surface is the torso leaning forward, which the real robot's hip chain does over
+planted feet when it crawls, and which here is a joint of its own, `base_pitch`
+(`ainex_model`, step 2), because the base rides the torso and folding the hips alone
+lifts the legs instead of lowering the body.
+
+So a frame may carry **`base_pitch`** beside `servos`: the torso's lean in radians,
+carried forward like every other channel and zero wherever it is not mentioned. The
+ground-follow (`ground.py`) keeps the stance sole on the surface while the legs fold under
+it, which is what lets the body come down.
+
+`crawl_left` / `crawl_right` — the vendor's names for the bend-down grasp its pick-up
+demo runs between `hand_back` and `place_block` — are **solved, not typed**, by
+`shared/tools/author_ainex_crawl.py`, which sweeps the lean, the leg fold and one arm
+inside the servo limits until the TCP lands an apple's radius above the surface in
+front of the feet. Their `reach:` key records where, and
+`shared/tests/ainex_grasp_check.py` puts the task's apple there and asserts a hand geom
+touches it and it moves. `test_attach.py` holds every other group inside the standing
+band and these two below 45 mm.

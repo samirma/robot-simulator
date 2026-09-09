@@ -61,17 +61,40 @@ def probe_tcp(host: str, port: int, timeout: float = 1.5) -> PreflightResult:
     return PreflightResult(ok, host, int(port), detail, time.monotonic() - started)
 
 
+def startup_instructions_any(host: str, port: int) -> str:
+    """What to start when the robot is not known yet -- before the wire has been asked.
+
+    Which robot this console is about to drive is normally the wire's answer, and there is
+    no wire. So this names the two the console can drive and stops there: telling someone
+    to start a myAGV when they meant an AiNex is worse than naming both.
+    """
+    return f"""Start the simulator in another terminal:
+
+    cd ../simulator/molmospaces
+    ./run.sh view --robot myagv --scene ithor:1 --ros-port {port}   # or --robot ainex
+
+Or a kitchen with a fleet in it:
+
+    cd ../simulator
+    ./kitchen.sh serve --robots myagv --port {port}
+
+The robot and its namespace are then read off the wire; --robot and --namespace override
+that. On real hardware, point --host at the robot instead.
+
+Bypass this check with --no-preflight."""
+
+
 def startup_instructions(host: str, port: int) -> str:
     """What to start for a myAGV, in whichever of its three forms the user meant."""
     return f"""Start the simulator in another terminal:
 
-    cd ../simulator
+    cd ../simulator/molmospaces
     ./run.sh view --robot myagv --scene ithor:1 --ros-port {port}
 
 Or, without MuJoCo, the standalone protocol server (odom only, no camera):
 
     cd ../simulator
-    python bridge/rosbridge_server.py --port {port} --echo
+    python shared/contracts/rosbridge_server.py --port {port} --echo
 
 Or, on a real myAGV over the network:
 
@@ -88,7 +111,7 @@ def startup_instructions_ainex(host: str, port: int) -> str:
     """What to start when the robot being driven is the AiNex."""
     return f"""Start the simulator in another terminal:
 
-    cd ../simulator
+    cd ../simulator/molmospaces
     ./run.sh view --robot ainex --scene ithor:1 --ros-port {port}
 
 Or, on a real AiNex over the network:

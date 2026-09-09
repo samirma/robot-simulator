@@ -22,8 +22,10 @@ robot runs the stock `ros-noetic-rosbridge-suite`, so the client is identical.
 
 Implemented ops: advertise, unadvertise, publish, subscribe, unsubscribe, call_service.
 `advertise_service` and `unadvertise_service` are accepted as no-ops — nothing here
-consumes a client-provided service. Still no TF and no params; anything else gets a
-`status` warning rather than an error.
+consumes a client-provided service. TF and `robot_description` are here now: the
+transforms are ordinary topics (`contracts/tf.py`, fed by `ros_surfaces/tf_stream.py`)
+and the description is a parameter `rosapi` answers for. Anything else gets a `status`
+warning rather than an error.
 
 Standalone, for protocol testing without the simulator:
 
@@ -120,6 +122,9 @@ TYPE_JOINT_TRAJECTORY = "trajectory_msgs/msg/JointTrajectory"
 TYPE_FLOAT64_MULTI_ARRAY = "std_msgs/msg/Float64MultiArray"
 TYPE_BOOL = "std_msgs/msg/Bool"
 TYPE_COMPRESSED_IMAGE_ROS2 = "sensor_msgs/msg/CompressedImage"
+# The arm's `/reset` services answer `{success, message}` -- the shape of std_srvs/Trigger,
+# which is what a `mujoco_ros2_control` reset service is on the reference rig.
+SRV_TYPE_TRIGGER = "std_srvs/srv/Trigger"
 # Namespaced by the publishing plugin in the reference rig, and the client's settings
 # name it in full; it is a custom message, which over rosbridge JSON is just this shape.
 TYPE_FREE_JOINT_STATE_ARRAY = "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
@@ -380,6 +385,21 @@ class RosBridgeServer:
         # publication announces its own type the first time it goes out, a subscription
         # has to be told.
         self._subscribed_types: dict[str, str] = {}
+        # service name -> ROS service type, declared by `service`. The same gap `on` had:
+        # a type is not needed to route a call, and without one `/rosapi/services` can
+        # list names while `/rosapi/service_type` has nothing to answer with.
+        self._service_types: dict[str, str] = {}
+        # name (topic or service) -> the namespace that declared it, filled by
+        # `NamespacedBus`. It is what lets `publishers`, `subscribers`, `nodes` and
+        # `node_details` answer from something real: a namespace is one robot's surface,
+        # which is what a vendor bringup runs as one node.
+        self._owner: dict[str, str] = {}
+        # parameter name -> value, for the parameters a real bringup would have set.
+        # `robot_description` is the one that matters: `robot_state_publisher` reads the
+        # URDF from it, and so does every client that draws a robot. This server used to
+        # answer `get_param` with the empty string unconditionally, which is what left a
+        # client able to see a robot's joint angles and unable to learn what its body is.
+        self._params: dict[str, Any] = {}
         self._seq = 0
 
     # -- lifecycle ---------------------------------------------------------------
@@ -413,13 +433,20 @@ class RosBridgeServer:
         if message_type is not None:
             self._subscribed_types[topic] = message_type
 
-    def service(self, name: str, callback: Callable[[dict], dict]) -> None:
+    def service(
+        self, name: str, callback: Callable[[dict], dict], service_type: str | None = None
+    ) -> None:
         """Register a handler for `call_service` on `name`.
 
         The handler receives the request's `args` and returns the response's `values`.
         Raising is reported as `result: false` with the message in `values`, which is what
         rosbridge does for a service that threw -- a caller is blocked on the response, so
         it needs an answer either way.
+
+        `service_type` is optional only because it is not needed to *route* a call -- but
+        pass it, for the same reason `on` asks for a message type: it is what makes the
+        service discoverable through `/rosapi/services` and `/rosapi/service_type`, and
+        what `/rosapi/service_request_details` resolves the schema from.
 
         Like `on`, the handler runs on the calling client's reader thread rather than on
         the simulation thread, so it may only touch small shared state; never MjData.
@@ -428,36 +455,92 @@ class RosBridgeServer:
         if name in self._services:
             raise ValueError(f"service {name} is already registered on this server")
         self._services[name] = callback
+        if service_type is not None:
+            self._service_types[name] = service_type
+
+    def claim(self, namespace: str, name: str) -> None:
+        """Record that `namespace`'s surface declared `name` (a topic or a service)."""
+        self._owner[normalise(name)] = namespace
+
+    def set_param(self, name: str, value: Any) -> None:
+        """Set a ROS parameter, as a bringup's launch file would.
+
+        Refuses to overwrite for the same reason `on` does: two robots writing one
+        `robot_description` means the namespaces were not applied, and the client would
+        then draw both of them with whichever body won.
+        """
+        name = normalise(name)
+        if name in self._params:
+            raise ValueError(
+                f"parameter {name} is already set on this server. Two robots sharing one "
+                "bridge must each be namespaced (see ns_topic); without that they "
+                "silently overwrite each other's description."
+            )
+        self._params[name] = value
 
     def serve_rosapi(self) -> None:
-        """Answer the `rosapi` queries a browser client uses to discover topics.
+        """Answer the `rosapi` introspection queries a real rosbridge answers.
 
-        Real rosbridge ships `rosapi` alongside it, and clients written against a real
-        bridge assume it: the live camera page asks `topics_for_type` for everything
-        publishing CompressedImage rather than hard-coding a list, which is what lets a
-        camera appear when a simulator is restarted with one more of them and nothing
-        has to be edited. Without these the page connects, discovers nothing, and shows
-        an empty grid -- a failure with no error in it.
+        Real rosbridge ships `rosapi` alongside it -- `rosbridge_websocket.launch` starts
+        `rosapi_node` unconditionally, and a real AiNex's launch file does exactly that
+        with every glob set to `[*]` -- so clients written against a real bridge assume
+        all of it. This used to implement two queries, the two `live_cameras.html` made,
+        and a client asking anything else got `no service`: not "unknown type", not an
+        empty list, but a bridge that could not be asked what a topic's type was. That is
+        the largest way a client could tell this simulator from the robot it claims to be
+        indistinguishable from, and it was found by a client doing nothing unusual.
 
-        Only the two queries that page makes are implemented. `topics` reports what has
-        actually been published at least once -- not what was advertised, because on this
-        server nothing advertises: publishers are the surface code, not clients -- plus
-        the command topics the surface declared to `on`, which is the half a client needs
-        to discover how to *drive* the robot rather than only how to watch it.
+        Every answer below is true *of this simulator*. Where that differs from what the
+        hardware would say, it is said here rather than papered over:
 
-        `topics_for_type` deliberately answers from publications alone. Its one caller
-        asks for everything publishing CompressedImage and subscribes to the answer, so
-        folding subscriptions in could only ever hand it a topic to listen to that
-        nothing sends.
+        * `topics`, `topic_type`, `topics_for_type`, `services`, `service_type` -- from the
+          server's own tables. These *are* the contract, and contract tests already hold
+          them equal to the console's copies.
+        * `message_details`, `service_request_details`, `service_response_details` -- from
+          `message_schemas`, transcribed from each manufacturer's definition files with
+          provenance recorded there.
+        * `publishers`, `subscribers`, `nodes`, `node_details` -- the **namespace** that
+          declared the name. A real robot returns node names (`/ainex_controller`); there
+          are no nodes here, and a namespace -- one robot's surface -- is the closest true
+          statement. No client in this project uses node names.
+        * `get_param_names`, `get_param` -- the parameters a surface actually set, which
+          in practice means each robot's `robot_description`. They answered empty until
+          the transform tree went in, and that was the other half of the same gap: a
+          client could be told a frame's name and never what the body in it looks like.
+          A real robot's parameter server holds a great deal more than one URDF per
+          robot, and none of the rest is here -- a difference, stated.
+        * `action_servers` -- empty, which is true: this simulator runs none by design
+          (the gripper is a topic; see CLAUDE.md).
+        * `get_ros_version` -- 1, the dialect of this rosapi surface itself. The graph
+          carries **two dialects by design** (ROS 1 for the myAGV and AiNex, ROS 2 for the
+          SO-101), so a client must read per-topic types from `topics` and never infer
+          them from this.
+
+        `topics` reports what has actually been published at least once -- not what was
+        advertised, because on this server nothing advertises: publishers are the surface
+        code, not clients -- plus the command topics the surface declared to `on`, which is
+        the half a client needs to discover how to *drive* the robot rather than only how
+        to watch it. `topics_for_type` deliberately answers from publications alone. Its
+        one caller asks for everything publishing CompressedImage and subscribes to the
+        answer, so folding subscriptions in could only ever hand it a topic to listen to
+        that nothing sends.
         """
+        from contracts import message_schemas as schemas
 
         # Idempotent: a fleet's owner calls this once, but a single-robot surface used to
-        # call it for itself, and `service()` now refuses a duplicate registration.
+        # call it for itself, and `service()` refuses a duplicate registration.
         if "/rosapi/topics" in self._services:
             return
 
+        def _known_topics() -> dict[str, str]:
+            return {**self._subscribed_types, **self._published_types}
+
+        def _owners_of(name: str) -> list[str]:
+            owner = self._owner.get(normalise(name))
+            return [f"/{owner}"] if owner else []
+
         def topics(_args: dict) -> dict:
-            known = {**self._subscribed_types, **self._published_types}
+            known = _known_topics()
             names = sorted(known)
             return {"topics": names, "types": [known[n] for n in names]}
 
@@ -465,8 +548,89 @@ class RosBridgeServer:
             wanted = args.get("type")
             return {"topics": sorted(n for n, t in self._published_types.items() if t == wanted)}
 
-        self.service("/rosapi/topics", topics)
-        self.service("/rosapi/topics_for_type", topics_for_type)
+        def topic_type(args: dict) -> dict:
+            return {"type": _known_topics().get(normalise(args.get("topic", "")), "")}
+
+        def services(_args: dict) -> dict:
+            return {"services": sorted(self._services)}
+
+        def service_type(args: dict) -> dict:
+            return {"type": self._service_types.get(normalise(args.get("service", "")), "")}
+
+        def publishers(args: dict) -> dict:
+            name = normalise(args.get("topic", ""))
+            return {"publishers": _owners_of(name) if name in self._published_types else []}
+
+        def subscribers(args: dict) -> dict:
+            name = normalise(args.get("topic", ""))
+            return {"subscribers": _owners_of(name) if name in self._subscribed_types else []}
+
+        def nodes(_args: dict) -> dict:
+            return {"nodes": sorted({f"/{ns}" for ns in self._owner.values()})}
+
+        def node_details(args: dict) -> dict:
+            node = str(args.get("node", "")).lstrip("/")
+            mine = {n for n, ns in self._owner.items() if ns == node}
+            return {
+                "subscribing": sorted(n for n in mine if n in self._subscribed_types),
+                "publishing": sorted(n for n in mine if n in self._published_types),
+                "services": sorted(n for n in mine if n in self._services),
+            }
+
+        def message_details(args: dict) -> dict:
+            return {"typedefs": schemas.typedefs(str(args.get("type", "")))}
+
+        def service_request_details(args: dict) -> dict:
+            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "request")}
+
+        def service_response_details(args: dict) -> dict:
+            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "response")}
+
+        def get_param_names(_args: dict) -> dict:
+            return {"names": sorted(self._params)}
+
+        def get_param(args: dict) -> dict:
+            """rosapi returns a parameter **JSON-encoded**, and a client decodes it.
+
+            `rosapi/GetParam` declares `string value`, and the real node fills it with
+            `json.dumps(rospy.get_param(...))` -- which is why roslibpy's `Param.get`
+            runs the answer back through `json.loads`. Handing back the raw URDF instead
+            would decode as a JSON syntax error at the client, so a robot's description
+            would arrive as a parse failure rather than as a body.
+            """
+            name = normalise(str(args.get("name", "")))
+            if name in self._params:
+                return {"value": json.dumps(self._params[name])}
+            # rosapi answers an unset parameter with the caller's own default, verbatim.
+            return {"value": args.get("default", "")}
+
+        def action_servers(_args: dict) -> dict:
+            return {"action_servers": []}
+
+        def get_ros_version(_args: dict) -> dict:
+            return {"version": 1, "distro": ""}
+
+        for name, handler, stype in (
+            ("/rosapi/topics", topics, "rosapi/Topics"),
+            ("/rosapi/topics_for_type", topics_for_type, "rosapi/TopicsForType"),
+            ("/rosapi/topic_type", topic_type, "rosapi/TopicType"),
+            ("/rosapi/services", services, "rosapi/Services"),
+            ("/rosapi/service_type", service_type, "rosapi/ServiceType"),
+            ("/rosapi/publishers", publishers, "rosapi/Publishers"),
+            ("/rosapi/subscribers", subscribers, "rosapi/Subscribers"),
+            ("/rosapi/nodes", nodes, "rosapi/Nodes"),
+            ("/rosapi/node_details", node_details, "rosapi/NodeDetails"),
+            ("/rosapi/message_details", message_details, "rosapi/MessageDetails"),
+            ("/rosapi/service_request_details", service_request_details,
+             "rosapi/ServiceRequestDetails"),
+            ("/rosapi/service_response_details", service_response_details,
+             "rosapi/ServiceResponseDetails"),
+            ("/rosapi/get_param_names", get_param_names, "rosapi/GetParamNames"),
+            ("/rosapi/get_param", get_param, "rosapi/GetParam"),
+            ("/rosapi/action_servers", action_servers, "rosapi/GetActionServers"),
+            ("/rosapi/get_ros_version", get_ros_version, "rosapi/GetROSVersion"),
+        ):
+            self.service(name, handler, stype)
 
     def start(self) -> None:
         self._server = ws_server.serve(
@@ -660,37 +824,46 @@ class NamespacedBus:
     def frame(self, frame_id: str) -> str:
         return self.ns.frame(frame_id)
 
-    def sibling(self, namespace: str) -> "NamespacedBus":
-        """The same server under a different namespace: for what is not this robot's.
-
-        A robot's namespace is for what the robot presents. The work surface's fixed
-        camera rig is not that -- it watches the room and would still be there with the
-        arm unbolted, so on real hardware it is a camera driver launched outside any
-        robot's namespace, and putting it inside one says the arm owns a view of itself.
-        With two robots around one worktop it is also simply wrong: whichever of them was
-        asked to render would lend the scene its name.
-
-        The surface that renders a thing is not always the thing's owner, and this is how
-        it says so: one server, one graph, and a name that belongs to the scene.
-        """
-        return NamespacedBus(self.server, namespace)
+    # There used to be a `sibling(namespace)` here, for the arm's surface to reach the
+    # worktop rig's namespace from inside its own loop. The rig is a fleet member now
+    # (`ros_surfaces/scene.py`), with a bus of its own from `RobotFleet.bus`, so no
+    # surface needs to speak for a name that is not its own any more.
 
     # -- the server's surface, namespaced ----------------------------------------
 
+    # Every name that goes through here is claimed for this namespace on the server.
+    # That is what `/rosapi/publishers`, `subscribers`, `nodes` and `node_details` answer
+    # from, and it is recorded here rather than in each surface because this is the one
+    # place every name of a robot's already passes.
     def on(self, topic: str, callback: Callable[[dict], None],
            message_type: str | None = None) -> None:
         name = self.ns.topic(topic)
         self.server.on(name, callback, message_type)
+        self.server.claim(self.ns.name, name)
         self.subscribed.append(name)
 
-    def service(self, name: str, callback: Callable[[dict], dict]) -> None:
+    def service(self, name: str, callback: Callable[[dict], dict],
+                service_type: str | None = None) -> None:
         full = self.ns.service(name)
-        self.server.service(full, callback)
+        self.server.service(full, callback, service_type)
+        self.server.claim(self.ns.name, full)
+
+    def set_param(self, name: str, value: Any) -> None:
+        """Set one of this robot's parameters, namespaced like everything else it has.
+
+        `robot_description` is a relative name in ROS, so a bringup inside
+        `<group ns="myagv">` puts it at `/myagv/robot_description` -- which is where a
+        client that found the robot by namespace then looks for its body.
+        """
+        full = self.ns.topic(name)
+        self.server.set_param(full, value)
+        self.server.claim(self.ns.name, full)
 
     def publish(self, topic: str, msg: dict, message_type: str | None = None) -> None:
         name = self.ns.topic(topic)
         if message_type is not None and name not in self.published:
             self.published.append(name)
+            self.server.claim(self.ns.name, name)
         self.server.publish(name, msg, message_type)
 
     def next_seq(self) -> int:
@@ -731,7 +904,10 @@ def main() -> int:
         if args.echo:
             log.info("cmd_vel %s", latest)
 
-    server.on(TOPIC_CMD_VEL, on_cmd_vel)
+    server.on(TOPIC_CMD_VEL, on_cmd_vel, TYPE_TWIST)
+    # The same introspection surface the fleet serves, so protocol testing against this
+    # standalone bridge sees what a client of the real thing sees.
+    server.serve_rosapi()
     server.start()
 
     # Dead-reckon the echoed velocity so a standalone client sees odom move.

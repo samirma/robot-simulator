@@ -32,7 +32,7 @@ def _base_of(view):
 def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: int,
                control_hz: float, watchdog_s: float, scan: dict | None = None,
                depth: dict | None = None, extra: dict | None = None, scene_option=None,
-               camera_period: float = 0.0, world_reset=None):
+               camera_period: float = 0.0, world_reset=None, prefix: str = ""):
     """Wire this engine's myAGV onto a bus, via the shared contract.
 
     `extra` is accepted and ignored: `tools/spawn_robot.py` passes the same bag to every
@@ -54,13 +54,17 @@ def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: 
         scene_option=scene_option,
         camera_period=camera_period,
         world_reset=world_reset,
+        # The MJCF prefix, for the transform tree: it is what turns `robot_0/base` into
+        # the `base_footprint` frame on the wire. Topics never see it -- see the note in
+        # `spawn_robot.py` about the two prefixes being different things.
+        prefix=prefix or getattr(view, "_namespace", "") or "",
     )
 
 
 def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
               control_hz: float, watchdog_s: float, scan: dict | None = None,
               depth: dict | None = None, extra: dict | None = None,
-              host: str = "0.0.0.0", namespace: str = ""):
+              host: str = "0.0.0.0", namespace: str = "", prefix: str = ""):
     """The single-robot path, kept for callers that only ever want one robot."""
     from ros_surfaces.myagv import serve_ros as _serve_ros
 
@@ -77,4 +81,5 @@ def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_qual
         depth=depth,
         host=host,
         namespace=namespace,
+        prefix=prefix or getattr(view, "_namespace", "") or "",
     )

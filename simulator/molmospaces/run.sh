@@ -6,11 +6,16 @@
 #   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
 #                 [--robot so101]      ...optionally with an out-of-tree robot in it:
 #                                      so101 | myagv | rebot_b601 | ainex
-#                 [--ros-port 9090]    ...and on that robot's own vendor ROS topics
-#                                      (myagv and ainex only):
+#                 [--ros-port 9090]    the port that robot's own vendor ROS topics are
+#                                      served on -- 9090 unless you say otherwise, and 0
+#                                      to serve nothing:
 #                                      myagv -> cmd_vel in, odom + camera + /scan
 #                                      out; ainex -> /walking/* and /app/* in, joint_states
 #                                      + camera + /scan out (it has no cmd_vel at all)
+#                 [--ros-namespace ''] the namespace each robot is under, its own name by
+#                                      default; '' is the bare single-robot contract.
+#                                      robot_console discovers this off the wire, so it
+#                                      needs telling only when you want it otherwise
 #                 [--task apple_on_plate]  ...and with a task staged into the scene:
 #                                      its objects, its cameras and its success predicate
 #   ./run.sh shell                     interactive shell inside the venv
