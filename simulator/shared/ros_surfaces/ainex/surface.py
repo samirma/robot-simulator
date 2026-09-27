@@ -1,30 +1,42 @@
-"""The AiNex's ROS contract: the manufacturer's own topics and services.
+"""The AiNex's ROS surface: exactly the interface `robots_specs/ainex/ros.yml` records.
 
-This is what `Hiwonder/ainex` presents -- `ainex_kinematics/scripts/ainex_controller.py`
-registers every walking topic and service, and `ros_robot_controller_node.py` the bus
-servo one. A client written against the real robot drives this one.
+Every name in `topics.TOPICS`, `topics.SERVICES` and `topics.PARAMETERS` is registered
+here under the node that provides it on the robot, and nothing else is: no `/joint_states`,
+no `/tf`, no `robot_description`, no lidar -- the boot chain presents none of them. See
+`topics.py` for the whole table and what is deliberately absent.
 
-**No `/cmd_vel`, no `/odom`, no `/tf`.** The AiNex is commanded as a state machine
-(`/walking/command` plus a parameter block), not by a Twist, and it publishes no wheel
-odometry because it has no wheels. See `topics.py`.
+The behaviour is `ainex_controller.py`'s, and the parts that surprise are the vendor's:
 
-Locomotion here is the planar base plus the animated gait described in `ainex.py`: the
-walking parameters are turned into a body-frame velocity by `gait.planar_velocity` and
-integrated by the same `PlanarSetpoint` the myAGV uses, while `gait.leg_joint_targets`
-drives the legs at a phase matched to the distance covered.
+* `/walking/command` answers `result: true` to everything, and `start`/`stop`/`enable`/
+  `disable` do nothing unless control is enabled (`init_pose_finish`), which only
+  `enable_control` sets -- and `/app/set_action` and `/walking/init_pose` clear while they
+  run and set again when they finish. `disable_control` is how the app freezes the gait.
+* `stop` finishes the step cycle in progress and the call returns once the gait has halted;
+  `disable` does the same and then blocks gait output until `enable` or `start`.
+* `period_times` N walks N full cycles and then stops by itself.
+* `/walking/is_walking` is published on transitions only.
+* There is **no watchdog**. A client that disconnects mid-walk leaves the robot walking,
+  exactly as the real gait engine does; the official way to stop it is `/walking/command`
+  `stop` (see `stop_command` in the ROS file).
+
+Locomotion is the planar base plus the animated gait described in `gait.py`: the walking
+parameters are turned into a body-frame velocity by `gait.planar_velocity` and integrated
+by `PlanarSetpoint`, while `gait.leg_joint_targets` drives the legs at a phase matched to
+the distance covered.
 
 Threading, which is the invariant that keeps a service call from corrupting the
-simulation: every subscriber and service handler below runs on a **websocket reader
-thread** and may only write to the small `_State` object. The `step(data)` callback is
-the only thing that touches MjData, and it is called from the simulation thread.
+simulation: subscribers and service handlers run on websocket reader threads and write
+only to the `_Controller` below; the periodic streams run on their own clock thread and
+read only snapshots (`streams.py`); `step(data)` is the only thing that touches MjData, on
+the simulation thread.
 """
 
 from __future__ import annotations
 
+import base64
 import math
 import sys
 import threading
-import time
 from pathlib import Path
 
 import numpy as np
@@ -33,64 +45,209 @@ SIM_ROOT = Path(__file__).resolve().parents[2]
 if str(SIM_ROOT) not in sys.path:
     sys.path.insert(0, str(SIM_ROOT))
 
-from ros_surfaces.ainex import gait, servos, topics  # noqa: E402
+from ros_surfaces.ainex import gait, servos, streams, topics  # noqa: E402
 from ros_surfaces.ainex.actions import (  # noqa: E402
     BASE_PITCH, ActionPlayer, load_action_dir, rest_pose,
 )
 from ros_surfaces.ainex.ground import GroundFollow  # noqa: E402
+from ros_surfaces.ainex.nodes import App, JoystickControl, VisionNode  # noqa: E402
+
+#: How long a blocking call waits for the simulation to act on it before giving up. The
+#: vendor's calls block without limit; a simulation that is not stepping would then hang
+#: the caller for ever, which helps no one.
+BLOCK_TIMEOUT_S = 5.0
+
+#: `walking_param.yaml`, the gait parameters `ainex_controller` starts with, in the
+#: message's own units (ms, degrees, radians for the arm swing).
+DEFAULT_WALKING_PARAM = {
+    "init_x_offset": 0.0, "init_y_offset": -0.005, "init_z_offset": 0.025,
+    "init_roll_offset": 0.0, "init_pitch_offset": 0.0, "init_yaw_offset": 0.0,
+    "period_time": 400.0, "dsp_ratio": 0.2, "step_fb_ratio": 0.028, "period_times": 0,
+    "x_move_amplitude": 0.0, "y_move_amplitude": 0.0, "z_move_amplitude": 0.02,
+    "angle_move_amplitude": 0.0, "move_aim_on": False, "arm_swing_gain": 0.5,
+    "y_swap_amplitude": 0.02, "z_swap_amplitude": 0.006, "pelvis_offset": 5.0,
+    "hip_pitch_offset": 15.0,
+    "balance_enable": False, "balance_hip_roll_gain": 0.0, "balance_knee_gain": 0.0,
+    "balance_ankle_roll_gain": 0.0, "balance_ankle_pitch_gain": 0.0,
+}
+
+#: `ainex_controller.py`'s clamps on `/walking/set_param`, per field.
+WALKING_PARAM_RANGES = {
+    "init_z_offset": (0.015, 0.06),
+    "x_move_amplitude": (-0.05, 0.05),
+    "y_move_amplitude": (-0.05, 0.05),
+    "z_move_amplitude": (0.0, 0.05),
+    "angle_move_amplitude": (-10.0, 10.0),
+    "y_swap_amplitude": (0.0, 0.05),
+    "arm_swing_gain": (0.0, math.radians(60)),
+}
 
 
-class _State:
-    """Everything the reader threads write and the simulation thread reads.
+def _gait_of(wire: dict) -> gait.WalkingParam:
+    """The wire block in `gait`'s units: seconds, radians. Balance gains have no effect on
+    a torso riding position-controlled planar joints, so they are held and not used."""
+    return gait.WalkingParam(
+        period_time=float(wire["period_time"]) / 1000.0,
+        dsp_ratio=float(wire["dsp_ratio"]),
+        x_amplitude=float(wire["x_move_amplitude"]),
+        y_amplitude=float(wire["y_move_amplitude"]),
+        angle_amplitude=math.radians(float(wire["angle_move_amplitude"])),
+        body_height=float(wire["init_z_offset"]),
+        step_height=float(wire["z_move_amplitude"]),
+        y_swap=float(wire["y_swap_amplitude"]),
+        z_swap=float(wire["z_swap_amplitude"]),
+        arm_swing_gain=float(wire["arm_swing_gain"]),
+        hip_pitch_offset=math.radians(float(wire["hip_pitch_offset"])),
+        period_times=int(wire["period_times"]),
+    ).clamped()
 
-    Guarded by one lock. Deliberately small: no MjData, no numpy views into the model,
-    nothing whose lifetime the simulation owns.
+
+class _Controller:
+    """`ainex_controller`'s state machine, written by handlers and run by `step`.
+
+    Guarded by one condition variable. Deliberately small: no MjData, nothing whose
+    lifetime the simulation owns.
     """
 
     def __init__(self) -> None:
-        self.lock = threading.Lock()
-        # The vendor's state machine. `walking_enable` is enable/disable; `stepping` is
-        # start/stop; `initialised` is enable_control/disable_control, which the app layer
-        # uses as a separate axis to gate whether the robot considers itself ready at all.
+        self.cond = threading.Condition()
+        # The vendor's flags, under the vendor's names where it has them.
         self.walking_enable = True
-        self.stepping = False
-        self.initialised = True
-        self.param = gait.WalkingParam()
-        # Name of an action group to begin on the next tick, or None.
+        self.init_pose_finish = True     # "control enabled"
+        self.running = False             # walking_module started and not yet finished
+        self.stop_pending = False        # finish the current cycle, then halt
+        self.moving = False              # `not self.stop`: the gait is moving joints
+        self.wire = dict(DEFAULT_WALKING_PARAM)
+        self.param = _gait_of(self.wire)
+        self.count_step = 0
+        # Requests the simulation thread acts on.
         self.pending_action: str | None = None
-        # Raw bus-servo writes: joint name -> radians. Applied once, then cleared.
+        self.init_requests = 0
+        self.inits_done = 0
         self.servo_writes: dict[str, float] = {}
-        self.init_pose_requested = False
+
+    # -- /walking/command ---------------------------------------------------------
+
+    def command(self, command: str) -> bool:
+        wait = False
+        with self.cond:
+            if self.init_pose_finish:
+                if command == "start":
+                    self.walking_enable = True
+                    self.running = True
+                    self.stop_pending = False
+                elif command in ("stop", "disable"):
+                    if self.running:
+                        self.stop_pending = True
+                    wait = True
+                elif command == "enable":
+                    self.walking_enable = True
+            if command == "enable_control":
+                self.init_pose_finish = True
+            elif command == "disable_control":
+                self.init_pose_finish = False
+        if wait:
+            self.wait_halted()
+            if command == "disable":
+                with self.cond:
+                    self.walking_enable = False
+        return True
+
+    def wait_halted(self, timeout: float = BLOCK_TIMEOUT_S) -> bool:
+        with self.cond:
+            return self.cond.wait_for(lambda: not self.running and not self.moving,
+                                      timeout=timeout)
+
+    # -- parameters ---------------------------------------------------------------
+
+    def set_walking_param(self, msg: dict) -> None:
+        """`set_walking_param_callback`: every field from the message, clamped.
+
+        A field the client left out arrives as the message default -- zero, or false --
+        because rosbridge fills an incomplete message that way before the node sees it.
+        The balance block is not read by the controller at all.
+        """
+        with self.cond:
+            for key, default in DEFAULT_WALKING_PARAM.items():
+                if key.startswith("balance_"):
+                    continue
+                value = msg.get(key, False if isinstance(default, bool) else 0)
+                if key in WALKING_PARAM_RANGES:
+                    lo, hi = WALKING_PARAM_RANGES[key]
+                    value = min(max(float(value), lo), hi)
+                self.wire[key] = value
+            self.param = _gait_of(self.wire)
+
+    def set_app_walking_param(self, msg: dict) -> None:
+        param = gait.from_app_params(
+            int(msg.get("speed", gait.APP_DEFAULT_SPEED)), float(msg.get("height", 0.025)),
+            float(msg.get("x", 0.0)), float(msg.get("y", 0.0)), float(msg.get("angle", 0.0)),
+        )
+        with self.cond:
+            self.wire.update(
+                period_times=0, init_x_offset=0.0, init_z_offset=param.body_height,
+                init_roll_offset=0.0, init_pitch_offset=0.0, init_yaw_offset=0.0,
+                hip_pitch_offset=15.0, z_move_amplitude=param.step_height,
+                pelvis_offset=5.0, move_aim_on=False, arm_swing_gain=0.5,
+                period_time=param.period_time * 1000.0, dsp_ratio=param.dsp_ratio,
+                x_move_amplitude=param.x_amplitude, y_move_amplitude=param.y_amplitude,
+                angle_move_amplitude=math.degrees(param.angle_amplitude),
+                y_swap_amplitude=param.y_swap, z_swap_amplitude=param.z_swap,
+            )
+            self.param = _gait_of(self.wire)
+
+    def walking_param(self) -> dict:
+        """`/walking/get_param`'s answer: the current block, `period_times` as 0."""
+        with self.cond:
+            wire = dict(self.wire)
+        return {**wire, "period_times": 0}
+
+    # -- init pose and action groups ----------------------------------------------
+
+    def request_init_pose(self, block: bool = True) -> None:
+        with self.cond:
+            self.init_requests += 1
+            ticket = self.init_requests
+            if self.running:
+                self.stop_pending = True
+            if block:
+                self.cond.wait_for(lambda: self.inits_done >= ticket, timeout=BLOCK_TIMEOUT_S)
+
+    def request_action(self, name: str) -> None:
+        with self.cond:
+            self.pending_action = name
+            if self.running:
+                self.stop_pending = True
+
+    def is_walking(self) -> bool:
+        with self.cond:
+            return self.moving
+
+    def write_servos(self, writes: dict[str, float]) -> None:
+        with self.cond:
+            self.servo_writes.update(writes)
 
 
-def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
-               jpeg_quality: int, control_hz: float, watchdog_s: float,
-               scan: dict | None = None, depth: dict | None = None,
-               extra: dict | None = None, scene_option=None,
-               camera_period: float = 0.0, world_reset=None):
+def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: int = 80,
+               control_hz: float = 20.0, extra: dict | None = None, scene_option=None,
+               world_reset=None):
     """Wire the AiNex onto an already-built bus and return a per-step callback.
 
-    The vendor topic names in `topics.py` stay bare; the bus applies whatever namespace
-    this robot was given. See `contracts/namespace.py`.
-
-    **What an engine must supply**, and nothing more -- the same shape as the myAGV's
-    shared surface, so that a second engine needs an adapter and not a port:
+    **What an engine must supply**, and nothing more:
 
     * `base`  -- `.pose`, a 4x4 whose `[0:2, 3]` is x/y and whose `[1,0]`,`[0,0]` give
       yaw, and a writable `.ctrl` taking `(x, y, yaw)`. MolmoSpaces' holonomic base group
       and `mujoco_bridge.PlanarJointBase` both satisfy it already.
     * `model` -- the compiled `mujoco.MjModel` for the whole scene.
     * `prefix` -- this robot's MJCF name prefix, such that every name in `servos.SERVOS`
-      has both a joint and a position actuator under it. It used to be read off a
-      MolmoSpaces `RobotView` private attribute, which is exactly the kind of coupling
-      that kept this robot inside one engine.
+      has both a joint and a position actuator under it.
+    * `camera` -- the head camera's MJCF name, or None for no camera.
 
-    A `legs` move group used to be demanded here as well. It was checked and never
-    read -- all 24 servos are written through `data.ctrl` by actuator id -- so requiring
-    it would have made a second engine fabricate a group nothing looks at.
+    Every rate is this robot's own, from `topics.RATES_HZ`; `control_hz` is only the
+    period `step` is called at, which the gait integrates over.
     """
-    from contracts.rosbridge_server import header
-    from mujoco_bridge import PlanarSetpoint, SensorStreams, SensorTopics
+    import ainex_model
+    from mujoco_bridge import PlanarSetpoint
 
     actions = load_action_dir(Path(extra["action_dir"]) if (extra or {}).get("action_dir") else None)
     print(f"action groups: {', '.join(sorted(actions)) or '(none)'}", file=sys.stderr)
@@ -100,373 +257,413 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     joint_ids = {n: model.joint(f"{namespace}{n}").id for n in servos.SERVOS}
     actuator_ids = {n: model.actuator(f"{namespace}{n}").id for n in servos.SERVOS}
     qpos_adr = {n: model.jnt_qposadr[joint_ids[n]] for n in servos.SERVOS}
-    # The torso's lean is a 25th channel beside the servos: it is not a servo on the
-    # robot, it is what the vendor's hip chain does to the body when it bends to pick
-    # something up, and with the base riding the torso it has to be a joint of its own.
-    # Action groups author it; everything else holds it at zero. It never reaches
-    # `/joint_states`, which lists the 24 servos and nothing the robot does not have.
+    # The torso's lean is a 25th channel beside the servos: it is what the vendor's hip
+    # chain does to the body when it bends to pick something up, and with the base riding
+    # the torso it has to be a joint of its own. Action groups author it. It is not a
+    # servo, so no servo read-back reports it.
     actuator_ids[BASE_PITCH] = model.actuator(f"{namespace}base_pitch_act").id
     qpos_adr[BASE_PITCH] = model.jnt_qposadr[model.joint(f"{namespace}base_pitch").id]
     pitch_dof = model.jnt_dofadr[model.joint(f"{namespace}base_pitch").id]
 
-    state = _State()
+    ctl = _Controller()
     # The MjData the step loop owns, for a service answered on a websocket thread. Read
     # only, one float per servo; a torn read here is a count one tick stale, not a crash.
     live: list = [None]
+    by_id = {sid: name for name, (sid, _, _) in servos.SERVOS.items()}
 
-    # ---------------------------------------------------------------- subscribers
+    def node(n: str) -> dict:
+        return {"node": n}
 
-    def on_app_walking_param(msg: dict) -> None:
-        with state.lock:
-            state.param = gait.from_app_params(
-                int(msg.get("speed", gait.APP_DEFAULT_SPEED)),
-                float(msg.get("height", 0.025)),
-                float(msg.get("x", 0.0)),
-                float(msg.get("y", 0.0)),
-                float(msg.get("angle", 0.0)),
-            )
+    def ignored(_msg: dict) -> None:
+        """Board I/O with nothing in the simulation to drive: LEDs, buzzer, OLED, DC
+        motors the AiNex does not have, PWM servos it does not carry, the serial link."""
 
-    def on_walking_param(msg: dict) -> None:
-        """The full ZMP parameter block.
+    # ---------------------------------------------------------------- ainex_controller
 
-        `period_time` is milliseconds on the wire and seconds in `gait`; the balance gains
-        are accepted and dropped, because a torso on planar joints cannot tip and there is
-        nothing for them to act on.
-        """
-        with state.lock:
-            state.param = gait.WalkingParam(
-                period_time=float(msg.get("period_time", 400.0)) / 1000.0,
-                dsp_ratio=float(msg.get("dsp_ratio", 0.2)),
-                x_amplitude=float(msg.get("x_move_amplitude", 0.0)),
-                y_amplitude=float(msg.get("y_move_amplitude", 0.0)),
-                angle_amplitude=math.radians(float(msg.get("angle_move_amplitude", 0.0))),
-                body_height=float(msg.get("init_z_offset", 0.025)),
-                step_height=float(msg.get("z_move_amplitude", 0.02)),
-                y_swap=float(msg.get("y_swap_amplitude", 0.02)),
-                z_swap=float(msg.get("z_swap_amplitude", 0.006)),
-                arm_swing_gain=float(msg.get("arm_swing_gain", 0.5)),
-                hip_pitch_offset=math.radians(float(msg.get("hip_pitch_offset", 15.0))),
-                period_times=int(msg.get("period_times", 0)),
-            ).clamped()
-
-    def on_set_action(msg: dict) -> None:
-        name = str(msg.get("data", ""))
-        with state.lock:
-            if name in actions:
-                # The vendor stops walking before running an action group and returns to
-                # the init pose afterwards; `step` does the same.
-                state.pending_action = name
-                state.stepping = False
-            else:
-                print(f"unknown action group {name!r}", file=sys.stderr)
-
-    def on_bus_servo_set(msg: dict) -> None:
-        """`ros_robot_controller/SetBusServosPosition`: raw counts, addressed by servo id.
-
-        The whole point of keeping the vendor's count<->radian mapping (servos.py) is that
-        this means here exactly what it means on the robot. `duration` is accepted and
-        ignored: the position servo takes its own time to travel, as the real one does.
-        """
-        by_id = {sid: name for name, (sid, _, _) in servos.SERVOS.items()}
-        with state.lock:
-            for entry in msg.get("position") or []:
-                name = by_id.get(int(entry.get("id", -1)))
-                if name is None:
-                    continue
-                state.servo_writes[name] = servos.clamp(
-                    name, servos.count_to_angle(name, float(entry.get("position", 500)))
-                )
-
-    def joint_setter(joint: str):
+    def on_head(joint: str):
         def handler(msg: dict) -> None:
-            # ainex_interfaces/HeadState is {position, duration} and std_msgs/Float64 is
-            # {data}: the vendor drives the head through the first and every Gazebo joint
-            # controller through the second, so both shapes are accepted on every topic
-            # rather than dropping a message for using the other dialect's field name.
-            value = msg.get("position", msg.get("data", 0.0))
-            with state.lock:
-                state.servo_writes[joint] = servos.clamp(joint, float(value))
-
+            # HeadState {position, duration}: the vendor sends it to the servo as a
+            # timed move; the simulated servo takes its own time to travel.
+            ctl.write_servos({joint: servos.clamp(joint, float(msg.get("position", 0.0)))})
         return handler
 
-    # The type is what makes a subscription *discoverable*: `/rosapi/topics` answers
-    # from what has been published plus what was declared here, and a topic declared
-    # without one is recorded nowhere. Untyped, this robot advertised no way to command
-    # it at all -- a client asking the wire what is on it saw a camera and a lidar.
-    bus.on(topics.TOPIC_APP_WALKING_PARAM, on_app_walking_param,
-           topics.TYPE_APP_WALKING_PARAM)
-    bus.on(topics.TOPIC_SET_WALKING_PARAM, on_walking_param, topics.TYPE_WALKING_PARAM)
-    bus.on(topics.TOPIC_APP_ACTION, on_set_action, topics.TYPE_STRING)
-    bus.on(topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set,
-           topics.TYPE_SET_BUS_SERVOS_POSITION)
-    # One command topic per joint, the vendor's ros_control layout: `/<joint>_controller/
-    # command` for all 24, of which the head pair are the two the real controller drives.
-    # This is what lets a client -- or the live page -- move one arm or hand joint at a
-    # time, where `bus_servo/set_position` writes raw counts to the whole bus.
-    for joint, topic in topics.JOINT_COMMAND_TOPICS.items():
-        bus.on(topic, joint_setter(joint), topics.joint_command_type(joint))
+    bus.on(topics.TOPIC_SET_WALKING_PARAM, ctl.set_walking_param, topics.TYPE_WALKING_PARAM,
+           **node(topics.NODE_CONTROLLER))
+    bus.on(topics.TOPIC_APP_WALKING_PARAM, ctl.set_app_walking_param,
+           topics.TYPE_APP_WALKING_PARAM, **node(topics.NODE_CONTROLLER))
+    bus.on(topics.TOPIC_APP_ACTION, lambda m: ctl.request_action(str(m.get("data", ""))),
+           topics.TYPE_STRING, **node(topics.NODE_CONTROLLER))
+    bus.on(topics.TOPIC_HEAD_PAN, on_head("head_pan"), topics.TYPE_HEAD_STATE,
+           **node(topics.NODE_CONTROLLER))
+    bus.on(topics.TOPIC_HEAD_TILT, on_head("head_tilt"), topics.TYPE_HEAD_STATE,
+           **node(topics.NODE_CONTROLLER))
+    bus.advertise(topics.TOPIC_IS_WALKING, topics.TYPE_BOOL, **node(topics.NODE_CONTROLLER))
 
-    # ---------------------------------------------------------------- services
+    bus.service(topics.SRV_WALKING_COMMAND,
+                lambda a: {"result": ctl.command(str(a.get("command", "")))},
+                topics.SRV_TYPE_SET_WALKING_COMMAND, **node(topics.NODE_CONTROLLER))
+    bus.service(topics.SRV_GET_WALKING_PARAM, lambda a: {"parameters": ctl.walking_param()},
+                topics.SRV_TYPE_GET_WALKING_PARAM, **node(topics.NODE_CONTROLLER))
+    bus.service(topics.SRV_IS_WALKING,
+                lambda a: {"state": ctl.is_walking(), "message": "is_walking"},
+                topics.SRV_TYPE_GET_WALKING_STATE, **node(topics.NODE_CONTROLLER))
 
-    def walking_command(args: dict) -> dict:
-        """`SetWalkingCommand`: one of six strings -> {result}.
-
-        Transcribed from ainex_controller.py::walking_command_callback, including that
-        enable/disable/start/stop are gated on the robot being initialised while
-        enable_control/disable_control are what set that flag.
-        """
-        command = str(args.get("command", ""))
-        if command not in topics.WALKING_COMMANDS:
-            return {"result": False}
-        with state.lock:
-            if state.initialised:
-                if command == "start":
-                    # `start` implies `enable` on the real robot: ainex_controller.py's
-                    # start branch sets walking_enable = True itself before starting the
-                    # walking module. Gating on a prior `enable` here made disable->start
-                    # walk on hardware but not in sim.
-                    state.walking_enable = True
-                    state.stepping = True
-                elif command == "stop":
-                    state.stepping = False
-                elif command == "enable":
-                    state.walking_enable = True
-                elif command == "disable":
-                    # The vendor stops before disabling, so `disable` implies `stop`.
-                    state.stepping = False
-                    state.walking_enable = False
-            if command == "enable_control":
-                state.initialised = True
-            elif command == "disable_control":
-                state.initialised = False
-        return {"result": True}
-
-    def get_walking_param(args: dict) -> dict:
-        with state.lock:
-            param = state.param
-        return {"parameters": _to_walking_param_msg(param)}
-
-    def is_walking(args: dict) -> dict:
-        with state.lock:
-            walking = state.stepping
-        return {"state": walking, "message": "is_walking"}
-
-    def init_pose(args: dict) -> dict:
-        with state.lock:
-            state.stepping = False
-            state.init_pose_requested = True
+    def init_pose(_args: dict) -> dict:
+        ctl.request_init_pose(block=True)
         return {}
 
-    def get_bus_servos_position(args: dict) -> dict:
-        """`ros_robot_controller/GetBusServosPosition`: raw counts by servo id.
+    bus.service(topics.SRV_INIT_POSE, init_pose, topics.SRV_TYPE_EMPTY,
+                **node(topics.NODE_CONTROLLER))
 
-        The read-back half of the bus, answered from the compiled model through the same
-        count<->radian table the write half uses, so a pose read here and written back
-        through `set_position` lands where it was. Asks for every servo when given no
-        ids, as the vendor's node does.
-        """
-        wanted = [int(i) for i in (args.get("id") or args.get("ids") or [])] \
-            or list(range(1, len(servos.BY_ID) + 1))
-        by_id = {sid: name for name, (sid, _, _) in servos.SERVOS.items()}
+    # ---------------------------------------------------------------- ros_robot_controller
+
+    def on_bus_servo_set(msg: dict) -> None:
+        """`SetBusServosPosition`: raw counts by servo id, through the vendor's own
+        count<->radian table, so a count means here what it means on the robot."""
+        writes = {}
+        for entry in msg.get("position") or []:
+            name = by_id.get(int(entry.get("id", -1)))
+            if name is not None:
+                writes[name] = servos.clamp(
+                    name, servos.count_to_angle(name, float(entry.get("position", 500))))
+        ctl.write_servos(writes)
+
+    def on_bus_servo_state(msg: dict) -> None:
+        """`SetBusServoState`: each field is `[flag, value...]` for servo `present_id[1]`.
+        A position moves it and `stop` holds it where it is; id, offset, limit, torque and
+        save-offset writes configure servo firmware the simulation does not have."""
+        writes = {}
         data = live[0]
-        positions = []
-        for sid in wanted:
-            name = by_id.get(sid)
-            if name is None or data is None:
+        for state in msg.get("state") or []:
+            present = list(state.get("present_id") or [])
+            if len(present) < 2 or not present[0]:
                 continue
-            angle = float(data.qpos[qpos_adr[name]])
-            positions.append({"id": sid, "position": servos.angle_to_count(name, angle)})
-        # `success` is the vendor's first response field (`GetBusServosPosition.srv`:
-        # `bool success`, `BusServoPosition[] position`); it was missing, and the schema
-        # drift check in test_fleet.py is what would have said so.
-        return {"success": True, "position": positions}
+            name = by_id.get(int(present[1]))
+            if name is None:
+                continue
+            position = list(state.get("position") or [])
+            if len(position) >= 2 and position[0]:
+                writes[name] = servos.clamp(name, servos.count_to_angle(name, float(position[1])))
+            stop = list(state.get("stop") or [])
+            if stop and stop[0] and data is not None:
+                writes[name] = float(data.qpos[qpos_adr[name]])
+        ctl.write_servos(writes)
 
-    # Typed, like the topics above: the type is what makes a service discoverable through
-    # `/rosapi/services` and `/rosapi/service_type`, and what resolves its schema.
-    bus.service(topics.SRV_WALKING_COMMAND, walking_command,
-                topics.SRV_TYPE_SET_WALKING_COMMAND)
-    bus.service(topics.SRV_GET_WALKING_PARAM, get_walking_param,
-                topics.SRV_TYPE_GET_WALKING_PARAM)
+    board_in = (
+        (topics.TOPIC_BUS_SERVO_SET, on_bus_servo_set, topics.TYPE_SET_BUS_SERVOS_POSITION),
+        (topics.TOPIC_BUS_SERVO_SET_STATE, on_bus_servo_state, topics.TYPE_SET_BUS_SERVO_STATE),
+        (topics.TOPIC_PWM_SERVO_SET_STATE, ignored, topics.TYPE_SET_PWM_SERVO_STATE),
+        (topics.TOPIC_SET_LED, ignored, topics.TYPE_LED_STATE),
+        (topics.TOPIC_SET_BUZZER, ignored, topics.TYPE_BUZZER_STATE),
+        (topics.TOPIC_SET_OLED, ignored, topics.TYPE_OLED_STATE),
+        (topics.TOPIC_SET_MOTOR, ignored, topics.TYPE_MOTORS_STATE),
+        (topics.TOPIC_SET_RGB, ignored, topics.TYPE_RGBS_STATE),
+        (topics.TOPIC_SET_MOTOR_DUTY, ignored, topics.TYPE_MOTORS_STATE),
+        (topics.TOPIC_ENABLE_RECEPTION, ignored, topics.TYPE_BOOL),
+    )
+    for name, handler, mtype in board_in:
+        bus.on(name, handler, mtype, **node(topics.NODE_BOARD))
+    # Published only when the board reports them, which a simulated board never does:
+    # there is no gamepad on its receiver, no SBUS radio, no button press and no battery.
+    for name, mtype in ((topics.TOPIC_BOARD_JOY, topics.TYPE_JOY),
+                        (topics.TOPIC_SBUS, topics.TYPE_SBUS),
+                        (topics.TOPIC_BOARD_BUTTON, topics.TYPE_BUTTON_STATE),
+                        (topics.TOPIC_BATTERY, topics.TYPE_UINT16)):
+        bus.advertise(name, mtype, **node(topics.NODE_BOARD))
+
+    def _ids(value) -> list[int]:
+        # uint8[] may arrive as a JSON list or, as rosbridge encodes it, base64.
+        if isinstance(value, str):
+            return list(base64.b64decode(value))
+        return [int(i) for i in (value or [])]
+
+    def count_of(name: str) -> int | None:
+        data = live[0]
+        return None if data is None else servos.angle_to_count(
+            name, float(data.qpos[qpos_adr[name]]))
+
+    def get_bus_servos_position(args: dict) -> dict:
+        """Positions of the requested ids, as the driver reads them one by one."""
+        out = []
+        for sid in _ids(args.get("id")):
+            name = by_id.get(sid)
+            count = count_of(name) if name else None
+            if count is not None:
+                out.append({"id": sid, "position": count})
+        return {"success": True, "position": out}
+
+    def get_bus_servo_state(args: dict) -> dict:
+        """What the simulated servo can truthfully report: its id, position and the
+        firmware defaults the simulation assumes (no offset, the 0..1000 travel, torque
+        on). Voltage and temperature are not simulated and come back empty, as the
+        driver leaves a field it could not read."""
+        out = []
+        for cmd in args.get("cmd") or []:
+            sid = int(cmd.get("id", 0))
+            name = by_id.get(sid)
+            state = {k: [] for k in ("present_id", "target_id", "position", "offset",
+                                     "voltage", "temperature", "position_limit",
+                                     "voltage_limit", "max_temperature_limit",
+                                     "enable_torque", "save_offset", "stop")}
+            if name is not None:
+                if cmd.get("get_id"):
+                    state["present_id"] = [sid]
+                if cmd.get("get_position") and (count := count_of(name)) is not None:
+                    state["position"] = [count]
+                if cmd.get("get_offset"):
+                    state["offset"] = [0]
+                if cmd.get("get_position_limit"):
+                    state["position_limit"] = [servos.COUNT_MIN, servos.COUNT_MAX]
+                if cmd.get("get_torque_state"):
+                    state["enable_torque"] = [1]
+            out.append(state)
+        return {"success": True, "state": out}
+
+    def get_pwm_servo_state(args: dict) -> dict:
+        # The AiNex carries no PWM servo, so every read comes back empty.
+        return {"success": True,
+                "state": [{"id": [], "position": [], "offset": []}
+                          for _ in args.get("cmd") or []]}
+
     bus.service(topics.SRV_BUS_SERVO_GET, get_bus_servos_position,
-                topics.SRV_TYPE_GET_BUS_SERVOS_POSITION)
-    bus.service(topics.SRV_IS_WALKING, is_walking, topics.SRV_TYPE_GET_WALKING_STATE)
-    bus.service(topics.SRV_INIT_POSE, init_pose, topics.SRV_TYPE_EMPTY)
+                topics.SRV_TYPE_GET_BUS_SERVOS_POSITION, **node(topics.NODE_BOARD))
+    bus.service(topics.SRV_BUS_SERVO_GET_STATE, get_bus_servo_state,
+                topics.SRV_TYPE_GET_BUS_SERVO_STATE, **node(topics.NODE_BOARD))
+    bus.service(topics.SRV_PWM_SERVO_GET_STATE, get_pwm_servo_state,
+                topics.SRV_TYPE_GET_PWM_SERVO_STATE, **node(topics.NODE_BOARD))
 
-    # ---------------------------------------------------------------- streams
+    # ---------------------------------------------------------------- IMU pipeline
 
-    # The bus, not the server: this surface was left holding a name that stopped
-    # existing when robots got namespaces, and since nothing loaded an AiNex afterwards
-    # it stayed a NameError at attach time -- `--robots so101,ainex` died before the
-    # kitchen finished compiling. The frames come from the bus for the same reason the
-    # myAGV's do: two robots on one graph both reporting `camera_link` give a tf tree one
-    # frame with two parents.
-    sensors = SensorStreams(
-        bus, model, camera, camera_size, jpeg_quality, scan, depth,
-        SensorTopics(
-            topics.TOPIC_CAMERA,
-            topics.TOPIC_SCAN,
-            "/camera/depth/image_raw",
-            "/camera/rgb/camera_info",
-            camera_frame=bus.frame(topics.FRAME_CAMERA),
-            scan_frame=bus.frame(topics.FRAME_LASER),
-        ),
-        scene_option=scene_option,
-        camera_period=camera_period,
+    for name, owner in ((topics.TOPIC_IMU_RAW, topics.NODE_BOARD),
+                        (topics.TOPIC_IMU_CORRECTED, topics.NODE_IMU_CALIB),
+                        (topics.TOPIC_IMU, topics.NODE_IMU_FILTER)):
+        bus.advertise(name, topics.TYPE_IMU, **node(owner))
+    bus.advertise(topics.TOPIC_MAG_RAW, topics.TYPE_MAGNETOMETER, **node(topics.NODE_BOARD))
+    bus.advertise(topics.TOPIC_MAG, topics.TYPE_MAGNETIC_FIELD, **node(topics.NODE_BOARD))
+
+    # ---------------------------------------------------------------- camera
+
+    camera_out = (
+        (topics.TOPIC_CAMERA_RAW, topics.TYPE_IMAGE, topics.NODE_CAMERA),
+        (topics.TOPIC_CAMERA_INFO, topics.TYPE_CAMERA_INFO, topics.NODE_CAMERA),
+        (topics.TOPIC_CAMERA, topics.TYPE_COMPRESSED_IMAGE, topics.NODE_CAMERA),
+        (topics.TOPIC_CAMERA_RECT, topics.TYPE_IMAGE, topics.NODE_RECTIFY),
     )
+    for name, mtype, owner in camera_out:
+        bus.advertise(name, mtype, **node(owner))
+    bus.service(topics.SRV_SET_CAMERA_INFO, lambda a: {"success": True, "status_message": ""},
+                topics.SRV_TYPE_SET_CAMERA_INFO, **node(topics.NODE_CAMERA))
+    head_camera = streams.HeadCamera(bus, model, camera, ainex_model.CAMERA_FOVY_DEG,
+                                     jpeg_quality, scene_option)
+
+    # ---------------------------------------------------------------- sensor node
+
+    button = {"enabled": True, "seq": 0}
+
+    def button_enable(args: dict) -> dict:
+        button["enabled"] = bool(args.get("data", False))
+        return {"success": True, "message": "set_button_enable"}
+
+    bus.advertise(topics.TOPIC_BUTTON_STATE, topics.TYPE_BOOL, **node(topics.NODE_SENSOR))
+    bus.on(topics.TOPIC_SENSOR_LED, ignored, topics.TYPE_BOOL, **node(topics.NODE_SENSOR))
+    bus.service(topics.SRV_BUTTON_ENABLE, button_enable, topics.SRV_TYPE_SET_BOOL,
+                **node(topics.NODE_SENSOR))
+
+    # ---------------------------------------------------------------- the other nodes
+
+    def write_head_counts(pan: int, tilt: int) -> None:
+        ctl.write_servos({"head_pan": servos.count_to_angle("head_pan", pan),
+                          "head_tilt": servos.count_to_angle("head_tilt", tilt)})
+
+    color = VisionNode(bus, topics.NODE_COLOR_DETECTION, topics.TOPIC_COLOR_IMAGE_RESULT,
+                       head_camera)
+    face = VisionNode(bus, topics.NODE_FACE_DETECT, topics.TOPIC_FACE_IMAGE_RESULT,
+                      head_camera, label="face")
+    color.register(topics.SRV_COLOR_ENTER, topics.SRV_COLOR_EXIT, topics.SRV_COLOR_START,
+                   topics.SRV_COLOR_STOP, update_lab=topics.SRV_COLOR_UPDATE_LAB,
+                   update_detect=topics.TOPIC_UPDATE_DETECT)
+    face.register(topics.SRV_FACE_ENTER, topics.SRV_FACE_EXIT, topics.SRV_FACE_START,
+                  topics.SRV_FACE_STOP)
+    # `/object/pixel_coords` has two publishers on the robot; both are declared.
+    bus.advertise(topics.TOPIC_PIXEL_COORDS, topics.TYPE_OBJECTS_INFO,
+                  **node(topics.NODE_COLOR_DETECTION))
+
+    joystick = JoystickControl(ctl)
+    bus.advertise(topics.TOPIC_JOY, topics.TYPE_JOY, **node(topics.NODE_JOY))
+    bus.on(topics.TOPIC_JOY, joystick.on_joy, topics.TYPE_JOY,
+           **node(topics.NODE_JOYSTICK_CONTROL))
+
+    app = App(ctl, write_head_counts, color, face)
+    bus.advertise(topics.TOPIC_APP_IMAGE_RESULT, topics.TYPE_IMAGE, **node(topics.NODE_APP))
+    for name, handler, stype in (
+        (topics.SRV_APP_ENTER, app.enter, topics.SRV_TYPE_SET_INT),
+        (topics.SRV_APP_SET_RUNNING, app.set_running, topics.SRV_TYPE_SET_BOOL),
+        (topics.SRV_APP_SET_TARGET_COLOR, app.set_target_color, topics.SRV_TYPE_SET_POINT),
+        (topics.SRV_APP_GET_TARGET_COLOR, app.get_target_color, topics.SRV_TYPE_TRIGGER),
+        (topics.SRV_APP_SET_THRESHOLD, app.set_threshold, topics.SRV_TYPE_SET_FLOAT),
+        (topics.SRV_APP_HEARTBEAT, app.heartbeat, topics.SRV_TYPE_SET_BOOL),
+    ):
+        bus.service(name, handler, stype, **node(topics.NODE_APP))
+
+    # ---------------------------------------------------------------- parameters
+
+    for param in topics.PARAMETERS:
+        bus.set_param(param.name, param.value)
+
+    # ---------------------------------------------------------------- periodic streams
+
+    attitude = streams.Attitude()
+    seqs = {"imu": 0, "joy": 0}
+
+    def publish_imu() -> None:
+        seqs["imu"] += 1
+        msgs = streams.imu_messages(attitude, seqs["imu"])
+        owners = {topics.TOPIC_IMU_RAW: topics.NODE_BOARD,
+                  topics.TOPIC_MAG_RAW: topics.NODE_BOARD, topics.TOPIC_MAG: topics.NODE_BOARD,
+                  topics.TOPIC_IMU_CORRECTED: topics.NODE_IMU_CALIB,
+                  topics.TOPIC_IMU: topics.NODE_IMU_FILTER}
+        types = {topics.TOPIC_MAG_RAW: topics.TYPE_MAGNETOMETER,
+                 topics.TOPIC_MAG: topics.TYPE_MAGNETIC_FIELD}
+        for name, msg in msgs.items():
+            bus.publish(name, msg, types.get(name, topics.TYPE_IMU), node=owners[name])
+
+    def publish_joy() -> None:
+        seqs["joy"] += 1
+        bus.publish(topics.TOPIC_JOY, streams.neutral_joy(seqs["joy"]), topics.TYPE_JOY,
+                    node=topics.NODE_JOY)
+
+    def publish_button() -> None:
+        # Published every cycle while enabled; the simulated user button is never pressed.
+        if button["enabled"]:
+            bus.publish(topics.TOPIC_BUTTON_STATE, {"data": False}, topics.TYPE_BOOL,
+                        node=topics.NODE_SENSOR)
+
+    clocks = streams.Clocks(f"ainex-streams{'-' + str(bus.ns) if bus.ns else ''}")
+    rate = topics.RATES_HZ
+    clocks.every(rate[topics.TOPIC_IMU], publish_imu)
+    clocks.every(rate[topics.TOPIC_JOY], publish_joy)
+    clocks.every(rate[topics.TOPIC_BUTTON_STATE], publish_button)
+    clocks.every(rate[topics.TOPIC_CAMERA_RAW], head_camera.publish)
+
     setpoint = PlanarSetpoint()
-
-    # The transform tree and the description, built from `topics.TF_*`. A DEPARTURE from
-    # the *shipped robot*, which runs neither at boot, and a match to the vendor's own
-    # Gazebo and RViz launches, which run both off this same URDF -- see the module
-    # docstring in `topics.py`, which states the split and corrects the claim that used
-    # to be here. `/tf_static` is not published: this is a ROS 1 stack, and tf1's static
-    # publisher writes to `/tf`.
-    from contracts.tf import TOPIC_TF, urdf_fixed_joints
-    from mujoco_bridge import TransformTree
-    from ros_surfaces.tf_stream import attach_tf, read_description
-    import robots_spec
-
-    description = read_description(robots_spec.urdf_path("ainex"))
-    statics = [
-        # The vendor bolts `camera_link` to the torso; `ainex_model` step 4 moves it to
-        # the head, where the hardware's 2-DOF camera actually is, and the tree follows
-        # the model for exactly that reason -- so the URDF's own camera joint is dropped
-        # here and the frame comes off the compiled camera instead. Keeping both would
-        # give one frame two parents, which is the one thing a tf tree cannot have.
-        (parent, child, pos, quat)
-        for parent, child, pos, quat in urdf_fixed_joints(description)
-        if child != topics.FRAME_CAMERA
-    ]
-    if scan is not None:
-        # Invented along with the virtual lidar itself, at the mount the ray-cast uses.
-        statics.append(
-            (topics.TF_ROOT_FRAME, topics.FRAME_LASER,
-             (scan["offset_x"], 0.0, scan["offset_z"]), (1.0, 0.0, 0.0, 0.0))
-        )
-    tf = attach_tf(
-        bus,
-        TransformTree(model, root_body=f"{namespace}{topics.TF_ROOT_BODY}",
-                      frames=topics.TF_FRAMES, prefix=namespace,
-                      cameras=topics.TF_CAMERAS, extra_static=statics),
-        description,
-    )
-
-    # The ground under the soles, solved every tick; see ground.py. It is what keeps a
-    # standing robot standing on an uneven counter, lowers the body when the legs fold,
-    # and drops the robot to the floor when it walks off the edge.
+    # The ground under the soles, solved every tick; see ground.py.
     ground = GroundFollow(model, namespace)
 
     if world_reset is not None:
-        # Same reason as the myAGV surface: a whole-world reset restores this robot's
-        # joints and actuator targets but not the setpoint integrating its gait, so the
-        # torso would drive for a pose it no longer occupies. The fall integrator too: a
-        # robot reset mid-air onto its spawn must not keep the speed it was falling at.
+        # A whole-world reset restores this robot's joints and actuator targets but not
+        # the setpoint integrating its gait, so the torso would drive for a pose it no
+        # longer occupies. The fall integrator too.
         world_reset.on_reset(setpoint.reset)
         world_reset.on_reset(ground.reset)
 
-    subscribed = [
-        topics.TOPIC_APP_WALKING_PARAM, topics.TOPIC_SET_WALKING_PARAM,
-        topics.TOPIC_APP_ACTION, topics.TOPIC_BUS_SERVO_SET,
-        *topics.JOINT_COMMAND_TOPICS.values(),
-    ]
-    published = [topics.TOPIC_IS_WALKING, topics.TOPIC_JOINT_STATES, topics.TOPIC_IMU,
-                 TOPIC_TF]
-    # The port belongs to the fleet, not to this robot: several surfaces may be sharing
-    # it, and each printing its own address would suggest otherwise.
-    print(
-        f"ainex topics under namespace {bus.ns}\n"
-        f"  sub {', '.join(subscribed)}\n"
-        f"  srv {', '.join([topics.SRV_WALKING_COMMAND, topics.SRV_GET_WALKING_PARAM, topics.SRV_IS_WALKING, topics.SRV_INIT_POSE])}\n"
-        f"  pub {', '.join(published + sensors.published)}",
-        file=sys.stderr,
-    )
+    print(f"ainex under namespace {bus.ns or '<bare>'}: {len(topics.TOPICS)} topics, "
+          f"{len(topics.SERVICES)} services, {len(topics.PARAMETERS)} parameters "
+          "(robots_specs/ainex/ros.yml)", file=sys.stderr)
 
     dt = 1.0 / control_hz
     phase = {"at": 0.0}
     player: dict[str, ActionPlayer | None] = {"at": None}
-    # Whatever the limbs should hold when nothing else is driving them.
     rest = rest_pose()
     held = dict(rest)
-    # Ground-follow transitions are printed once each, not per tick: a robot walking
-    # off a worktop is a thing worth one line on the terminal, and the same line ten
-    # times a second is noise that hides the next one.
-    was = {"falling": False, "supported": True, "fall_started": 0.0}
+    was = {"falling": False, "fall_started": 0.0, "moving": None, "started": False,
+           "stepping": False}
+
+    def publish_is_walking(moving: bool) -> None:
+        bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(moving)}, topics.TYPE_BOOL,
+                    node=topics.NODE_CONTROLLER)
+
+    def to_init_pose() -> None:
+        # `move_to_init_pose`: the body to init_pose.yaml, the head left where it is.
+        player["at"] = None
+        phase["at"] = 0.0
+        held.update({k: v for k, v in rest.items() if k not in servos.HEAD_JOINTS})
 
     def step(data):
         if data is None:
-            sensors.close()
+            clocks.stop()
+            head_camera.close()
             return
         live[0] = data
+        if not was["started"]:
+            was["started"] = True
+            clocks.start()
 
-        with state.lock:
-            param = state.param
-            walking = state.stepping and state.walking_enable and state.initialised
-            pending = state.pending_action
-            state.pending_action = None
-            writes = dict(state.servo_writes)
-            state.servo_writes.clear()
-            wants_init = state.init_pose_requested
-            state.init_pose_requested = False
-            clients = bus.client_count
+        with ctl.cond:
+            writes = dict(ctl.servo_writes)
+            ctl.servo_writes.clear()
+            # An init pose or an action group waits for the gait to finish its cycle.
+            if not ctl.running:
+                if ctl.inits_done < ctl.init_requests:
+                    to_init_pose()
+                    ctl.inits_done = ctl.init_requests
+                    ctl.walking_enable = True
+                    ctl.init_pose_finish = True
+                    ctl.cond.notify_all()
+                if ctl.pending_action is not None:
+                    name, ctl.pending_action = ctl.pending_action, None
+                    # set_action_callback: walking disabled and control cleared while the
+                    # group plays; an unknown name plays nothing and still ends in the
+                    # init pose.
+                    ctl.walking_enable = False
+                    ctl.init_pose_finish = False
+                    if name in actions:
+                        current = {n: float(data.qpos[qpos_adr[n]]) for n in qpos_adr}
+                        player["at"] = ActionPlayer(actions[name], current)
+                    else:
+                        print(f"unknown action group {name!r}", file=sys.stderr)
+                        player["at"] = ActionPlayer([], {})
+            advancing = (ctl.running and ctl.walking_enable and ctl.init_pose_finish
+                         and player["at"] is None)
+            param = ctl.param
 
-        # The myAGV's silence-based watchdog is wrong for a state machine: a correct
-        # client sends nothing at all between `start` and `stop`. Losing the last client
-        # is a far stronger signal, and unlike a timer it keeps /walking/is_walking
-        # honest, because the machine really does leave the walking state.
-        #
-        # This is a SIM-ONLY safety net. The real robot has nothing like it -- its gait
-        # engine keeps walking on zero traffic until told to stop -- so a client must
-        # issue `stop` explicitly on every exit path and never lean on this.
-        if clients == 0 and walking:
-            with state.lock:
-                state.stepping = False
-            walking = False
-
-        if wants_init:
-            player["at"] = None
-            held.update(rest)
-            phase["at"] = 0.0
-
-        if pending is not None:
-            # The torso's lean is snapshotted with the servos, so a group that starts
-            # from a leaning robot eases out of the lean rather than snapping upright.
-            current = {n: float(data.qpos[qpos_adr[n]]) for n in qpos_adr}
-            player["at"] = ActionPlayer(actions[pending], current)
-
-        # An action group owns the whole body while it runs -- as on the real robot, which
-        # stops walking, replays, and only then re-enables the gait.
         if player["at"] is not None:
             held.update(player["at"].step(dt))
             if player["at"].finished:
-                player["at"] = None
+                to_init_pose()
+                with ctl.cond:
+                    ctl.walking_enable = True
+                    ctl.init_pose_finish = True
             vx = vy = wz = 0.0
-        elif walking:
+        elif advancing:
             vx, vy, wz = gait.planar_velocity(param)
-            phase["at"] = (phase["at"] + dt / max(param.period_time, 1e-3)) % 1.0
+            phase["at"] += dt / max(param.period_time, 1e-3)
+            if phase["at"] >= 1.0:
+                phase["at"] -= 1.0
+                _cycle_done(ctl)
+            with ctl.cond:
+                halted = not ctl.running
+            if halted:
+                phase["at"] = 0.0
             held.update(gait.leg_joint_targets(param, phase["at"], leg_geometry))
             held.update(gait.arm_joint_targets(param, phase["at"]))
         else:
             vx = vy = wz = 0.0
-            # Ease the legs back to the rest pose rather than snapping: `stop` on the real
-            # robot finishes the step it is in.
-            phase["at"] = 0.0
-            for name in (*servos.LEG_JOINTS, BASE_PITCH):
-                held[name] += (rest[name] - held[name]) * min(4.0 * dt, 1.0)
+            with ctl.cond:
+                frozen = ctl.running
+            if not frozen:
+                # Ease the legs back to the rest pose rather than snapping.
+                phase["at"] = 0.0
+                for name in (*servos.LEG_JOINTS, BASE_PITCH):
+                    held[name] += (rest[name] - held[name]) * min(4.0 * dt, 1.0)
 
-        # Raw bus-servo writes win over everything: they are a direct command to a servo,
-        # which is exactly what they are on the robot.
+        # Raw servo writes win over everything: they are a direct command to a servo.
         held.update(writes)
-
         for name, value in held.items():
             data.ctrl[actuator_ids[name]] = value
 
         pose = base.pose
         x, y = float(pose[0, 3]), float(pose[1, 3])
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
+        stepping = bool(vx or vy or wz)
+        if was["stepping"] and not stepping:
+            # The gait has halted (or been frozen), so the body stops where it is. The
+            # setpoint leads a walking robot by up to TARGET_LEAD_M; kept, the torso would
+            # coast that far after the controller already reported the walk finished.
+            setpoint.reset()
+        was["stepping"] = stepping
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
 
-        # z is the ground's to decide, after the legs and the lean have been commanded
-        # for this tick so the sole it measures is the sole the servos are driving to.
+        # z is the ground's to decide, after the legs and the lean have been commanded.
         gs = ground.step(data, dt)
         if gs.falling and not was["falling"]:
             was["fall_started"] = float(data.time)
@@ -477,30 +674,42 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
                   f"{float(data.time) - was['fall_started']:.2f} s", file=sys.stderr)
         was["falling"] = gs.falling
 
-        seq = bus.next_seq()
-        positions = [float(data.qpos[qpos_adr[n]]) for n in servos.BY_ID]
-        bus.publish(
-            topics.TOPIC_JOINT_STATES,
-            {
-                "header": header(seq, topics.FRAME_BASE),
-                "name": list(servos.BY_ID),
-                "position": positions,
-                "velocity": [],
-                "effort": [],
-            },
-            topics.TYPE_JOINT_STATE,
-        )
-        bus.publish(topics.TOPIC_IS_WALKING, {"data": bool(walking)}, topics.TYPE_BOOL)
-        bus.publish(
-            topics.TOPIC_IMU,
-            _imu_msg(seq, yaw, wz, float(data.qpos[qpos_adr[BASE_PITCH]]),
-                     float(data.qvel[pitch_dof])),
-            topics.TYPE_IMU,
-        )
-        tf.publish(data, seq, time.time())
-        sensors.publish(data, seq, x, y, yaw)
+        attitude.set(yaw, float(data.qpos[qpos_adr[BASE_PITCH]]), wz,
+                     float(data.qvel[pitch_dof]))
+        head_camera.render(data)
+
+        with ctl.cond:
+            ctl.moving = ctl.running
+            moving = ctl.moving
+            ctl.cond.notify_all()
+        if moving != was["moving"]:
+            # On transitions only, as the controller publishes it -- including the False
+            # its first loop reports.
+            publish_is_walking(moving)
+            was["moving"] = moving
 
     return step
+
+
+def _cycle_done(ctl: _Controller) -> None:
+    """One full gait cycle finished: a pending stop takes effect, `period_times` counts."""
+    with ctl.cond:
+        if ctl.stop_pending:
+            ctl.running = ctl.stop_pending = False
+            ctl.count_step = 0
+        elif int(ctl.wire.get("period_times", 0)) != 0:
+            ctl.count_step += 1
+            if ctl.count_step >= int(ctl.wire["period_times"]):
+                ctl.count_step = 0
+                ctl.wire["period_times"] = 0
+                ctl.param = _gait_of(ctl.wire)
+                ctl.running = False
+        else:
+            ctl.count_step = 0
+        # Halting and reporting it are one event, as `self.stop` is on the robot: a
+        # blocked `stop` returns, and `/walking/is_walking` answers false, together.
+        ctl.moving = ctl.running
+        ctl.cond.notify_all()
 
 
 def _leg_geometry(model, namespace: str) -> gait.LegGeometry:
@@ -510,76 +719,15 @@ def _leg_geometry(model, namespace: str) -> gait.LegGeometry:
     return gait.LegGeometry(thigh=link("l_knee_link"), shank=link("l_ank_pitch_link"))
 
 
-def _to_walking_param_msg(param: gait.WalkingParam) -> dict:
-    """A `WalkingParam` back onto the wire, in the vendor's units and field names."""
-    return {
-        "init_x_offset": 0.0,
-        "init_y_offset": 0.0,
-        "init_z_offset": param.body_height,
-        "init_roll_offset": 0.0,
-        "init_pitch_offset": 0.0,
-        "init_yaw_offset": 0.0,
-        "period_time": param.period_time * 1000.0,  # seconds here, ms on the wire
-        "dsp_ratio": param.dsp_ratio,
-        "step_fb_ratio": 0.028,
-        "period_times": param.period_times,
-        "x_move_amplitude": param.x_amplitude,
-        "y_move_amplitude": param.y_amplitude,
-        "z_move_amplitude": param.step_height,
-        "angle_move_amplitude": math.degrees(param.angle_amplitude),
-        "move_aim_on": False,
-        "arm_swing_gain": param.arm_swing_gain,
-        "y_swap_amplitude": param.y_swap,
-        "z_swap_amplitude": param.z_swap,
-        "pelvis_offset": 5.0,
-        "hip_pitch_offset": math.degrees(param.hip_pitch_offset),
-        # Accepted on the wire and inert: the torso rides position-controlled planar
-        # joints and cannot tip, so a balance gain has nothing to act on.
-        "balance_enable": False,
-        "balance_hip_roll_gain": 0.0,
-        "balance_knee_gain": 0.0,
-        "balance_ankle_roll_gain": 0.0,
-        "balance_ankle_pitch_gain": 0.0,
-    }
-
-
-def _imu_msg(seq: int, yaw: float, wz: float, pitch: float = 0.0, wy: float = 0.0) -> dict:
-    """A `sensor_msgs/Imu` carrying real yaw, pitch and their rates.
-
-    DEPARTURE, documented in robots/README.md: roll is identically zero, because the base
-    has no roll degree of freedom. Pitch is the torso's lean (`base_pitch`), so a robot
-    bent over to pick something up reads as bent over. The topic exists so a client
-    written against the hardware connects and reads an attitude; it is not a substitute
-    for the real 9-axis IMU. Covariance of -1 in the first element is the ROS convention
-    for "this quantity is not reported", which is the honest thing to say about the rest.
-    """
-    from contracts.rosbridge_server import header as make_header
-
-    # yaw about world z, then pitch about the body's y: q = q_yaw * q_pitch.
-    cy, sy = math.cos(yaw / 2.0), math.sin(yaw / 2.0)
-    cp, sp = math.cos(pitch / 2.0), math.sin(pitch / 2.0)
-    return {
-        "header": make_header(seq, topics.FRAME_IMU),
-        "orientation": {"x": -sy * sp, "y": cy * sp, "z": sy * cp, "w": cy * cp},
-        "orientation_covariance": [-1.0] + [0.0] * 8,
-        "angular_velocity": {"x": 0.0, "y": wy, "z": wz},
-        "angular_velocity_covariance": [-1.0] + [0.0] * 8,
-        "linear_acceleration": {"x": 0.0, "y": 0.0, "z": 0.0},
-        "linear_acceleration_covariance": [-1.0] + [0.0] * 8,
-    }
-
-
-def serve_ros(port: int, base, model, prefix: str, camera: str | None, camera_size,
-              jpeg_quality: int, control_hz: float, watchdog_s: float,
-              scan: dict | None = None, depth: dict | None = None,
-              extra: dict | None = None, host: str = "0.0.0.0", namespace: str = ""):
+def serve_ros(port: int, base, model, prefix: str, camera: str | None,
+              jpeg_quality: int = 80, control_hz: float = 20.0, extra: dict | None = None,
+              host: str = "0.0.0.0", namespace: str = ""):
     """The single-robot path: own a server on `port`, put one AiNex on it, start it."""
     from ros_surfaces import RobotFleet
 
     fleet = RobotFleet(port=port, host=host)
     fleet.attach(namespace, attach_ros, base=base, model=model, prefix=prefix,
-                 camera=camera, camera_size=camera_size, jpeg_quality=jpeg_quality,
-                 control_hz=control_hz, watchdog_s=watchdog_s, scan=scan, depth=depth,
+                 camera=camera, jpeg_quality=jpeg_quality, control_hz=control_hz,
                  extra=extra)
     fleet.start()
     return fleet

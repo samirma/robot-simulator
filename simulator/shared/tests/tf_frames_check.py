@@ -46,7 +46,6 @@ from contracts.tf import rpy_to_quat, urdf_fixed_joints, urdf_links  # noqa: E40
 from mujoco_bridge import TransformTree, camera_link_pose  # noqa: E402
 from ros_surfaces import myagv as myagv_surface  # noqa: E402
 from ros_surfaces import so101 as so101_surface  # noqa: E402
-from ros_surfaces.ainex import topics as ainex_topics  # noqa: E402
 
 #: Angular agreement to 1e-5 rather than exactly. The SO-101's MJCF writes its body
 #: quaternions as decimal text, so a quaternion read back off the compiled model differs
@@ -227,17 +226,10 @@ def check_so101() -> None:
 
 
 def check_ainex() -> None:
+    """The AiNex publishes no tree -- its boot chain runs no `robot_state_publisher`
+    (`robots_specs/ainex/ros.yml`) -- so only its model's camera is checked here."""
     model = ainex_model.build_spec().compile()
     text = robots_spec.urdf_path("ainex").read_text()
-    statics = [e for e in urdf_fixed_joints(text) if e[1] != ainex_topics.FRAME_CAMERA]
-    tree = TransformTree(
-        model, root_body=ainex_topics.TF_ROOT_BODY, frames=ainex_topics.TF_FRAMES,
-        cameras=ainex_topics.TF_CAMERAS,
-        extra_static=statics + [(ainex_topics.TF_ROOT_FRAME, ainex_topics.FRAME_LASER,
-                                 (0.0, 0.0, 0.20), (1, 0, 0, 0))],
-    )
-    check_robot("ainex", model, tree, text, {ainex_topics.FRAME_CAMERA,
-                                             ainex_topics.FRAME_LASER})
 
     # The camera is the one frame this simulator knowingly moves: the vendor bolts it to
     # the torso and `ainex_model` step 4 puts it on the head, because that is where the
@@ -252,7 +244,7 @@ def check_ainex() -> None:
     head_rot, torso_rot = data.xmat[head].reshape(3, 3), data.xmat[torso].reshape(3, 3)
     in_torso = torso_rot.T @ (data.xpos[head] + head_rot @ pos - data.xpos[torso])
     vendor = {c: (p, xyz) for p, c, xyz, _ in urdf_fixed_joints(text)}
-    _, vendor_xyz = vendor[ainex_topics.FRAME_CAMERA]
+    _, vendor_xyz = vendor[ainex_model.CAMERA_LINK]
     error = float(np.linalg.norm(in_torso - np.asarray(vendor_xyz)))
     check("the head-mounted camera frame is still at the vendor's torso offset",
           error < TOL, f"{error:.2e} m from {tuple(round(v, 4) for v in vendor_xyz)}")

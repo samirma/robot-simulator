@@ -1,10 +1,15 @@
-"""The two projects' copies of the AiNex's topic names, held equal.
+"""The two projects' copies of the AiNex's contract, held equal.
 
 Same mechanism and same reason as `tests/arm/test_ros_contract.py`: the console cannot
 import the simulator -- it has to install and run with no simulator checkout at all -- so
 the vendor's names are written down on both sides, and a duplicated constant that drifts
 is worse than no constant. The failure it prevents is silent: a fleet check asking for a
 topic nobody publishes reports a robot missing that is right there.
+
+The simulator's `topics.py` transcribes `robots_specs/ainex/ros.yml` and is itself held
+to that file by `simulator/shared/contracts/test_ainex_contract.py`; this file holds the
+console's subset to the simulator's tables -- name, type and direction -- so every fact
+the console uses is one the robot's ROS file states.
 
 Skips when the sibling simulator is not checked out, exactly as the arm's does.
 """
@@ -53,26 +58,53 @@ def _sim():
     return _sim_module("topics")
 
 
-def test_every_name_matches_the_simulators() -> None:
+def _published(s) -> dict[str, str]:
+    return {t.name: t.type for t in s.TOPICS if t.direction == "out"}
+
+
+def _subscribed(s) -> dict[str, str]:
+    return {t.name: t.type for t in s.TOPICS if t.direction == "in"}
+
+
+def _services(s) -> dict[str, str]:
+    return {x.name: x.type for x in s.SERVICES}
+
+
+def test_every_topic_the_console_sends_is_one_the_robot_subscribes_with_that_type() -> None:
     s = _sim()
-    assert ac.TOPIC_SET_WALKING_PARAM == s.TOPIC_SET_WALKING_PARAM
-    assert ac.TOPIC_APP_ACTION == s.TOPIC_APP_ACTION
-    assert ac.TOPIC_BUS_SERVO_SET == s.TOPIC_BUS_SERVO_SET
-    assert ac.TOPIC_IS_WALKING == s.TOPIC_IS_WALKING
-    assert ac.TOPIC_JOINT_STATES == s.TOPIC_JOINT_STATES
-    assert ac.TOPIC_IMU == s.TOPIC_IMU
-    assert ac.TOPIC_CAMERA == s.TOPIC_CAMERA
+    sub = _subscribed(s)
+    assert sub[ac.TOPIC_SET_WALKING_PARAM] == ac.TYPE_WALKING_PARAM
+    assert sub[ac.TOPIC_APP_ACTION] == ac.TYPE_STRING
+    assert sub[ac.TOPIC_HEAD_PAN] == ac.TYPE_HEAD_STATE
+    assert sub[ac.TOPIC_HEAD_TILT] == ac.TYPE_HEAD_STATE
 
 
-def test_the_walking_service_and_its_commands_match_the_simulators() -> None:
-    """A service name is exactly as easy to get wrong as a topic name.
-
-    None of this was held equal until `ainex_link` stopped keeping its own copies: the
-    link re-typed the service name and two type strings as literals, so a rename on the
-    simulator's side would have passed every test here while teleop called into nothing.
-    """
+def test_every_topic_the_console_reads_is_one_the_robot_publishes_with_that_type() -> None:
     s = _sim()
-    assert ac.SRV_WALKING_COMMAND == s.SRV_WALKING_COMMAND
+    pub = _published(s)
+    assert pub[ac.TOPIC_IS_WALKING] == ac.TYPE_BOOL
+    assert pub[ac.TOPIC_IMU] == ac.TYPE_IMU
+    assert pub[ac.TOPIC_CAMERA] == ac.TYPE_COMPRESSED_IMAGE
+
+
+def test_every_service_the_console_calls_is_the_robots_with_that_type() -> None:
+    """A service name is exactly as easy to get wrong as a topic name."""
+    srv = _services(_sim())
+    assert srv[ac.SRV_WALKING_COMMAND] == ac.SRV_TYPE_SET_WALKING_COMMAND
+    assert srv[ac.SRV_IS_WALKING] == ac.SRV_TYPE_GET_WALKING_STATE
+    assert srv[ac.SRV_BUS_SERVO_GET] == ac.SRV_TYPE_GET_BUS_SERVOS_POSITION
+
+
+def test_the_names_match_the_simulators_constants() -> None:
+    s = _sim()
+    for name in ("TOPIC_SET_WALKING_PARAM", "TOPIC_APP_ACTION", "TOPIC_HEAD_PAN",
+                 "TOPIC_HEAD_TILT", "TOPIC_IS_WALKING", "TOPIC_IMU", "TOPIC_CAMERA",
+                 "SRV_WALKING_COMMAND", "SRV_IS_WALKING", "SRV_BUS_SERVO_GET"):
+        assert getattr(ac, name) == getattr(s, name), name
+
+
+def test_the_walking_commands_match_the_simulators() -> None:
+    s = _sim()
     assert ac.WALKING_COMMANDS == s.WALKING_COMMANDS
     # The handshake `ainex_link.connect` sends, and the two the gait state machine runs
     # on. Named individually because the link depends on these four strings specifically.
@@ -80,36 +112,35 @@ def test_the_walking_service_and_its_commands_match_the_simulators() -> None:
         assert command in ac.WALKING_COMMANDS
 
 
-def test_every_type_string_matches_the_simulators() -> None:
-    """The dialect too: ROS 1 single-slash, and the vendor's own `ainex_interfaces`.
-
-    A type string that disagrees is not cosmetic -- `rosapi/topics_for_type` matches it
-    exactly, which is how asking for one dialect found half the cameras on the wire.
-    """
+def test_the_joint_table_and_servo_scale_match_the_simulators() -> None:
+    """Servo ids by position, and the count<->radian scale the read-back is decoded with."""
     s = _sim()
-    assert ac.TYPE_WALKING_PARAM == s.TYPE_WALKING_PARAM
-    assert ac.TYPE_HEAD_STATE == s.TYPE_HEAD_STATE
-    assert ac.TYPE_BOOL == s.TYPE_BOOL
-    assert ac.TYPE_FLOAT64 == s.TYPE_FLOAT64
-    assert ac.TYPE_JOINT_STATE == s.TYPE_JOINT_STATE
-    assert ac.TYPE_IMU == s.TYPE_IMU
-    assert ac.TYPE_COMPRESSED_IMAGE == s.TYPE_COMPRESSED_IMAGE
-    assert ac.SRV_TYPE_SET_WALKING_COMMAND == s.SRV_TYPE_SET_WALKING_COMMAND
+    servos = _sim_module("servos")
+    assert ac.JOINT_NAMES == s.JOINT_NAMES
+    for joint in ("head_pan", "head_tilt", "l_knee"):
+        assert ac.servo_id(joint) == servos.SERVOS[joint][0]
+    assert ac.SERVO_TICKS_PER_RADIAN == pytest.approx(servos.TICKS_PER_RADIAN)
+    assert servos.SERVOS["head_pan"][1:] == (ac.HEAD_SERVO_CENTRE, False)
+    assert servos.SERVOS["head_tilt"][1:] == (ac.HEAD_SERVO_CENTRE, False)
+
+
+def test_the_contract_topics_are_all_names_the_robot_presents() -> None:
+    """Nothing may be required of the robot that its ROS file does not list."""
+    s = _sim()
+    assert set(ac.CONTRACT_TOPICS) <= {t.name for t in s.TOPICS}
 
 
 def test_the_link_keeps_no_copy_of_the_contract() -> None:
-    """`ainex_link` must read these names, not re-type them.
-
-    It used to declare its own `TOPIC_SET_WALKING_PARAM`, `SRV_WALKING_COMMAND` and two
-    type strings, which the test above could not see. Identity, not equality: a literal
-    that happens to match today is the same drift risk tomorrow.
-    """
+    """`ainex_link` must read these names, not re-type them. Identity, not equality: a
+    literal that happens to match today is the same drift risk tomorrow."""
     from robot_console import ainex_link
 
     assert ainex_link.TOPIC_SET_WALKING_PARAM is ac.TOPIC_SET_WALKING_PARAM
     assert ainex_link.SRV_WALKING_COMMAND is ac.SRV_WALKING_COMMAND
     assert ainex_link.TYPE_WALKING_PARAM is ac.TYPE_WALKING_PARAM
     assert ainex_link.SRV_TYPE_SET_WALKING_COMMAND is ac.SRV_TYPE_SET_WALKING_COMMAND
+    assert ainex_link.TOPIC_HEAD_PAN is ac.TOPIC_HEAD_PAN
+    assert ainex_link.TOPIC_HEAD_TILT is ac.TOPIC_HEAD_TILT
 
 
 def test_the_link_puts_the_drive_names_under_the_namespace() -> None:
@@ -122,67 +153,31 @@ def test_the_link_puts_the_drive_names_under_the_namespace() -> None:
                      namespace="ainex")
     assert link._param_name == "/ainex/walking/set_param"
     assert link._command_name == "/ainex/walking/command"
+    assert link._head_names == ("/ainex/head_pan_controller/command",
+                                "/ainex/head_tilt_controller/command")
 
     bare = AiNexLink("127.0.0.1", 9090)
     assert bare._param_name == ac.TOPIC_SET_WALKING_PARAM
     assert bare._command_name == ac.SRV_WALKING_COMMAND
 
 
-def test_the_contract_topics_are_all_names_the_simulator_knows() -> None:
-    """Nothing may be required of the robot that the other side has never heard of."""
-    s = _sim()
-    known = {v for k, v in vars(s).items() if k.startswith("TOPIC_")}
-    # The per-joint controllers are a table, not a constant each.
-    known |= set(s.JOINT_COMMAND_TOPICS.values())
-    assert set(ac.CONTRACT_TOPICS) <= known
-
-
-def test_the_joint_table_matches_the_simulators() -> None:
-    """24 joints, same names, same servo-id order, same topic per joint."""
-    s = _sim()
-    assert ac.JOINT_NAMES == s.JOINT_NAMES
-    assert ac.JOINT_COMMAND_TOPICS == tuple(s.JOINT_COMMAND_TOPICS[j] for j in s.JOINT_NAMES)
-
-
-def test_the_head_topics_are_two_of_the_joint_controllers() -> None:
-    """The arrows drive per-joint controllers, not a topic of their own.
-
-    Named rather than indexed, but they still have to *be* in the table: a head topic the
-    simulator does not subscribe to fails as a head that never moves, with no error, which
-    is the same silence namespacing the drive topics once produced.
-    """
-    assert ac.TOPIC_HEAD_PAN in ac.JOINT_COMMAND_TOPICS
-    assert ac.TOPIC_HEAD_TILT in ac.JOINT_COMMAND_TOPICS
-    assert ac.TOPIC_HEAD_PAN != ac.TOPIC_HEAD_TILT
-
-
 def test_the_head_limits_match_the_simulators() -> None:
-    """The console clamps to the robot's own range, so the two copies must agree.
-
-    Clamping short would make part of the head's travel unreachable from teleop; clamping
-    long would have the console asking for angles the robot silently folds back, which
-    reads as a head that stops responding near the end of its travel.
-    """
+    """The console clamps to the robot's own range, so the two copies must agree."""
     servos = _sim_module("servos")
     assert servos.joint_limits("head_pan") == (-ac.HEAD_PAN_LIMIT, ac.HEAD_PAN_LIMIT)
     assert servos.joint_limits("head_tilt") == (-ac.HEAD_TILT_LIMIT, ac.HEAD_TILT_LIMIT)
 
 
 def test_a_humanoid_is_not_a_mobile_base() -> None:
-    """The AiNex is commanded as a walking state machine and has no wheels.
-
-    Checking it against the myAGV's contract demanded `/cmd_vel` and `/odom` of a biped,
-    which is how `--robots so101,ainex` failed its fleet check with every topic it does
-    present sitting on the wire.
-    """
+    """The AiNex is commanded as a walking state machine and has no wheels."""
     from robot_console.topics import TOPIC_CMD_VEL, TOPIC_ODOM
 
     assert TOPIC_CMD_VEL not in ac.CONTRACT_TOPICS
     assert TOPIC_ODOM not in ac.CONTRACT_TOPICS
 
 
-def test_the_invented_lidar_is_not_required() -> None:
-    """The simulator publishes `/scan` for this robot and its own constants call that a
-    departure -- the real AiNex has no lidar. Requiring it here would make the console
-    assert a simulator's invention as though it were the hardware."""
-    assert "/scan" not in ac.CONTRACT_TOPICS
+def test_nothing_outside_the_boot_chain_is_required() -> None:
+    """No lidar, no joint states and no transform tree: the shipped robot presents none."""
+    for name in ("/scan", "/joint_states", "/tf", "/tf_static"):
+        assert name not in ac.CONTRACT_TOPICS
+        assert name not in {t.name for t in _sim().TOPICS}

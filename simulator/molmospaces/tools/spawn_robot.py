@@ -86,17 +86,6 @@ TASKS = {
     "apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate"),
 }
 
-# Per-robot lidar defaults for the robots whose surface takes them from here. Overridden
-# by any explicit --scan-* flag. The myAGV is not one: its X2's geometry and rate are its
-# contract's (`ros_surfaces/myagv.py`).
-SCAN_DEFAULTS = {
-    # INVENTED, not transcribed: the AiNex has no lidar at all (see robots/README.md).
-    # Mid-torso on a 0.46 m robot, centred -- above the leg swing, low enough to see the
-    # edges of furniture. The range is cut to the room scale a robot walking at 0.2 m/s
-    # actually operates in.
-    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
-}
-
 # Robots whose base is three virtual holonomic joints must be grafted in at the origin
 # and then *driven* to their spawn pose, because the slide joints are world-aligned.
 # Robots on a mocap mount are placed by the attach pos/quat instead.
@@ -957,49 +946,18 @@ def _surface_kwargs(args, inst, model, task):
     camera = _pick_camera(args, model, ns)
     if inst.name == "myagv":
         return _myagv_kwargs(args, inst, model, camera, ns)
-    scan_cfg = None
-    if not args.no_scan:
-        defaults = SCAN_DEFAULTS[inst.name]
-        offset = args.scan_offset or defaults["offset"]
-        scan_cfg = {
-            "beams": args.scan_beams,
-            "max_range": args.scan_range or defaults["max_range"],
-            "min_range": args.scan_min_range or defaults["min_range"],
-            "offset_x": offset[0],
-            "offset_z": offset[1],
-            "period": 1.0 / max(args.scan_hz, 1e-3),
-            # Rays start at the robot's own root body and must not range it.
-            "body": f"{ns}{inst.robot_cls.robot_model_root_name()}",
-            # A legged robot's limbs are separate bodies, and mj_ray takes only one
-            # bodyexclude. Without this a torso-mounted scanner ranges its own thigh.
-            # It excludes only *this* robot: another robot in the room is something the
-            # lidar is supposed to see, and a fleet that could not see itself would map a
-            # kitchen with a hole where its neighbour stands.
-            "exclude_bodies": frozenset(
-                i for i in range(model.nbody)
-                if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
-                and n.startswith(ns)
-            ),
+    if inst.name == "ainex":
+        # The AiNex's own bag. Its interface is its ROS file and nothing a launcher flag
+        # says: no lidar, no depth, the camera at usb_cam's 640x480, and every periodic
+        # topic at the rate the file declares (`ros_surfaces/ainex/topics.RATES_HZ`), so
+        # `--scan-*`, `--depth-*`, `--camera-size`, `--camera-hz` and `--watchdog` do not
+        # reach it. The same bag as the RoboCasa engine's, key for key.
+        return {
+            "view": inst.view, "model": model, "camera": camera,
+            "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+            "extra": {"action_dir": args.action_dir}, "prefix": ns,
         }
-    depth_cfg = None
-    if not args.no_depth and camera is not None:
-        fovy = float(model.cam_fovy[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera)])
-        depth_cfg = {
-            "size": args.depth_size,
-            "period": 1.0 / max(args.depth_hz, 1e-3),
-            "max_range": args.depth_range,
-            "fovy": fovy,
-        }
-    return {
-        "view": inst.view, "model": model, "camera": camera,
-        "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
-        # The AiNex surface's signature still takes a watchdog; it does not use one.
-        "control_hz": args.control_hz, "watchdog_s": None,
-        "scan": scan_cfg, "depth": depth_cfg,
-        "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
-        "extra": {"action_dir": args.action_dir},
-        "prefix": ns,
-    }
+    raise SystemExit(f"no ROS surface arguments for {inst.name!r}")
 
 
 def _myagv_kwargs(args, inst, model, camera, ns: str) -> dict:

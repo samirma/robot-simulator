@@ -3,8 +3,11 @@
 A package rather than a module, which is not the shape the other two robots needed and is
 inherent to this one: the myAGV's contract is a Twist in and odometry out, while a Hiwonder
 AiNex is a 24-servo walking state machine with a vendor action library. The pieces are
-`surface.py` (the loop), `topics.py` (the vendor names), `servos.py` (the bus servo table),
-`gait.py` (the walk) and `actions.py` with its `action_groups/` data. All of them are
+`topics.py` (`robots_specs/ainex/ros.yml`, transcribed), `surface.py` (the loop and
+`ainex_controller`), `nodes.py` (joystick_control, the app and the vision nodes),
+`streams.py` (the drivers' periodic publications, each at its own rate), `servos.py` (the
+bus servo table), `gait.py` (the walk) and `actions.py` with its `action_groups/` data.
+All of them are
 engine-neutral -- none imports `molmo_spaces` -- which is what let them move here.
 
 It lives in `shared/` for the same reason the myAGV's does: the topic set a robot presents

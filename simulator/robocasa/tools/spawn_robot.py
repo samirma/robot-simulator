@@ -84,16 +84,6 @@ ARM_ROS_SURFACES = {"so101"}
 # Tasks an engine can stage into its scene; see simulator/shared/tasks/.
 TASKS = {"apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate")}
 
-# Lidar defaults for the robots whose surface takes them from here. The myAGV is not
-# one: its X2's geometry and rate are its contract's (`ros_surfaces/myagv.py`).
-SCAN_DEFAULTS = {
-    # Byte-identical to the MolmoSpaces engine's, deliberately: a client that could
-    # measure a different /scan across engines has found the regression the split exists
-    # to prevent. The AiNex has no lidar at all -- the topic is an invention both engines
-    # make the same way.
-    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
-}
-
 # Robots grafted in at the origin and then *driven* to their spawn pose, because their
 # base joints are world-aligned slides.
 HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
@@ -967,51 +957,17 @@ def _surface_kwargs(args, inst, model, task, scene_option):
             },
             "prefix": prefix,
         }
-    scan_cfg = None
-    if not args.no_scan:
-        defaults = SCAN_DEFAULTS[inst.name]
-        offset = args.scan_offset or defaults["offset"]
-        scan_cfg = {
-            "beams": args.scan_beams,
-            "max_range": args.scan_range or defaults["max_range"],
-            "min_range": args.scan_min_range or defaults["min_range"],
-            "offset_x": offset[0],
-            "offset_z": offset[1],
-            "period": 1.0 / max(args.scan_hz, 1e-3),
-            # Rays start inside the robot's own chassis and must not range it. Only its
-            # own: another robot in the kitchen is something the lidar is meant to see.
-            "body": f"{prefix}base",
-            "exclude_bodies": frozenset(
-                i for i in range(model.nbody)
-                if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
-                and n.startswith(prefix)
-            ),
-        }
-    # Depth is not one of the four topics in the ROS contract and nothing in the
-    # console reads it, but the MolmoSpaces engine publishes it -- and an engine a
-    # client could tell apart by its topic list is the regression this split exists
-    # to prevent. Same defaults, same flag to turn it off.
-    depth_cfg = None
-    if not args.no_depth and camera is not None:
-        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera)
-        depth_cfg = {
-            "size": args.depth_size,
-            "period": 1.0 / max(args.depth_hz, 1e-3),
-            "max_range": args.depth_range,
-            "fovy": float(model.cam_fovy[cam_id]),
-        }
-    bag = {
-        "base": inst.base, "model": model, "camera": camera,
-        "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
-        # The AiNex surface's signature still takes a watchdog; it does not use one.
-        "control_hz": args.control_hz, "watchdog_s": None,
-        "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
-        "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
-        "prefix": prefix,
-    }
     if inst.name == "ainex":
-        bag |= {"extra": {"action_dir": args.action_dir}}
-    return bag
+        # The AiNex's own bag, the same as the MolmoSpaces engine's key for key (with this
+        # engine's base and scene option): its interface is its ROS file, so no lidar, no
+        # depth, usb_cam's 640x480 and the file's rates -- no launcher flag reaches it.
+        return {
+            "base": inst.base, "model": model, "camera": camera,
+            "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+            "extra": {"action_dir": args.action_dir}, "scene_option": scene_option,
+            "prefix": prefix,
+        }
+    raise SystemExit(f"no ROS surface arguments for {inst.name!r}")
 
 
 def _pick_camera(args, model, prefix: str) -> str | None:

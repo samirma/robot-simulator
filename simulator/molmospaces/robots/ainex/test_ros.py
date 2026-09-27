@@ -1,13 +1,22 @@
 #!/usr/bin/env python
-"""Standalone check of the AiNex's ROS surface, against a real websocket.
+"""Standalone check of the AiNex's ROS surface against `robots_specs/ainex/ros.yml`.
 
     python robots/ainex/test_ros.py [--port 9391]
 
-Separate from `test_attach.py` for the reason `robots/myagv/test_scan.py` is separate:
-everything here misbehaves *quietly*. A service that drops the caller's `id` hangs the
-client instead of failing it; a walk that ignores `start` looks like a stationary robot;
-a scan that ranges the robot's own thigh produces a perfectly plausible map of a room
-that is not there.
+Over a real websocket, on the bare contract (no namespace), with the simulation stepping
+in real time on the main thread as an engine steps it. Two halves:
+
+* **the interface** -- every topic, service and parameter the ROS file lists is on the
+  wire with its type and node, nothing else is (no `/joint_states`, `/tf`, `/scan`,
+  `robot_description` or per-joint controllers beyond the head), the frames are the
+  drivers' and each periodic topic runs at its declared rate;
+* **the behaviour** -- `/walking/command`'s control gate and blocking `stop`,
+  `period_times`, `/app/set_action`, `/walking/init_pose`, `/app/enter`,
+  `/app/set_running`, `/joy`, the servo bus, and no watchdog.
+
+Everything here misbehaves *quietly* when wrong: a gated command still answers true, a
+stop that does not block returns while the robot is still stepping, a missing topic is
+just a topic nobody receives.
 """
 
 from __future__ import annotations
@@ -15,17 +24,21 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import queue
 import sys
+import threading
 import time
 from pathlib import Path
 
 import mujoco
 import numpy as np
 import websockets.sync.client as wsc
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-FAIL = []
+FAIL: list[str] = []
+REPO = Path(__file__).resolve().parents[4]
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -35,265 +48,434 @@ def check(label: str, ok: bool, detail: str = "") -> None:
 
 
 class Client:
-    """Just enough rosbridge client to drive the surface under test."""
+    """Just enough rosbridge client: a reader thread files publishes by topic and
+    service responses by id, so a check can wait on either without draining the other."""
 
     def __init__(self, url: str) -> None:
-        self._ws = wsc.connect(url, open_timeout=5)
+        self._ws = wsc.connect(url, open_timeout=5, max_size=None)
         self._id = 0
+        self._lock = threading.Lock()
+        self._responses: dict[str, queue.Queue] = {}
+        self.messages: dict[str, list[tuple[float, dict]]] = {}
+        self._reader = threading.Thread(target=self._read, daemon=True)
+        self._reader.start()
+
+    def _read(self) -> None:
+        try:
+            for raw in self._ws:
+                frame = json.loads(raw)
+                if frame.get("op") == "publish":
+                    with self._lock:
+                        self.messages.setdefault(frame["topic"], []).append(
+                            (time.monotonic(), frame["msg"]))
+                elif frame.get("op") == "service_response":
+                    self._responses.setdefault(frame.get("id"), queue.Queue()).put(frame)
+        except Exception:
+            pass
 
     def close(self) -> None:
         self._ws.close()
 
+    def send(self, frame: dict) -> None:
+        self._ws.send(json.dumps(frame))
+
     def publish(self, topic: str, msg: dict) -> None:
-        self._ws.send(json.dumps({"op": "publish", "topic": topic, "msg": msg}))
+        self.send({"op": "publish", "topic": topic, "msg": msg})
 
     def subscribe(self, topic: str) -> None:
-        self._ws.send(json.dumps({"op": "subscribe", "topic": topic}))
+        self.send({"op": "subscribe", "topic": topic})
 
     def unsubscribe(self, topic: str) -> None:
-        self._ws.send(json.dumps({"op": "unsubscribe", "topic": topic}))
+        self.send({"op": "unsubscribe", "topic": topic})
 
-    def drain(self) -> None:
-        """Throw away anything already queued.
+    def call(self, service: str, args: dict | None = None, timeout: float = 10.0) -> dict:
+        with self._lock:
+            self._id += 1
+            cid = f"call-{self._id}"
+            box = self._responses.setdefault(cid, queue.Queue())
+        self.send({"op": "call_service", "service": service, "args": args or {}, "id": cid})
+        return box.get(timeout=timeout)
 
-        The surface publishes /joint_states, /imu and /walking/is_walking every control
-        tick, so by the time a later check runs there are thousands of frames buffered and
-        a naive read for one scan spends its whole timeout draining them.
-        """
-        try:
-            while True:
-                self._ws.recv(timeout=0.05)
-        except Exception:
-            pass
+    def values(self, service: str, args: dict | None = None) -> dict:
+        return self.call(service, args).get("values") or {}
 
-    def call(self, service: str, args: dict | None = None, call_id: str | None = None) -> dict:
-        self._id += 1
-        cid = call_id or f"call-{self._id}"
-        self._ws.send(
-            json.dumps({"op": "call_service", "service": service, "args": args or {}, "id": cid})
-        )
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
-            frame = json.loads(self._ws.recv(timeout=5))
-            if frame.get("op") == "service_response" and frame.get("service") == service:
-                frame["_sent_id"] = cid
-                return frame
-        raise TimeoutError(f"no response to {service}")
+    def clear(self, topic: str) -> None:
+        with self._lock:
+            self.messages[topic] = []
 
-    def next_message(self, topic: str, timeout: float = 5.0) -> dict:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            frame = json.loads(self._ws.recv(timeout=timeout))
-            if frame.get("op") == "publish" and frame.get("topic") == topic:
-                return frame["msg"]
-        raise TimeoutError(f"no message on {topic}")
+    def received(self, topic: str) -> list[tuple[float, dict]]:
+        with self._lock:
+            return list(self.messages.get(topic, []))
 
 
-def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
+def interface_checks(client: Client, ros: dict, t) -> None:
+    print("interface:")
+    names = client.values("/rosapi/topics")
+    served = dict(zip(names.get("topics", []), names.get("types", [])))
+    want = {e["name"]: e["type"] for e in ros["topics"]}
+    check("rosapi lists exactly the ROS file's topics", set(served) == set(want),
+          f"missing {sorted(set(want) - set(served))}; extra {sorted(set(served) - set(want))}")
+    wrong = {n: (served[n], want[n]) for n in want if n in served and served[n] != want[n]}
+    check("...each with the file's type", not wrong, str(wrong))
+
+    services = set(client.values("/rosapi/services").get("services", []))
+    own = {s for s in services if not s.startswith("/rosapi/")}
+    want_srv = {e["name"] for e in ros["services"]}
+    check("rosapi lists exactly the ROS file's services, beside its own",
+          own == want_srv, f"missing {sorted(want_srv - own)}; extra {sorted(own - want_srv)}")
+    bad_types = [e["name"] for e in ros["services"]
+                 if client.values("/rosapi/service_type", {"service": e["name"]}).get("type")
+                 != e["type"]]
+    check("...each with the file's type", not bad_types, str(bad_types))
+
+    bad_nodes = []
+    for e in ros["topics"]:
+        role = "publishers" if e["direction"] == "out" else "subscribers"
+        nodes = client.values(f"/rosapi/{role}", {"topic": e["name"]}).get(role, [])
+        if f"/{e['node']}" not in nodes:
+            bad_nodes.append((e["name"], role, nodes))
+    for e in ros["services"]:
+        node = client.values("/rosapi/service_node", {"service": e["name"]}).get("node")
+        if node != f"/{e['node']}":
+            bad_nodes.append((e["name"], "service", node))
+    check("every name is provided by the node the file names", not bad_nodes, str(bad_nodes[:4]))
+
+    params = set(client.values("/rosapi/get_param_names").get("names", []))
+    want_params = {e["name"] for e in ros["parameters"]}
+    check("the parameter server holds exactly the file's parameters", params == want_params,
+          f"missing {sorted(want_params - params)}; extra {sorted(params - want_params)}")
+    freq = client.values("/rosapi/get_param", {"name": "/ros_robot_controller/freq"})
+    check("a parameter's value comes back JSON-encoded", json.loads(freq.get("value", "0")) == 100)
+
+    absent = ["/joint_states", "/tf", "/tf_static", "/scan", "/l_knee_controller/command",
+              "/camera/depth/image_raw", "/camera/rgb/camera_info"]
+    check("nothing the boot chain does not present", not set(absent) & set(served),
+          str(sorted(set(absent) & set(served))))
+    check("no robot_description", "/robot_description" not in params)
+
+
+def rate_checks(client: Client, t) -> None:
+    print("\nrates and frames:")
+    periodic = dict(t.RATES_HZ)
+    for topic in periodic:
+        client.subscribe(topic)
+    time.sleep(1.0)
+    for topic in periodic:
+        client.clear(topic)
+    window = 3.0
+    time.sleep(window)
+    for topic, hz in periodic.items():
+        stamps = [s for s, _ in client.received(topic)]
+        measured = len(stamps) / window
+        gap = max(np.diff(stamps)) if len(stamps) > 1 else math.inf
+        check(f"{topic} at {hz:g} Hz", abs(measured - hz) <= 0.1 * hz and gap < 3.0 / hz,
+              f"{measured:.1f} Hz, worst gap {gap * 1000:.0f} ms")
+    imu = client.received(t.TOPIC_IMU)[-1][1]
+    check("/imu is framed imu_link", imu["header"]["frame_id"] == "imu_link")
+    raw = client.received(t.TOPIC_IMU_RAW)[-1][1]
+    check("imu_raw carries no orientation, as the board sends it",
+          raw["orientation"] == {"x": 0.0, "y": 0.0, "z": 0.0, "w": 0.0})
+    corrected = client.received(t.TOPIC_IMU_CORRECTED)[-1][1]["linear_acceleration"]
+    check("the calibrated accelerometer reads gravity standing still",
+          abs(math.hypot(corrected["x"], corrected["y"], corrected["z"]) - 9.80665) < 0.01,
+          str(corrected))
+    info = client.received(t.TOPIC_CAMERA_INFO)[-1][1]
+    check("the camera is framed camera, at 640x480",
+          info["header"]["frame_id"] == "camera" and (info["width"], info["height"]) == (640, 480))
+    image = client.received(t.TOPIC_CAMERA_RAW)[-1][1]
+    check("image_raw is rgb8, as usb_cam converts yuyv",
+          image["encoding"] == "rgb8" and image["step"] == 1920)
+    jpeg = client.received(t.TOPIC_CAMERA)[-1][1]
+    check("the compressed companion is image_transport's", "jpeg" in jpeg["format"])
+    for topic in periodic:
+        client.unsubscribe(topic)
+
+
+def behaviour_checks(client: Client, t, sim) -> None:  # noqa: PLR0915
+    from ros_surfaces.ainex import servos
+
+    def walking() -> bool:
+        return bool(client.values(t.SRV_IS_WALKING).get("state"))
+
+    def cmd(command: str) -> dict:
+        return client.values(t.SRV_WALKING_COMMAND, {"command": command})
+
+    def x() -> float:
+        return sim.base_x()
+
+    forward = {"period_time": 400.0, "dsp_ratio": 0.2, "x_move_amplitude": 0.02,
+               "init_z_offset": 0.025, "z_move_amplitude": 0.02, "y_swap_amplitude": 0.02,
+               "z_swap_amplitude": 0.006, "arm_swing_gain": 0.5, "hip_pitch_offset": 15.0}
+
+    print("\n/walking/command:")
+    check("an unknown command still answers result true", cmd("nonsense").get("result") is True)
+    client.subscribe(t.TOPIC_IS_WALKING)
+    client.publish(t.TOPIC_SET_WALKING_PARAM, forward)
+    time.sleep(0.2)
+    check("period_time is milliseconds on the wire",
+          client.values(t.SRV_GET_WALKING_PARAM)["parameters"]["period_time"] == 400.0)
+
+    cmd("disable_control")
+    reply = cmd("start")
+    time.sleep(0.6)
+    check("start while control is disabled answers true and does nothing",
+          reply.get("result") is True and not walking())
+    cmd("enable_control")
+    before = x()
+    cmd("start")
+    time.sleep(2.0)
+    moved = x() - before
+    check("with control enabled, start walks forward at 4A/T",
+          abs(moved - 0.2 * 2.0) < 0.25 * 0.4, f"moved {moved:.3f} m in 2 s")
+    check("is_walking is true while walking", walking())
+
+    cmd("disable_control")
+    frozen = x()
+    reply = cmd("stop")
+    time.sleep(0.5)
+    check("stop is ignored while control is disabled -- the gait is frozen, not stopped",
+          reply.get("result") is True and walking() and abs(x() - frozen) < 0.005)
+    cmd("enable_control")
+    started = time.monotonic()
+    cmd("stop")
+    blocked = time.monotonic() - started
+    at_stop = x()
+    check("stop blocks until the gait has halted", not walking(), f"returned after {blocked:.2f} s")
+    time.sleep(0.5)
+    check("...and the robot stays put", abs(x() - at_stop) < 0.005, f"{x() - at_stop:+.4f} m")
+    events = [m["data"] for _, m in client.received(t.TOPIC_IS_WALKING)]
+    check("/walking/is_walking is published on transitions only", events[-2:] == [True, False],
+          str(events))
+
+    cmd("disable")
+    before = x()
+    cmd("start")
+    time.sleep(1.0)
+    check("start after disable walks (start implies enable)", x() - before > 0.05)
+    cmd("stop")
+
+    print("\nperiod_times:")
+    client.clear(t.TOPIC_IS_WALKING)
+    client.publish(t.TOPIC_SET_WALKING_PARAM, {**forward, "period_times": 2})
+    time.sleep(0.2)
+    started = time.monotonic()
+    cmd("start")
+    # As GaitManager does: wait for the gait to report it is moving, then for it to stop.
+    deadline = time.monotonic() + 1.0
+    while not walking() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    deadline = time.monotonic() + 3.0
+    while walking() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    took = time.monotonic() - started
+    check("period_times 2 walks two cycles and stops by itself",
+          not walking() and 0.6 < took < 1.4, f"{took:.2f} s at 400 ms a cycle")
+    check("get_param reports period_times as 0",
+          client.values(t.SRV_GET_WALKING_PARAM)["parameters"]["period_times"] == 0)
+    client.publish(t.TOPIC_SET_WALKING_PARAM, forward)
+
+    print("\nno watchdog:")
+    cmd("start")
+    time.sleep(0.3)
+    client.close()
+    time.sleep(1.0)
+    fresh = Client(sim.url)
+    check("a client that disconnects mid-walk leaves the robot walking",
+          bool(fresh.values(t.SRV_IS_WALKING).get("state")))
+    fresh.values(t.SRV_WALKING_COMMAND, {"command": "stop"})
+    return fresh
+
+
+def behaviour_checks_2(client: Client, t, sim) -> None:  # noqa: PLR0915
+    from ros_surfaces.ainex import servos
+
+    def walking() -> bool:
+        return bool(client.values(t.SRV_IS_WALKING).get("state"))
+
+    def cmd(command: str) -> dict:
+        return client.values(t.SRV_WALKING_COMMAND, {"command": command})
+
+    def counts(*ids: int) -> dict[int, int]:
+        reply = client.values(t.SRV_BUS_SERVO_GET, {"id": list(ids)})
+        return {p["id"]: p["position"] for p in reply.get("position", [])}
+
+    print("\nservo bus and head:")
+    for sid, joint, count in ((23, "head_pan", 700), (13, "l_sho_pitch", 700)):
+        client.publish(t.TOPIC_BUS_SERVO_SET,
+                       {"duration": 0.2, "position": [{"id": sid, "position": count}]})
+        time.sleep(1.0)
+        got = counts(sid).get(sid)
+        check(f"servo {sid} ({joint}) reaches count {count}, read back over get_position",
+              got is not None and abs(got - count) <= 12, f"read {got}")
+    check("get_position answers only the ids asked for", set(counts(5, 6)) == {5, 6})
+    client.publish(t.TOPIC_HEAD_PAN, {"position": 0.5, "duration": 0.2})
+    client.publish(t.TOPIC_HEAD_TILT, {"position": -0.3, "duration": 0.2})
+    time.sleep(1.0)
+    pan = servos.count_to_angle("head_pan", counts(23)[23])
+    tilt = servos.count_to_angle("head_tilt", counts(24)[24])
+    check("the head controllers move the head", abs(pan - 0.5) < 0.03 and abs(tilt + 0.3) < 0.03,
+          f"pan {pan:+.3f} tilt {tilt:+.3f}")
+
+    print("\n/walking/init_pose:")
+    cmd("start")
+    time.sleep(0.5)
+    client.values(t.SRV_INIT_POSE)
+    check("init_pose stops the walk before it returns", not walking())
+    time.sleep(1.0)
+    knee = servos.count_to_angle("l_knee", counts(5)[5])
+    pan = servos.count_to_angle("head_pan", counts(23)[23])
+    check("...puts the body in the init pose and leaves the head",
+          abs(knee - servos.INIT_POSE["l_knee"]) < 0.05 and abs(pan - 0.5) < 0.03,
+          f"l_knee {knee:+.3f}, head_pan {pan:+.3f}")
+
+    print("\n/app/set_action:")
+    # `wave` lifts the left arm (l_sho_pitch to 1.4) for about two seconds.
+    client.publish(t.TOPIC_APP_ACTION, {"data": "wave"})
+    time.sleep(0.3)
+    cmd("start")
+    time.sleep(0.4)
+    check("walking commands are ignored while an action group plays", not walking())
+    shoulder = servos.count_to_angle("l_sho_pitch", counts(13)[13])
+    check("the group plays", shoulder > 0.5, f"l_sho_pitch {shoulder:+.3f}")
+    time.sleep(2.5)
+    shoulder = servos.count_to_angle("l_sho_pitch", counts(13)[13])
+    check("...and ends in the init pose",
+          abs(shoulder - servos.INIT_POSE["l_sho_pitch"]) < 0.05, f"l_sho_pitch {shoulder:+.3f}")
+    cmd("start")
+    time.sleep(0.4)
+    check("control is enabled again afterwards", walking())
+    cmd("stop")
+
+    print("\n/app/enter and /app/set_running:")
+    reply = client.values(t.SRV_APP_ENTER, {"data": 1})
+    time.sleep(1.0)
+    pan = servos.count_to_angle("head_pan", counts(23)[23])
+    check("enter 1 (control) runs init_pose and centres the head",
+          reply.get("success") is True and abs(pan) < 0.03, f"head_pan {pan:+.3f}")
+    reply = client.values(t.SRV_APP_SET_RUNNING, {"data": True})
+    check("set_running true in a mode answers true", reply.get("success") is True)
+    cmd("start")
+    time.sleep(0.5)
+    reply = client.values(t.SRV_APP_SET_RUNNING, {"data": False})
+    check("set_running false stops the gait, and answers false as the vendor does",
+          not walking() and reply.get("success") is False)
+    client.values(t.SRV_APP_ENTER, {"data": 7})
+    cmd("start")
+    time.sleep(0.5)
+    check("enter 7 (fall_rise) leaves control disabled: start does nothing", not walking())
+    client.values(t.SRV_APP_ENTER, {"data": 0})
+    check("enter 0 (idle) enables control again, and set_running is refused there",
+          client.values(t.SRV_APP_SET_RUNNING, {"data": True}).get("success") is False)
+    cmd("start")
+    time.sleep(0.3)
+    check("...so start walks", walking())
+    cmd("stop")
+    check("heartbeat answers", client.values(t.SRV_APP_HEARTBEAT, {"data": True}).get("success"))
+
+    print("\n/joy (joystick_control):")
+    before = sim.base_x()
+    axes = [0.0] * 8
+    client.publish(t.TOPIC_JOY, {"axes": [0.0, 1.0] + axes[2:], "buttons": [0] * 21})
+    time.sleep(1.5)
+    check("the left stick walks forward", walking() and sim.base_x() - before > 0.05,
+          f"moved {sim.base_x() - before:+.3f} m")
+    client.publish(t.TOPIC_JOY, {"axes": axes, "buttons": [0] * 21})
+    time.sleep(0.2)
+    check("releasing the stick stops the gait", not walking())
+
+    print("\nsensor node:")
+    client.subscribe(t.TOPIC_BUTTON_STATE)
+    time.sleep(0.5)
+    client.values(t.SRV_BUTTON_ENABLE, {"data": False})
+    time.sleep(0.2)
+    client.clear(t.TOPIC_BUTTON_STATE)
+    time.sleep(0.5)
+    check("button/enable false stops the button stream",
+          not client.received(t.TOPIC_BUTTON_STATE))
+    client.values(t.SRV_BUTTON_ENABLE, {"data": True})
+
+
+class Sim:
+    """The simulation, stepped in real time on the main thread, as an engine steps it."""
+
+    def __init__(self, port: int, control_hz: float) -> None:
+        import ainex_model
+        from robots.ainex import AiNexRobot, AiNexRobotConfig, AiNexRobotView
+        from robots.ainex.ros_surface import serve_ros
+
+        config = AiNexRobotConfig()
+        ns = config.robot_namespace
+        spec = mujoco.MjSpec()
+        spec.worldbody.add_light(pos=[0, 0, 4], dir=[0, 0, -1],
+                                 type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL)
+        spec.worldbody.add_geom(type=mujoco.mjtGeom.mjGEOM_PLANE, size=[10, 10, 0.1],
+                                rgba=[0.55, 0.56, 0.58, 1])
+        AiNexRobot.add_robot_to_scene(config, spec, prefix=ns, pos=[0.0, 0.0, 0.0],
+                                      quat=[1.0, 0.0, 0.0, 0.0])
+        self.model = spec.compile()
+        self.data = mujoco.MjData(self.model)
+        ainex_model.stand(self.model, self.data, ns)
+        mujoco.mj_forward(self.model, self.data)
+        self.view = AiNexRobotView(self.data, ns)
+        self.control_hz = control_hz
+        self.url = f"ws://127.0.0.1:{port}"
+        self.step = serve_ros(port, self.view, self.model, f"{ns}{ainex_model.CAMERA_NAME}",
+                              80, control_hz, None, host="127.0.0.1")
+        self._base = self.view.get_move_group("base")
+
+    def base_x(self) -> float:
+        return float(np.asarray(self._base.joint_pos)[0])
+
+    def run_until(self, done: threading.Event) -> None:
+        period = 1.0 / self.control_hz
+        substeps = int(round(period / self.model.opt.timestep))
+        next_tick = time.monotonic()
+        while not done.is_set():
+            for _ in range(substeps):
+                mujoco.mj_step(self.model, self.data)
+            self.step(self.data)
+            next_tick += period
+            time.sleep(max(0.0, next_tick - time.monotonic()))
+
+
+def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=9391)
+    ap.add_argument("--control-hz", type=float, default=50.0)
     args = ap.parse_args()
 
-    from robots.ainex import AiNexRobot, AiNexRobotConfig, AiNexRobotView
-    from ros_surfaces.ainex import servos, topics
-    from robots.ainex.ros_surface import serve_ros
-    from tools.spawn_robot import SCAN_DEFAULTS
+    from ros_surfaces.ainex import topics as t
 
-    config = AiNexRobotConfig()
-    ns = config.robot_namespace
+    ros = yaml.safe_load((REPO / "robots_specs" / "ainex" / "ros.yml").read_text())
+    sim = Sim(args.port, args.control_hz)
+    done = threading.Event()
 
-    spec = mujoco.MjSpec()
-    spec.worldbody.add_light(
-        pos=[0, 0, 4], dir=[0, 0, -1], type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL
-    )
-    spec.worldbody.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_PLANE, size=[10, 10, 0.1], rgba=[0.55, 0.56, 0.58, 1]
-    )
-    # A wall to range, 2 m ahead.
-    spec.worldbody.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.05, 3.0, 1.0], pos=[2.0, 0.0, 1.0]
-    )
-    AiNexRobot.add_robot_to_scene(
-        config, spec, prefix=ns, pos=[0.0, 0.0, 0.0], quat=[1.0, 0.0, 0.0, 0.0]
-    )
-    model = spec.compile()
-    data = mujoco.MjData(model)
-    mujoco.mj_forward(model, data)
+    def checks() -> None:
+        client = None
+        try:
+            time.sleep(0.5)
+            client = Client(sim.url)
+            interface_checks(client, ros, t)
+            rate_checks(client, t)
+            client = behaviour_checks(client, t, sim)
+            behaviour_checks_2(client, t, sim)
+        except Exception as exc:  # noqa: BLE001 -- report, and let the loop end
+            import traceback
 
-    view = AiNexRobotView(data, ns)
-    for name, value in servos.INIT_POSE.items():
-        data.ctrl[model.actuator(f"{ns}{name}").id] = value
+            traceback.print_exc()
+            FAIL.append(f"crashed: {exc!r}")
+        finally:
+            if client is not None:
+                client.close()
+            done.set()
 
-    defaults = SCAN_DEFAULTS["ainex"]
-    scan_cfg = {
-        "beams": 360,
-        "max_range": defaults["max_range"],
-        "min_range": defaults["min_range"],
-        "offset_x": defaults["offset"][0],
-        "offset_z": defaults["offset"][1],
-        "period": 0.1,
-        "body": f"{ns}{AiNexRobot.robot_model_root_name()}",
-        "exclude_bodies": frozenset(
-            i for i in range(model.nbody)
-            if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i)) and n.startswith(ns)
-        ),
-    }
-
-    control_hz = 50.0
-    step = serve_ros(
-        args.port, view, model, None, (640, 480), 80, control_hz, 0.5,
-        scan=scan_cfg, depth=None, extra=None,
-    )
-
-    def run(seconds: float) -> None:
-        for _ in range(int(seconds * control_hz)):
-            for _ in range(int((1.0 / control_hz) / model.opt.timestep)):
-                mujoco.mj_step(model, data)
-            step(data)
-
-    time.sleep(0.4)
-    client = Client(f"ws://127.0.0.1:{args.port}")
+    worker = threading.Thread(target=checks, daemon=True)
+    worker.start()
     try:
-        print("services:")
-        reply = client.call(topics.SRV_WALKING_COMMAND, {"command": "enable"}, call_id="xyz")
-        # A dropped id hangs a blocked caller instead of failing it, and nothing else here
-        # would notice; roslibpy would simply never return.
-        check("call_service echoes the caller's id", reply.get("id") == "xyz", str(reply.get("id")))
-        check("known command returns result true", reply.get("result") is True, str(reply))
-
-        reply = client.call("/walking/nonexistent")
-        check("unknown service fails promptly rather than hanging",
-              reply.get("result") is False, str(reply.get("values")))
-
-        reply = client.call(topics.SRV_WALKING_COMMAND, {"command": "nonsense"})
-        check("unknown walking command is rejected", reply["values"].get("result") is False)
-
-        print("\nwalking parameters:")
-        client.publish(topics.TOPIC_APP_WALKING_PARAM,
-                       {"speed": 4, "height": 0.03, "x": 1.0, "y": 0.0, "angle": 0.0})
-        run(0.2)
-        reply = client.call(topics.SRV_GET_WALKING_PARAM, {"get_param": True})
-        param = reply["values"]["parameters"]
-        check("set_walking_param round-trips through get_param",
-              abs(param["period_time"] - 300.0) < 1e-6 and param["x_move_amplitude"] > 0,
-              f"period_time={param['period_time']} x={param['x_move_amplitude']}")
-        check("period_time is milliseconds on the wire", param["period_time"] > 100,
-              f"{param['period_time']}")
-
-        print("\nwalking:")
-        base = view.get_move_group("base")
-        before = np.asarray(base.joint_pos).copy()
-        reply = client.call(topics.SRV_IS_WALKING)
-        check("is_walking false before start", reply["values"]["state"] is False)
-
-        client.call(topics.SRV_WALKING_COMMAND, {"command": "start"})
-        run(2.0)
-        moved = np.asarray(base.joint_pos).copy() - before
-        expected = 4.0 * param["x_move_amplitude"] / (param["period_time"] / 1000.0) * 2.0
-        check("start walks forward at the commanded speed",
-              abs(moved[0] - expected) < 0.25 * expected,
-              f"moved {moved[0]:.3f} m in 2 s, expected ~{expected:.3f}")
-        reply = client.call(topics.SRV_IS_WALKING)
-        check("is_walking true while walking", reply["values"]["state"] is True)
-
-        client.call(topics.SRV_WALKING_COMMAND, {"command": "stop"})
-        run(0.2)
-        halted = np.asarray(base.joint_pos).copy()
-        run(0.5)
-        check("stop halts within a control period or two",
-              abs(np.asarray(base.joint_pos)[0] - halted[0]) < 0.005,
-              f"drifted {np.asarray(base.joint_pos)[0] - halted[0]:+.4f} m after stopping")
-
-        # `start` must imply `enable`, as the vendor controller's start branch sets
-        # walking_enable itself. Gating on a prior enable made disable -> start walk on
-        # hardware but not here, which is exactly the class of divergence a client
-        # rehearsing against the sim cannot afford.
-        client.call(topics.SRV_WALKING_COMMAND, {"command": "disable"})
-        before_restart = np.asarray(base.joint_pos).copy()
-        client.call(topics.SRV_WALKING_COMMAND, {"command": "start"})
-        run(1.0)
-        client.call(topics.SRV_WALKING_COMMAND, {"command": "stop"})
-        restart_moved = np.asarray(base.joint_pos)[0] - before_restart[0]
-        check("start after disable walks (start implies enable)",
-              abs(restart_moved) > 0.05, f"moved {restart_moved:+.3f} m")
-        run(0.2)
-
-        print("\nturning and strafing:")
-        for axis, key, index in (("yaw", "angle", 2), ("lateral", "y", 1)):
-            start = np.asarray(base.joint_pos).copy()
-            client.publish(topics.TOPIC_APP_WALKING_PARAM,
-                           {"speed": 4, "height": 0.03, "x": 0.0, "y": 0.0, "angle": 0.0,
-                            key: 1.0})
-            client.call(topics.SRV_WALKING_COMMAND, {"command": "start"})
-            run(1.5)
-            client.call(topics.SRV_WALKING_COMMAND, {"command": "stop"})
-            delta = np.asarray(base.joint_pos).copy() - start
-            check(f"{axis} command moves the {axis} axis", abs(delta[index]) > 0.05,
-                  f"delta={delta[index]:+.3f}")
-            run(0.2)
-
-        print("\njoint states:")
-        client.subscribe(topics.TOPIC_JOINT_STATES)
-        run(0.2)
-        msg = client.next_message(topics.TOPIC_JOINT_STATES)
-        check("24 joints, named, in servo-id order",
-              msg["name"] == list(servos.BY_ID) and len(msg["position"]) == 24,
-              f"{len(msg['name'])} names, first={msg['name'][0]}")
-
-        print("\nbus servos:")
-        # id 23 is head_pan; id 13 is l_sho_pitch, one of the two the vendor yaml flips.
-        for servo_id, joint, count in ((23, "head_pan", 700), (13, "l_sho_pitch", 700)):
-            client.publish(topics.TOPIC_BUS_SERVO_SET,
-                           {"duration": 0.2, "position": [{"id": servo_id, "position": count}]})
-            run(1.0)
-            reached = float(data.qpos[model.jnt_qposadr[model.joint(f"{ns}{joint}").id]])
-            expected_rad = servos.count_to_angle(joint, count)
-            check(f"servo {servo_id} ({joint}) reaches the commanded count",
-                  abs(reached - expected_rad) < 0.05,
-                  f"{reached:+.3f} rad, expected {expected_rad:+.3f}")
-        # servo_controller.yaml writes `min: 1000, max: 0` for the two sho_pitch servos,
-        # which is how the vendor encodes a servo mounted the other way round. So counting
-        # *up* from a joint's init must move a flipped joint negative and an unflipped one
-        # positive. Comparing against a fixed count would only re-test the arithmetic.
-        def direction(joint: str) -> float:
-            init = servos.SERVOS[joint][1]
-            return servos.count_to_angle(joint, init + 100)
-
-        check("the flipped servos move opposite the unflipped ones",
-              direction("l_sho_pitch") < 0 < direction("head_pan")
-              and direction("r_sho_pitch") < 0,
-              f"l_sho_pitch {direction('l_sho_pitch'):+.3f} vs head_pan {direction('head_pan'):+.3f}")
-
-        print("\naction groups:")
-        client.publish(topics.TOPIC_APP_ACTION, {"data": "hand_open"})
-        run(1.5)
-        gripper = float(data.qpos[model.jnt_qposadr[model.joint(f"{ns}l_gripper").id]])
-        check("set_action replays a group", abs(gripper - 0.690) < 0.1, f"l_gripper={gripper:+.3f}")
-        client.publish(topics.TOPIC_APP_ACTION, {"data": "no_such_action"})
-        run(0.3)
-        check("unknown action group is ignored rather than fatal", True)
-
-        print("\nscan:")
-        client.unsubscribe(topics.TOPIC_JOINT_STATES)
-        client.subscribe(topics.TOPIC_SCAN)
-        client.drain()
-        run(0.5)
-        msg = client.next_message(topics.TOPIC_SCAN)
-        ranges = np.array(msg["ranges"])
-        check("360 beams", ranges.shape == (360,), str(ranges.shape))
-        check("every value finite", bool(np.isfinite(ranges).all()))
-        # The robot's own limbs are within ~0.15 m of the torso-mounted scanner. Without
-        # exclude_bodies most beams would come back at that distance, and the resulting
-        # scan looks entirely reasonable until you try to map with it.
-        close = int((ranges < 0.3).sum())
-        check("the scan does not range the robot's own limbs", close == 0,
-              f"{close} beams under 0.3 m")
-
-        print(f"\n{'FAILED: ' + ', '.join(FAIL) if FAIL else 'all checks passed'}")
+        sim.run_until(done)
     finally:
-        client.close()
-        step(None)
-
+        sim.step(None)
+    print(f"\n{'FAILED: ' + ', '.join(FAIL) if FAIL else 'all checks passed'}")
     return 1 if FAIL else 0
 
 

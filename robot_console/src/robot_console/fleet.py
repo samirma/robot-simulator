@@ -44,7 +44,7 @@ BASE_TOPICS: tuple[str, ...] = tuple(CONTRACT_TOPICS)
 #: What a humanoid must present, from `ainex_topics.py` -- the Hiwonder AiNex contract.
 #: A third kind rather than a second flavour of base: the AiNex is commanded as a walking
 #: state machine and has no wheels, so it shares not one topic with the myAGV beyond
-#: `/joint_states` and its camera. Checking it as a base demanded `/cmd_vel` and `/odom`
+#: its camera. Checking it as a base demanded `/cmd_vel` and `/odom`
 #: of a biped, which is how `--robots so101,ainex` failed its fleet check even when every
 #: topic it does present was on the wire.
 HUMANOID_TOPICS: tuple[str, ...] = AINEX_CONTRACT_TOPICS

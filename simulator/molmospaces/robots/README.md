@@ -300,47 +300,26 @@ with the hardware.
 
 ### Faithful, and not
 
-**Faithful:** the 24-joint topology and the servo-id map; the count↔radian mapping,
-including the per-joint `init` offset and the two deliberately inverted `sho_pitch` servos;
-the native topics and services, with no `/cmd_vel` and no `/odom`; grasping as
-action-group replay with no IK; the gait envelope and the 0.20 m/s it yields at the default
-gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion topic.
+**Faithful:** the interface is exactly `robots_specs/ainex/ros.yml` -- every topic,
+service and parameter it lists, with its type, the node that provides it and, for a
+periodic topic, its rate, and nothing else (`shared/ros_surfaces/ainex/topics.py`, held to
+the file by `shared/contracts/test_ainex_contract.py`). So there is no `/cmd_vel`, `/odom`,
+`/scan`, `/joint_states`, `/tf` or `robot_description`, and of the 24
+`/<joint>_controller/command` topics only the head pair, which are the only two the real
+`ainex_controller` subscribes to (the rest are `gazebo_sim` only). Also faithful: the
+24-joint topology and the servo-id map; the count<->radian mapping, including the per-joint
+`init` offset and the two deliberately inverted `sho_pitch` servos; `/walking/command`'s
+control gate, its blocking `stop` and the absence of any watchdog; `/app/set_action` and
+`/walking/init_pose` ending in the init pose; grasping as action-group replay with no IK;
+the gait envelope and the 0.20 m/s it yields at the default gait. Servo angles are read the
+vendor's way, through `bus_servo/get_position`.
 
 **Deliberate departures**, each of them load-bearing somewhere:
 
-* **`/scan` is a virtual lidar and the real AiNex has none.** The mount pose is invented,
-  not transcribed — mid-torso, which is above the leg swing. Enabled by default because
-  it is what makes the robot navigable; `--no-scan` turns it off.
-* **`/tf` and `robot_description` are published; the shipped robot publishes neither at
-  boot, but the vendor's own Gazebo and RViz launches publish both.** An exhaustive sweep
-  of `Hiwonder/ainex` (485 paths) and `UruBots/ainex-robot-code` (1299) finds
-  `robot_state_publisher` in `ainex_description/launch/display.launch`,
-  `ainex_gazebo/launch/position_controller.launch` and `ainex_peripherals/launch/imu.launch`
-  (the last behind a `debug` arg that defaults false), each loading `robot_description`
-  from the same `ainex.urdf.xacro` that `robots_specs/ainex/ainex.urdf` flattens — while the boot chain,
-  `ainex_bringup/service/start_app_node.service` → `bringup.launch`, contains no tf
-  broadcaster and sets no such parameter. So this is a departure from the *rosbridge
-  surface a client meets on a real robot*, and a match to the vendor's own simulation. The
-  one frame that is not the vendor's placement is `camera_link`, which follows this model's
-  head mount rather than the description's torso mount, for the reason the camera section
-  gives. `/tf_static` is **not** published, here or on the robot: nothing in either repo
-  names it, and ROS 1's `tf` static publisher writes to `/tf`.
-  `robot_console/ainex_topics.py` leaves both out of `CONTRACT_TOPICS`, because the boot
-  chain is what a client actually connects to.
-* **22 of the 24 `/<joint>_controller/command` topics are Gazebo-only on the real robot.**
-  Found while checking the above, not yet acted on. In
-  `ainex_kinematics/scripts/ainex_controller.py` the 24 per-joint publishers and the
-  `/joint_states` subscription are all inside `if self.gazebo_sim:` (lines 133-139,
-  152-154), and `ainex_controller.launch` defaults `gazebo_sim` to false; on hardware the
-  node subscribes to `head_pan` and `head_tilt` only. The table here and the console's
-  `CONTRACT_TOPICS` list all 24, which is faithful to `ainex_gazebo`'s
-  `position_controller.yaml` exactly as documented — but a physical AiNex would accept two
-  of them. Whether to narrow the contract or keep the Gazebo layout is a decision, not an
-  oversight; recorded here so it is made deliberately.
 * Locomotion is a planar base plus a cosmetic gait: no balance, and the torso cannot
-  roll. It *can* pitch — `base_pitch`, a joint of its own that action groups author,
+  roll. It *can* pitch -- `base_pitch`, a joint of its own that action groups author,
   because the base rides the torso and the real robot's forward lean when it crawls has
-  nowhere else to come from — and it *can* fall: `ground.py` solves the torso's height
+  nowhere else to come from -- and it *can* fall: `ground.py` solves the torso's height
   every tick so the stance sole sits on the surface a ray-cast finds beneath it, and
   integrates a fall when it finds none. The fall is the setpoint's, not gravity's.
 * `gravcomp` is on, so it does not sag the way a 2.35 kg robot on hobby servos really does.
@@ -350,17 +329,18 @@ gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion t
   the world-aligned position servos, which shows up as an undershooting base picking up
   uncommanded yaw. Only one torso hull and the two hands collide with the world; the
   ground-follow above is what stands the robot on a surface instead.
-* `/imu` reports real yaw and yaw rate with roll identically zero, because the base has
-  no roll degree of freedom. Covariances are `-1`, the ROS convention for "not reported".
-* `ros_robot_controller`'s peripherals are not mirrored: `set_led`, `set_buzzer`,
-  `set_oled`, `set_rgb`, the motor and PWM-servo topics, `sbus`, `joy`, the magnetometer
-  and `button` have no physical counterpart in a simulation. Of that node's surface the
-  bus-servo half is here in full — `bus_servo/set_position` and the `bus_servo/get_position`
-  service — as are the 24 per-joint `/<joint>_controller/command` topics of the vendor's
-  ros_control layout.
+* The IMU pipeline reports the torso's real yaw, lean and their rates, with roll
+  identically zero because the base has no roll degree of freedom, and a fixed simulated
+  Earth field on the magnetometer. Each periodic topic runs at its declared rate on its own
+  clock; the values behind it, and the camera frames, refresh at the engine's control rate.
+* The board's peripherals have nothing to drive: `set_led`, `set_buzzer`, `set_oled`,
+  `set_rgb`, the motor and PWM-servo topics and `enable_reception` are accepted and do
+  nothing, and `joy`, `sbus`, `button` and `battery` are declared but never published --
+  a simulated board has no receiver, radio, button press or battery reading to report.
+* The app's modes set up exactly as `app_node.py` does (init pose, head, control gate,
+  detector enter/start), but their autonomous behaviours are not simulated, and the vision
+  nodes publish their result frames with no detections.
 * The shipped action groups are ours, not Hiwonder's — see the licence note below.
-* Scan misses are `range_max + 1` rather than `inf`, inherited from the existing convention
-  (JSON has no infinity).
 
 ### Two URDF-import behaviours specific to this robot
 

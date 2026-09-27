@@ -3,46 +3,58 @@
     cd simulator && ./kitchen.sh serve --robots ainex          # or --engine robocasa
     cd robot_console && .venv/bin/python -m pytest -m live tests/test_ainex_live.py
 
+`AINEX_LIVE_URL=ws://127.0.0.1:9791` points it at a serve on another port.
+
 Nothing else in either project joins these two halves. `test_cli.py` checks the console's
 gait arithmetic with no wire; the simulator's `robots/ainex/test_ros.py` drives the
-surface over a raw websocket, and through `/app/set_walking_param` -- the *other* command
-topic, the tiered preset one -- so the topic teleop actually publishes to had no
-end-to-end check at all. That gap hid a real bug: `AiNexLink` composed the camera under
-the discovered namespace and left `/walking/set_param` and `/walking/command` bare, so
-against any engine (they namespace every robot after itself) the view streamed and every
-key did nothing. rosbridge acks nothing, so there was no error to see.
+surface over a raw websocket. That gap hid a real bug: `AiNexLink` composed the camera
+under the discovered namespace and left `/walking/set_param` and `/walking/command` bare,
+so against any engine (they namespace every robot after itself) the view streamed and
+every key did nothing. rosbridge acks nothing, so there was no error to see.
 
-Yaw is read back from `/imu`, which is the only pose this robot's vendor contract carries
--- it has no `/odom` and no `/tf`, by the vendor's design. That makes the turn the
-measurable half here; that the gait is running at all is read from `/walking/is_walking`
-and from the legs moving in `/joint_states`. How far it walks is the simulator's own
-measurement to make, against a model this side cannot see.
+Everything is read back through the robot's own interface (`robots_specs/ainex/ros.yml`):
+yaw off `/imu`, the only attitude it reports -- it has no `/odom` and no `/tf`; whether
+the gait is running from the `/walking/is_walking` service, since the topic of that name
+is published on transitions only; and joint angles from
+`/ros_robot_controller/bus_servo/get_position` in servo counts, since there is no
+`/joint_states`. How far it walks is the simulator's own measurement to make, against a
+model this side cannot see.
 """
 
 from __future__ import annotations
 
 import math
+import os
 import time
+from urllib.parse import urlparse
 
 import pytest
 
-from robot_console.ainex_link import AiNexLink
+from robot_console.ainex_link import HEAD_RATE, AiNexLink
 from robot_console.ainex_topics import (
+    HEAD_PAN_LIMIT,
+    HEAD_SERVO_CENTRE,
+    HEAD_TILT_LIMIT,
+    SERVO_TICKS_PER_RADIAN,
+    SRV_BUS_SERVO_GET,
+    SRV_IS_WALKING,
+    SRV_TYPE_GET_BUS_SERVOS_POSITION,
+    SRV_TYPE_GET_WALKING_STATE,
     TOPIC_IMU,
-    TOPIC_IS_WALKING,
-    TOPIC_JOINT_STATES,
-    TYPE_BOOL,
     TYPE_IMU,
-    TYPE_JOINT_STATE,
+    servo_id,
 )
 from robot_console.bridge import quiet_roslibpy_logging
 from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT
-from robot_console.ainex_link import HEAD_RATE
-from robot_console.ainex_topics import HEAD_PAN_LIMIT, HEAD_TILT_LIMIT
 from robot_console.teleop import Action, Command, HeadPose
 from robot_console.topics import namespaced
 
 pytestmark = pytest.mark.live
+
+#: Where the engine under test serves. The default is the console's own.
+URL = os.environ.get("AINEX_LIVE_URL", f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}")
+HOST = urlparse(URL).hostname or DEFAULT_HOST
+PORT = urlparse(URL).port or DEFAULT_PORT
 
 #: Long enough to be unambiguous against the gait's own 0.4 s cycle, short enough that
 #: three of them plus a settle is a few seconds.
@@ -64,16 +76,13 @@ def robot():
     from robot_console.discovery import DiscoveryError, discover
 
     try:
-        found = discover(f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}", "ainex")
+        found = discover(URL, "ainex")
     except DiscoveryError as exc:
-        pytest.skip(f"no AiNex on ws://{DEFAULT_HOST}:{DEFAULT_PORT}: {exc}")
+        pytest.skip(f"no AiNex on {URL}: {exc}")
     except Exception as exc:  # noqa: BLE001 - nothing listening is the usual case
-        pytest.skip(f"no rosbridge on ws://{DEFAULT_HOST}:{DEFAULT_PORT}: {exc}")
+        pytest.skip(f"no rosbridge on {URL}: {exc}")
 
-    link = AiNexLink(
-        DEFAULT_HOST, DEFAULT_PORT,
-        camera_topic=found.camera_topic, namespace=found.namespace,
-    )
+    link = AiNexLink(HOST, PORT, camera_topic=found.camera_topic, namespace=found.namespace)
     link.connect(timeout=10.0)
     yield link, found.namespace
     link.stop()
@@ -96,6 +105,32 @@ def _latest(link, topic, message_type, namespace, timeout=5.0):
     return lambda: box["msg"]
 
 
+def _call(link, name, service_type, namespace, args=None) -> dict:
+    """One blocking service call over the link's own connection."""
+    import roslibpy
+
+    service = roslibpy.Service(link._ros, namespaced(name, namespace), service_type)
+    return dict(service.call(roslibpy.ServiceRequest(args or {}), timeout=5.0))
+
+
+def _walking(link, namespace) -> bool:
+    return bool(_call(link, SRV_IS_WALKING, SRV_TYPE_GET_WALKING_STATE, namespace)["state"])
+
+
+def _counts(link, namespace, *joints: str) -> dict[str, int]:
+    """Servo counts by joint name, read off the bus as the vendor's own tools read them."""
+    ids = {servo_id(j): j for j in joints}
+    reply = _call(link, SRV_BUS_SERVO_GET, SRV_TYPE_GET_BUS_SERVOS_POSITION, namespace,
+                  {"id": list(ids)})
+    return {ids[p["id"]]: p["position"] for p in reply.get("position", [])}
+
+
+def _head_angles(link, namespace) -> tuple[float, float]:
+    counts = _counts(link, namespace, "head_pan", "head_tilt")
+    return ((counts["head_pan"] - HEAD_SERVO_CENTRE) / SERVO_TICKS_PER_RADIAN,
+            (counts["head_tilt"] - HEAD_SERVO_CENTRE) / SERVO_TICKS_PER_RADIAN)
+
+
 def _yaw(msg) -> float:
     q = msg["orientation"]
     return math.atan2(
@@ -116,7 +151,8 @@ def _drive(link, command: Command, seconds: float = DRIVE_S) -> None:
         link.publish_cmd_vel(command)
         time.sleep(0.05)
     link.publish_cmd_vel(Command())
-    time.sleep(0.5)
+    # `stop` finishes the step cycle in progress -- up to one 0.4 s period -- first.
+    time.sleep(1.0)
 
 
 def _turned(imu, link, command) -> float:
@@ -140,8 +176,8 @@ def test_q_turns_left_and_e_turns_right(robot) -> None:
     right = _turned(imu, link, Command(wz=-TURN_WZ))
 
     # The gait model round-trips exactly -- the console solves A = wz*T/4 and the surface
-    # reads wz = 4A/T back out -- so this is `TURN_WZ * DRIVE_S`, about 69 degrees, and
-    # the tolerance is for the release ramp rather than for any modelling slack.
+    # reads wz = 4A/T back out -- so this is about `TURN_WZ * DRIVE_S`, plus whatever the
+    # cycle in progress adds after the release; the tolerance is for that.
     expected = math.degrees(TURN_WZ * DRIVE_S)
     assert left > 0.5 * expected, f"Q turned {left:+.1f} deg, expected about {expected:+.1f}"
     assert right < -0.5 * expected, f"E turned {right:+.1f} deg, expected about {-expected:+.1f}"
@@ -159,30 +195,29 @@ def test_w_walks_without_turning(robot) -> None:
     """
     link, namespace = robot
     imu = _latest(link, TOPIC_IMU, TYPE_IMU, namespace)
-    walking = _latest(link, TOPIC_IS_WALKING, TYPE_BOOL, namespace)
-    joints = _latest(link, TOPIC_JOINT_STATES, TYPE_JOINT_STATE, namespace)
 
-    assert walking()["data"] is False, "the robot was already walking before any key"
-    knee = joints()["name"].index("l_knee")
-    still = joints()["position"][knee]
+    assert not _walking(link, namespace), "the robot was already walking before any key"
+    still = _counts(link, namespace, "l_knee")["l_knee"]
 
     before = _yaw(imu())
     moved = {"walking": False, "knee": False}
     deadline = time.monotonic() + DRIVE_S
     while time.monotonic() < deadline:
         link.publish_cmd_vel(Command(vx=0.10))
-        moved["walking"] = moved["walking"] or bool(walking()["data"])
-        moved["knee"] = moved["knee"] or abs(joints()["position"][knee] - still) > 0.02
+        moved["walking"] = moved["walking"] or _walking(link, namespace)
+        # 0.02 rad of knee is about 5 counts.
+        knee = _counts(link, namespace, "l_knee")["l_knee"]
+        moved["knee"] = moved["knee"] or abs(knee - still) > 5
         time.sleep(0.05)
     link.publish_cmd_vel(Command())
-    time.sleep(0.5)
+    time.sleep(1.0)
 
-    assert moved["walking"], "/walking/is_walking never went true -- `start` never landed"
+    assert moved["walking"], "/walking/is_walking never answered true -- `start` never landed"
     assert moved["knee"], "the legs never moved -- the parameter block never landed"
     drift = math.degrees(abs(math.atan2(math.sin(_yaw(imu()) - before),
                                         math.cos(_yaw(imu()) - before))))
     assert drift < 5.0, f"walking forward yawed {drift:.1f} deg"
-    assert walking()["data"] is False, "releasing the key did not stop the gait"
+    assert not _walking(link, namespace), "releasing the key did not stop the gait"
 
 
 def test_the_arrow_keys_point_the_head(robot) -> None:
@@ -195,22 +230,16 @@ def test_the_arrow_keys_point_the_head(robot) -> None:
     That is the exact bug this file was written for, one contract further along.
     """
     link, namespace = robot
-    states = _latest(link, TOPIC_JOINT_STATES, TYPE_JOINT_STATE, namespace)
-
-    def head_angles() -> tuple[float, float]:
-        msg = states()
-        by_name = dict(zip(msg["name"], msg["position"]))
-        return by_name["head_pan"], by_name["head_tilt"]
 
     head = HeadPose(
         pan_limit=HEAD_PAN_LIMIT, tilt_limit=HEAD_TILT_LIMIT, rate=HEAD_RATE,
     )
     # Hold the left arrow, then the up arrow, at the OS's repeat interval.
-    for action, _ in ((Action.HEAD_LEFT, None),) * 12:
-        head.apply(action, 0.09)
+    for _ in range(12):
+        head.apply(Action.HEAD_LEFT, 0.09)
     link.publish_head(head.pan, head.tilt)
     time.sleep(1.0)
-    pan, tilt = head_angles()
+    pan, tilt = _head_angles(link, namespace)
     assert pan == pytest.approx(head.pan, abs=0.05), f"pan {pan:.3f} vs {head.pan:.3f}"
     assert abs(tilt) < 0.05, f"tilt moved to {tilt:.3f} on a pan-only command"
 
@@ -218,7 +247,7 @@ def test_the_arrow_keys_point_the_head(robot) -> None:
         head.apply(Action.HEAD_UP, 0.09)
     link.publish_head(head.pan, head.tilt)
     time.sleep(1.0)
-    pan_after, tilt_after = head_angles()
+    pan_after, tilt_after = _head_angles(link, namespace)
     assert tilt_after == pytest.approx(head.tilt, abs=0.05)
     assert pan_after == pytest.approx(pan, abs=0.05), "panning changed when tilting"
 
@@ -226,5 +255,5 @@ def test_the_arrow_keys_point_the_head(robot) -> None:
     head.apply(Action.HEAD_CENTRE, 0.0)
     link.publish_head(head.pan, head.tilt)
     time.sleep(1.5)
-    pan_home, tilt_home = head_angles()
+    pan_home, tilt_home = _head_angles(link, namespace)
     assert abs(pan_home) < 0.05 and abs(tilt_home) < 0.05, (pan_home, tilt_home)
