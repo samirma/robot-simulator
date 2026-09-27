@@ -1,4 +1,4 @@
-"""The SO-101 arm task: an Inspect Robots task, policies, embodiment and scorers.
+"""The SO-101 arm task: an Inspect Robots task, policy, embodiment and scorer.
 
 This subpackage is the console's arm half, and it is deliberately walled off from the
 rest of `robot_console`. Everything here talks to a simulator (or a real arm) over

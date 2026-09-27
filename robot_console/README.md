@@ -17,7 +17,7 @@ Start a robot in one terminal:
 
 ```bash
 cd ../simulator
-./run.sh view --robot myagv --scene ithor:1 --ros-port 9090
+./kitchen.sh serve --robots myagv --port 9090
 ```
 
 Drive it from another:
@@ -69,89 +69,68 @@ re-sends every subscription and advertisement.
 
 `--rates` is the simulator spec's rate gate: after a 5 s warm-up it observes for the
 greater of 30 s and five periods of the slowest topic, and requires each periodic topic
-within ±10% of the rate its ROS file declares with no gap over three periods, and each
-member's real-time factor (from its header stamps) at a mean in [0.90, 1.10] with no
-10 s window below 0.90.
+within ±10% of the rate its ROS file declares with no gap over three periods, and the
+fleet's real-time factor -- every member's header stamps against their arrival, since
+every simulated member stamps the one simulated clock from zero -- at a mean in
+[0.90, 1.10] with no 10 s window below 0.90. Each member's own factor is printed beneath
+as a breakdown.
 
 ## The arm
 
-The SO-101 is driven over **rosbridge**, on the ros2_control topic set a real bringup for
-that arm presents — `joint_trajectory_controller` for the five arm joints, a
-`forward_command_controller` for the jaw, one `joint_state_broadcaster` covering both.
-There is no simulator-specific protocol: the same client drives the simulated arm and a
-real one, which is the whole reason for presenting that interface rather than an easier
-one.
+The SO-101 is driven over **rosbridge**, on the ROS 2 interface a real bringup for that
+arm presents: `joint_trajectory_controller` for the five arm joints, the
+`gripper_controller/gripper_cmd` action (`control_msgs/action/ParallelGripperCommand`)
+for the jaw, one `joint_state_broadcaster` covering both. There is no
+simulator-specific protocol: the same client drives the simulated arm and a real one.
 
 Everything arm-related lives in `src/robot_console/arm/` and registers itself with the
-[Inspect Robots](https://pypi.org/project/inspect-robots/) framework through the
-`inspect_robots.{tasks,policies,embodiments,scorers}` entry points in `pyproject.toml`.
-That is what makes the framework's own `inspect-robot` CLI able to find it — this project
-ships no arm console script of its own:
-
-```bash
-uv pip install -e '.[arm]'        # numpy + inspect-robots + inspect-robots-ros
-.venv/bin/inspect-robot list tasks        # apple_on_plate
-.venv/bin/inspect-robot list policies     # molmoact2
-.venv/bin/inspect-robot list embodiments  # so101_ros
-```
-
-Registered pieces:
+[Inspect Robots](https://pypi.org/project/inspect-robots/) framework through four entry
+points in `pyproject.toml`, one in each of `inspect_robots.tasks`, `.policies`,
+`.embodiments` and `.scorers`. That is what makes the framework's own `inspect-robot`
+CLI able to find it; this project ships no console script of its own.
 
 | kind | name | what it is |
 |---|---|---|
-| task | `apple_on_plate` | pick a 20 mm apple off the work surface, place it on the plate, hold it there |
-| policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text. The scripted `so101_waypoint` plan that used to sit beside it was deleted; the preflight's IK reach gate covers what it checked |
-| embodiment | `so101_ros` | the arm behind rosbridge |
-| scorer | `apple_on_plate_success`, `reference_success`, `apple_plate_distance` | the camera's verdict, plus a pose-derived one that grades nothing and exists to audit it |
+| task | `apple_on_plate` | pick the apple off the worktop, place it on the plate, release it there |
+| policy | `molmoact2` | the `allenai/MolmoAct2-SO100_101` VLA, from two camera views and the task text |
+| embodiment | `so101_ros` | the arm behind rosbridge, recording the rig evidence the scorer grades from |
+| scorer | `apple_on_plate` | the camera verdict (`arm/vision_success.py`): the apple triangulated from the rig's two calibrated views, the fingers placed by forward kinematics from `/joint_states` |
 
-The usual way to run it is from the simulator, which starts the world and the client
-together and reports PASS/FAIL:
+The scorer reads only public observations -- the rig's overhead and side frames, their
+`camera_info` and the arm's joint states -- so the grade is one a real rig could give.
+An episode passes when, through the whole hold at its end, the apple rests on the plate,
+still, with both fingers clear of it; a sample it cannot measure fails the episode.
 
-```bash
-./run_task.sh --episodes 8                                 # MolmoAct2, a pass count
-```
-
-Manually, against a simulator someone else started (the VLA lives in `.venv-vla`):
+The usual way to run it is `run_task.sh`, against a simulator someone else started:
 
 ```bash
-.venv/bin/python -m robot_console.arm.preflight --url ws://127.0.0.1:9090   # reset + verify
-.venv-vla/bin/inspect-robot run --task apple_on_plate --policy molmoact2 \
-    --embodiment so101_ros -E url=ws://127.0.0.1:9090 -T max_steps=400 \
-    -T layout=standard --max-action-delta 0.65
+cd ../simulator && ./kitchen.sh serve --robots so101       # one terminal
+./run_task.sh --episodes 8 --label molmospaces              # another: a pass count
 ```
 
-`-T layout=` is `standard` or `swapped` (plate at the apple's spawn, apple at the
-plate's); the preflight prints which one the simulator is serving and `run_task.sh`
-passes that along, so the pose-derived reference scorer grades the right arrangement.
+In order it installs `.venv-vla` (below), waits for the members' topics, checks each
+member's typed interface (the SO-101 and the rig with `python -m robot_console.arm.preflight
+check`, the other `--robots` with `python -m robot_console.fleet`), then per episode calls
+the SO-101's `/reset` (a `success: false` aborts the run), runs `inspect-robot` and grades
+the episode's log with the scorer. It refuses a wire without `/reset` or the rig, so the
+task never runs on hardware. `run_task.sh --help` lists the flags.
 
-Three flags there are load-bearing rather than decorative:
-
-- **`-T max_steps=400`.** The task's own default is smaller, and a short budget cuts the
-  episode off with the apple still in the air over the plate — a working plan scored as a
-  failure.
-- **`--max-action-delta 0.65`.** The framework applies its own per-step limiter, derived
-  from the action space, which lands near 0.03 and halves the policy's 0.06 rad step. The
-  policy is already the rate limiter and it is the one holding the measured constants;
-  this raises the framework's limit above the jaw's largest intended move and leaves the
-  bounds clamp in place.
-- **`preflight` before the episode.** `/reset` says the world was restored; this checks
-  that it *was* — the apple measured back at spawn over three consecutive samples, and the
-  plan still solving from there. A drifted apple otherwise scores zero looking exactly
-  like a policy failure, and a failed episode really does leave the apple on the floor.
+`python -m robot_console.arm.preflight {discover,check,wait,reset}` are those wire steps
+one at a time, and `python -m robot_console.arm.verdict RUN_DIR` re-grades a finished
+episode.
 
 ### torch stays out of `.venv`
 
-`molmoact2` needs torch, transformers and a ~22 GB checkpoint; the scripted policy needs
-none of it. So the VLA extra installs into a **separate** venv:
+`molmoact2` needs torch, transformers and a ~22 GB checkpoint. So `run_task.sh` installs
+the `arm` and `vla` extras into a **separate** venv, `.venv-vla`:
 
 ```bash
-uv venv --python 3.12 .venv-vla && VIRTUAL_ENV=.venv-vla uv pip install -e '.[vla]'
+uv venv --python 3.12 .venv-vla && VIRTUAL_ENV=.venv-vla uv pip install -e '.[arm,vla]'
 ```
 
-`run_task.sh` picks the venv from `--policy`, so this is only worth knowing
-when running the client by hand. `arm/molmoact.py` imports torch inside `_load()` rather
-than at module scope, which is what lets `inspect-robot list policies` work — and the
-offline test suite run — in the torch-free venv.
+`arm/molmoact.py` imports torch inside `_load()` rather than at module scope, which is
+what lets `inspect-robot list policies` work -- and the offline test suite run -- in the
+torch-free `.venv`.
 
 
 ## Mapping and navigation
@@ -180,7 +159,7 @@ so a map can be reloaded and *kept building* rather than only navigated.
 
 Nothing here knows which simulator is on the other end of the socket, and that is worth
 stating because it has been checked rather than assumed: the same
-`robot-console-explore` builds a map of a MolmoSpaces iTHOR house and of a RoboCasa
+`slam.sh explore` builds a map of a MolmoSpaces iTHOR house and of a RoboCasa
 kitchen, over the same four topics, with no flag telling it which.
 
 This is the same sensor choice Elephant Robotics makes -- `myagv_slam_laser.launch` runs
@@ -189,9 +168,6 @@ is occupancy-grid SLAM with correlative scan matching: **no loop closure, no glo
 optimiser**. On an identical trajectory with 6 % odometry drift, scan matching roughly
 halves the map smear (median wall offset 0.28 m -> 0.13 m, p90 0.68 m -> 0.28 m) at
 about 2 ms per keyframe. It does not correct global drift after a long loop.
-
-`--no-match` trusts `/odom` and skips matching, which is reasonable against the
-simulator, where odometry is ground truth, and is not on hardware.
 
 ## Controls
 
@@ -256,7 +232,7 @@ with the real size and rate. If no camera frames ever arrive, no `feed.mp4` is w
 `odom` lines carrying `t` in seconds from the start, then a `summary` line.
 
 ```jsonc
-{"type":"meta","schema":1,"host":"127.0.0.1","port":9090,"speed":0.15,...}
+{"type":"meta","schema":1,"robot":"myagv","url":"ws://127.0.0.1:9090","speed":0.15,...}
 {"type":"cmd","t":0.05,"seq":1,"key":"w","action":"FORWARD","speed":0.15,
  "linear":{"x":0.15,"y":0.0,"z":0.0},"angular":{"x":0.0,"y":0.0,"z":0.0}}
 {"type":"frame","t":0.06,"index":0,"header_seq":5880,"width":640,"height":480}
@@ -283,10 +259,10 @@ of and 80 mm above `base_footprint` (`myagv_active.launch`'s static transform, w
 ignores it; the SLAM commands need it.
 
 Unlike `CompressedImage`, `ranges` arrives as a **plain JSON float array** -- rosbridge
-base64-encodes `uint8[]` only. A no-return is reported three different ways depending on
-who is publishing: `0.0` by the real driver (`invalid_range_is_inf: false`), `inf` by a
-stock one, and `range_max + 1` by the simulator, which cannot express infinity in JSON.
-The console tests `range_min <= r <= range_max`, which rejects all three and `NaN` too.
+base64-encodes `uint8[]` only. A no-return is `0.0` from the real driver
+(`invalid_range_is_inf: false`) and from the simulator, which follows it, and `inf` from a
+stock driver. The console tests `range_min <= r <= range_max`, which rejects both and
+`NaN` too.
 
 Body frame, ROS convention: `+x` forward, `+y` left, `+z` counter-clockwise. The base is
 holonomic -- the myAGV is Mecanum-wheeled, so `linear.y` is a real strafe, not a
@@ -364,19 +340,21 @@ src/robot_console/
   ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
   preflight.py             reachability probe + startup instructions
+  wire.py                  --url parsing, shared by every entry point
+  supervisor.py            the safety supervisor process: the only motion publisher
   discovery.py             which members are on the wire, by typed signature
   fleet.py                 validate a wire against the contract; --dump; --rates [--gate]
   arm/                     the SO-101, over rosbridge -- see "The arm" above
-    ros_client.py          the header-stamping shim (without it the arm never moves)
+    ros_client.py          rosbridge with actions and short topic histories
     ros_settings.py        every topic name, type and camera size, in one place
     kinematics.py          FK/IK for the SO-101                  (pure, MuJoCo-free)
     molmoact.py            the MolmoAct2-SO100_101 VLA (torch imported inside _load)
-    task.py                the task, its scene, its instruction and its two layouts
-    success.py             the live geometric verdict            (pure)
-    scorer.py              the offline re-derivation from a log  (pure)
-    embodiment.py          the arm behind rosbridge
-    preflight.py           reset the world and verify it took
-    steptrace.py wire_trace.py   observational only; never affect an action
+    task.py                the task, its scene and its instruction
+    vision_success.py      the camera verdict                    (pure)
+    scorer.py              the scorer entry point, over the rig samples
+    verdict.py             one episode's verdict from its log, for run_task.sh
+    embodiment.py          so101_ros: the arm behind rosbridge
+    preflight.py           discover / check / wait / reset, as run_task.sh runs them
   app.py                   the teleop loop
   cli.py                   argument parsing
   smoke.py                 live integration check
@@ -405,7 +383,7 @@ degrades into a stop. That matters more in an autonomous mode than in teleop, be
 nobody is watching the window.
 
 Which is why scan matching is keyframed rather than run on every scan: it happens only
-after 0.15 m or 10 deg of motion and never faster than `--slam-hz`. The loop measures
+after 0.15 m or 10 deg of motion and never faster than 5 Hz. The loop measures
 its own tick time against the publish period and says so when it overruns, because a
 robot that drives fine and maps badly otherwise leaves nothing in the log to explain it.
 
@@ -427,14 +405,14 @@ robot that drives fine and maps badly otherwise leaves nothing in the log to exp
   the enclosed sensor holes, and a last look round. `tests/test_exploration_coverage.py`
   drives a four-room floorplan offline and asserts it maps every reachable square metre
   and leaves no frontier behind; on that house it does, including the room whose only
-  entrance is a 0.7 m doorway. A run that genuinely gets nowhere ends as `stalled`
-  (`--stall-timeout`) rather than pretending to be finished.
+  entrance is a 0.7 m doorway. A run that genuinely gets nowhere ends at its
+  `--max-duration` or `--max-goals` limit rather than pretending to be finished.
 - Unknown space behind a wall is not chased. Walls are recorded a cell thick and grazing
   beams skip cells, so a mapped wall has unknown slivers along it that look exactly like
   frontiers; they are filtered by thickness, because they can never be resolved. A real
   opening thinner than two cells at the working resolution would be filtered with them.
-- The map grows without bound, and there is no downsampling. At 5 cm a large house is
-  fine; a warehouse would want a coarser `--resolution`.
+- The map grows without bound, and there is no downsampling. At the fixed 5 cm a large
+  house is fine; a warehouse would want a coarser grid.
 - `mp4v` is the recording codec; `avc1` is missing from many `opencv-python` builds. If
   the writer cannot open, the drive continues and `commands.jsonl` is still written.
 
