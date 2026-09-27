@@ -89,11 +89,7 @@ TASKS = {"apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate")}
 # a client that could measure a difference here would have found a regression.
 SCAN_DEFAULTS = {
     "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
-    # Byte-identical to the MolmoSpaces engine's, deliberately: a client that could
-    # measure a different /scan across engines has found the regression the split exists
-    # to prevent. The AiNex has no lidar at all -- the topic is an invention both engines
-    # make the same way.
-    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
+    # No AiNex entry: the AiNex has no lidar, and its ROS file has no /scan.
 }
 
 # Robots grafted in at the origin and then *driven* to their spawn pose, because their
@@ -955,6 +951,16 @@ def _surface_kwargs(args, inst, model, task, scene_option):
         }
 
     camera = _pick_camera(args, model, prefix)
+    if inst.name == "ainex":
+        # The AiNex's own bag, the same as the MolmoSpaces engine's key for key (with this
+        # engine's base and scene option): its interface is its ROS file, so no lidar, no
+        # depth, usb_cam's 640x480 and the file's rates -- no launcher flag reaches it.
+        return {
+            "base": inst.base, "model": model, "camera": camera,
+            "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+            "extra": {"action_dir": args.action_dir}, "scene_option": scene_option,
+            "prefix": prefix,
+        }
     scan_cfg = None
     if not args.no_scan:
         defaults = SCAN_DEFAULTS[inst.name]
@@ -988,22 +994,15 @@ def _surface_kwargs(args, inst, model, task, scene_option):
             "max_range": args.depth_range,
             "fovy": float(model.cam_fovy[cam_id]),
         }
-    bag = {
+    return {
         "base": inst.base, "model": model, "camera": camera,
         "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
         "control_hz": args.control_hz, "watchdog_s": args.watchdog,
         "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
         "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
-        # Both bases take this now: it is what names the bodies their transform trees
-        # read, and the myAGV's shared surface grew the same keyword the AiNex's had.
+        # It is what names the bodies the base's transform tree reads.
         "prefix": prefix,
     }
-    if inst.name == "ainex":
-        # A per-robot tail rather than one more key in the common bag: the myAGV's
-        # shared surface is called from here with no adapter in between, so anything
-        # extra in the bag every base gets is a TypeError on that one.
-        bag |= {"extra": {"action_dir": args.action_dir}}
-    return bag
 
 
 def _pick_camera(args, model, prefix: str) -> str | None:

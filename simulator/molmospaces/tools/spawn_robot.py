@@ -92,11 +92,7 @@ SCAN_DEFAULTS = {
     # Transcribed from ydlidar_ros_driver/launch/X2.launch and the
     # base_footprint -> laser_frame transform in myagv_active.launch.
     "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
-    # INVENTED, not transcribed: the AiNex has no lidar at all (see robots/README.md).
-    # Mid-torso on a 0.46 m robot, centred -- above the leg swing, low enough to see the
-    # edges of furniture. The range is cut to the room scale a robot walking at 0.2 m/s
-    # actually operates in.
-    "ainex": {"offset": (0.0, 0.20), "min_range": 0.1, "max_range": 8.0},
+    # No AiNex entry: the AiNex has no lidar, and its ROS file has no /scan.
 }
 
 # Robots whose base is three virtual holonomic joints must be grafted in at the origin
@@ -970,6 +966,17 @@ def _surface_kwargs(args, inst, model, task):
         }
 
     camera = _pick_camera(args, model, ns)
+    if inst.name == "ainex":
+        # The AiNex's own bag. Its interface is its ROS file and nothing a launcher flag
+        # says: no lidar, no depth, the camera at usb_cam's 640x480, and every periodic
+        # topic at the rate the file declares (`ros_surfaces/ainex/topics.RATES_HZ`), so
+        # `--scan-*`, `--depth-*`, `--camera-size`, `--camera-hz` and `--watchdog` do not
+        # reach it. The same bag as the RoboCasa engine's, key for key.
+        return {
+            "view": inst.view, "model": model, "camera": camera,
+            "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+            "extra": {"action_dir": args.action_dir}, "prefix": ns,
+        }
     scan_cfg = None
     if not args.no_scan:
         defaults = SCAN_DEFAULTS.get(inst.name, SCAN_DEFAULTS["myagv"])

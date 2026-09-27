@@ -27,15 +27,26 @@ from ros_surfaces.ainex.actions import BASE_PITCH, rest_pose  # noqa: E402
 
 FAIL = []
 
-# Hiwonder publish 415 mm for the assembled robot. Ours measures a little more because
-# the vendor figure is presumably taken in a different pose; a wide band still catches a
-# model that is mis-scaled or standing on the wrong part of itself.
-HEIGHT_RANGE = (0.38, 0.50)
+# Hiwonder publish 415 mm for the assembled robot: the robot standing straight, every
+# servo at zero. That is the pose the figure is checked in, to 1 % (measured 414.4 mm).
+# It used to be checked against the *rest* pose with a band of (0.38, 0.50), which is two
+# different claims: the rest pose is the vendor's crouched init pose, leaned forward by
+# the hip chain's 14.95 degrees (see `actions.rest_pose`), with the arms hanging -- and
+# that pose stands 379.9 mm tall, under the band's floor, because the band was set before
+# the lean and the lowered arms existed. The crouch is correct; the band was stale.
+PUBLISHED_HEIGHT_M = 0.415
+PUBLISHED_HEIGHT_TOL = 0.01
+# The rest pose is lower than straight by the crouch and the lean, and no lower than a
+# model standing on the wrong part of itself would be.
+REST_HEIGHT_RANGE = (0.36, 0.40)
 # The band a standing robot's hands sweep through, sampled through every frame of every
-# group that does not bend down. Measured: `greet`'s swing passes 0.183 m on its way, so
-# the floor of the band is below the 0.25 m the end poses sit at. The crawl groups are
-# the exception and are checked separately -- they exist to leave this band.
-REACH_RANGE = (0.15, 0.45)
+# group that does not bend down. The floor is set by the resting arms, which every group
+# starts and ends from: they hang with the claw tips 0.149 / 0.143 m (l / r) over the
+# sole, and `greet`'s swing up out of them passes 0.118 m on its way. The old 0.15 floor
+# was measured when the rest pose still held the vendor's raised arms, and put the rest
+# pose itself outside the band. 0.10 m still sits well clear of the crawl groups, which
+# are the exception and are checked separately -- they exist to reach below 45 mm.
+REACH_RANGE = (0.10, 0.45)
 
 
 def check(label: str, ok: bool, detail: str = "") -> None:
@@ -371,8 +382,15 @@ def main() -> int:  # noqa: PLR0915 -- a checklist reads better in one piece
               f"{(min(zs) - ground) * 1000:+.1f} mm over the floor")
 
     top = max(mesh_world_z(model, data, meshed_bodies(model, ns)))
-    check(f"standing height in {HEIGHT_RANGE}", HEIGHT_RANGE[0] <= top - ground <= HEIGHT_RANGE[1],
-          f"{top - ground:.3f} m")
+    check(f"rest-pose height in {REST_HEIGHT_RANGE}",
+          REST_HEIGHT_RANGE[0] <= top - ground <= REST_HEIGHT_RANGE[1], f"{top - ground:.4f} m")
+    straight = {**{n: 0.0 for n in servos.SERVOS}, BASE_PITCH: 0.0}
+    hold(model, data, straight, ns, steps=800)
+    height = max(mesh_world_z(model, data, meshed_bodies(model, ns))) - lowest_point(
+        model, data, feet)
+    check(f"standing straight, the published {PUBLISHED_HEIGHT_M * 1000:.0f} mm",
+          abs(height - PUBLISHED_HEIGHT_M) <= PUBLISHED_HEIGHT_TOL, f"{height:.4f} m")
+    hold(model, data, rest, ns, steps=800)
 
     # With gravcomp on and 24 small servos, this is what catches a kp clamped too soft by
     # the stability margin.

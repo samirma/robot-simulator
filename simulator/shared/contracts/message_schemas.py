@@ -32,6 +32,9 @@ AiNex (Hiwonder) -- `UruBots/ainex-robot-code`, a real AiNex deployment, at
     HeadState.msg, WalkingParam.msg, AppWalkingParam.msg, SetWalkingCommand.srv,
     GetWalkingParam.srv, GetWalkingState.srv, SetBusServosPosition.msg,
     BusServoPosition.msg, GetBusServosPosition.srv
+    ...and the rest of its boot interface from `Hiwonder/ainex` at the revision
+    `robots_specs/robots.yml` records, listed where they are defined (the `AiNex: the rest
+    of its boot interface` block below).
 myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros`, branch `myagv_ros_2023Pi`: uses
     the standard messages only (Twist, Odometry, CompressedImage, LaserScan, Image,
     CameraInfo); no vendor package.
@@ -251,7 +254,160 @@ _SO101: dict[str, list[Field]] = {
     ),
 }
 
-MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101}
+# --- AiNex: the rest of its boot interface (robots_specs/ainex/ros.yml) ------------------
+#
+# Hiwonder/ainex at e8fe2a816797cf83054135160df5a82ec3596a69:
+#   src/ainex_interfaces/{msg,srv}/  ColorsDetect, ColorDetect, ROI, LineROI, ObjectsInfo,
+#       ObjectInfo, SetInt, SetPoint, SetFloat
+#   src/ainex_driver/ros_robot_controller/{msg,srv}/  SetBusServoState, BusServoState,
+#       SetPWMServoState, PWMServoState, GetBusServoCmd, GetPWMServoCmd, LedState,
+#       BuzzerState, OLEDState, MotorsState, MotorState, RGBsState, RGBState, Sbus,
+#       ButtonState, GetBusServoState, GetPWMServoState
+#   src/third_party/ros-sensor_msgs_ext/msg/magnetometer.msg
+# plus the standard ROS 1 Noetic definitions those topics and services use: std_msgs/UInt16,
+# sensor_msgs/Joy, sensor_msgs/MagneticField, sensor_msgs/SetCameraInfo, std_srvs/SetBool.
+
+_AINEX_INTERFACE: dict[str, list[Field]] = {
+    "ainex_interfaces/ROI": _h(
+        ("y_min", "int32", SCALAR), ("y_max", "int32", SCALAR),
+        ("x_min", "int32", SCALAR), ("x_max", "int32", SCALAR),
+    ),
+    "ainex_interfaces/LineROI": _h(
+        ("up", "ainex_interfaces/ROI", SCALAR), ("center", "ainex_interfaces/ROI", SCALAR),
+        ("down", "ainex_interfaces/ROI", SCALAR),
+    ),
+    "ainex_interfaces/ColorDetect": _h(
+        ("color_name", "string", SCALAR), ("use_name", "bool", SCALAR),
+        ("detect_type", "string", SCALAR), ("roi", "ainex_interfaces/ROI", SCALAR),
+        ("line_roi", "ainex_interfaces/LineROI", SCALAR),
+        ("image_process_size", "uint32", VARIABLE), ("lab_min", "int16", VARIABLE),
+        ("lab_max", "int16", VARIABLE), ("min_area", "float64", SCALAR),
+        ("max_area", "float64", SCALAR),
+    ),
+    "ainex_interfaces/ColorsDetect": _h(
+        ("data", "ainex_interfaces/ColorDetect", VARIABLE),
+    ),
+    "ainex_interfaces/ObjectInfo": _h(
+        ("label", "string", SCALAR), ("type", "string", SCALAR),
+        ("width", "int32", SCALAR), ("height", "int32", SCALAR), ("x", "int32", SCALAR),
+        ("y", "int32", SCALAR), ("radius", "int32", SCALAR), ("angle", "int32", SCALAR),
+        ("left_point", "int32", VARIABLE), ("right_point", "int32", VARIABLE),
+    ),
+    "ainex_interfaces/ObjectsInfo": _h(
+        ("data", "ainex_interfaces/ObjectInfo", VARIABLE),
+    ),
+    "ros_robot_controller/BusServoState": _h(
+        ("present_id", "uint16", VARIABLE), ("target_id", "uint16", VARIABLE),
+        ("position", "uint16", VARIABLE), ("offset", "int16", VARIABLE),
+        ("voltage", "uint16", VARIABLE), ("temperature", "uint16", VARIABLE),
+        ("position_limit", "uint16", VARIABLE), ("voltage_limit", "uint16", VARIABLE),
+        ("max_temperature_limit", "uint16", VARIABLE), ("enable_torque", "uint16", VARIABLE),
+        ("save_offset", "uint16", VARIABLE), ("stop", "uint16", VARIABLE),
+    ),
+    "ros_robot_controller/SetBusServoState": _h(
+        ("state", "ros_robot_controller/BusServoState", VARIABLE),
+        ("duration", "float64", SCALAR),
+    ),
+    "ros_robot_controller/PWMServoState": _h(
+        ("id", "uint16", VARIABLE), ("position", "uint16", VARIABLE),
+        ("offset", "int16", VARIABLE),
+    ),
+    "ros_robot_controller/SetPWMServoState": _h(
+        ("state", "ros_robot_controller/PWMServoState", VARIABLE),
+        ("duration", "float64", SCALAR),
+    ),
+    "ros_robot_controller/GetBusServoCmd": _h(
+        ("id", "uint8", SCALAR), ("get_id", "uint8", SCALAR),
+        ("get_position", "uint8", SCALAR), ("get_offset", "uint8", SCALAR),
+        ("get_voltage", "uint8", SCALAR), ("get_temperature", "uint8", SCALAR),
+        ("get_position_limit", "uint8", SCALAR), ("get_voltage_limit", "uint8", SCALAR),
+        ("get_max_temperature_limit", "uint8", SCALAR), ("get_torque_state", "uint8", SCALAR),
+    ),
+    "ros_robot_controller/GetPWMServoCmd": _h(
+        ("id", "uint8", SCALAR), ("get_position", "uint8", SCALAR),
+        ("get_offset", "uint8", SCALAR),
+    ),
+    "ros_robot_controller/LedState": _h(
+        ("id", "uint8", SCALAR), ("on_time", "float32", SCALAR),
+        ("off_time", "float32", SCALAR), ("repeat", "uint16", SCALAR),
+    ),
+    "ros_robot_controller/BuzzerState": _h(
+        ("freq", "uint16", SCALAR), ("on_time", "float32", SCALAR),
+        ("off_time", "float32", SCALAR), ("repeat", "uint16", SCALAR),
+    ),
+    "ros_robot_controller/OLEDState": _h(
+        ("index", "uint8", SCALAR), ("text", "string", SCALAR),
+    ),
+    "ros_robot_controller/MotorState": _h(
+        ("id", "uint16", SCALAR), ("rps", "float64", SCALAR), ("duty", "int8", SCALAR),
+    ),
+    "ros_robot_controller/MotorsState": _h(
+        ("data", "ros_robot_controller/MotorState", VARIABLE),
+    ),
+    "ros_robot_controller/RGBState": _h(
+        ("id", "uint8", SCALAR), ("r", "uint8", SCALAR), ("g", "uint8", SCALAR),
+        ("b", "uint8", SCALAR),
+    ),
+    "ros_robot_controller/RGBsState": _h(
+        ("data", "ros_robot_controller/RGBState", VARIABLE),
+    ),
+    "ros_robot_controller/Sbus": _h(
+        ("header", "std_msgs/Header", SCALAR), ("channel", "float32", VARIABLE),
+    ),
+    "ros_robot_controller/ButtonState": _h(
+        ("id", "uint8", SCALAR), ("state", "uint8", SCALAR),
+    ),
+    "sensor_msgs_ext/magnetometer": _h(
+        ("x", "float64", SCALAR), ("y", "float64", SCALAR), ("z", "float64", SCALAR),
+    ),
+    "std_msgs/UInt16": _h(("data", "uint16", SCALAR)),
+    "sensor_msgs/Joy": _h(
+        ("header", "std_msgs/Header", SCALAR), ("axes", "float32", VARIABLE),
+        ("buttons", "int32", VARIABLE),
+    ),
+    "sensor_msgs/MagneticField": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("magnetic_field", "geometry_msgs/Vector3", SCALAR),
+        ("magnetic_field_covariance", "float64", 9),
+    ),
+}
+
+_AINEX_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    "ainex_interfaces/SetInt": (
+        _h(("data", "int64", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "ainex_interfaces/SetFloat": (
+        _h(("data", "float64", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "ainex_interfaces/SetPoint": (
+        _h(("data", "geometry_msgs/Point", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "ros_robot_controller/GetBusServoState": (
+        _h(("cmd", "ros_robot_controller/GetBusServoCmd", VARIABLE)),
+        _h(("success", "bool", SCALAR),
+           ("state", "ros_robot_controller/BusServoState", VARIABLE)),
+    ),
+    "ros_robot_controller/GetPWMServoState": (
+        _h(("cmd", "ros_robot_controller/GetPWMServoCmd", VARIABLE)),
+        _h(("success", "bool", SCALAR),
+           ("state", "ros_robot_controller/PWMServoState", VARIABLE)),
+    ),
+    "std_srvs/SetBool": (
+        _h(("data", "bool", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "sensor_msgs/SetCameraInfo": (
+        _h(("camera_info", "sensor_msgs/CameraInfo", SCALAR)),
+        _h(("success", "bool", SCALAR), ("status_message", "string", SCALAR)),
+    ),
+}
+
+# --- end AiNex ----------------------------------------------------------------------------
+
+MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101, **_AINEX_INTERFACE}
 
 #: Services: canonical name -> (request fields, response fields). `rosapi` names the two
 #: halves `<Srv>Request` and `<Srv>Response`, and that is how `typedefs()` labels them.
@@ -273,6 +429,7 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
         _h(("success", "bool", SCALAR),
            ("position", "ros_robot_controller/BusServoPosition", VARIABLE)),
     ),
+    **_AINEX_SERVICES,
 }
 
 

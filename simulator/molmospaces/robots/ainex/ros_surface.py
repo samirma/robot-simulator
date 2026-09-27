@@ -1,16 +1,14 @@
 """The AiNex's ROS contract, as this engine presents it.
 
-The contract itself -- the vendor's walking topics, the bus servo one, the gait and the
-action library -- lives in `simulator/shared/ros_surfaces/ainex/`, because every engine has
-to present exactly the same one and two copies of that loop would be two chances to drift.
-What is left here is the MolmoSpaces-specific half: pulling the base move group out of a
-`RobotView`, and reading the MJCF prefix off it.
+The contract itself -- `robots_specs/ainex/ros.yml` transcribed, the controller, the
+gait and the action library -- lives in `simulator/shared/ros_surfaces/ainex/`, because
+every engine has to present exactly the same one and two copies of that loop would be two
+chances to drift. What is left here is the MolmoSpaces-specific half: pulling the base
+move group out of a `RobotView`, and reading the MJCF prefix off it.
 
 That prefix used to be taken inside the shared loop as `getattr(view, "_namespace", "")`,
 a private attribute of a MolmoSpaces class. Reaching into one engine's object from code
 that claims to belong to every engine is exactly what kept this robot inside one of them.
-
-See the shared package for the topic table and the reasoning about the gait.
 """
 
 from __future__ import annotations
@@ -33,57 +31,33 @@ def _base_of(view):
     return view.get_move_group("base")
 
 
-def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: int,
-               control_hz: float, watchdog_s: float, scan: dict | None = None,
-               depth: dict | None = None, extra: dict | None = None, scene_option=None,
-               camera_period: float = 0.0, world_reset=None, prefix: str = ""):
+def attach_ros(bus, view, model, camera: str | None, jpeg_quality: int = 80,
+               control_hz: float = 20.0, extra: dict | None = None, scene_option=None,
+               world_reset=None, prefix: str = ""):
     """Wire this engine's AiNex onto a bus, via the shared contract.
 
-    `prefix` is the MJCF one, passed by the launcher now that it also names the transform
-    tree's bodies. It falls back to the `RobotView` attribute for `serve_ros`'s callers,
-    which is where it used to come from for every caller -- see the module docstring.
+    `prefix` is the MJCF one, passed by the launcher. It falls back to the `RobotView`
+    attribute for `serve_ros`'s callers, which is where it used to come from for every
+    caller -- see the module docstring. Every rate is the robot's own
+    (`topics.RATES_HZ`), not a launcher flag.
     """
     from ros_surfaces.ainex import attach_ros as shared_attach_ros
 
     return shared_attach_ros(
-        bus,
-        _base_of(view),
-        model,
-        prefix or getattr(view, "_namespace", "") or "",
-        camera,
-        camera_size,
-        jpeg_quality,
-        control_hz,
-        watchdog_s,
-        scan=scan,
-        depth=depth,
-        extra=extra,
-        scene_option=scene_option,
-        camera_period=camera_period,
-        world_reset=world_reset,
+        bus, _base_of(view), model, prefix or getattr(view, "_namespace", "") or "", camera,
+        jpeg_quality=jpeg_quality, control_hz=control_hz, extra=extra,
+        scene_option=scene_option, world_reset=world_reset,
     )
 
 
-def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
-              control_hz: float, watchdog_s: float, scan: dict | None = None,
-              depth: dict | None = None, extra: dict | None = None,
+def serve_ros(port: int, view, model, camera: str | None, jpeg_quality: int = 80,
+              control_hz: float = 20.0, extra: dict | None = None,
               host: str = "0.0.0.0", namespace: str = ""):
     """The single-robot path, in this engine's terms. `robots/ainex/test_ros.py` uses it."""
     from ros_surfaces.ainex import serve_ros as shared_serve_ros
 
     return shared_serve_ros(
-        port,
-        _base_of(view),
-        model,
-        getattr(view, "_namespace", "") or "",
-        camera,
-        camera_size,
-        jpeg_quality,
-        control_hz,
-        watchdog_s,
-        scan=scan,
-        depth=depth,
-        extra=extra,
-        host=host,
+        port, _base_of(view), model, getattr(view, "_namespace", "") or "", camera,
+        jpeg_quality=jpeg_quality, control_hz=control_hz, extra=extra, host=host,
         namespace=namespace,
     )
