@@ -984,6 +984,11 @@ class AppleOnPlate:
             # names and must not have to know how a scene spells them.
             yield name, pos, quat, lin, ang
 
+    @property
+    def base_from_world(self) -> np.ndarray:
+        """4x4 from the engine's world into the arm base frame (the rig's `worktop`)."""
+        return self._base_from_world.copy()
+
     def object_positions(self, data) -> dict[str, np.ndarray]:
         """The staged apple and plate where they are in the world, off the compiled model."""
         return {"apple": np.array(data.xpos[self._apple]),

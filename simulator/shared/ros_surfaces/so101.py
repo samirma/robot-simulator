@@ -1164,6 +1164,8 @@ def attach_ros(bus, view, model, task=None, *, cameras=None, jpeg_quality: int =
     reset_requested = threading.Event()
     reset_observed = threading.Event()
     spawn: dict = {}
+    #: The simulated time the last reset's observations were released at.
+    reset_stamp = [0.0]
 
     def do_reset(_args: dict) -> dict:
         reset_observed.clear()
@@ -1171,6 +1173,8 @@ def attach_ros(bus, view, model, task=None, *, cameras=None, jpeg_quality: int =
         if not reset_observed.wait(timeout=10.0):
             return {"success": False,
                     "message": "reset requested but the simulation loop did not apply it"}
+        if world_reset is not None:
+            world_reset.observed(reset_stamp[0])
         return {"success": True, "message": "world reset"}
 
     bus.service(SERVICE_RESET, do_reset, SRV_TYPE_TRIGGER, node=SIMULATOR_NODE)
@@ -1458,6 +1462,7 @@ def attach_ros(bus, view, model, task=None, *, cameras=None, jpeg_quality: int =
         if release:
             if worker is not None:
                 worker.wait(0.2)      # the post-reset wrist frame is out too
+            reset_stamp[0] = now
             reset_observed.set()
 
     step.rate_hz = UPDATE_RATE_HZ

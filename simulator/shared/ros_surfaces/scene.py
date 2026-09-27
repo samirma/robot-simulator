@@ -82,8 +82,13 @@ def camera_info(width: int, height: int, fovy_deg: float, frame_id: str, stamp_s
 
 
 def attach_scene_rig(bus, *, model, cameras, jpeg_quality: int = 70, scene_option=None,
-                     world_reset=None):
-    """Put the rig on `bus`; return the per-step callback, which carries `rate_hz`."""
+                     world_reset=None, truth=None):
+    """Put the rig on `bus`; return the per-step callback, which carries `rate_hz`.
+
+    `truth` (a `tasks.truth_log.TruthLog`, when `SIMULATOR_TRUTH_LOG` asks for one)
+    records the task's true state for every frame the rig renders, stamped as that frame
+    is; it writes a local file and puts nothing on the wire.
+    """
 
     from contracts.rosbridge_server import compressed_image_ros2
     from contracts.tf import TYPE_TF_MESSAGE_ROS2, tf_message
@@ -137,8 +142,9 @@ def attach_scene_rig(bus, *, model, cameras, jpeg_quality: int = 70, scene_optio
             elif bus.has_subscribers(info_topic):
                 bus.publish(info_topic, camera_info(width, height, fovy, frame, stamp),
                             TYPE_SCENE_CAMERA_INFO)
-        if jobs and worker is not None:
-            worker.submit(data, stamp, jobs)
+        if jobs and worker is not None and worker.submit(data, stamp, jobs) \
+                and truth is not None:
+            truth.state(data, stamp)
 
     step.rate_hz = SCENE_CAMERA_HZ
     return step

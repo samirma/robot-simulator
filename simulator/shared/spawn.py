@@ -499,8 +499,17 @@ def build_fleet(args, world):
         rig = probe_scene_cameras(world.model, SCENE_CAMERA_TOPICS)
         if not rig:
             raise SystemExit("the task is staged but its rig cameras are not in the model")
+        # The truth the console's offline audit reads, to a local file and only when
+        # SIMULATOR_TRUTH_LOG asks (tasks/truth_log.py); nothing of it reaches the wire.
+        from tasks.truth_log import from_environment
+
+        arm = next((inst.mjcf for inst in world.instances if inst.name == "so101"), None)
+        truth = from_environment(world.model, world.task, arm_prefix=arm)
+        if truth is not None:
+            fleet.world_reset.on_observed(truth.reset)
         fleet.attach(SCENE_NAMESPACE, attach_scene_rig, model=world.model, cameras=rig,
-                     jpeg_quality=args.jpeg_quality, scene_option=world.scene_option)
+                     jpeg_quality=args.jpeg_quality, scene_option=world.scene_option,
+                     truth=truth)
     fleet.start()
     return fleet
 

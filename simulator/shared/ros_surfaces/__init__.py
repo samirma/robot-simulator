@@ -40,6 +40,7 @@ class WorldReset:
 
     def __init__(self) -> None:
         self._callbacks: list[Callable[[], None]] = []
+        self._observed: list[Callable[[float], None]] = []
 
     def on_reset(self, callback: Callable[[], None]) -> None:
         self._callbacks.append(callback)
@@ -47,6 +48,14 @@ class WorldReset:
     def fire(self) -> None:
         for callback in self._callbacks:
             callback()
+
+    def on_observed(self, callback: Callable[[float], None]) -> None:
+        """`callback(stamp_s)` once a reset has completed and its observations are out."""
+        self._observed.append(callback)
+
+    def observed(self, stamp_s: float) -> None:
+        for callback in self._observed:
+            callback(stamp_s)
 
 
 class RobotFleet:

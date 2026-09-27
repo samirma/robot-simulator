@@ -52,6 +52,11 @@
 #
 # The serve warns when its real-time factor over a 10 s window falls below 0.90.
 #
+# With SIMULATOR_TRUTH_LOG=<path> in the environment (e.g. runs/truth.jsonl), a serve that
+# stages the task also appends its true state -- each /reset, and the apple, plate and
+# fingers at every rig frame -- to that local file, for robot_console's offline audit
+# (python -m robot_console.arm.audit). Nothing of it is served on the wire.
+#
 # Examples:
 #   ./kitchen.sh serve
 #   ./kitchen.sh serve --robots so101,myagv --engine robocasa
