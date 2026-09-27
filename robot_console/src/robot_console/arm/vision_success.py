@@ -365,6 +365,8 @@ def locate_apple(overhead: CameraModel, over_bgr: np.ndarray,
 #      "joint_state": {"stamp": s, "name": [...], "position": [...]} | None}
 
 RIG_SAMPLES_KEY = "rig_samples"
+#: Where an assessment records the first and last graded stamp, seconds.
+WINDOW_KEY = "window_s"
 
 
 def _stamp(part: Any) -> float | None:
@@ -507,10 +509,14 @@ def assess(samples: Sequence[Mapping[str, Any]]) -> Assessment:
     stamps = [float(_stamp(s["overhead"])) for s in ordered]  # type: ignore[arg-type]
     end = stamps[-1]
     start = end - HOLD_SECONDS
+    # The observed interval, in the rig's header clock: what an offline audit lines its
+    # own record up against (`arm/audit.py`). Public stamps, nothing more.
+    window = {WINDOW_KEY: [stamps[0], end]}
     anchors = [i for i, t in enumerate(stamps) if t <= start + 1e-9]
     if not anchors:
         return Assessment(False, f"observations cover only {end - stamps[0]:.2f} s, "
-                                 f"the hold needs {HOLD_SECONDS:g} s", samples=len(ordered))
+                                 f"the hold needs {HOLD_SECONDS:g} s", samples=len(ordered),
+                          extra=window)
     first = anchors[-1]
     # Poses from before the hold are needed for the speed at its start.
     earliest = start - SPEED_BASELINE_S - 2 * MAX_SAMPLE_GAP_S
@@ -519,7 +525,7 @@ def assess(samples: Sequence[Mapping[str, Any]]) -> Assessment:
     measured = {i: measure(ordered[i]) for i in range(lo, len(ordered))}
 
     plate = plate_centre(list(measured.values()), ordered[-1].get("camera_info"))
-    result = Assessment(False, "", samples=len(ordered))
+    result = Assessment(False, "", samples=len(ordered), extra=window)
     if plate is not None:
         result.plate_xy = [round(plate[0], 4), round(plate[1], 4)]
     final = measured[len(ordered) - 1]
