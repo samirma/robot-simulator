@@ -23,7 +23,18 @@ brew install python@3.11 uv git
 - Disk: MolmoSpaces ~13 GB with every iTHOR house (houses otherwise download on demand);
   RoboCasa ~10 GB of kitchen assets; the MolmoAct2 checkpoint ~22 GB.
 
-### 2. Simulator — MolmoSpaces (the default engine)
+### 2. Robot assets
+
+`robots_specs/` holds each robot's official URDF, MuJoCo model and ROS interface; the
+meshes they reference (~220 MB) are not in git but fetched from each robot's pinned
+upstream and checked against `robots_specs/meshes.sha256`. Each engine's `run.sh setup`
+also does this.
+
+```bash
+./fetch_robot_assets.sh
+```
+
+### 3. Simulator — MolmoSpaces (the default engine)
 
 ```bash
 cd simulator/molmospaces
@@ -34,7 +45,7 @@ cd simulator/molmospaces
 `--scene ithor:1` (the `kitchen.sh` default) is installed on first use if you skip
 `assets ithor`.
 
-### 3. Simulator — RoboCasa (optional, second engine)
+### 4. Simulator — RoboCasa (optional, second engine)
 
 Only needed for `./kitchen.sh serve --engine robocasa`.
 
@@ -44,7 +55,7 @@ cd simulator/robocasa
 ./run.sh assets           # kitchen assets (~10 GB)
 ```
 
-### 4. Console
+### 5. Console
 
 Nothing to do up front: `bin/teleop.sh`, `bin/slam.sh` and `run_task.sh` create their venv
 on first run (`.venv`, and `.venv-vla` for the MolmoAct2 policy, which pulls torch). To
@@ -56,7 +67,7 @@ cd robot_console
 .venv/bin/python -m pytest
 ```
 
-### 5. Check it works
+### 6. Check it works
 
 ```bash
 cd simulator

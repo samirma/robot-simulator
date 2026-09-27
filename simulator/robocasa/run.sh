@@ -57,6 +57,9 @@ find_python311() {
 do_setup() {
   command -v uv >/dev/null || die "uv not found; install from https://docs.astral.sh/uv/"
 
+  echo ">> fetching the robot meshes into robots_specs/"
+  "$SIM_ROOT/../../fetch_robot_assets.sh"
+
   if [ ! -d "$ROBOSUITE_DIR" ]; then
     echo ">> cloning robosuite $ROBOSUITE_REF"
     git clone --depth 1 --branch "$ROBOSUITE_REF" \

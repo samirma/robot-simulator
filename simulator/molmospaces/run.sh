@@ -55,6 +55,9 @@ find_python311() {
 do_setup() {
   command -v uv >/dev/null || die "uv not found; install from https://docs.astral.sh/uv/"
 
+  echo ">> fetching the robot meshes into robots_specs/"
+  "$SIM_ROOT/../../fetch_robot_assets.sh"
+
   if [ ! -d "$MOLMOSPACES_DIR" ]; then
     echo ">> cloning molmospaces"
     git clone https://github.com/allenai/molmospaces.git "$MOLMOSPACES_DIR"

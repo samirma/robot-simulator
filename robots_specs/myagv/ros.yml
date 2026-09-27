@@ -1,0 +1,297 @@
+# myAGV — official ROS 1 interface.
+# Boot launch (myagv_active.launch) plus a camera run beside it:
+#   rosrun usb_cam usb_cam_node __name:=camera _camera_frame_id:=camera_link   (usb_cam 0.3.7)
+# ROS runtime names (/rosout, /rosout_agg, logger services) are excluded.
+dialect: ros1          # ROS Noetic
+sources:               # every URL a fact below cites, pinned where possible
+  - https://github.com/elephantrobotics/myagv_ros/tree/c71f3cc574e5ed1973a925238eabe88662cfa701
+  - https://github.com/elephantrobotics/myAGV-docs/tree/2510f8a3bd399823dd82088a92b1b2ee62d6d130/MYAGV_PI_2023_EN
+  - https://docs.elephantrobotics.com/docs/myagv_pi23_en/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.html
+  - https://github.com/ros-drivers/usb_cam/tree/addab4a65fdf65c460fec2cc3eee8fab94699370
+  - https://github.com/ros/robot_state_publisher/tree/85ed2140a0966f492a038d47f222f593047760c3        # noetic-devel, 1.15.3
+  - https://github.com/ros/joint_state_publisher/tree/ccb4446b9092e7f6d7956d7058d17745df7f8475        # noetic-devel
+  - https://github.com/ros/geometry/tree/f23e0aa39053a57263615ebb7d603fc97f09707c                     # noetic-devel, tf
+  - https://github.com/ros-perception/image_common/tree/5559cc5ff15c4e94bef7912eabe5e330de62475c      # noetic-devel
+  - https://github.com/ros-perception/image_transport_plugins/tree/cae592ce0816ea03bc38f0b6d27b6eae907feb10  # noetic-devel
+boot_launch: myagv_odometry/launch/myagv_active.launch   # roslaunch myagv_odometry myagv_active.launch
+
+topics:
+  # --- myagv_odometry_node (base MCU over /dev/ttyAMA2) ---
+  - name: /cmd_vel
+    type: geometry_msgs/Twist
+    direction: in
+    rate_hz: event
+    node: myagv_odometry_node
+    description: Holonomic velocity command; linear.x, linear.y, angular.z each clamped to [-1, 1] and re-sent to the MCU every loop cycle (last value held, no timeout).
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGVSub.cpp#L26
+  - name: /odom
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: 100
+    unverified: true   # 100 Hz is the loop cap; each cycle blocks on the MCU's serial auto-report, whose rate is not documented
+    node: myagv_odometry_node
+    description: Wheel odometry, frame odom -> child base_footprint (no TF broadcast; robot_pose_ekf owns odom -> base_footprint).
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGV.cpp#L335
+  - name: /imu
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: 100
+    unverified: true   # same MCU-gated loop as /odom
+    node: myagv_odometry_node
+    description: Onboard IMU orientation, angular velocity and linear acceleration, frame imu_link.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGV.cpp#L290
+  - name: /Voltage
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: 100
+    unverified: true   # same MCU-gated loop as /odom
+    node: myagv_odometry_node
+    description: Main battery voltage in volts.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGV.cpp#L253
+  - name: /voltage_backup
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: 100
+    unverified: true   # same MCU-gated loop as /odom
+    node: myagv_odometry_node
+    description: Backup battery voltage in volts (0.0 when no backup battery).
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGV.cpp#L256
+
+  # --- robot description / TF ---
+  - name: /joint_states
+    type: sensor_msgs/JointState
+    direction: out
+    rate_hz: 10
+    node: joint_state_publisher
+    description: Default position of the URDF's one movable joint (base_up, continuous); consumed by robot_state_publisher.
+    source: https://github.com/ros/joint_state_publisher/blob/ccb4446b9092e7f6d7956d7058d17745df7f8475/joint_state_publisher/src/joint_state_publisher/__init__.py#L174
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 10
+    node: robot_state_publisher
+    description: base_footprint -> base_up, published per /joint_states message (throttled by publish_frequency 50 Hz).
+    source: https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L85
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: latched
+    node: robot_state_publisher
+    description: Fixed URDF joints; myAGV.urdf has none, so it carries no transforms.
+    source: https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/include/robot_state_publisher/robot_state_publisher.h#L97
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 20
+    node: base2camera_link
+    description: tf static_transform_publisher base_footprint -> camera_link (0.13, 0, 0.131; rpy 0), period 50 ms.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L9
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 20
+    node: base2imu_link
+    description: tf static_transform_publisher base_footprint -> imu_link (0, 0, 0; yaw 0, pitch pi, roll pi), period 50 ms.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L10
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 100
+    node: base2laser_link
+    description: tf static_transform_publisher base_footprint -> laser_frame (0.065, 0, 0.08; yaw pi), period 10 ms.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L11
+
+  # --- robot_pose_ekf (vendored, modified to publish nav_msgs/Odometry) ---
+  - name: /robot_pose_ekf/odom_combined
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: 30
+    node: robot_pose_ekf
+    description: EKF fusion of /odom and /imu (vo off), frame odom; twist copied from /odom. Emitted on the 30 Hz timer only once the filter is initialised and updates.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L107
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 30
+    node: robot_pose_ekf
+    description: odom -> base_footprint from the EKF estimate (z forced to 0), same cadence as odom_combined.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L480
+
+  # --- ydlidar_lidar_publisher (YDLIDAR X2, /dev/ttyAMA0) ---
+  - name: /scan
+    type: sensor_msgs/LaserScan
+    direction: out
+    rate_hz: 30
+    unverified: true   # 30 Hz is the loop cap; the X2 motor speed is external PWM ("frequency is invalid"), real scan rate not stated
+    node: ydlidar_lidar_publisher
+    description: 2D laser scan, frame laser_frame, 360 deg, range 0.1-12.0 m per launch.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L241
+  - name: /point_cloud
+    type: sensor_msgs/PointCloud
+    direction: out
+    rate_hz: 30
+    unverified: true   # published alongside /scan
+    node: ydlidar_lidar_publisher
+    description: Same scan as points in laser_frame, channels intensities and stamps.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L242
+
+  # --- camera (usb_cam 0.3.7, run beside the boot launch) ---
+  - name: /camera/image_raw
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: 30
+    node: camera
+    description: USB camera frames, frame camera_link; defaults /dev/video0, 640x480, mjpeg, framerate 30.
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89
+  - name: /camera/camera_info
+    type: sensor_msgs/CameraInfo
+    direction: out
+    rate_hz: 30
+    node: camera
+    description: Calibration published with every image (camera_info_url empty by default, so uncalibrated).
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L251
+  - name: /camera/image_raw/compressed
+    type: sensor_msgs/CompressedImage
+    direction: out
+    rate_hz: 30
+    node: camera
+    description: image_transport "compressed" plugin output (requires compressed_image_transport installed; encodes only while subscribed).
+    source: https://github.com/ros-perception/image_transport_plugins/blob/cae592ce0816ea03bc38f0b6d27b6eae907feb10/compressed_image_transport/include/compressed_image_transport/compressed_publisher.h#L49
+
+services:
+  - name: /stop_scan
+    type: std_srvs/Empty
+    node: ydlidar_lidar_publisher
+    description: Stop lidar scanning.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L157
+  - name: /start_scan
+    type: std_srvs/Empty
+    node: ydlidar_lidar_publisher
+    description: Start lidar scanning.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L159
+  - name: /robot_pose_ekf/get_status
+    type: robot_pose_ekf/GetStatus
+    node: robot_pose_ekf
+    description: Returns a status string describing the filter and its sensors.
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L143
+  - name: /camera/start_capture
+    type: std_srvs/Empty
+    node: camera
+    description: Start camera capture.
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L124
+  - name: /camera/stop_capture
+    type: std_srvs/Empty
+    node: camera
+    description: Stop camera capture.
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L125
+  - name: /camera/set_camera_info
+    type: sensor_msgs/SetCameraInfo
+    node: camera
+    description: Store a camera calibration (camera_info_manager on the node's private namespace).
+    source: https://github.com/ros-perception/image_common/blob/5559cc5ff15c4e94bef7912eabe5e330de62475c/camera_info_manager/src/camera_info_manager.cpp#L94
+
+parameters:
+  - name: /robot_description
+    description: Contents of myagv_urdf/urdf/myAGV.urdf (links base_footprint, base_up; continuous joint base_up).
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L5
+  - name: /robot_pose_ekf/output_frame
+    description: odom
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L14
+  - name: /robot_pose_ekf/base_footprint_frame
+    description: base_footprint
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L15
+  - name: /robot_pose_ekf/freq
+    description: 30.0 (filter update Hz)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L16
+  - name: /robot_pose_ekf/sensor_timeout
+    description: 2.0 s
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L17
+  - name: /robot_pose_ekf/odom_used
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L18
+  - name: /robot_pose_ekf/odom_data
+    description: odom (input odometry topic)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L19
+  - name: /robot_pose_ekf/imu_used
+    description: true (imu_data remapped to /imu)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L20
+  - name: /robot_pose_ekf/vo_used
+    description: false
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/launch/myagv_active.launch#L21
+  - name: /ydlidar_lidar_publisher/port
+    description: /dev/ttyAMA0
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L4
+  - name: /ydlidar_lidar_publisher/frame_id
+    description: laser_frame
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L5
+  - name: /ydlidar_lidar_publisher/ignore_array
+    description: "-50,50"
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L7
+  - name: /ydlidar_lidar_publisher/baudrate
+    description: 115200
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L10
+  - name: /ydlidar_lidar_publisher/lidar_type
+    description: 1 (TYPE_TRIANGLE)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L12
+  - name: /ydlidar_lidar_publisher/device_type
+    description: 0 (serial)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L14
+  - name: /ydlidar_lidar_publisher/sample_rate
+    description: "3"
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L15
+  - name: /ydlidar_lidar_publisher/abnormal_check_count
+    description: 4
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L16
+  - name: /ydlidar_lidar_publisher/resolution_fixed
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L19
+  - name: /ydlidar_lidar_publisher/auto_reconnect
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L20
+  - name: /ydlidar_lidar_publisher/reversion
+    description: false
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L21
+  - name: /ydlidar_lidar_publisher/inverted
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L22
+  - name: /ydlidar_lidar_publisher/isSingleChannel
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L23
+  - name: /ydlidar_lidar_publisher/intensity
+    description: false
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L24
+  - name: /ydlidar_lidar_publisher/support_motor_dtr
+    description: true
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L25
+  - name: /ydlidar_lidar_publisher/invalid_range_is_inf
+    description: false (invalid ranges reported as 0.0)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L26
+  - name: /ydlidar_lidar_publisher/point_cloud_preservative
+    description: false
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L27
+  - name: /ydlidar_lidar_publisher/angle_min
+    description: -180 deg
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L30
+  - name: /ydlidar_lidar_publisher/angle_max
+    description: 180 deg
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L31
+  - name: /ydlidar_lidar_publisher/range_min
+    description: 0.1 m
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L32
+  - name: /ydlidar_lidar_publisher/range_max
+    description: 12.0 m
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L33
+  - name: /ydlidar_lidar_publisher/frequency
+    description: 10.0 Hz (launch comment says ineffective; X2 speed is external PWM)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L35
+  - name: /camera/camera_frame_id
+    description: camera_link (set by the rosrun _camera_frame_id arg; node default head_camera)
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L118
+
+stop_command: >-
+  Publish a zero geometry_msgs/Twist on /cmd_vel (official teleop key "k", or any unbound key, sends
+  all-zero velocities, and a zero Twist is sent when teleop exits). myagv_odometry_node keeps
+  re-sending the last /cmd_vel every cycle with no timeout, so the base keeps moving until a zero Twist arrives.
+  Refs: https://docs.elephantrobotics.com/docs/myagv_pi23_en/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.html
+  https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_teleop/scripts/myagv_teleop.py#L149
+  https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGVSub.cpp#L32

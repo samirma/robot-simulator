@@ -65,3 +65,9 @@ MUJOCO_LOG.TXT
 # specs.json describes the delivered state and IS tracked.
 implementation_plan.json
 target_specs.json
+
+# Official robot meshes — restored with ./fetch_robot_assets.sh, verified against
+# robots_specs/meshes.sha256 (~220 MB, fetched from each robot's pinned upstream).
+robots_specs/**/*.stl
+robots_specs/**/*.STL
+robots_specs/**/*.dae
