@@ -6,7 +6,7 @@ root, with its paths in `robots_specs/robots.yml`. The simulator reads them from
 through `shared/robots_spec.py`; nothing under `simulator/` keeps a copy.
 
 What the simulator builds from them lives in `shared/robots/<id>/` (a generated MJCF,
-converted meshes, menagerie's additions) or, for the AiNex, in `shared/ainex_model.py`.
+converted meshes, collision simplifications) or, for the AiNex, in `shared/ainex_model.py`.
 See [README.md](README.md) for how each robot is actually built.
 
 Deliberately **not** placed in `simulator/assets/` — that is `MLSPACES_ASSETS_DIR`, a
@@ -15,7 +15,7 @@ hand-curated files there could be pruned by a later `./run.sh assets`.
 
 | Robot | Source | Used to load? |
 |---|---|---|
-| `so101` | [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) `Simulation/SO101` — `so101_new_calib.urdf`, `so101_new_calib.xml` + STL meshes | **meshes** — `model.xml` is menagerie's MJCF, loading the official meshes; the URDF is served as `robot_description` |
+| `so101` | [TheRobotStudio/SO-ARM100](https://github.com/TheRobotStudio/SO-ARM100) `Simulation/SO101` — `so101_new_calib.urdf`, `so101_new_calib.xml` + STL meshes | **the MJCF** — `model.xml` is generated from `so101_new_calib.xml` (collision, a TCP site and the wrist camera added) and loads the official meshes; the URDF is served as `robot_description` |
 | `myagv` | [elephantrobotics/myagv_ros](https://github.com/elephantrobotics/myagv_ros) `myagv_ros_2023Pi` — `myAGV.urdf` + COLLADA meshes | **meshes only** — `make_model.py` converts the DAE files; the URDF itself is visualisation-only (no wheels, collision or inertia) |
 | `ainex` | [Hiwonder/ainex](https://github.com/Hiwonder/ainex) `ainex_description` — `ainex.urdf.xacro` flattened to `ainex.urdf`, plus 25 STL meshes. **No licence stated** — see below | **yes** — no MJCF exists that is not itself a derivative of this |
 

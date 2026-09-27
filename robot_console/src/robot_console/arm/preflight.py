@@ -52,7 +52,7 @@ import numpy as np
 from inspect_robots_ros._client import RosbridgeClient
 
 from robot_console.arm.embodiment import apple_state_from
-from robot_console.arm.kinematics import ik_position
+from robot_console.arm.kinematics import REACH_POINT_OFFSET, ik_position
 from robot_console.arm.ros_settings import (
     APPLE_BODY,
     CAMERA_SPECS,
@@ -160,7 +160,10 @@ def _within_reach(apple: np.ndarray, plate: np.ndarray) -> tuple[bool, str]:
     worst = 0.0
     for name, xyz, (lift, pitch) in (("grasp", apple, _GRASP), ("release", plate, _RELEASE)):
         target = (float(xyz[0]), float(xyz[1]), float(xyz[2]) + lift)
-        solve = ik_position(target, pitch=pitch, pitch_weight=1.0, max_iterations=600)
+        # The point this gate was calibrated on: see `REACH_POINT_OFFSET`.
+        solve = ik_position(
+            target, pitch=pitch, pitch_weight=1.0, max_iterations=600, offset=REACH_POINT_OFFSET
+        )
         if solve.position_error > _MAX_IK_RESIDUAL:
             return False, (
                 f"{name} pose {target} misses by {solve.position_error * 1000:.1f} mm "

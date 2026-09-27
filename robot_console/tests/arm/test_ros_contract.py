@@ -24,15 +24,18 @@ from robot_console.topics import namespaced
 from robot_console.arm.ros_settings import (
     ARM_COMMAND_TOPIC,
     FREE_JOINT_STATES_TOPIC,
-    GRIPPER_COMMAND_TOPIC,
+    GRIPPER_ACTION,
+    GRIPPER_ACTION_TYPE,
     JOINT_STATES_TOPIC,
     OVERHEAD_CAMERA_TOPIC,
+    RESET_SERVICE,
     SCENE_NAMESPACE,
     SIDE_CAMERA_NAME,
     SIDE_CAMERA_TOPIC,
-    TASK_MANAGER_RESET_SERVICE,
+    WRIST_CAMERA_HEIGHT,
     WRIST_CAMERA_NAME,
     WRIST_CAMERA_TOPIC,
+    WRIST_CAMERA_WIDTH,
 )
 
 _SIMULATOR = Path(__file__).resolve().parents[3] / "simulator" / "shared"
@@ -69,10 +72,17 @@ def _namespace():
 def test_every_topic_name_matches_the_simulators() -> None:
     s = _surface()
     assert s.TOPIC_ARM_COMMAND == ARM_COMMAND_TOPIC
-    assert s.TOPIC_GRIPPER_COMMAND == GRIPPER_COMMAND_TOPIC
     assert s.TOPIC_JOINT_STATES == JOINT_STATES_TOPIC
-    assert s.TOPIC_FREE_JOINT_STATES == FREE_JOINT_STATES_TOPIC
-    assert s.SERVICE_RESET == TASK_MANAGER_RESET_SERVICE
+    assert s.ACTION_GRIPPER_COMMAND == GRIPPER_ACTION
+    assert s.ACTIONS[GRIPPER_ACTION][0] == GRIPPER_ACTION_TYPE
+    assert s.TOPIC_WRIST_COMPRESSED == WRIST_CAMERA_TOPIC
+    assert s.SERVICE_RESET == RESET_SERVICE
+
+
+def test_the_free_joint_topic_the_console_still_reads_is_not_served() -> None:
+    """Not part of the official interface; the console's consumers of it are pending."""
+    s = _surface()
+    assert FREE_JOINT_STATES_TOPIC not in s.TOPICS
 
 
 def test_the_simulators_publish_no_success_topic() -> None:
@@ -88,28 +98,21 @@ def test_the_simulators_publish_no_success_topic() -> None:
 
 def test_the_camera_topics_and_sizes_match() -> None:
     s = _surface()
-    published = {**s.SCENE_CAMERA_TOPICS, **s.WRIST_CAMERA}
+    published = {**s.SCENE_CAMERA_TOPICS,
+                 s.TOPIC_WRIST_COMPRESSED: (s.WRIST_MJCF_CAMERA, *s.WRIST_SIZE)}
     assert set(published) == {OVERHEAD_CAMERA_TOPIC, SIDE_CAMERA_TOPIC, WRIST_CAMERA_TOPIC}
     # The sizes are contract terms: the VLA's preprocessor stretches to 4:3 without
     # preserving aspect, which is why the two scene cameras are 640x480.
     assert published[OVERHEAD_CAMERA_TOPIC][1:] == (640, 480)
     assert published[SIDE_CAMERA_TOPIC][1:] == (640, 480)
-    # The wrist view is 16:9 because it renders the SO-101's own `wrist_cam` at
-    # menagerie's published pose and intrinsics, and that camera's sensor is 16:9.
-    # It was a 256x256 project-added camera until 2026-09-06; the model is now
-    # exclusively upstream's, so the view is whatever upstream's camera sees.
-    assert published[WRIST_CAMERA_TOPIC][1:] == (640, 360)
+    # The wrist is usb_cam 0.8.1 at its default 640x480.
+    assert published[WRIST_CAMERA_TOPIC][1:] == (WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT) == (640, 480)
 
 
-def test_the_wrist_view_renders_the_upstream_camera() -> None:
-    """The MJCF camera behind the wrist topic must be menagerie's, by name.
-
-    A rename here is how the model would quietly stop being upstream's: the topic and
-    the frame size would look untouched while the view moved 119 mm and 53.7 degrees,
-    which is exactly what the removed project camera did.
-    """
+def test_the_wrist_view_renders_the_models_wrist_camera() -> None:
+    """The MJCF camera behind the wrist topic, by name."""
     s = _surface()
-    assert s.WRIST_CAMERA[WRIST_CAMERA_TOPIC][0] == "wrist_cam"
+    assert s.WRIST_MJCF_CAMERA == "wrist_cam"
 
 
 def test_both_sides_agree_on_the_joint_names_and_their_order() -> None:
@@ -127,17 +130,19 @@ def test_the_sorted_wire_order_shares_no_index_with_the_contract_order() -> None
 
 
 def test_the_gripper_map_is_an_offset_and_round_trips() -> None:
+    """`gripper_joint` is the official hinge shifted so the closed stop is 0."""
     s = _surface()
-    for contract in (0.0, 0.25, 0.4, 0.5, 0.75, 1.0):
-        mjcf = s.to_mjcf_gripper(contract)
-        assert mjcf == pytest.approx(contract - s.GRIPPER_OFFSET_RAD)
-        assert s.to_contract_gripper(mjcf) == pytest.approx(contract)
+    for wire in (0.0, 0.25, 0.4, 0.5, 0.75, 1.0):
+        mjcf = s.to_mjcf_gripper(wire)
+        assert mjcf == pytest.approx(wire - s.GRIPPER_OFFSET_RAD)
+        assert s.to_wire_gripper(mjcf) == pytest.approx(wire)
 
 
-def test_the_gripper_map_clamps_to_the_contract_range() -> None:
+def test_the_gripper_map_clamps_to_the_hinge_range() -> None:
     s = _surface()
-    assert s.to_contract_gripper(5.0) == 1.0
-    assert s.to_contract_gripper(-5.0) == 0.0
+    assert s.to_mjcf_gripper(5.0) == s.GRIPPER_MJCF_RANGE[1]
+    assert s.to_mjcf_gripper(-5.0) == s.GRIPPER_MJCF_RANGE[0]
+    assert s.GRIPPER_RANGE[0] == pytest.approx(0.0)
 
 
 # --------------------------------------------------------------- namespacing
@@ -156,13 +161,12 @@ def test_both_sides_compose_a_namespaced_topic_the_same_way() -> None:
     for namespace in ("so101", "myagv", "", "robot_2"):
         for topic in (
             ARM_COMMAND_TOPIC,
-            GRIPPER_COMMAND_TOPIC,
+            GRIPPER_ACTION,
             JOINT_STATES_TOPIC,
-            FREE_JOINT_STATES_TOPIC,
             OVERHEAD_CAMERA_TOPIC,
             SIDE_CAMERA_TOPIC,
             WRIST_CAMERA_TOPIC,
-            TASK_MANAGER_RESET_SERVICE,
+            RESET_SERVICE,
             "/cmd_vel",
             "/odom",
             "/scan",
@@ -210,14 +214,14 @@ def test_both_sides_agree_the_scene_rig_is_not_the_robot_s() -> None:
 
     published = {
         ns.ns_topic(s.SCENE_NAMESPACE, t) for t in s.SCENE_CAMERA_TOPICS
-    } | {ns.ns_topic("so101", t) for t in s.WRIST_CAMERA}
+    } | {ns.ns_topic("so101", s.TOPIC_WRIST_COMPRESSED)}
     subscribed = {
         spec[0]
         for spec in RosSettings(
             namespace="so101",
             extra_cameras=(
                 (SIDE_CAMERA_NAME, SIDE_CAMERA_TOPIC, 640, 480),
-                (WRIST_CAMERA_NAME, WRIST_CAMERA_TOPIC, 640, 360),
+                (WRIST_CAMERA_NAME, WRIST_CAMERA_TOPIC, 640, 480),
             ),
         ).cameras().values()
     }
@@ -239,7 +243,7 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     kwargs = settings.base_kwargs()
     assert kwargs["joint_states_topic"] == "/so101/joint_states"
     assert kwargs["command_topic"] == "/so101/joint_trajectory_controller/joint_trajectory"
-    assert kwargs["gripper_topic"] == "/so101/gripper_controller/commands"
+    assert kwargs["gripper_topic"] == "/so101/gripper_controller/gripper_cmd"
     assert kwargs["reset_service"] == "/so101/reset"
     assert set(kwargs["cameras"]) == {"overhead", "side"}
     # The rig's own namespace, not the arm's -- see the test below.

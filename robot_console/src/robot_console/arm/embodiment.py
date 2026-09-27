@@ -5,9 +5,10 @@ Subclasses the upstream
 reimplementing it, so the arm command path, the gripper publish, joint-state
 freshness gating, staleness bounds, camera decoding and the rate preflight all
 stay the upstream plugin's. The whole six-dimensional action vector — five arm
-joints on ``/joint_trajectory_controller/joint_trajectory`` and the jaw on
-``/gripper_controller/commands`` — is plain topic publishing that the adapter
-already does, so nothing here touches the transport.
+joints on ``/joint_trajectory_controller/joint_trajectory`` and the jaw on the
+``/gripper_controller/gripper_cmd`` action — goes through the adapter; the only
+transport change is the client's (``ros_client.HeaderStampingClient``), which stamps
+trajectories and turns the adapter's gripper publish into an action goal.
 
 Two things are added on top, both of which the upstream adapter cannot do
 because they are task knowledge:
@@ -45,6 +46,7 @@ from robot_console.arm.ros_settings import (
     SCENE_CAMERA_POSES,
     SCENE_CAMERA_TILT_DEG,
     FREE_JOINT_STATES_TYPE,
+    GRIPPER_ACTION_TYPE,
     RosSettings,
 )
 from robot_console.arm.vision_success import VisionTracker
@@ -106,6 +108,10 @@ class SO101RosEmbodiment(RosEmbodiment):
             # keeps working, and the episode looks alive. That is the failure this whole
             # class exists to prevent, so it must not be reintroduced by a namespace.
             stamped_topics=(self.settings.topic(self.settings.command_topic),),
+            # The gripper is an action on the wire; see HeaderStampingClient.publish.
+            gripper_actions=({self.settings.topic(self.settings.gripper_topic):
+                              GRIPPER_ACTION_TYPE}
+                             if self.settings.gripper_mode != "none" else {}),
             clock=self._clock,
             sleep=self._sleep,
         )

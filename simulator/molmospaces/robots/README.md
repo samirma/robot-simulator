@@ -34,27 +34,29 @@ Mark the robot `simulated` in `robots_specs/robots.yml` and register its adapter
 ## so101
 
 TheRobotStudio / LeRobot SO-101: a 5-DoF tabletop arm with a single hinged jaw.
-Model from [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
-`robotstudio_so101`, kept verbatim as `shared/robots/so101/so101.xml` (Apache 2.0, see
-its `LICENSE`). Its official meshes are loaded from `robots_specs/so101/assets/`; only
-menagerie's additions (gripper collision parts, camera mount) are kept beside it.
+`shared/robots/so101/model.xml` is **generated** by `make_model.py` from the official
+`robots_specs/so101/so101_new_calib.xml`, whose meshes it loads from
+`robots_specs/so101/assets/`. Every body, inertial, joint, visual geom, site, default and
+actuator is the official file's; the generator adds only what simulation needs:
 
-`model.xml` is **generated** from it by `make_model.py`, which points the official
-meshes at `robots_specs/` and adds exactly one thing:
+* **collision**: the official convex hulls (a hull of a jaw fills the gap between the
+  fingers) are replaced by mujoco_menagerie's `robotstudio_so101` primitives and gripper
+  collision meshes (Apache 2.0; the meshes are in `shared/robots/so101/assets/`), in
+  groups 3 and 4, invisible;
+* a `tcp` site in MolmoSpaces convention, which `SO101RobotView` resolves by name:
+  positioned at the true grasp centre (the midpoint between the jaw tips, ~19 mm from
+  the official `gripperframe`, which sits on the fixed-jaw tip) and oriented with +z
+  along the approach. Both axes are *measured from the model* at generation time;
+* the wrist camera `wrist_cam`, directly in the official `gripper` body at menagerie's
+  pose, as a 640x480 capture (usb_cam's default mode, square pixels).
 
-* a `tcp` site in MolmoSpaces convention, positioned at the true grasp centre (the
-  midpoint between the jaw tips, ~12 mm from the stock `gripperframe`) and oriented
-  with +z along the approach. Both axes are *measured from the model* at generation
-  time rather than hardcoded, so the file stays correct if the jaw geometry changes.
+`python robots/so101/make_model.py --check` (also run after every generation) compiles
+the official file and `model.xml` and asserts the kinematics, inertials, limits,
+actuators and visual geoms are identical, and compares forward kinematics against the
+official URDF. An `exo_camera`, a second wrist camera and a softened gripper
+`forcerange` lived here until 2026-09-06; see `shared/robots/so101/CHANGELOG.md`.
 
-It is in group 3 -- no visual, no collision, no dynamics -- and it stays only because
-`SO101RobotView` resolves it by name. **Everything the simulator renders or steps is
-upstream's**: geoms, joints, actuators and the one camera, `wrist_cam`, which is what
-the ROS wrist topic streams. An `exo_camera`, a second wrist camera and a softened
-gripper `forcerange` lived here until 2026-09-06; `make_model.py` records what each was
-and what removing it costs.
-
-Re-run `python robots/so101/make_model.py` after changing `so101.xml`.
+Re-run `python robots/so101/make_model.py` after `robots_specs/so101/` changes.
 
 ### Verified
 

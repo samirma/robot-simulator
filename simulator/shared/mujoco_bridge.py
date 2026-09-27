@@ -575,6 +575,100 @@ class CameraStreams:
         self._renderers.clear()
 
 
+class RenderWorker:
+    """Renders cameras on a thread of its own, off the physics loop.
+
+    A camera's cost is the GL render and readback (about 12 ms for a 640x480 view of an
+    iTHOR kitchen), and paid on the loop thread it caps every topic on the port at the
+    camera's pace. Here the loop thread only copies `MjData` into the worker's buffer
+    (`submit`, which never blocks: a worker still busy with the last frame refuses, and
+    the caller tries again next tick) and the worker renders, then hands each image to
+    its job's callback -- which publishes, from the worker thread. The renderers are made
+    on that thread, so their GL contexts belong to it. Verified on macOS under both
+    `MUJOCO_GL=glfw` and `cgl`: physics and rendering overlap (MuJoCo releases the GIL).
+    """
+
+    def __init__(self, model, name: str = "render") -> None:
+        import threading
+
+        self._model = model
+        self._copy = mujoco.MjData(model)
+        self._jobs: list = []
+        self._stamp = 0.0
+        self._wake = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+        self._thread.start()
+
+    @property
+    def busy(self) -> bool:
+        return not self._idle.is_set()
+
+    def submit(self, data, stamp_s: float, jobs) -> bool:
+        """`jobs`: `(camera, width, height, scene_option, callback(rgb, stamp_s))`."""
+        if self.busy or not jobs:
+            return False
+        # The state a render needs, not the whole arena: MuJoCo 3.3.1's bindings (the
+        # RoboCasa venv) have no `mj_copyData`, and the kinematics are recomputed from
+        # these on the worker thread, identically on both engines.
+        copy = self._copy
+        copy.qpos[:] = data.qpos
+        copy.qvel[:] = data.qvel
+        copy.act[:] = data.act
+        copy.mocap_pos[:] = data.mocap_pos
+        copy.mocap_quat[:] = data.mocap_quat
+        copy.time = data.time
+        self._jobs, self._stamp = list(jobs), float(stamp_s)
+        self._idle.clear()
+        self._wake.set()
+        return True
+
+    def wait(self, timeout: float | None = None) -> bool:
+        return self._idle.wait(timeout)
+
+    def _run(self) -> None:
+        renderers: dict = {}
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            if self._stop:
+                break
+            try:
+                mujoco.mj_kinematics(self._model, self._copy)
+                mujoco.mj_comPos(self._model, self._copy)
+                mujoco.mj_camlight(self._model, self._copy)
+            except Exception as exc:
+                print(f"render worker: kinematics: {exc!r}", file=sys.stderr)
+            for camera, width, height, scene_option, callback in self._jobs:
+                try:
+                    renderer = renderers.get((width, height))
+                    if renderer is None:
+                        vis = self._model.vis.global_
+                        vis.offwidth = max(vis.offwidth, width)
+                        vis.offheight = max(vis.offheight, height)
+                        renderer = renderers[(width, height)] = mujoco.Renderer(
+                            self._model, height, width)
+                    if scene_option is not None:
+                        renderer.update_scene(self._copy, camera=camera,
+                                              scene_option=scene_option)
+                    else:
+                        renderer.update_scene(self._copy, camera=camera)
+                    callback(renderer.render(), self._stamp)
+                except Exception as exc:  # a failed frame must not kill the camera
+                    print(f"render worker: {camera}: {exc!r}", file=sys.stderr)
+            self._jobs = []
+            self._idle.set()
+        for renderer in renderers.values():
+            renderer.close()
+
+    def close(self) -> None:
+        self._stop = True
+        self._wake.set()
+        self._thread.join(timeout=2.0)
+
+
 def _camera_frame(topic: str) -> str:
     """`/overhead/color/compressed` -> `overhead`; the contract's name for that view.
 
@@ -781,7 +875,11 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
             now = time.monotonic()
             if controller is not None and now >= next_control:
                 controller(data)
-                next_control = now + control_period
+                # On the period's own grid, so the controller's run time does not stretch
+                # every period (a 50 Hz member measured 46 Hz); rebase after a stall.
+                next_control += control_period
+                if next_control < now:
+                    next_control = now + control_period
 
             target_time = sim_start + (time.monotonic() - wall_start)
             steps = 0
@@ -887,11 +985,12 @@ class TransformTree:
 
     `frames` maps an MJCF body name -- with the engine's `robot_0/` prefix already
     stripped -- to the name the contract gives that frame. It is a map rather than the
-    identity because the two genuinely differ on the SO-101 (`shoulder` in menagerie's
-    MJCF, `shoulder_link` in the description a client renders from), and because a body
-    the description does not have must not reach the wire at all: publishing menagerie's
-    `camera_mount` would leak this engine's model layout into a client's tf tree, which is
-    the rule that already keeps a camera's `frame_id` off its MJCF camera name.
+    identity because the two genuinely differ on the SO-101 (`shoulder` in the official
+    MJCF, `shoulder_link` in the official URDF a client renders from), and because a body
+    the description does not have must not reach the wire at all: publishing one (the
+    model used to carry menagerie's `camera_mount`) would leak this engine's model layout
+    into a client's tf tree, which is the rule that already keeps a camera's `frame_id`
+    off its MJCF camera name.
 
     The root's own transform is never published. A robot's root has no parent inside the
     robot: the myAGV's comes from its odometry (`odom -> base_footprint`, which is what a

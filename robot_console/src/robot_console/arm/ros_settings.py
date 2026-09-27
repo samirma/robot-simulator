@@ -1,36 +1,17 @@
-"""ROS wiring for the simulated SO-101, in one place.
+"""ROS wiring for the SO-101, in one place.
 
-Every topic, service, message type and joint bound here is copied from
-``simulator/INTERFACE.md``, which the simulator role wrote from real
-``ros2 topic list -t`` / ``ros2 service list -t`` / ``ros2 control
-list_controllers`` output captured **inside the running container**. Where
-``CONTRACT.md`` and ``INTERFACE.md`` disagree, ``INTERFACE.md`` wins.
+The names, types and joints are the SO-101's official ROS 2 interface as
+``robots_specs/so101/ros2.yml`` records it (the community ``so_arm101_description``
+bringup with ``hardware_type:=real``, plus ``usb_cam`` in ``/wrist``), and the
+workspace-owned ``/reset`` and ``/scene`` rig from the simulator's spec §3. The
+simulator's contract module (``simulator/shared/ros_surfaces/so101.py``) transcribes
+the same file; ``tests/arm/test_ros_contract.py`` holds the two equal.
 
-Sources, per item:
-
-* joints and their limits — ``ros2_so_arm/so_arm101_description/mjcf/so_arm101.xml``
-* arm and gripper controllers — ``so_arm_mujoco/config/ros2_controllers.yaml``,
-  plus ``so_arm_mujoco/launch/sim.launch.py``. **Not**
-  ``so_arm101_description/control/ros2_controllers.yaml``: that file is a
-  pristine upstream clone and the simulator no longer loads it. The two differ
-  in exactly the way that matters here — the shipped file makes
-  ``gripper_controller`` a ``forward_command_controller/ForwardCommandController``
-  rather than an action controller.
-* ``/reset`` — ``so_arm_mujoco/so_arm_mujoco/task_manager.py``
-* ``/free_joint_publisher/free_joint_states`` and ``/mujoco_ros2_control_node/*``
-  — ``mujoco_ros2_control_plugins`` and ``mujoco_ros2_control_msgs``, with the
-  names as they actually resolve at runtime (see the namespacing note below)
-* ``/overhead/color/compressed`` — the ``image_transport republish`` node in
-  ``sim.launch.py``, whose output is remapped to this contract-facing name
-
-**Plugin topics are namespaced by their key in
-``so_arm_mujoco/config/mujoco_plugins.yaml``.** Plugins are constructed with
-``get_node()->create_sub_node(plugin_name)``, so the ``free_joint_publisher``
-key becomes a ROS sub-namespace and the topic is
-``/free_joint_publisher/free_joint_states``, not ``/free_joint_states``. The
-same rule applies to the camera plugin, whose *raw* image is on
-``/camera_publisher/overhead/color``; only the republished compressed stream
-carries the contract name. Renaming a key in that YAML renames the topics.
+Not yet migrated: the console still reads the apple's pose from
+``/free_joint_publisher/free_joint_states`` (``FREE_JOINT_STATES_TOPIC``), which is
+not part of the official interface and is no longer served, and drives the gripper
+through a stopgap that turns the base adapter's gripper publish into a
+``ParallelGripperCommand`` goal (``ros_client.HeaderStampingClient``).
 """
 
 from __future__ import annotations
@@ -54,11 +35,11 @@ ARM_COMMAND_TOPIC = "/joint_trajectory_controller/joint_trajectory"
 #: so every consumer must index it by name.
 JOINT_STATES_TOPIC = "/joint_states"
 
-#: ``gripper_controller`` is a ``forward_command_controller/ForwardCommandController``
-#: on ``gripper_joint``. It subscribes to ``~/commands``, so the sixth command
-#: dimension is a plain ``std_msgs/msg/Float64MultiArray`` publish with a single
-#: element in ``data``. There is no action server and no action client is needed.
-GRIPPER_COMMAND_TOPIC = "/gripper_controller/commands"
+#: ``gripper_controller`` is a ``parallel_gripper_action_controller/GripperActionController``
+#: on ``gripper_joint``: an action server, goal ``command.position[0]`` in radians.
+GRIPPER_ACTION = "/gripper_controller/gripper_cmd"
+GRIPPER_ACTION_TYPE = "control_msgs/action/ParallelGripperCommand"
+#: What the base adapter builds for its gripper publish; the client turns it into a goal.
 GRIPPER_COMMAND_TYPE = "std_msgs/msg/Float64MultiArray"
 
 #: ``robot_state_publisher`` runs beside the broadcaster in every ros2_control bringup
@@ -119,6 +100,8 @@ SCENE_CAMERA_XYAXES: dict[str, tuple[float, ...]] = {
     "side": (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
 }
 SCENE_CAMERA_FOVY_DEG: dict[str, float] = {"overhead": 45.0, "side": 45.0}
+#: The rig's frame rate, the simulator task's ``SCENE_CAMERA_HZ``.
+SCENE_CAMERA_HZ = 10.0
 
 OVERHEAD_CAMERA_NAME = "overhead"
 OVERHEAD_CAMERA_TOPIC = "/overhead/color/compressed"
@@ -153,18 +136,14 @@ SIDE_CAMERA_HEIGHT = 480
 #: the intended loud failure -- an eye-in-hand policy fed a stale or absent wrist
 #: frame is worse than one that refuses to start.
 #:
-#: 640x360, the 16:9 aspect of the SO-101's own `wrist_cam` as mujoco_menagerie
-#: publishes it. It was 256x256 for a project-added camera that no longer exists:
-#: the simulator now renders the official camera at its official pose, so the view
-#: a policy is handed is the one the upstream model defines. Note the aspect is
-#: 16:9 where the two scene cameras are 4:3, and MolmoAct2's preprocessor stretches
-#: to 4:3 without preserving aspect -- so a policy fed this view sees it squeezed.
-#: That is a property of the official camera, and the reason the flag stays opt-in.
+#: The wrist camera is ``usb_cam`` in ``/wrist``: 640x480 (4:3) at 30 Hz, its
+#: compressed stream on ``image_transport``'s ``/wrist/image_raw/compressed``.
 WRIST_CAMERA_NAME = "wrist"
-WRIST_CAMERA_TOPIC = "/wrist/color/compressed"
+WRIST_CAMERA_TOPIC = "/wrist/image_raw/compressed"
 WRIST_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
+#: usb_cam 0.8.1's defaults (image_width 640, image_height 480, framerate 30).
 WRIST_CAMERA_WIDTH = 640
-WRIST_CAMERA_HEIGHT = 360
+WRIST_CAMERA_HEIGHT = 480
 
 # History, so the gap in the record is not mistaken for an oversight: a
 # ``trainlow``/``trainhigh`` pair was defined here and used as the default
@@ -225,18 +204,12 @@ def camera_topic(name: str, topic: str, namespace: str) -> str:
     return namespaced(topic, SCENE_NAMESPACE if name in SCENE_CAMERA_NAMES else namespace)
 
 
-#: ``mujoco_ros2_control``'s own reset, which restores the state captured at
-#: startup. The services live on the node named ``mujoco_ros2_control_node``
-#: (``mujoco_system_interface.cpp``), **not** ``ros2_control_node``.
-#:
-#: ``task_manager``'s ``/reset`` (``std_srvs/srv/Trigger``) forwards to this
-#: same service with an empty keyframe and no state overrides, and additionally
-#: clears ``task_manager``'s own hold timer. It does **not** teleport the apple:
-#: ``task_manager`` has no ``set_free_joint_state`` client at all, which
-#: ``CONTRACT.md`` section 6 forbids anyway. Either service is a valid
-#: ``reset_service``; ``/reset`` is the one that also clears the task's own state.
-RESET_WORLD_SERVICE = "/mujoco_ros2_control_node/reset_world"
-TASK_MANAGER_RESET_SERVICE = "/reset"
+#: The workspace-owned reset (spec §3): ``std_srvs/srv/Trigger`` provided by
+#: ``/simulator``, composed with the SO-101's namespace. It restores the staged world
+#: and the controllers, aborts outstanding goals, and answers once observations of the
+#: reset world are out.
+RESET_SERVICE = "/reset"
+TASK_MANAGER_RESET_SERVICE = RESET_SERVICE
 
 
 @dataclass(frozen=True)
@@ -264,8 +237,8 @@ class RosSettings:
     command_topic: str = ARM_COMMAND_TOPIC
     command_type: str = "joint_trajectory"
     gripper_joint: str = GRIPPER_JOINT
-    gripper_mode: str = "topic"
-    gripper_topic: str = GRIPPER_COMMAND_TOPIC
+    gripper_mode: str = "action"
+    gripper_topic: str = GRIPPER_ACTION
     object_state_topic: str = FREE_JOINT_STATES_TOPIC
     object_body: str = APPLE_BODY
     camera_name: str = OVERHEAD_CAMERA_NAME
@@ -292,10 +265,7 @@ class RosSettings:
             SIDE_CAMERA_HEIGHT,
         ),
     )
-    #: ``/reset`` rather than ``reset_world``: it forwards to the same service
-    #: **and** clears ``task_manager``'s own hold timer, so the task's state
-    #: starts each episode from a known state instead of relying on the apple's
-    #: return to spawn to break a stale hold.
+    #: The workspace-owned ``/reset``: world, controllers and task timers together.
     reset_service: str | None = TASK_MANAGER_RESET_SERVICE
     control_hz: float = 10.0
     #: Minimum simulated-time-per-wall-second the simulator must be running at
@@ -336,11 +306,10 @@ class RosSettings:
         # primary means no cameras at all.
         if self.camera_topic is None and self.extra_cameras:
             object.__setattr__(self, "extra_cameras", ())
-        if self.gripper_mode not in ("topic", "none"):
+        if self.gripper_mode not in ("action", "none"):
             raise ValueError(
-                f"gripper_mode must be 'topic' or 'none', got {self.gripper_mode!r}. "
-                "The simulator's gripper_controller is a ForwardCommandController on "
-                f"{GRIPPER_COMMAND_TOPIC}; there is no action server to drive."
+                f"gripper_mode must be 'action' or 'none', got {self.gripper_mode!r}. "
+                f"The gripper_controller is a GripperActionController on {GRIPPER_ACTION}."
             )
 
     @property

@@ -141,13 +141,64 @@ def check_myagv() -> None:
 
 
 def check_so101() -> None:
+    """The SO-101's tree is `robot_state_publisher`'s: the served description plus joint
+    states. So it is checked the other way round from the two above -- the published tree,
+    composed from the description at random joint positions, against MuJoCo's own forward
+    kinematics of the compiled model at the same positions."""
+    print("so101")
+    import random
+
+    from contracts.tf import UrdfTree
+
     model = mujoco.MjModel.from_xml_path(str(robots_spec.model_xml("so101")))
-    text = robots_spec.urdf_path("so101").read_text()
-    tree = TransformTree(
-        model, root_body=so101_surface.TF_ROOT_BODY, frames=so101_surface.TF_FRAMES,
-        cameras=so101_surface.TF_CAMERAS, extra_static=urdf_fixed_joints(text),
-    )
-    check_robot("so101", model, tree, text, {"wrist"})
+    data = mujoco.MjData(model)
+    served = so101_surface.bringup_description(robots_spec.urdf_path("so101").read_text())
+    tree = UrdfTree(served)
+
+    links = set(tree.links)
+    entries = tree.fixed() + tree.moving({j: 0.0 for j in so101_surface.JOINT_ORDER})
+    children = {child for _, child, _, _ in entries}
+    roots = {parent for parent, _, _, _ in entries} - children
+    check("the tree has exactly one root, `world`", roots == {"world"}, str(sorted(roots)))
+    check("every frame is a link of the description",
+          {p for p, *_ in entries} | children <= links)
+    check("every joint the state names moves a link",
+          len(tree.moving({j: 0.0 for j in so101_surface.JOINT_ORDER})) == 6)
+
+    rng = random.Random(7)
+    worst_pos = worst_quat = 0.0
+    for _ in range(50):
+        wire = {}
+        for joint in so101_surface.ARM_JOINTS:
+            jid = model.joint(joint.removesuffix("_joint")).id
+            low, high = model.jnt_range[jid]
+            wire[joint] = rng.uniform(low, high)
+        low, high = so101_surface.GRIPPER_RANGE
+        wire[so101_surface.GRIPPER_JOINT] = rng.uniform(low, high)
+        mujoco.mj_resetData(model, data)
+        for joint, value in wire.items():
+            mjcf = joint.removesuffix("_joint")
+            if joint == so101_surface.GRIPPER_JOINT:
+                value = so101_surface.to_mjcf_gripper(value)
+            data.qpos[model.jnt_qposadr[model.joint(mjcf).id]] = value
+        mujoco.mj_forward(model, data)
+        poses = tree.link_poses(wire)
+        base = model.body("base").id
+        base_rot = data.xmat[base].reshape(3, 3)
+        for body, link in so101_surface.MJCF_BODY_LINKS.items():
+            bid = model.body(body).id
+            pos = base_rot.T @ (data.xpos[bid] - data.xpos[base])
+            quat = np.zeros(4)
+            mujoco.mju_mat2Quat(quat, np.ascontiguousarray(
+                base_rot.T @ data.xmat[bid].reshape(3, 3)).flatten())
+            upos, uquat = poses[link]
+            worst_pos = max(worst_pos, float(np.linalg.norm(pos - np.asarray(upos))))
+            worst_quat = max(worst_quat, quat_error(quat, uquat))
+    # The URDF writes its angles rounded (1.5708 for pi/2), so it agrees with the MJCF's
+    # quaternions to about 1e-5 rad per joint, which compounds down the chain.
+    check("all 7 links, at 50 random joint states, sit where MuJoCo puts them",
+          worst_pos < 2e-4 and worst_quat < 2e-4,
+          f"worst dpos {worst_pos:.2e} m, dquat {worst_quat:.2e}")
 
 
 def check_ainex() -> None:

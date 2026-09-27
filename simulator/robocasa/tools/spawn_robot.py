@@ -933,20 +933,11 @@ def _surface_kwargs(args, inst, model, task, scene_option):
     """
     prefix = inst.mjcf
     if inst.name in ARM_ROS_SURFACES:
-        from ros_surfaces.so101 import WRIST_CAMERA
-
-        # The same two sets, split the same way, as the MolmoSpaces engine -- see the
-        # longer note there. The wrist is the robot's and carries its MJCF prefix; the
-        # worktop rig is the scene's and goes out under the scene's namespace.
-        cameras = (
-            {t: (f"{prefix}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()}
-            if args.wrist_camera else {}
-        )
-        # No scene cameras here: the rig is the scene's and is attached to the fleet
-        # below, whether or not an arm is in the kitchen.
         return {
             "view": inst.groups, "model": model, "task": task,
-            "cameras": cameras,
+            # The wrist camera is the robot's own and the surface always
+            # renders it; the flag is off only for tools that serve no wire.
+            "wrist": bool(args.wrist_camera),
             "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
             "scene_option": scene_option,
             # The MJCF prefix, for the transform tree's body names only. Same key, same
@@ -1327,7 +1318,7 @@ def main() -> int:
 
     if args.robot in TABLETOP_ROBOTS:
         # A tabletop arm needs a scene-level camera of its own. The SO-101 model carries
-        # exactly one camera -- menagerie's wrist_cam, on the gripper -- so there is no
+        # exactly one camera -- wrist_cam, on the gripper -- so there is no
         # robot-mounted view of the workspace to fall back on. (There was a project-added
         # `exo_camera` here until 2026-09-06; it sat behind-left of the base, which on a
         # counter against a wall put it inside the wall cabinets, streaming the black
@@ -1627,7 +1618,8 @@ def main() -> int:
 
         from ros_surfaces import RobotFleet
 
-        fleet = RobotFleet(port=args.ros_port, host=args.control_host)
+        fleet = RobotFleet(port=args.ros_port, host=args.control_host,
+                           control_hz=args.control_hz)
         for inst in instances:
             module_name, func_name = ROS_SURFACES[inst.name]
             attach_ros = getattr(importlib.import_module(module_name), func_name)
@@ -1650,7 +1642,10 @@ def main() -> int:
         fleet.start()
         controller = fleet
 
-    control_period = 1.0 / args.control_hz
+    # A member with a rate of its own (the SO-101 controller manager's 50 Hz) sets
+    # the loop's pace; the fleet steps every other member at --control-hz.
+    loop_hz = max(args.control_hz, getattr(controller, "rate_hz", 0.0) or 0.0)
+    control_period = 1.0 / loop_hz
     next_control = 0.0
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
@@ -1659,7 +1654,7 @@ def main() -> int:
     try:
         if args.headless:
             # No window: what a displayless host and an automated check run.
-            run_sim_loop(model, data, controller, control_hz=args.control_hz,
+            run_sim_loop(model, data, controller, control_hz=loop_hz,
                          deadline=deadline, label="headless loop")
         else:
             # Bound as a separate name: `import mujoco.viewer` here would shadow the
@@ -1676,7 +1671,7 @@ def main() -> int:
                     args.azimuth if args.azimuth is not None else np.degrees(yaw) + 180.0
                 )
                 viewer.cam.elevation = args.elevation
-                run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                run_sim_loop(model, data, controller, control_hz=loop_hz,
                              deadline=deadline, viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:

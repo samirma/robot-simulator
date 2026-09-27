@@ -50,14 +50,42 @@ class HeaderStampingClient(RosbridgeClient):
     gripper and any future publisher too.
     """
 
-    def __init__(self, url: str, *, stamped_topics: tuple[str, ...] = (), **kwargs: Any) -> None:
+    def __init__(self, url: str, *, stamped_topics: tuple[str, ...] = (),
+                 gripper_actions: Mapping[str, str] | None = None, **kwargs: Any) -> None:
         super().__init__(url, **kwargs)
         self.stamped_topics = tuple(stamped_topics)
+        #: action name -> action type, for grippers the base adapter "publishes" to.
+        self.gripper_actions = dict(gripper_actions or {})
         #: How many messages this client actually had to fix up.
         self.headers_added = 0
+        self._goal_counter = 0
+
+    def advertise(self, topic: str, *, message_type: str) -> None:
+        if topic in self.gripper_actions:
+            return  # an action, not a topic: nothing to advertise
+        super().advertise(topic, message_type=message_type)
 
     def publish(self, topic: str, msg: Mapping[str, Any]) -> None:
-        """Publish, inserting an empty header first if this topic needs one."""
+        """Publish, inserting an empty header first if this topic needs one.
+
+        A publish to a gripper *action* (the SO-101's `gripper_controller/gripper_cmd`,
+        a `ParallelGripperCommand`) goes out as a `send_action_goal` with the
+        Float64MultiArray's first value as the goal position. A stopgap so the base
+        adapter's topic-shaped gripper keeps working until the console has an action
+        client of its own; each goal preempts the last, as the controller does.
+        """
+        if topic in self.gripper_actions:
+            data = list(msg.get("data") or [])
+            if not data:
+                return
+            self._goal_counter += 1
+            self._send({
+                "op": "send_action_goal", "id": f"gripper_goal_{self._goal_counter}",
+                "action": topic, "action_type": self.gripper_actions[topic],
+                "args": {"command": {"name": [], "position": [float(data[0])],
+                                     "velocity": [], "effort": []}},
+            })
+            return
         if topic in self.stamped_topics and "header" not in msg:
             self.headers_added += 1
             msg = {"header": dict(ZERO_HEADER), **dict(msg)}

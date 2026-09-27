@@ -12,9 +12,18 @@ against a guess.
 
 Two things the table has to get right that a naive one would not:
 
-* **Both dialects resolve to one definition.** `sensor_msgs/Imu` and `sensor_msgs/msg/Imu`
-  are the same message; this graph deliberately carries ROS 1 names for the myAGV and the
-  AiNex beside ROS 2 names for the SO-101, and a client may ask in either spelling.
+* **Both dialects resolve to one definition -- except where ROS 2 changed it.**
+  `sensor_msgs/Imu` and `sensor_msgs/msg/Imu` are the same message; this graph
+  deliberately carries ROS 1 names for the myAGV and the AiNex beside ROS 2 names for the
+  SO-101, and a client may ask in either spelling. A handful of types are *not* the same
+  message in the two distributions -- `std_msgs/Header` lost `seq` and stamps with
+  `builtin_interfaces/Time` (`sec`/`nanosec`), `sensor_msgs/CameraInfo` lower-cased
+  `D K R P` to `d k r p`, `JointTrajectoryPoint.time_from_start` became a
+  `builtin_interfaces/Duration` -- and those have a second, ROS 2 entry in
+  `ROS2_MESSAGES`. The dialect of a query is read off the name it was asked in: a
+  `pkg/msg/Type` spelling, or a package this table holds only in ROS 2 form
+  (`_ROS2_PACKAGES`), gets the ROS 2 definitions for itself and for everything it nests;
+  a `pkg/Type` spelling gets ROS 1's, so the myAGV's `sensor_msgs/CameraInfo` keeps `K`.
 * **`typedefs()` returns the transitive closure**, as `rosapi` does. Asking for
   `sensor_msgs/Imu` also returns `std_msgs/Header`, `geometry_msgs/Quaternion` and
   `geometry_msgs/Vector3`, in `rosapi`'s own `TypeDef` shape, or a tool walking the schema
@@ -35,12 +44,35 @@ AiNex (Hiwonder) -- `UruBots/ainex-robot-code`, a real AiNex deployment, at
 myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros`, branch `myagv_ros_2023Pi`: uses
     the standard messages only (Twist, Odometry, CompressedImage, LaserScan, Image,
     CameraInfo); no vendor package.
-SO-101 (ros2_control bringup) -- standard ROS 2 messages, plus
-    `ros-controls/mujoco_ros2_control` at `mujoco_ros2_control_msgs/msg/`:
-    FreeJointStateArray.msg, FreeJointState.msg (the plugin the reference rig runs).
+SO-101 (ros2_control bringup, ROS 2 Jazzy) -- every interface its graph uses, from the
+    upstream files at the revisions Jazzy's rosdistro releases (`jazzy/distribution.yaml`):
+    `ros-controls/control_msgs` tag `5.10.0` (the `jazzy` branch head, and the release
+    `ros2_controllers` 4.42.1 builds against), `control_msgs/`:
+        msg/{JointTrajectoryControllerState, DynamicJointState, InterfaceValue,
+        SpeedScalingFactor, JointTolerance, JointComponentTolerance}.msg,
+        srv/QueryTrajectoryState.srv,
+        action/{FollowJointTrajectory, ParallelGripperCommand}.action
+    `ros-controls/ros2_control` tag `4.48.1`, `controller_manager_msgs/`:
+        msg/{ControllerManagerActivity, NamedLifecycleState, ControllerState,
+        ChainConnection, HardwareComponentState, HardwareInterface}.msg,
+        srv/{ListControllers, ListControllerTypes, LoadController, ConfigureController,
+        ReloadControllerLibraries, SwitchController, UnloadController, CleanupController,
+        ListHardwareComponents, ListHardwareInterfaces, SetHardwareComponentState}.srv
+    `pal-robotics/pal_statistics` tag `2.8.2` (Jazzy's release), `pal_statistics_msgs/msg/`:
+        Statistic.msg, Statistics.msg, StatisticsNames.msg, StatisticsValues.msg
+    `ros2/common_interfaces` tag `5.3.8` (Jazzy's release; byte-identical to the `jazzy`
+    branch for every file here): diagnostic_msgs/msg/{DiagnosticArray, DiagnosticStatus,
+        KeyValue}, trajectory_msgs/msg/{MultiDOFJointTrajectory,
+        MultiDOFJointTrajectoryPoint, JointTrajectoryPoint}, sensor_msgs/msg/CameraInfo,
+        sensor_msgs/srv/SetCameraInfo, std_srvs/srv/SetBool, std_msgs/msg/Header
+    `ros2/rcl_interfaces` tag `2.0.4` (likewise identical to `jazzy`):
+        lifecycle_msgs/msg/State.msg, builtin_interfaces/msg/{Time, Duration}.msg
+    Constants are transcribed too, into `CONSTANTS`. The `mujoco_ros2_control_msgs`
+    FreeJointState/FreeJointStateArray pair that used to be listed here is gone: the
+    SO-101 no longer serves it.
 Standard packages -- the ROS distributions' own files, identical between Noetic and
     Humble for every type here: std_msgs, std_srvs, geometry_msgs, nav_msgs, sensor_msgs,
-    trajectory_msgs, builtin_interfaces.
+    trajectory_msgs, builtin_interfaces -- except the few `ROS2_MESSAGES` holds twice.
 """
 
 from __future__ import annotations
@@ -58,9 +90,10 @@ PRIMITIVES = frozenset({
     "float32", "float64", "string", "time", "duration", "byte", "char",
 })
 
-#: ROS 1 -> ROS 2 renames for the few types whose *package* differs by dialect, so that a
-#: ROS 2 client asking for `builtin_interfaces/msg/Time` finds the same definition a ROS 1
-#: client gets for `time`.
+#: ROS 1 -> ROS 2 renames for the few types whose *package* differs by dialect, so that
+#: `canonical()` names them one way. Schema lookups for these no longer land here: a
+#: ROS 2 query finds `builtin_interfaces/Time` in `ROS2_MESSAGES` (`sec`/`nanosec`), which
+#: is what Jazzy's file says, rather than ROS 1's `secs`/`nsecs`.
 _ALIASES = {
     "builtin_interfaces/Time": "std_msgs/Time",
     "builtin_interfaces/Duration": "std_msgs/Duration",
@@ -238,20 +271,279 @@ _AINEX: dict[str, list[Field]] = {
     ),
 }
 
-# --- SO-101: the reference rig's mujoco_ros2_control plugin ------------------------------
+# --- SO-101 ------------------------------------------------------------------------------
+# Everything the SO-101's ROS 2 Jazzy graph uses that the standard block above does not
+# already hold, transcribed from the files and revisions named in PROVENANCE. Unqualified
+# field types in the upstream files (`JointTolerance[]` inside control_msgs) are written
+# out with their package, which is how rosapi reports them.
 
 _SO101: dict[str, list[Field]] = {
-    "mujoco_ros2_control_msgs/FreeJointState": _h(
-        ("name", "string", SCALAR), ("pose", "geometry_msgs/PoseStamped", SCALAR),
-        ("twist", "geometry_msgs/TwistStamped", SCALAR),
+    # ros2/common_interfaces 5.3.8
+    "trajectory_msgs/MultiDOFJointTrajectoryPoint": _h(
+        ("transforms", "geometry_msgs/Transform", VARIABLE),
+        ("velocities", "geometry_msgs/Twist", VARIABLE),
+        ("accelerations", "geometry_msgs/Twist", VARIABLE),
+        ("time_from_start", "builtin_interfaces/Duration", SCALAR),
     ),
-    "mujoco_ros2_control_msgs/FreeJointStateArray": _h(
+    "trajectory_msgs/MultiDOFJointTrajectory": _h(
+        ("header", "std_msgs/Header", SCALAR), ("joint_names", "string", VARIABLE),
+        ("points", "trajectory_msgs/MultiDOFJointTrajectoryPoint", VARIABLE),
+    ),
+    "diagnostic_msgs/KeyValue": _h(("key", "string", SCALAR), ("value", "string", SCALAR)),
+    "diagnostic_msgs/DiagnosticStatus": _h(
+        ("level", "byte", SCALAR), ("name", "string", SCALAR),
+        ("message", "string", SCALAR), ("hardware_id", "string", SCALAR),
+        ("values", "diagnostic_msgs/KeyValue", VARIABLE),
+    ),
+    "diagnostic_msgs/DiagnosticArray": _h(
         ("header", "std_msgs/Header", SCALAR),
-        ("free_joints", "mujoco_ros2_control_msgs/FreeJointState", VARIABLE),
+        ("status", "diagnostic_msgs/DiagnosticStatus", VARIABLE),
+    ),
+    # ros2/rcl_interfaces 2.0.4
+    "lifecycle_msgs/State": _h(("id", "uint8", SCALAR), ("label", "string", SCALAR)),
+    # ros-controls/control_msgs 5.10.0
+    "control_msgs/JointTolerance": _h(
+        ("name", "string", SCALAR), ("position", "float64", SCALAR),
+        ("velocity", "float64", SCALAR), ("acceleration", "float64", SCALAR),
+    ),
+    "control_msgs/JointComponentTolerance": _h(
+        ("joint_name", "string", SCALAR), ("component", "uint16", SCALAR),
+        ("position", "float64", SCALAR), ("velocity", "float64", SCALAR),
+        ("acceleration", "float64", SCALAR),
+    ),
+    "control_msgs/InterfaceValue": _h(
+        ("interface_names", "string", VARIABLE), ("values", "float64", VARIABLE),
+    ),
+    "control_msgs/DynamicJointState": _h(
+        ("header", "std_msgs/Header", SCALAR), ("joint_names", "string", VARIABLE),
+        ("interface_values", "control_msgs/InterfaceValue", VARIABLE),
+    ),
+    "control_msgs/SpeedScalingFactor": _h(("factor", "float64", SCALAR)),
+    "control_msgs/JointTrajectoryControllerState": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("joint_names", "string", VARIABLE),
+        ("reference", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+        ("feedback", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+        ("error", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+        ("output", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+        ("multi_dof_joint_names", "string", VARIABLE),
+        ("multi_dof_reference", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+        ("multi_dof_feedback", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+        ("multi_dof_error", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+        ("multi_dof_output", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+        ("speed_scaling_factor", "float64", SCALAR),
+    ),
+    # ros-controls/ros2_control 4.48.1
+    "controller_manager_msgs/NamedLifecycleState": _h(
+        ("name", "string", SCALAR), ("state", "lifecycle_msgs/State", SCALAR),
+    ),
+    "controller_manager_msgs/ControllerManagerActivity": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("controllers", "controller_manager_msgs/NamedLifecycleState", VARIABLE),
+        ("hardware_components", "controller_manager_msgs/NamedLifecycleState", VARIABLE),
+    ),
+    "controller_manager_msgs/ChainConnection": _h(
+        ("name", "string", SCALAR), ("reference_interfaces", "string", VARIABLE),
+    ),
+    "controller_manager_msgs/ControllerState": _h(
+        ("name", "string", SCALAR), ("state", "string", SCALAR), ("type", "string", SCALAR),
+        ("is_async", "bool", SCALAR), ("update_rate", "uint16", SCALAR),
+        ("claimed_interfaces", "string", VARIABLE),
+        ("required_command_interfaces", "string", VARIABLE),
+        ("required_state_interfaces", "string", VARIABLE),
+        ("is_chainable", "bool", SCALAR), ("is_chained", "bool", SCALAR),
+        ("exported_state_interfaces", "string", VARIABLE),
+        ("reference_interfaces", "string", VARIABLE),
+        ("chain_connections", "controller_manager_msgs/ChainConnection", VARIABLE),
+    ),
+    "controller_manager_msgs/HardwareInterface": _h(
+        ("name", "string", SCALAR), ("data_type", "string", SCALAR),
+        ("is_available", "bool", SCALAR), ("is_claimed", "bool", SCALAR),
+    ),
+    "controller_manager_msgs/HardwareComponentState": _h(
+        ("name", "string", SCALAR), ("type", "string", SCALAR),
+        ("is_async", "bool", SCALAR), ("rw_rate", "uint16", SCALAR),
+        ("class_type", "string", SCALAR), ("plugin_name", "string", SCALAR),
+        ("state", "lifecycle_msgs/State", SCALAR),
+        ("command_interfaces", "controller_manager_msgs/HardwareInterface", VARIABLE),
+        ("state_interfaces", "controller_manager_msgs/HardwareInterface", VARIABLE),
+    ),
+    # pal-robotics/pal_statistics 2.8.2
+    "pal_statistics_msgs/Statistic": _h(("name", "string", SCALAR), ("value", "float64", SCALAR)),
+    "pal_statistics_msgs/Statistics": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("statistics", "pal_statistics_msgs/Statistic", VARIABLE),
+    ),
+    "pal_statistics_msgs/StatisticsNames": _h(
+        ("header", "std_msgs/Header", SCALAR), ("names", "string", VARIABLE),
+        ("names_version", "uint32", SCALAR),
+    ),
+    "pal_statistics_msgs/StatisticsValues": _h(
+        ("header", "std_msgs/Header", SCALAR), ("values", "float64", VARIABLE),
+        ("names_version", "uint32", SCALAR),
     ),
 }
 
+#: The ROS 2 (Jazzy) definition of the types whose fields differ from ROS 1's, under the
+#: same canonical name. Consulted only for a query in the ROS 2 dialect (see `_is_ros2`),
+#: so a ROS 1 member asking in `pkg/Type` spelling still gets `seq` and `K`.
+ROS2_MESSAGES: dict[str, list[Field]] = {
+    "builtin_interfaces/Time": _h(("sec", "int32", SCALAR), ("nanosec", "uint32", SCALAR)),
+    "builtin_interfaces/Duration": _h(
+        ("sec", "int32", SCALAR), ("nanosec", "uint32", SCALAR),
+    ),
+    "std_msgs/Header": _h(
+        ("stamp", "builtin_interfaces/Time", SCALAR), ("frame_id", "string", SCALAR),
+    ),
+    "sensor_msgs/CameraInfo": _h(
+        ("header", "std_msgs/Header", SCALAR), ("height", "uint32", SCALAR),
+        ("width", "uint32", SCALAR), ("distortion_model", "string", SCALAR),
+        ("d", "float64", VARIABLE), ("k", "float64", 9), ("r", "float64", 9),
+        ("p", "float64", 12), ("binning_x", "uint32", SCALAR), ("binning_y", "uint32", SCALAR),
+        ("roi", "sensor_msgs/RegionOfInterest", SCALAR),
+    ),
+    "trajectory_msgs/JointTrajectoryPoint": _h(
+        ("positions", "float64", VARIABLE), ("velocities", "float64", VARIABLE),
+        ("accelerations", "float64", VARIABLE), ("effort", "float64", VARIABLE),
+        ("time_from_start", "builtin_interfaces/Duration", SCALAR),
+    ),
+}
+
+#: Packages this table holds in ROS 2 form only: a query naming one is ROS 2 whatever its
+#: spelling, so `control_msgs/FollowJointTrajectory` nests a Header without `seq`.
+_ROS2_PACKAGES = frozenset({
+    "builtin_interfaces", "control_msgs", "controller_manager_msgs", "lifecycle_msgs",
+    "pal_statistics_msgs",
+})
+
+_SO101_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    # ros2/common_interfaces 5.3.8
+    "std_srvs/SetBool": (
+        _h(("data", "bool", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "sensor_msgs/SetCameraInfo": (
+        _h(("camera_info", "sensor_msgs/CameraInfo", SCALAR)),
+        _h(("success", "bool", SCALAR), ("status_message", "string", SCALAR)),
+    ),
+    # ros-controls/control_msgs 5.10.0
+    "control_msgs/QueryTrajectoryState": (
+        _h(("time", "builtin_interfaces/Time", SCALAR)),
+        _h(("success", "bool", SCALAR), ("message", "string", SCALAR),
+           ("name", "string", VARIABLE), ("position", "float64", VARIABLE),
+           ("velocity", "float64", VARIABLE), ("acceleration", "float64", VARIABLE)),
+    ),
+    # ros-controls/ros2_control 4.48.1
+    "controller_manager_msgs/ListControllers": (
+        [], _h(("controller", "controller_manager_msgs/ControllerState", VARIABLE)),
+    ),
+    "controller_manager_msgs/ListControllerTypes": (
+        [], _h(("types", "string", VARIABLE), ("base_classes", "string", VARIABLE)),
+    ),
+    "controller_manager_msgs/LoadController": (
+        _h(("name", "string", SCALAR)), _h(("ok", "bool", SCALAR)),
+    ),
+    "controller_manager_msgs/ConfigureController": (
+        _h(("name", "string", SCALAR)), _h(("ok", "bool", SCALAR)),
+    ),
+    "controller_manager_msgs/ReloadControllerLibraries": (
+        _h(("force_kill", "bool", SCALAR)), _h(("ok", "bool", SCALAR)),
+    ),
+    "controller_manager_msgs/SwitchController": (
+        _h(("activate_controllers", "string", VARIABLE),
+           ("deactivate_controllers", "string", VARIABLE),
+           ("strictness", "int32", SCALAR), ("activate_asap", "bool", SCALAR),
+           ("timeout", "builtin_interfaces/Duration", SCALAR)),
+        _h(("ok", "bool", SCALAR), ("message", "string", SCALAR)),
+    ),
+    "controller_manager_msgs/UnloadController": (
+        _h(("name", "string", SCALAR)), _h(("ok", "bool", SCALAR)),
+    ),
+    "controller_manager_msgs/CleanupController": (
+        _h(("name", "string", SCALAR)), _h(("ok", "bool", SCALAR)),
+    ),
+    "controller_manager_msgs/ListHardwareComponents": (
+        [], _h(("component", "controller_manager_msgs/HardwareComponentState", VARIABLE)),
+    ),
+    "controller_manager_msgs/ListHardwareInterfaces": (
+        [], _h(("command_interfaces", "controller_manager_msgs/HardwareInterface", VARIABLE),
+               ("state_interfaces", "controller_manager_msgs/HardwareInterface", VARIABLE)),
+    ),
+    "controller_manager_msgs/SetHardwareComponentState": (
+        _h(("name", "string", SCALAR), ("target_state", "lifecycle_msgs/State", SCALAR)),
+        _h(("ok", "bool", SCALAR), ("state", "lifecycle_msgs/State", SCALAR)),
+    ),
+}
+
+_SO101_ACTIONS: dict[str, tuple[list[Field], list[Field], list[Field]]] = {
+    # ros-controls/control_msgs 5.10.0
+    "control_msgs/FollowJointTrajectory": (
+        _h(("trajectory", "trajectory_msgs/JointTrajectory", SCALAR),
+           ("multi_dof_trajectory", "trajectory_msgs/MultiDOFJointTrajectory", SCALAR),
+           ("path_tolerance", "control_msgs/JointTolerance", VARIABLE),
+           ("component_path_tolerance", "control_msgs/JointComponentTolerance", VARIABLE),
+           ("goal_tolerance", "control_msgs/JointTolerance", VARIABLE),
+           ("component_goal_tolerance", "control_msgs/JointComponentTolerance", VARIABLE),
+           ("goal_time_tolerance", "builtin_interfaces/Duration", SCALAR)),
+        _h(("error_code", "int32", SCALAR), ("error_string", "string", SCALAR)),
+        _h(("header", "std_msgs/Header", SCALAR), ("joint_names", "string", VARIABLE),
+           ("desired", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+           ("actual", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+           ("error", "trajectory_msgs/JointTrajectoryPoint", SCALAR),
+           ("multi_dof_joint_names", "string", VARIABLE),
+           ("multi_dof_desired", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+           ("multi_dof_actual", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR),
+           ("multi_dof_error", "trajectory_msgs/MultiDOFJointTrajectoryPoint", SCALAR)),
+    ),
+    "control_msgs/ParallelGripperCommand": (
+        _h(("command", "sensor_msgs/JointState", SCALAR)),
+        _h(("state", "sensor_msgs/JointState", SCALAR), ("stalled", "bool", SCALAR),
+           ("reached_goal", "bool", SCALAR)),
+        _h(("state", "sensor_msgs/JointState", SCALAR)),
+    ),
+}
+
+#: Constants, as (type, name, value) in file order, keyed by the name `typedefs()` labels
+#: the definition with: the canonical type for a message, `<Srv>Request`/`<Srv>Response`
+#: for a service half, `<Action>_Goal`/`_Result`/`_Feedback` for an action part.
+_SO101_CONSTANTS: dict[str, list[tuple[str, str, str]]] = {
+    "diagnostic_msgs/DiagnosticStatus": [
+        ("byte", "OK", "0"), ("byte", "WARN", "1"), ("byte", "ERROR", "2"),
+        ("byte", "STALE", "3"),
+    ],
+    "lifecycle_msgs/State": [
+        ("uint8", "PRIMARY_STATE_UNKNOWN", "0"), ("uint8", "PRIMARY_STATE_UNCONFIGURED", "1"),
+        ("uint8", "PRIMARY_STATE_INACTIVE", "2"), ("uint8", "PRIMARY_STATE_ACTIVE", "3"),
+        ("uint8", "PRIMARY_STATE_FINALIZED", "4"),
+        ("uint8", "TRANSITION_STATE_CONFIGURING", "10"),
+        ("uint8", "TRANSITION_STATE_CLEANINGUP", "11"),
+        ("uint8", "TRANSITION_STATE_SHUTTINGDOWN", "12"),
+        ("uint8", "TRANSITION_STATE_ACTIVATING", "13"),
+        ("uint8", "TRANSITION_STATE_DEACTIVATING", "14"),
+        ("uint8", "TRANSITION_STATE_ERRORPROCESSING", "15"),
+    ],
+    "control_msgs/JointComponentTolerance": [
+        ("uint16", "X_AXIS", "1"), ("uint16", "Y_AXIS", "2"), ("uint16", "Z_AXIS", "3"),
+        ("uint16", "TRANSLATION", "4"), ("uint16", "ROTATION", "5"),
+    ],
+    "controller_manager_msgs/SwitchControllerRequest": [
+        ("int32", "BEST_EFFORT", "1"), ("int32", "STRICT", "2"), ("int32", "AUTO", "3"),
+        ("int32", "FORCE_AUTO", "4"),
+    ],
+    "control_msgs/FollowJointTrajectory_Result": [
+        ("int32", "SUCCESSFUL", "0"), ("int32", "INVALID_GOAL", "-1"),
+        ("int32", "INVALID_JOINTS", "-2"), ("int32", "OLD_HEADER_TIMESTAMP", "-3"),
+        ("int32", "PATH_TOLERANCE_VIOLATED", "-4"), ("int32", "GOAL_TOLERANCE_VIOLATED", "-5"),
+    ],
+}
+
+# --- end SO-101 ----------------------------------------------------------------------------
+
 MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101}
+
+#: Constants per definition, as `rosapi`'s `constnames`/`constvalues` carry them. Keyed as
+#: `_SO101_CONSTANTS` documents; a definition with none is simply absent.
+CONSTANTS: dict[str, list[tuple[str, str, str]]] = {**_SO101_CONSTANTS}
 
 #: Services: canonical name -> (request fields, response fields). `rosapi` names the two
 #: halves `<Srv>Request` and `<Srv>Response`, and that is how `typedefs()` labels them.
@@ -273,21 +565,42 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
         _h(("success", "bool", SCALAR),
            ("position", "ros_robot_controller/BusServoPosition", VARIABLE)),
     ),
+    **_SO101_SERVICES,
 }
 
 
-#: Actions: canonical name -> (goal fields, result fields, feedback fields). No member
-#: serves an action yet; a surface that does transcribes its `.action` file here, with its
-#: provenance in the block above, exactly as for messages and services. `rosapi` labels
-#: the three parts `<Action>_Goal`, `<Action>_Result` and `<Action>_Feedback`.
-ACTIONS: dict[str, tuple[list[Field], list[Field], list[Field]]] = {}
+#: Actions: canonical name -> (goal fields, result fields, feedback fields). A surface
+#: that serves one transcribes its `.action` file here, with its provenance in the block
+#: above, exactly as for messages and services. `rosapi` labels the three parts
+#: `<Action>_Goal`, `<Action>_Result` and `<Action>_Feedback`.
+ACTIONS: dict[str, tuple[list[Field], list[Field], list[Field]]] = {**_SO101_ACTIONS}
 
 _ACTION_PARTS = ("goal", "result", "feedback")
 
 
+def _is_ros2(type_name: str) -> bool:
+    """Whether a query is in the ROS 2 dialect: `pkg/msg/Type` spelling, or a ROS-2-only package."""
+    parts = str(type_name).split("/")
+    return (len(parts) == 3 and parts[1] in ("msg", "srv", "action")) \
+        or parts[0] in _ROS2_PACKAGES
+
+
+def _message(type_name: str, ros2: bool) -> tuple[str, list[Field]] | None:
+    """(label, fields) for a message type in one dialect, or None if unknown."""
+    if ros2:
+        parts = str(type_name).split("/")
+        plain = f"{parts[0]}/{parts[-1]}" if len(parts) == 3 else str(type_name)
+        if plain in ROS2_MESSAGES:
+            return plain, ROS2_MESSAGES[plain]
+    name = canonical(type_name)
+    fields = MESSAGES.get(name)
+    return None if fields is None else (name, fields)
+
+
 def fields_of(type_name: str) -> list[Field] | None:
     """The top-level fields of a message type, or None if it is not one this bridge knows."""
-    return MESSAGES.get(canonical(type_name))
+    hit = _message(type_name, _is_ros2(type_name))
+    return None if hit is None else hit[1]
 
 
 def _example(field_type: str, arraylen: int) -> str:
@@ -304,19 +617,24 @@ def _example(field_type: str, arraylen: int) -> str:
 
 
 def _typedef(type_name: str, fields: list[Field]) -> dict:
+    consts = CONSTANTS.get(type_name, [])
     return {
         "type": type_name,
         "fieldnames": [f[0] for f in fields],
         "fieldtypes": [f[1] for f in fields],
         "fieldarraylen": [f[2] for f in fields],
         "examples": [_example(f[1], f[2]) for f in fields],
-        "constnames": [],
-        "constvalues": [],
+        "constnames": [c[1] for c in consts],
+        "constvalues": [c[2] for c in consts],
     }
 
 
-def _closure(type_name: str, fields: list[Field]) -> list[dict]:
-    """This type's typedef followed by every nested type's, each once, depth first."""
+def _closure(type_name: str, fields: list[Field], ros2: bool = False) -> list[dict]:
+    """This type's typedef followed by every nested type's, each once, depth first.
+
+    `ros2` is the dialect of the query, and every nested type is looked up in it: a ROS 2
+    CameraInfo nests a ROS 2 Header.
+    """
     out: list[dict] = []
     seen: set[str] = set()
 
@@ -326,12 +644,11 @@ def _closure(type_name: str, fields: list[Field]) -> list[dict]:
         seen.add(name)
         out.append(_typedef(name, flds))
         for _, ftype, _ in flds:
-            nested = canonical(ftype)
-            if nested in PRIMITIVES:
+            if ftype in PRIMITIVES:
                 continue
-            body = MESSAGES.get(nested)
-            if body is not None:
-                walk(nested, body)
+            hit = _message(ftype, ros2)
+            if hit is not None:
+                walk(*hit)
 
     walk(type_name, fields)
     return out
@@ -339,9 +656,9 @@ def _closure(type_name: str, fields: list[Field]) -> list[dict]:
 
 def typedefs(type_name: str) -> list[dict]:
     """`/rosapi/message_details`: the type and everything it nests, or `[]` if unknown."""
-    name = canonical(type_name)
-    fields = MESSAGES.get(name)
-    return [] if fields is None else _closure(name, fields)
+    ros2 = _is_ros2(type_name)
+    hit = _message(type_name, ros2)
+    return [] if hit is None else _closure(*hit, ros2=ros2)
 
 
 def service_typedefs(service_type: str, half: str) -> list[dict]:
@@ -351,7 +668,7 @@ def service_typedefs(service_type: str, half: str) -> list[dict]:
     if pair is None:
         return []
     fields = pair[0] if half == "request" else pair[1]
-    return _closure(f"{name}{half.capitalize()}", fields)
+    return _closure(f"{name}{half.capitalize()}", fields, ros2=_is_ros2(service_type))
 
 
 def action_fields(action_type: str, part: str) -> list[Field] | None:
@@ -367,7 +684,8 @@ def action_typedefs(action_type: str, part: str) -> list[dict]:
     fields = action_fields(action_type, part)
     if fields is None:
         return []
-    return _closure(f"{canonical(action_type)}_{part.capitalize()}", fields)
+    return _closure(f"{canonical(action_type)}_{part.capitalize()}", fields,
+                    ros2=_is_ros2(action_type))
 
 
 def _field_line(field: Field) -> str:
@@ -376,21 +694,25 @@ def _field_line(field: Field) -> str:
     return f"{ftype}{suffix} {name}"
 
 
+def _definition_lines(typedef: dict) -> str:
+    """One definition's text from its typedef: constants first, then the fields."""
+    consts = [f"{c[0]} {c[1]}={c[2]}" for c in CONSTANTS.get(typedef["type"], [])]
+    fields = zip(typedef["fieldnames"], typedef["fieldtypes"], typedef["fieldarraylen"])
+    return "\n".join(consts + [_field_line(f) for f in fields])
+
+
 def definition_text(type_name: str) -> str:
     """A message's full definition text, as `/rosapi/topics_and_raw_types` answers it.
 
     `gendeps --cat`'s layout: the type's own fields, then each nested type once, after a
     line of 80 `=` and `MSG: <type>`. Empty for a type this table does not hold.
     """
-    name = canonical(type_name)
-    fields = MESSAGES.get(name)
-    if fields is None:
+    closure = typedefs(type_name)
+    if not closure:
         return ""
-    blocks = ["\n".join(_field_line(f) for f in fields)]
-    for typedef in _closure(name, fields)[1:]:
-        nested = MESSAGES[typedef["type"]]
-        blocks.append("=" * 80 + f"\nMSG: {typedef['type']}\n"
-                      + "\n".join(_field_line(f) for f in nested))
+    blocks = [_definition_lines(closure[0])]
+    for typedef in closure[1:]:
+        blocks.append("=" * 80 + f"\nMSG: {typedef['type']}\n" + _definition_lines(typedef))
     return "\n".join(blocks) + "\n"
 
 
@@ -405,12 +727,13 @@ def ros2_name(type_name: str, category: str) -> str:
 def interfaces() -> list[str]:
     """`/rosapi/interfaces`: every interface this table holds, in ROS 2 spelling."""
     return sorted(
-        [ros2_name(t, "msg") for t in MESSAGES]
-        + [ros2_name(t, "srv") for t in SERVICES]
-        + [ros2_name(t, "action") for t in ACTIONS]
+        {ros2_name(t, "msg") for t in {**MESSAGES, **ROS2_MESSAGES}}
+        | {ros2_name(t, "srv") for t in SERVICES}
+        | {ros2_name(t, "action") for t in ACTIONS}
     )
 
 
 def known_types() -> frozenset[str]:
     """Every canonical message, service and action type this table can answer for."""
-    return frozenset(MESSAGES) | frozenset(SERVICES) | frozenset(ACTIONS)
+    return (frozenset(MESSAGES) | frozenset(ROS2_MESSAGES) | frozenset(SERVICES)
+            | frozenset(ACTIONS))
