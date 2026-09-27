@@ -197,13 +197,31 @@ class PlanarSetpoint:
         self._target: np.ndarray | None = None
         self._lead_m = lead_m
         self._lead_rad = lead_rad
+        #: The measured heading, unwrapped. The yaw hinge is continuous and callers read
+        #: the heading off a rotation matrix, in (-pi, pi]: a target set from the wrapped
+        #: reading after the robot had turned past pi -- on every stop, and whenever the
+        #: lead clamp engaged -- was a whole turn away from the hinge, and the servo spun
+        #: the robot round to reach it (a 69 deg left turn from 128 deg measured 124).
+        self._heading: float | None = None
 
     def reset(self) -> None:
+        """Forget everything: the world was reset, and the hinge with it."""
+        self._target = None
+        self._heading = None
+
+    def hold(self) -> None:
+        """Drop the target (the robot stops where it is), keeping track of its heading."""
         self._target = None
 
     def step(self, x: float, y: float, yaw: float,
              vx: float, vy: float, wz: float, dt: float) -> np.ndarray:
         """Advance the setpoint by one control period and return [x, y, yaw]."""
+        if self._heading is None:
+            self._heading = float(yaw)
+        else:
+            self._heading += float(np.arctan2(np.sin(yaw - self._heading),
+                                              np.cos(yaw - self._heading)))
+        yaw = self._heading
         if self._target is None:
             self._target = np.array([x, y, yaw])
 
@@ -216,9 +234,7 @@ class PlanarSetpoint:
         dist = float(np.linalg.norm(lag))
         if dist > self._lead_m:
             self._target[:2] = np.array([x, y]) + lag / dist * self._lead_m
-        yaw_lag = float(
-            np.arctan2(np.sin(self._target[2] - yaw), np.cos(self._target[2] - yaw))
-        )
+        yaw_lag = float(self._target[2] - yaw)
         if abs(yaw_lag) > self._lead_rad:
             self._target[2] = yaw + np.sign(yaw_lag) * self._lead_rad
         return self._target

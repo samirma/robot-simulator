@@ -683,7 +683,7 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
             # The gait has halted (or been frozen), so the body stops where it is. The
             # setpoint leads a walking robot by up to TARGET_LEAD_M; kept, the torso would
             # coast that far after the controller already reported the walk finished.
-            setpoint.reset()
+            setpoint.hold()
         was["stepping"] = stepping
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
 
