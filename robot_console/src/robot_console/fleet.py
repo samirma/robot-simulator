@@ -334,7 +334,7 @@ def expected_rates(members, present: Mapping[str, str]) -> dict[str, Periodic]:
 
 
 def clocks_of(members, topics: Iterable[str]) -> dict[str, str]:
-    """`{topic: member label}` -- which member's clock stamps each topic."""
+    """`{topic: member label}` -- which member publishes each topic, for the RTF breakdown."""
     namespaces = [m.namespace for m in members]
     out = {}
     for topic in topics:
@@ -581,8 +581,6 @@ class Observation:
     start: float
     end: float
     arrivals: dict[str, list[tuple[float, Optional[float]]]]
-    #: `time.time() - arrival clock`, to compare stamps with the host's wall clock.
-    wall_offset: float = 0.0
 
     @property
     def window_s(self) -> float:
@@ -595,7 +593,6 @@ def observe(wire: Wire, expected: Mapping[str, Periodic], warmup_s: float, windo
     for topic, periodic in sorted(expected.items()):
         wire.send({"op": "subscribe", "id": f"fleet-rates:{topic}", "topic": topic,
                    "type": periodic.type, "throttle_rate": 0, "queue_length": 0})
-    wall_offset = time.time() - clock()
     start = clock() + warmup_s
     end = start + window_s
     arrivals: dict[str, list[tuple[float, Optional[float]]]] = {t: [] for t in expected}
@@ -619,7 +616,7 @@ def observe(wire: Wire, expected: Mapping[str, Periodic], warmup_s: float, windo
             wire.send({"op": "unsubscribe", "id": f"fleet-rates:{topic}", "topic": topic})
         except OSError:
             break
-    return Observation(start, end, arrivals, wall_offset)
+    return Observation(start, end, arrivals)
 
 
 # ------------------------------------------------------------------ judging
@@ -653,16 +650,12 @@ class TopicRate:
 
 @dataclasses.dataclass(frozen=True)
 class ClockRtf:
-    """One member's clock, as its stamps tell it."""
+    """The real-time factor as a set of topics' header stamps tell it."""
 
     name: str
     topics: int
     mean: Optional[float]
     worst_window: Optional[float]
-    #: The stamps sit within `WALL_CLOCK_TOLERANCE_S` of the host's wall clock: this
-    #: clock is the wall's, so its factor is 1 by construction and says nothing about
-    #: whether the physics behind the member kept up.
-    wall: bool
 
 
 @dataclasses.dataclass
@@ -670,16 +663,15 @@ class RateReport:
     rows: list[TopicRate]
     window_s: float
     required_window_s: float
-    clocks: list[ClockRtf]
+    #: The whole fleet's factor, from every stamped topic: the one the gate judges.
+    fleet: Optional[ClockRtf]
+    #: The same measure over each member's own topics: a breakdown, not gated.
+    members: list[ClockRtf]
     failures: list[str]
 
     @property
     def ok(self) -> bool:
         return not self.failures
-
-
-#: How close stamps must sit to the host's wall clock to be read as wall-clock stamps.
-WALL_CLOCK_TOLERANCE_S = 5.0
 
 
 def _topic_rtf(samples: list[tuple[float, float]]) -> Optional[float]:
@@ -712,9 +704,7 @@ def _clock_rtf(name: str, stamped: Mapping[str, list[tuple[float, float]]],
         if value is not None:
             worst = value if worst is None else min(worst, value)
         t += RTF_WINDOW_STEP_S
-    offsets = [abs(s - (a + observation.wall_offset)) for v in stamped.values() for a, s in v]
-    wall = bool(offsets) and statistics.median(offsets) < WALL_CLOCK_TOLERANCE_S
-    return ClockRtf(name, len(stamped), mean, worst, wall)
+    return ClockRtf(name, len(stamped), mean, worst)
 
 
 def evaluate(expected: Mapping[str, Periodic], observation: "Observation",
@@ -722,14 +712,15 @@ def evaluate(expected: Mapping[str, Periodic], observation: "Observation",
              clocks: Optional[Mapping[str, str]] = None) -> RateReport:
     """Judge an observation against spec §5. Pure: everything it needs is passed in.
 
-    `clocks` maps each topic to the clock that stamps it -- its member -- and the real-time
-    factor is judged per clock, because members need not share one: on the simulator the
-    ROS 2 arm stamps simulated time while the ROS 1 robots stamp the host's wall clock.
-    A clock's factor over a span is, for each of its stamped topics, the stamped seconds
-    over the wall seconds between the first and last arrival in the span, and the median
-    across its topics, so one topic with a frozen stamp cannot speak for the member. Zero
-    stamps are "unset" and ignored; a fleet with no stamped topic fails, since then
-    nothing measured a clock. Every clock must pass the gate.
+    The real-time factor is the fleet's: every member stamps the one simulated clock,
+    which starts from zero, so every stamped topic of every member measures it. Over a
+    span it is, for each stamped topic, the stamped seconds over the wall seconds between
+    the first and last arrival in the span, and the median across topics, so one topic
+    with a frozen stamp cannot speak for the fleet. Zero stamps are "unset" and ignored; a
+    fleet with no stamped topic fails, since then nothing measured the clock.
+
+    `clocks` maps each topic to its member, for a per-member breakdown of the same
+    measure; the breakdown is reported, not gated.
     """
     required = required_window_s(expected) if required_s is None else required_s
     failures = list(problems)
@@ -738,7 +729,8 @@ def evaluate(expected: Mapping[str, Periodic], observation: "Observation",
         failures.append(f"insufficient observation window: {window:.1f} s observed, "
                         f"{required:.1f} s required")
     rows = []
-    stamped: dict[str, dict[str, list[tuple[float, float]]]] = {}
+    stamped: dict[str, list[tuple[float, float]]] = {}
+    by_member: dict[str, dict[str, list[tuple[float, float]]]] = {}
     for topic in sorted(expected):
         periodic = expected[topic]
         samples = [(a, s) for a, s in observation.arrivals.get(topic, [])
@@ -750,8 +742,10 @@ def evaluate(expected: Mapping[str, Periodic], observation: "Observation",
                               max_gap, MAX_GAP_PERIODS / periodic.fastest_hz, len(times)))
         stamps = [(a, s) for a, s in samples if s is not None]
         if len(stamps) >= 2:
-            clock = (clocks or {}).get(topic, "fleet")
-            stamped.setdefault(clock, {})[topic] = stamps
+            stamped[topic] = stamps
+            member = (clocks or {}).get(topic)
+            if member is not None:
+                by_member.setdefault(member, {})[topic] = stamps
     for row in rows:
         if not row.count:
             failures.append(f"{row.topic}: no message in {window:.1f} s")
@@ -761,22 +755,22 @@ def evaluate(expected: Mapping[str, Periodic], observation: "Observation",
         if row.count and not row.gap_ok:
             failures.append(f"{row.topic}: a {row.max_gap_s * 1000:.0f} ms gap, over "
                             f"{MAX_GAP_PERIODS:g} periods ({row.gap_limit_s * 1000:.0f} ms)")
-    results = [_clock_rtf(name, stamped[name], observation) for name in sorted(stamped)]
-    if not results:
+    fleet = _clock_rtf("fleet", stamped, observation) if stamped else None
+    members = [_clock_rtf(name, by_member[name], observation) for name in sorted(by_member)]
+    lo, hi = RTF_MEAN_BOUNDS
+    if fleet is None:
         failures.append("real-time factor: no topic carried two stamped messages, so no "
                         "clock was observed")
-    lo, hi = RTF_MEAN_BOUNDS
-    for clock in results:
-        if clock.mean is None or not lo <= clock.mean <= hi:
-            mean = "n/a" if clock.mean is None else f"{clock.mean:.3f}"
-            failures.append(f"real-time factor ({clock.name}): mean {mean}, outside [{lo}, {hi}]")
-        if clock.worst_window is None:
-            failures.append(f"real-time factor ({clock.name}): no full {RTF_WINDOW_S:g} s "
-                            "window observed")
-        elif clock.worst_window < RTF_WINDOW_FLOOR:
-            failures.append(f"real-time factor ({clock.name}): a {RTF_WINDOW_S:g} s window at "
-                            f"{clock.worst_window:.3f}, below {RTF_WINDOW_FLOOR}")
-    return RateReport(rows, window, required, results, failures)
+    else:
+        if fleet.mean is None or not lo <= fleet.mean <= hi:
+            mean = "n/a" if fleet.mean is None else f"{fleet.mean:.3f}"
+            failures.append(f"real-time factor: mean {mean}, outside [{lo}, {hi}]")
+        if fleet.worst_window is None:
+            failures.append(f"real-time factor: no full {RTF_WINDOW_S:g} s window observed")
+        elif fleet.worst_window < RTF_WINDOW_FLOOR:
+            failures.append(f"real-time factor: a {RTF_WINDOW_S:g} s window at "
+                            f"{fleet.worst_window:.3f}, below {RTF_WINDOW_FLOOR}")
+    return RateReport(rows, window, required, fleet, members, failures)
 
 
 def format_report(report: RateReport, url: str) -> str:
@@ -792,12 +786,13 @@ def format_report(report: RateReport, url: str) -> str:
                      f"{row.gap_limit_s * 1000:5.0f}ms{flag}")
     lines.append(f"real-time factor (gate: mean {RTF_MEAN_BOUNDS[0]}-{RTF_MEAN_BOUNDS[1]}, "
                  f"every {RTF_WINDOW_S:g} s window >= {RTF_WINDOW_FLOOR}):")
-    for clock in report.clocks:
+    breakdown = report.members if len(report.members) > 1 else []
+    for clock in ([report.fleet] if report.fleet else []) + breakdown:
         mean = "n/a" if clock.mean is None else f"{clock.mean:.3f}"
         worst = "n/a" if clock.worst_window is None else f"{clock.worst_window:.3f}"
-        note = "  (stamps are the host's wall clock)" if clock.wall else ""
-        lines.append(f"  {clock.name:12s} mean {mean}  worst window {worst}  "
-                     f"from {clock.topics} stamped topic(s){note}")
+        indent = "  " if clock is report.fleet else "    "
+        lines.append(f"{indent}{clock.name:12s} mean {mean}  worst window {worst}  "
+                     f"from {clock.topics} stamped topic(s)")
     if report.failures:
         lines.append(f"FAIL: {len(report.failures)} problem(s)")
         lines += [f"  {f}" for f in report.failures]

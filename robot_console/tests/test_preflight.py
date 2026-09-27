@@ -40,7 +40,7 @@ def test_probe_reports_a_bad_hostname():
 def test_instructions_cover_every_way_to_start_a_robot():
     text = startup_instructions("192.168.1.42", 9091)
     assert "9091" in text
-    assert "run.sh view --robot myagv" in text
+    assert "kitchen.sh serve --robots myagv --port" in text
     assert "rosbridge_server.py" in text  # standalone, no MuJoCo
     assert "rosbridge_websocket.launch" in text  # real hardware
     assert "myagv_active.launch" in text
@@ -57,7 +57,7 @@ def test_preflight_prints_instructions_on_failure():
     assert preflight("127.0.0.1", port, timeout=1.0, stream=stream) is False
     output = stream.getvalue()
     assert "no rosbridge" in output
-    assert "run.sh view --robot myagv" in output
+    assert "kitchen.sh serve --robots myagv --port" in output
 
 
 def test_preflight_is_quiet_on_success():

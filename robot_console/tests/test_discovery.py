@@ -68,7 +68,7 @@ def _scene() -> dict[str, str]:
 
 
 def test_the_simulators_default_namespace_is_found() -> None:
-    """`./run.sh view --robot myagv` puts the base on /myagv/*, and nothing says so."""
+    """`./kitchen.sh serve --robots myagv` puts the base on /myagv/*, and nothing says so."""
     found = choose(find_robots(_myagv("myagv")))
     assert (found.robot, found.namespace) == ("myagv", "myagv")
     assert found.camera_topic == "/myagv/camera/image_raw/compressed"

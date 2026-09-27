@@ -176,7 +176,7 @@ def test_a_member_with_no_rate_declaration_fails(monkeypatch) -> None:
     assert any("no rate declaration for a myagv" in p for p in problems)
 
 
-def test_members_are_clocked_by_namespace() -> None:
+def test_topics_are_assigned_to_members_by_namespace() -> None:
     members = [Member("so101", "so101"), Member("scene", "scene")]
     assert fleet.clocks_of(members, ["/so101/tf", "/scene/side/color/compressed"]) == {
         "/so101/tf": "so101", "/scene/side/color/compressed": "scene"}
@@ -220,7 +220,7 @@ def _synthetic(topics: dict[str, float], seconds: float = 30.0, rtf=lambda t: 1.
                 continue
             samples.append((t, clock[int(t / step)]))
         arrivals[topic] = samples
-    return Observation(0.0, seconds, arrivals, wall_offset=1e9)
+    return Observation(0.0, seconds, arrivals)
 
 
 EXPECTED = {"/r/fast": Periodic("t", 50, 50), "/r/slow": Periodic("t", 10, 10)}
@@ -230,8 +230,9 @@ STEADY = {"/r/fast": 50, "/r/slow": 10}
 def test_a_steady_fleet_passes() -> None:
     report = evaluate(EXPECTED, _synthetic(STEADY), clocks={"/r/fast": "r", "/r/slow": "r"})
     assert report.failures == []
-    (clock,) = report.clocks
-    assert clock.name == "r" and clock.mean == pytest.approx(1.0, abs=1e-2) and not clock.wall
+    assert report.fleet.name == "fleet" and report.fleet.mean == pytest.approx(1.0, abs=1e-2)
+    (member,) = report.members
+    assert member.name == "r" and member.mean == pytest.approx(1.0, abs=1e-2)
 
 
 def test_a_rate_outside_ten_percent_fails_and_inside_passes() -> None:
@@ -263,20 +264,30 @@ def test_the_mean_real_time_factor_is_gated_both_ways() -> None:
 def test_one_slow_ten_second_window_fails_a_good_mean() -> None:
     # 0.80 for 8 s inside 30 s: the mean is ~0.95 -- inside the gate -- and a window is not.
     dip = evaluate(EXPECTED, _synthetic(STEADY, rtf=lambda t: 0.80 if 10 <= t < 18 else 1.0))
-    assert 0.90 <= dip.clocks[0].mean <= 1.10
-    assert dip.clocks[0].worst_window < 0.90
+    assert 0.90 <= dip.fleet.mean <= 1.10
+    assert dip.fleet.worst_window < 0.90
     assert dip.failures and all("window" in f for f in dip.failures)
 
 
-def test_each_members_clock_is_judged_on_its_own() -> None:
-    obs = _synthetic({"/a/x": 50, "/b/y": 50}, rtf=lambda t: 0.8)
-    obs.arrivals["/a/x"] = [(t, 1e9 + t) for t, _ in obs.arrivals["/a/x"]]  # wall-clock stamps
-    report = evaluate({"/a/x": Periodic("t", 50, 50), "/b/y": Periodic("t", 50, 50)}, obs,
-                      clocks={"/a/x": "a", "/b/y": "b"})
-    by_name = {c.name: c for c in report.clocks}
-    assert by_name["a"].wall and by_name["a"].mean == pytest.approx(1.0)
-    assert not by_name["b"].wall and by_name["b"].mean == pytest.approx(0.8, abs=1e-2)
-    assert report.failures and all("(b)" in f for f in report.failures)
+def test_the_factor_is_the_fleets_and_every_member_counts() -> None:
+    """Every member stamps the one simulated clock, so the gate judges them together.
+
+    A slow member cannot hide behind a fast one: with three topics the median is a slow
+    one. The per-member breakdown says which member it was, and is not gated itself.
+    """
+    obs = _synthetic({"/a/x": 50, "/b/y": 50, "/b/z": 50}, rtf=lambda t: 0.8)
+    fast = _synthetic({"/a/x": 50})
+    obs.arrivals["/a/x"] = fast.arrivals["/a/x"]
+    periodic = Periodic("t", 50, 50)
+    report = evaluate({"/a/x": periodic, "/b/y": periodic, "/b/z": periodic}, obs,
+                      clocks={"/a/x": "a", "/b/y": "b", "/b/z": "b"})
+    assert report.fleet.topics == 3 and report.fleet.mean == pytest.approx(0.8, abs=1e-2)
+    by_name = {c.name: c for c in report.members}
+    assert by_name["a"].mean == pytest.approx(1.0, abs=1e-2)
+    assert by_name["b"].mean == pytest.approx(0.8, abs=1e-2)
+    assert report.failures and all(f.startswith("real-time factor:") for f in report.failures)
+    text = fleet.format_report(report, "ws://x:1")
+    assert "fleet" in text and "    a " in text and "    b " in text
 
 
 def test_an_unstamped_fleet_cannot_pass() -> None:
@@ -310,14 +321,15 @@ def small_contract(monkeypatch):
 
 @pytest.fixture
 def odom_wire(bridge, small_contract):
-    """The fake bridge carrying that myAGV, its `/odom` at 20 Hz stamped with the wall clock."""
+    """The fake bridge carrying that myAGV, its `/odom` at 20 Hz stamped with a simulated
+    clock that starts from zero and keeps real time, as every simulated member's does."""
     bridge.topics = {"/myagv/cmd_vel": "geometry_msgs/Twist", "/myagv/odom": "nav_msgs/Odometry"}
     stop = threading.Event()
 
     def publish() -> None:
-        next_t = time.monotonic()
+        next_t = origin = time.monotonic()
         while not stop.is_set():
-            now = time.time()
+            now = time.monotonic() - origin + 0.001  # zero is "unset"
             bridge.publish("/myagv/odom", {"header": {"seq": 0, "stamp": {
                 "secs": int(now), "nsecs": int((now % 1) * 1e9)}, "frame_id": "myagv/odom"}})
             next_t += 0.05
@@ -336,8 +348,9 @@ def test_measure_rates_times_a_live_wire(odom_wire, bridge) -> None:
     report = fleet.measure_rates(odom_wire, warmup_s=0.5, window_s=10.5, required_s=10.5)
     (row,) = report.rows
     assert row.topic == "/myagv/odom" and row.ok and row.count >= 200, row
-    (clock,) = report.clocks
-    assert clock.name == "myagv" and clock.wall and clock.mean == pytest.approx(1.0, abs=0.05)
+    assert report.fleet.mean == pytest.approx(1.0, abs=0.05)
+    (member,) = report.members
+    assert member.name == "myagv" and member.mean == pytest.approx(1.0, abs=0.05)
     assert report.failures == []
     # Unthrottled, and let go of afterwards.
     assert not bridge.subscriptions

@@ -70,13 +70,8 @@ def startup_instructions_any(host: str, port: int) -> str:
     """
     return f"""Start the simulator in another terminal:
 
-    cd ../simulator/molmospaces
-    ./run.sh view --robot myagv --scene ithor:1 --ros-port {port}   # or --robot ainex
-
-Or a kitchen with a fleet in it:
-
     cd ../simulator
-    ./kitchen.sh serve --robots myagv --port {port}
+    ./kitchen.sh serve --robots myagv --port {port}   # or --robots ainex, or both
 
 The robot and its namespace are then read off the wire; --robot and --namespace override
 that. On real hardware, point --url ws://<robot-ip>:{port} at the robot instead.
@@ -88,8 +83,8 @@ def startup_instructions(host: str, port: int) -> str:
     """What to start for a myAGV, in whichever of its three forms the user meant."""
     return f"""Start the simulator in another terminal:
 
-    cd ../simulator/molmospaces
-    ./run.sh view --robot myagv --scene ithor:1 --ros-port {port}
+    cd ../simulator
+    ./kitchen.sh serve --robots myagv --port {port}
 
 Or, without MuJoCo, the standalone protocol server (odom only, no camera):
 
@@ -111,8 +106,8 @@ def startup_instructions_ainex(host: str, port: int) -> str:
     """What to start when the robot being driven is the AiNex."""
     return f"""Start the simulator in another terminal:
 
-    cd ../simulator/molmospaces
-    ./run.sh view --robot ainex --scene ithor:1 --ros-port {port}
+    cd ../simulator
+    ./kitchen.sh serve --robots ainex --port {port}
 
 Or, on a real AiNex over the network:
 

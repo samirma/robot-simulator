@@ -23,7 +23,7 @@
 #   navigate: left click sets a goal, right click cancels
 #
 # Needs a robot publishing /scan (the YDLidar X2 on hardware; the simulator's ray-cast
-# stand-in with `./run.sh view --robot myagv --ros-port 9090`). Maps are written as a
+# stand-in with `simulator/kitchen.sh serve --robots myagv --port 9090`). Maps are written as a
 # map_server pgm/yaml pair, so myagv_navigation can load them directly.
 #
 # The first run creates .venv and installs the package; after that this is just a
