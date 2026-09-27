@@ -47,9 +47,9 @@ def home() -> np.ndarray:
 
     ``REST`` (all zeros) is a convenient constant, not the initial condition: the
     simulator puts the arm at ``START_ARM_QPOS`` before it snapshots the spawn state,
-    and the console mirrors that tuple in ``task.py``. wrist_roll there is +1.62 rad,
-    chosen so the corrected calibration maps it to the middle of the trained band
-    (model -2.8 deg) -- see the simulator's ``apple_on_plate.START_ARM_QPOS``.
+    and the console mirrors that tuple in ``task.py``. It is the upright pose, and it
+    is outside the trained band on two channels by decision -- see the simulator's
+    ``apple_on_plate.START_ARM_QPOS``.
     """
     from robot_console.arm.task import START_ARM_QPOS
 
@@ -224,17 +224,36 @@ def test_the_gripper_round_trips_up_to_its_two_scales(no_floor) -> None:
     assert back[:, 5] == pytest.approx(poses[:, 5] * ratio, abs=1e-9)
 
 
-def test_home_is_in_band_on_wrist_roll(stats, home) -> None:
-    """The first state the model sees every episode, on the recalibrated channel.
+def test_home_is_out_of_band_exactly_where_it_was_chosen_to_be(stats, home) -> None:
+    """The upright start pose leaves the trained band on these channels and no others.
 
-    Under the shipped mapping HOME's wrist_roll landed at +90.05 against a q99 of
-    +42.94 -- 47.1 deg past the top of the trained band, on the very first
-    inference of every run, and ``assert_state_in_distribution`` said so out loud.
+    That is a decision (see ``apple_on_plate.START_ARM_QPOS``), so it is pinned: a
+    start pose that drifts out of band on a *further* channel fails here rather than
+    only as a warning on the first inference. The jaw sits exactly at its q99 when
+    fully open and reads as out by rounding, as it always has.
     """
+    block = stats["state_stats"]
+    mapped = to_model_state(home)
+    outside = {
+        name
+        for name, value, low, high in zip(block["names"], mapped, block["q01"], block["q99"])
+        if not low - 1e-6 <= value <= high + 1e-6
+    }
+    assert outside == {"elbow_flex", "wrist_roll"}
+
+
+def test_the_previous_start_roll_is_in_band(stats) -> None:
+    """The recalibrated wrist_roll channel, on the roll the task used to start at.
+
+    Under the shipped mapping a roll of 0 landed at +90.05 against a q99 of +42.94 --
+    47.1 deg past the top of the trained band, and ``assert_state_in_distribution``
+    said so out loud. +1.62 is the in-band roll to return to if the upright start
+    costs the policy its pass count.
+    """
+    home = np.asarray([0.0, -0.6, 1.0, 0.6, 1.62, 1.0])
     index = stats["state_stats"]["names"].index("wrist_roll")
     q01 = stats["state_stats"]["q01"][index]
     q99 = stats["state_stats"]["q99"][index]
-    assert home[4] == pytest.approx(1.62, abs=1e-6), "home is the task's start roll"
     mapped = to_model_state(home)[index]
     assert q01 <= mapped <= q99, f"wrist_roll {mapped:.2f} outside [{q01:.2f}, {q99:.2f}]"
     # It is not merely inside; it sits near the model's zero (-2.8 deg by design, the

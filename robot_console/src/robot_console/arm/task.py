@@ -66,10 +66,12 @@ LAYOUTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]
 
 #: The arm pose every episode starts from: five arm joints, radians, contract order.
 #: Mirrors the simulator's ``apple_on_plate.START_ARM_QPOS`` -- it is the task's, not the
-#: engine's rest pose, and ``wrist_roll`` at +1.62 is what keeps the first state a VLA
-#: sees inside the band it was trained on. Pinned here so a test can hold the two sides
-#: together; the scripted plan whose first waypoint used to serve as this record is gone.
-START_ARM_QPOS: tuple[float, float, float, float, float] = (0.0, -0.6, 1.0, 0.6, 1.62)
+#: engine's rest pose, though today the two are the same upright pose. That pose is
+#: outside MolmoAct2's trained state band on ``elbow_flex`` and ``wrist_roll`` -- a
+#: decision, recorded beside the constant on the simulator side. Pinned here so a test
+#: can hold the two sides together; the scripted plan whose first waypoint used to serve
+#: as this record is gone.
+START_ARM_QPOS: tuple[float, float, float, float, float] = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 
 
 def layout_of(apple_xyz, *, tolerance: float = 0.03) -> str | None:

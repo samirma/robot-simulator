@@ -1550,7 +1550,11 @@ Three things were wrong, all found by measuring the checkpoint rather than the c
   so an out-of-band start is not an error, it is a total failure of conditioning on every
   step, invisibly. MolmoAct2-SO100_101's `wrist_roll` band maps to +47..+153 degrees in
   our frame; the engine's stock rest pose sits at 0. `shared/tasks/apple_on_plate.py` now
-  starts the arm at +1.62 rad, which maps to the middle of that band.
+  started the arm at +1.62 rad, which maps to the middle of that band. **Since
+  2026-09-27 it starts upright instead** (both links vertical, the wrist camera level
+  and facing forward), which is out of band on `elbow_flex` and `wrist_roll` by
+  decision; the figures in this section predate that, and the policy warns rather than
+  refusing.
 - **Two channels were clipping.** `ros2_so_arm` narrows `wrist_flex` to 1.6 and
   `wrist_roll` to 2.3, below both the mechanism's own range *and* the checkpoint's action
   band, which reaches +2.715 rad on `wrist_roll`. This arm is the mujoco_menagerie model

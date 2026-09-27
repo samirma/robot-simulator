@@ -197,7 +197,17 @@ def object_poses(swap: bool = False) -> dict[str, tuple[float, float, float]]:
 
 #: The pose the episode starts from: five arm joints, radians, contract order.
 #:
-#: **`wrist_roll` is +1.62 and that number is doing real work.** A VLA conditions on the
+#: **Upright, by decision, and outside the VLA's trained state band because of it.**
+#: Since 2026-09-27 the arm starts in the engine's rest pose (both links vertical, the
+#: wrist camera level along +x; see molmospaces/robots/so101/so101_config.py). Mapped
+#: into MolmoAct2's frame that puts `elbow_flex` at 0 deg against a band of 38..173 and
+#: `wrist_roll` at +177 against -63..+43 -- the camera wants an upright image, and the
+#: in-band +1.62 twin of this roll gives an upside-down one and needs a `wrist_flex`
+#: past its limit. `MolmoAct2Policy` warns about it on the first step rather than
+#: refusing. Everything below records why the previous pose, (0, -0.6, 1.0, 0.6, 1.62),
+#: was chosen, and is the thing to go back to if the pass count drops.
+#:
+#: **`wrist_roll` was +1.62 and that number was doing real work.** A VLA conditions on the
 #: measured joint state, and its processor bins that state into 256 buckets and clips
 #: silently -- so a start pose outside the band the checkpoint was trained on is a
 #: quiet, total failure of conditioning rather than a visible error. MolmoAct2-SO100_101
@@ -211,7 +221,7 @@ def object_poses(swap: bool = False) -> dict[str, tuple[float, float, float]]:
 #: tilt is 0.000 either way. So this costs nothing and buys in-distribution
 #: conditioning; with it the whole start state sits inside the band on every channel
 #: except the jaw, which is exactly at its q99 when fully open.
-START_ARM_QPOS = (0.0, -0.6, 1.0, 0.6, 1.62)
+START_ARM_QPOS = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 
 #: Jaw fully open at the start, in contract units.
 START_GRIPPER = 1.0

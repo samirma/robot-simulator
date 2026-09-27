@@ -23,9 +23,14 @@ from .so101_view import SO101RobotView
 # The model.xml + meshes are the engine-neutral spec, shared across simulator engines.
 ROBOT_DIR = spec_dir("so101")
 
-# Elbow-up rest pose that keeps the arm clear of its own mount and points the gripper
-# forward and slightly down, so the wrist camera sees the workspace.
-REST_ARM_QPOS = [0.0, -0.6, 1.0, 0.6, 0.0]
+# Upright rest pose: upper arm and forearm both vertical, square to the base, and the
+# wrist bent so the wrist camera looks level along the base's +x (its front) with an
+# upright horizon. "Vertical" is each link's own long axis, not the joint-to-joint line:
+# the elbow sits 28 mm off the upper arm's axis, so lining up the joints instead leaves
+# the link visibly leaning 14 deg. The camera is mounted 0.57 rad off the jaw axis, so a
+# level view has the jaw pointing ~33 deg up. wrist_roll is the -1.52 branch; its +1.62
+# twin gives the same jaw but an upside-down image, and needs a wrist_flex past its limit.
+REST_ARM_QPOS = [0.0, 0.0, -1.5708, 1.0008, -1.5221]
 
 # Gripper joint, near-open. See so101_view.INTER_FINGER_DIST_RANGE.
 REST_GRIPPER_QPOS = [1.2]

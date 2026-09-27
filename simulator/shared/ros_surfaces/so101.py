@@ -338,6 +338,8 @@ def attach_ros(
             if "jaw" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "")
         }
     last_contacts = [-1]
+    # What this loop last wrote to the six actuators, raw MJCF units. See step().
+    written: list = [None]
 
     def step(data):
         if data is None:
@@ -345,6 +347,20 @@ def attach_ros(
             return
 
         _live[0] = data
+
+        # A ctrl that differs from what this loop last wrote was written by someone else,
+        # and the only someone else is the MuJoCo viewer's Control panel (`serve
+        # --mujoco`): `sync()` applies a dragged slider to data.ctrl on this thread. So
+        # it is adopted as the target, as a command would be. Without this the
+        # line below overwrote it on the next tick and every slider snapped back within
+        # 0.1 s. Per channel, so a slider on one joint leaves a trajectory's targets for
+        # the other four alone; a later ROS command still wins, as the later command
+        # always does. Checked before the reset below, which rewrites ctrl itself.
+        if written[0] is not None:
+            now = np.concatenate([np.asarray(arm.ctrl, dtype=np.float64).reshape(-1),
+                                  np.asarray(gripper.ctrl, dtype=np.float64).reshape(-1)])
+            for i in np.flatnonzero(np.abs(now - written[0]) > 1e-9):
+                target[i] = now[i] if i < 5 else to_contract_gripper(float(now[i]))
 
         if reset_requested.is_set():
             reset_requested.clear()
@@ -363,6 +379,8 @@ def attach_ros(
 
         arm.ctrl = target[:5].tolist()
         gripper.ctrl = [to_mjcf_gripper(float(target[-1]))]
+        written[0] = np.concatenate([np.asarray(arm.ctrl, dtype=np.float64).reshape(-1),
+                                     np.asarray(gripper.ctrl, dtype=np.float64).reshape(-1)])
 
         # SIMULATED time, never the wall clock. The success predicate holds for >= 1.0 s
         # of simulated time, the client refuses to start if simulated time is not

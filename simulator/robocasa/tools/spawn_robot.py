@@ -144,11 +144,11 @@ ARM_REACH = (0.15, 0.35)
 SO101_ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
 SO101_GRIPPER_JOINTS = ("gripper",)
 SO101_TCP_BODY = "gripper"
-# The elbow-up rest pose and near-open gripper from
-# molmospaces/robots/so101/so101_config.py:28. Copied rather than imported -- that file
+# The upright rest pose and near-open gripper from
+# molmospaces/robots/so101/so101_config.py:33. Copied rather than imported -- that file
 # is a MolmoSpaces adapter and importing it here would put molmo_spaces in this venv --
 # but it is the same robot, so it starts in the same pose in both engines.
-SO101_REST_QPOS = (0.0, -0.6, 1.0, 0.6, 0.0)
+SO101_REST_QPOS = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 SO101_REST_GRIPPER = (1.2,)
 # The base plate's meshes hang 2.4 mm below the body origin (see the `pos` on
 # base_motor_holder_so101_v1 in the shared MJCF), so mounting the origin exactly on a
