@@ -2,8 +2,8 @@
 
 The console's copy of `robots_specs/myagv/ros.yml`, the official interface of the real
 `elephantrobotics/myagv_ros` stack, which the simulator's
-`simulator/shared/ros_surfaces/myagv.py` presents too. `tests/test_myagv_contract.py`
-holds the two copies to the same answers when the simulator is checked out alongside.
+`simulator/shared/ros_surfaces/myagv.py` presents too. The workspace parity tests
+(`tests/test_contract_parity.py` at the workspace root) hold the copies equal.
 
 They are ROS 1 single-slash type strings (`geometry_msgs/Twist`), not the ROS 2
 `geometry_msgs/msg/Twist` form.
@@ -109,7 +109,8 @@ def normalise(topic: str) -> str:
 #
 # The rule is duplicated from `simulator/shared/contracts/namespace.py` rather than
 # imported, because the console must install and run with no simulator checkout at all.
-# `tests/arm/test_ros_contract.py` is what holds the two copies to the same answers.
+# The workspace parity tests (`tests/test_contract_parity.py` at the workspace root)
+# hold the two copies to the same answers.
 def namespaced(topic: str, namespace: str) -> str:
     """Return `topic` under `namespace`. Empty namespace changes nothing.
 

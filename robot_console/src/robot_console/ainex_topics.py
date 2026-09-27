@@ -9,7 +9,8 @@ them of this robot would be asking a biped to be a Mecanum base.
 The authority is `robots_specs/ainex/ros.yml`, which the simulator transcribes in
 `simulator/shared/ros_surfaces/ainex/topics.py`. This copy holds only the facts the
 console consumes, duplicated rather than shared because this project must install and
-run with no simulator checkout at all; `tests/test_ainex_contract.py` holds them equal.
+run with no simulator checkout at all; the workspace parity tests (`tests/test_contract_parity.py` at the workspace root)
+hold them equal.
 
 Bare, like every other constant here: the namespace is applied where a name reaches the
 wire (`namespaced()` in `topics.py`), because these are the record of what a *single*
@@ -33,8 +34,8 @@ TOPIC_HEAD_TILT = "/head_tilt_controller/command"
 #: How far the head turns each way, radians. The **servo's** range, not a comfortable
 #: viewing range: `joint_limits` in the simulator's `servos.py` takes the tighter of the
 #: servo's 0..1000 counts and the URDF's uniform +/-2.09, and for these two -- `init` 500,
-#: so symmetric -- the URDF wins on both sides. Held equal to that by
-#: `tests/test_ainex_contract.py`; the console clamps to it so a held arrow stops asking
+#: so symmetric -- the URDF wins on both sides. Held equal to that by the workspace
+#: parity tests; the console clamps to it so a held arrow stops asking
 #: for angles the robot will silently clamp anyway.
 HEAD_PAN_LIMIT = 2.09
 HEAD_TILT_LIMIT = 2.09

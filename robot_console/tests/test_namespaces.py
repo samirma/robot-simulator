@@ -2,8 +2,8 @@
 
 The console and the simulator each own a copy of this rule -- the console must install
 with no simulator checkout at all, so it cannot import one. That makes the rule a
-contract like any other, and `tests/arm/test_ros_contract.py` is where the two copies are
-held to the same answers. This file pins the rule itself.
+contract like any other, and the workspace's `../tests/test_contract_parity.py` is where
+the two copies are held to the same answers. This file pins the rule itself.
 """
 
 from __future__ import annotations

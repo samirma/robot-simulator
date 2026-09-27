@@ -6,8 +6,8 @@ bringup with ``hardware_type:=real``, plus ``usb_cam`` in ``/wrist``), and the
 workspace-owned ``/reset`` and ``/scene`` rig from the simulator's spec §3. The
 simulator's contract modules (``simulator/shared/ros_surfaces/so101.py`` and
 ``simulator/shared/tasks/apple_on_plate.py``) transcribe the same facts;
-``tests/arm/test_ros_contract.py`` holds the two sides equal, because this project
-cannot import that one.
+the workspace parity tests (``tests/test_contract_parity.py`` at the workspace root)
+hold the two sides equal, because this project cannot import that one.
 
 Everything the console consumes is here and nothing else: no topic outside the official
 interface, the composed ``/reset`` and the rig is named in this module.

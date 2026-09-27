@@ -1,33 +1,21 @@
-"""The console's names and the simulator's must be the same names.
+"""The arm's names, used consistently by the console -- with no simulator checkout.
 
-Two projects, installed separately, that only ever meet on a websocket -- so nothing but
-a test holds their halves of the contract together. These run against the simulator's own
-source when it is checked out alongside, and skip when it is not, which is the same rule
-`test_scene_geometry` uses for the scene numbers.
+The console's copies of the SO-101 and rig contract (``ros_settings``, ``kinematics``,
+``task``, ``vision_success``) are held equal to the simulator's contract modules and to
+``robots_specs/so101/ros2.yml`` by the workspace tests in ``../tests/`` (console spec §4,
+Contract parity), which read both source trees. This file checks only what the console
+alone can: which names its modules read, and how it composes them onto the wire.
 
-The one that matters most is the joint-name check. `/joint_states` comes back
-alphabetically sorted, and for this arm the sorted order and the contract order share
-*no* index -- so a positional read is wrong about every joint while looking entirely
-plausible. Both sides have to agree that the sort happens and that names are the key.
+The one that matters most is the joint order. ``/joint_states`` comes back alphabetically
+sorted, and for this arm the sorted order and the contract order share *no* index -- so a
+positional read is wrong about every joint while looking entirely plausible.
 """
 
 from __future__ import annotations
 
-import importlib.util
-import sys
-from pathlib import Path
-
-import pytest
-
-from robot_console.arm.kinematics import ARM_JOINTS, GRIPPER_JOINT, JOINT_ORDER
-from robot_console.topics import namespaced
+from robot_console.arm.kinematics import JOINT_ORDER
 from robot_console.arm.ros_settings import (
-    ARM_COMMAND_TOPIC,
-    GRIPPER_ACTION,
-    GRIPPER_ACTION_TYPE,
-    JOINT_STATES_TOPIC,
     OVERHEAD_CAMERA_TOPIC,
-    RESET_SERVICE,
     SCENE_NAMESPACE,
     SIDE_CAMERA_NAME,
     SIDE_CAMERA_TOPIC,
@@ -35,67 +23,9 @@ from robot_console.arm.ros_settings import (
     WRIST_CAMERA_NAME,
     WRIST_CAMERA_TOPIC,
     WRIST_CAMERA_WIDTH,
+    CAMERA_SPECS,
 )
-
-_SIMULATOR = Path(__file__).resolve().parents[3] / "simulator" / "shared"
-SURFACE = _SIMULATOR / "ros_surfaces" / "so101.py"
-#: The simulator's copy of the namespacing rule. Deliberately a stdlib-only module on
-#: that side, so it can be loaded here the same way the surface is.
-NAMESPACE = _SIMULATOR / "contracts" / "namespace.py"
-
-
-def _load(path: Path, name: str):
-    if not path.exists():
-        pytest.skip(f"sibling simulator checkout not present at {path}")
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    # Registered before it is executed, because `@dataclass` resolves its annotations
-    # through `sys.modules[cls.__module__]` and raises on a module that is not there.
-    sys.modules[name] = module
-    try:
-        spec.loader.exec_module(module)  # stdlib and numpy only; no mujoco at import time
-    except Exception:
-        del sys.modules[name]
-        raise
-    return module
-
-
-def _surface():
-    return _load(SURFACE, "_so101_surface")
-
-
-def _namespace():
-    return _load(NAMESPACE, "_sim_namespace")
-
-
-def test_every_topic_name_matches_the_simulators() -> None:
-    s = _surface()
-    assert s.TOPIC_ARM_COMMAND == ARM_COMMAND_TOPIC
-    assert s.TOPIC_JOINT_STATES == JOINT_STATES_TOPIC
-    assert s.ACTION_GRIPPER_COMMAND == GRIPPER_ACTION
-    assert s.ACTIONS[GRIPPER_ACTION][0] == GRIPPER_ACTION_TYPE
-    assert s.TOPIC_WRIST_COMPRESSED == WRIST_CAMERA_TOPIC
-    assert s.SERVICE_RESET == RESET_SERVICE
-
-
-def test_every_typed_name_the_arm_task_uses_is_the_simulators() -> None:
-    """The SO-101's topics, action and `/reset`, and the rig's, type for type."""
-    from robot_console.arm import ros_settings as rs
-
-    s, ns = _surface(), _namespace()
-    arm = rs.arm_interface("")
-    for topic, kind in arm["topics"].items():
-        assert s.TOPICS[topic][0] == kind, topic
-    for action, kind in arm["actions"].items():
-        assert s.ACTIONS[action][0] == kind
-    assert (s.SERVICE_RESET, s.SRV_TYPE_TRIGGER) == (rs.RESET_SERVICE, rs.RESET_SERVICE_TYPE)
-    published = {ns.ns_topic(s.SCENE_NAMESPACE, t): s.TYPE_SCENE_IMAGE
-                 for t in s.SCENE_CAMERA_TOPICS}
-    published.update({ns.ns_topic(s.SCENE_NAMESPACE, t): s.TYPE_SCENE_CAMERA_INFO
-                      for t in s.SCENE_CAMERA_INFO_TOPICS.values()})
-    published[ns.ns_topic(s.SCENE_NAMESPACE, s.SCENE_TF_STATIC)] = rs.TF_TYPE
-    assert rs.rig_interface() == published
-    assert s.SCENE_ROOT_FRAME == rs.SCENE_ROOT_FRAME
+from robot_console.topics import namespaced
 
 
 def test_the_console_reads_nothing_outside_the_official_interface() -> None:
@@ -110,41 +40,12 @@ def test_the_console_reads_nothing_outside_the_official_interface() -> None:
         assert "reset_world" not in source
 
 
-def test_the_simulators_publish_no_success_topic() -> None:
-    """Both engines' shared surface must not offer a task verdict on the wire.
-
-    The verdict is inferred from the overhead camera by `arm.vision_success`. Publishing
-    it as well would hand the grader a channel the policy cannot see, and the two would
-    then be free to drift apart without anything noticing.
-    """
-    s = _surface()
-    assert not hasattr(s, "TOPIC_TASK_SUCCESS")
-
-
-def test_the_camera_topics_and_sizes_match() -> None:
-    s = _surface()
-    published = {**s.SCENE_CAMERA_TOPICS,
-                 s.TOPIC_WRIST_COMPRESSED: (s.WRIST_MJCF_CAMERA, *s.WRIST_SIZE)}
-    assert set(published) == {OVERHEAD_CAMERA_TOPIC, SIDE_CAMERA_TOPIC, WRIST_CAMERA_TOPIC}
-    # The sizes are contract terms: the VLA's preprocessor stretches to 4:3 without
-    # preserving aspect, which is why the two scene cameras are 640x480.
-    assert published[OVERHEAD_CAMERA_TOPIC][1:] == (640, 480)
-    assert published[SIDE_CAMERA_TOPIC][1:] == (640, 480)
-    # The wrist is usb_cam 0.8.1 at its default 640x480.
-    assert published[WRIST_CAMERA_TOPIC][1:] == (WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT) == (640, 480)
-
-
-def test_the_wrist_view_renders_the_models_wrist_camera() -> None:
-    """The MJCF camera behind the wrist topic, by name."""
-    s = _surface()
-    assert s.WRIST_MJCF_CAMERA == "wrist_cam"
-
-
-def test_both_sides_agree_on_the_joint_names_and_their_order() -> None:
-    s = _surface()
-    assert s.ARM_JOINTS == ARM_JOINTS
-    assert s.GRIPPER_JOINT == GRIPPER_JOINT
-    assert s.JOINT_ORDER == JOINT_ORDER
+def test_the_camera_sizes_are_contract_terms() -> None:
+    """The VLA's preprocessor stretches to 4:3 without preserving aspect, which is why the
+    two scene cameras are 640x480; the wrist is usb_cam 0.8.1 at its default 640x480."""
+    sizes = {topic: (w, h) for topic, w, h in CAMERA_SPECS.values()}
+    assert sizes[OVERHEAD_CAMERA_TOPIC] == sizes[SIDE_CAMERA_TOPIC] == (640, 480)
+    assert sizes[WRIST_CAMERA_TOPIC] == (WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT) == (640, 480)
 
 
 def test_the_sorted_wire_order_shares_no_index_with_the_contract_order() -> None:
@@ -154,100 +55,20 @@ def test_the_sorted_wire_order_shares_no_index_with_the_contract_order() -> None
     assert not any(a == b for a, b in zip(wire, JOINT_ORDER))
 
 
-def test_the_gripper_map_is_an_offset_and_round_trips() -> None:
-    """`gripper_joint` is the official hinge shifted so the closed stop is 0."""
-    s = _surface()
-    for wire in (0.0, 0.25, 0.4, 0.5, 0.75, 1.0):
-        mjcf = s.to_mjcf_gripper(wire)
-        assert mjcf == pytest.approx(wire - s.GRIPPER_OFFSET_RAD)
-        assert s.to_wire_gripper(mjcf) == pytest.approx(wire)
-
-
-def test_the_gripper_map_clamps_to_the_hinge_range() -> None:
-    s = _surface()
-    assert s.to_mjcf_gripper(5.0) == s.GRIPPER_MJCF_RANGE[1]
-    assert s.to_mjcf_gripper(-5.0) == s.GRIPPER_MJCF_RANGE[0]
-    assert s.GRIPPER_RANGE[0] == pytest.approx(0.0)
-
-
-# --------------------------------------------------------------- namespacing
-
-
-def test_both_sides_compose_a_namespaced_topic_the_same_way() -> None:
-    """The two projects each own a copy of the rule; this is where they are held equal.
-
-    The console cannot import the simulator -- it has to install and run with no
-    simulator checkout at all -- so the composition rule is duplicated rather than
-    shared. A duplicated rule that drifts is worse than no rule: the client would
-    subscribe to `/so101/joint_states` while the simulator published `/so101//joint_states`
-    or `/joint_states`, and the failure would be an empty observation, not an error.
-    """
-    sim = _namespace()
-    for namespace in ("so101", "myagv", "", "robot_2"):
-        for topic in (
-            ARM_COMMAND_TOPIC,
-            GRIPPER_ACTION,
-            JOINT_STATES_TOPIC,
-            OVERHEAD_CAMERA_TOPIC,
-            SIDE_CAMERA_TOPIC,
-            WRIST_CAMERA_TOPIC,
-            RESET_SERVICE,
-            "/cmd_vel",
-            "/odom",
-            "/scan",
-        ):
-            assert sim.ns_topic(namespace, topic) == namespaced(topic, namespace)
-
-
-def test_both_sides_agree_that_an_empty_namespace_changes_nothing() -> None:
-    """The bare vendor contract, which is what the tables in CLAUDE.md document."""
-    sim = _namespace()
-    for topic in (JOINT_STATES_TOPIC, "/cmd_vel", "/odom"):
-        assert sim.ns_topic("", topic) == topic == namespaced(topic, "")
-
-
-def test_the_simulator_prefixes_frames_without_a_leading_slash() -> None:
-    """Topics are absolute graph paths; frame ids are tf names joined by `tf_prefix`.
-
-    Getting these the same way round produces `/myagv/odom` as a *frame*, which no real
-    stack emits and nothing will connect a tf tree to. Only the simulator composes
-    frames -- the console reads them, in `smoke.py`, and this is what that check is
-    checking against.
-    """
-    sim = _namespace()
-    assert sim.ns_frame("myagv", "base_footprint") == "myagv/base_footprint"
-    assert sim.ns_frame("myagv", "odom") == "myagv/odom"
-    assert sim.ns_frame("", "odom") == "odom"
-    # A JointState carries an empty frame on a real broadcaster, and namespacing must not
-    # invent one -- that would be a difference from hardware, which is the one thing the
-    # contract exists to avoid.
-    assert sim.ns_frame("so101", "") == ""
-
-
-def test_both_sides_agree_the_scene_rig_is_not_the_robot_s() -> None:
-    """`/so101/*` holds what the SO-101 presents, and an overhead view of the room is not.
-
-    The two projects each own a copy of the scene namespace -- the console cannot import
-    the simulator -- so this is where they are held equal, the same way the composition
-    rule is. Drift here is a client subscribing to a topic nobody publishes, which
-    rosbridge reports by sending nothing at all.
-    """
-    s, ns = _surface(), _namespace()
-    assert s.SCENE_NAMESPACE == SCENE_NAMESPACE
-
+def test_the_scene_rig_is_not_the_robots() -> None:
+    """`/so101/*` holds what the SO-101 presents, and an overhead view of the room is not."""
     from robot_console.arm.ros_settings import RosSettings
 
-    published = {
-        ns.ns_topic(s.SCENE_NAMESPACE, t) for t in s.SCENE_CAMERA_TOPICS
-    } | {ns.ns_topic("so101", s.TOPIC_WRIST_COMPRESSED)}
     subscribed = {
         spec[0]
         for spec in RosSettings(
             namespace="so101", views=("overhead", SIDE_CAMERA_NAME, WRIST_CAMERA_NAME),
         ).cameras().values()
     }
-    assert subscribed == published
-    assert not any(t.startswith("/so101/") for t in published if "wrist" not in t)
+    assert subscribed == {namespaced(OVERHEAD_CAMERA_TOPIC, SCENE_NAMESPACE),
+                          namespaced(SIDE_CAMERA_TOPIC, SCENE_NAMESPACE),
+                          namespaced(WRIST_CAMERA_TOPIC, "so101")}
+    assert not any(t.startswith("/so101/") for t in subscribed if "wrist" not in t)
 
 
 def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
@@ -255,8 +76,7 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
 
     The dataclass fields stay bare -- they are the transcript of `ros2 topic list -t`
     inside the reference container -- and the prefix is applied where they are handed to
-    the adapter. So this checks the half that goes on the wire, and
-    `test_ros_settings.py` checks the half that records the hardware.
+    the adapter.
     """
     from robot_console.arm.ros_settings import RosSettings
 
@@ -270,7 +90,7 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     assert kwargs["cameras"]["wrist"][0] == "/so101/wrist/image_raw/compressed"
     assert set(settings.camera_info_topics().values()) == {
         "/scene/overhead/color/camera_info", "/scene/side/color/camera_info"}
-    # The rig's own namespace, not the arm's -- see the test below.
+    # The rig's own namespace, not the arm's.
     assert kwargs["cameras"]["overhead"][0] == "/scene/overhead/color/compressed"
 
     # Stripping the namespace back off must reproduce the container's own names exactly.
@@ -279,42 +99,14 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
         assert kwargs[key] == "/so101" + bare[key]
 
 
-def test_both_sides_name_the_transform_tree_the_same_way() -> None:
-    """The tf topics, and the parameter the tree is read against.
-
-    A fourth file loaded by path, for the same reason `namespace.py` is: the simulator
-    keeps `contracts/tf.py` stdlib-only so this test can reach it. The console consumes
-    none of this -- it does its own FK -- but `fleet.py` requires it of a base and of an
-    arm, and a name that drifted would fail as "the simulator did not start" rather than
-    as a rename.
-    """
-    from robot_console import topics as base_topics
-    from robot_console.arm import ros_settings as rs
-
-    tf = _load(_SIMULATOR / "contracts" / "tf.py", "_sim_tf")
-    assert (tf.TOPIC_TF, tf.TOPIC_TF_STATIC) == (base_topics.TOPIC_TF,
-                                                 base_topics.TOPIC_TF_STATIC)
-    assert (tf.TOPIC_TF, tf.TOPIC_TF_STATIC) == (rs.TF_TOPIC, rs.TF_STATIC_TOPIC)
-    assert tf.PARAM_ROBOT_DESCRIPTION == base_topics.PARAM_ROBOT_DESCRIPTION
-    # One graph, two dialects: the base is a ROS 1 stack and the arm is a ROS 2 one, so
-    # the same topic name carries two type strings and a client must read them per topic.
-    assert tf.TYPE_TF_MESSAGE == base_topics.TYPE_TF_MESSAGE
-    assert tf.TYPE_TF_MESSAGE_ROS2 == rs.TF_TYPE
-    assert tf.TYPE_TF_MESSAGE != tf.TYPE_TF_MESSAGE_ROS2
-
-
 def test_only_the_robots_that_boot_with_a_tree_are_required_to_have_one() -> None:
     """Three robots, three different true answers, and the console must not average them.
 
-    The simulator gives every robot a transform tree. What each *real* robot does differs:
-
-    * the myAGV's bringup starts `robot_state_publisher` and `robot_pose_ekf`, so `/tf` is
-      required of a base, and so is `robot_state_publisher`'s latched `/tf_static` --
-      empty, because the URDF has no fixed joint, but on the wire;
+    * the myAGV's bringup starts `robot_state_publisher` and `robot_pose_ekf`, so `/tf` and
+      the latched (empty) `/tf_static` are required of a base;
     * the SO-101's ROS 2 bringups run `robot_state_publisher` beside the controller
       manager, so both are required of an arm;
-    * the AiNex's *description package* runs one and its shipped boot chain does not, and
-      the boot chain is what a client meets over rosbridge -- so neither is required.
+    * the AiNex's shipped boot chain runs none, so neither is required.
     """
     from robot_console.ainex_topics import CONTRACT_TOPICS
     from robot_console.arm.ros_settings import TF_STATIC_TOPIC, TF_TOPIC

@@ -20,7 +20,7 @@ named expectations instead, which is what `run_task.sh` uses.
 **Rates** is simulator spec §5's gate. It subscribes, unthrottled, to every periodic
 topic of every member, discards a 5 s warm-up, then observes for the greater of 30 s and
 five periods of the slowest declared topic. Each topic's expected Hz is the console's
-`PERIODIC` table -- which `tests/test_fleet.py` holds equal to the `rate_hz` of every
+`PERIODIC` table -- which the workspace parity tests hold equal to the `rate_hz` of every
 periodic row in `robots_specs/<id>/ros*.yml` -- and it passes when the measured rate is
 within +/-10% and no inter-message gap exceeds three expected periods. The real-time
 factor is read off the messages' own header stamps against their arrival: its mean must
@@ -111,8 +111,9 @@ class Periodic:
 
 #: Every periodic `out` topic of each member kind, bare, from `robots_specs/<id>/ros*.yml`
 #: (`rate_hz` a number) and, for the rig, the simulator spec §3 / `ros_settings`. The
-#: rates are the ROS files' and nothing else's; `tests/test_fleet.py` reads those files
-#: and fails on any difference, in either direction.
+#: rates are the ROS files' and nothing else's; the workspace parity tests
+#: (`tests/test_contract_parity.py` at the workspace root) read those files and fail on
+#: any difference, in either direction.
 PERIODIC: dict[str, dict[str, Periodic]] = {
     "so101": {
         "/joint_trajectory_controller/controller_state":

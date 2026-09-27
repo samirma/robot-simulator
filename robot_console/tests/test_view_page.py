@@ -28,7 +28,6 @@ from browser import Browser, find_browser
 
 CONSOLE = Path(__file__).resolve().parents[1]
 PAGE = CONSOLE / "live_cameras.html"
-SPECS = CONSOLE.parent / "robots_specs"
 
 ROS2_IMAGE = "sensor_msgs/msg/CompressedImage"
 ROS1_IMAGE = "sensor_msgs/CompressedImage"
@@ -433,63 +432,8 @@ def test_the_pages_ainex_names_are_the_consoles() -> None:
     assert ainex["is_walking"] == [at.TOPIC_IS_WALKING, at.TYPE_BOOL]
 
 
-def _ros_file_entries(path: Path, section: str) -> dict[str, str]:
-    """`{name: type}` of one top-level list in a ROS file, read as text (no YAML parser)."""
-    entries, name, inside = {}, None, False
-    for line in path.read_text().splitlines():
-        if re.match(r"^\S", line):
-            inside = line.startswith(f"{section}:")
-            continue
-        if not inside:
-            continue
-        m = re.match(r"^  - name:\s*(\S+)", line)
-        if m:
-            name = m.group(1)
-            continue
-        m = re.match(r"^    type:\s*(\S+)", line)
-        if m and name:
-            entries.setdefault(name, m.group(1))
-    return entries
-
-
-@pytest.mark.skipif(not SPECS.is_dir(), reason="no robots_specs/ beside this checkout")
-def test_the_pages_names_are_in_the_official_interfaces() -> None:
-    contract = _contract()
-    so101 = SPECS / "so101" / "ros2.yml"
-    actions = _ros_file_entries(so101, "actions")
-    topics = _ros_file_entries(so101, "topics")
-    assert actions[contract["so101"]["trajectory_action"][0]] == contract["so101"]["trajectory_action"][1]
-    assert actions[contract["so101"]["gripper_action"][0]] == contract["so101"]["gripper_action"][1]
-    for key in ("joint_states", "robot_description"):
-        name, kind = contract["so101"][key]
-        assert topics[name] == kind
-    joints = re.search(r"^joints:\s*\[(.*?)\]", so101.read_text(), re.M).group(1)
-    names = [j.strip() for j in joints.split(",")]
-    assert contract["so101"]["arm_joints"] + [contract["so101"]["gripper_joint"]] == names
-
-    ainex_topics = _ros_file_entries(SPECS / "ainex" / "ros.yml", "topics")
-    for key in ("head_pan", "head_tilt", "set_action", "is_walking"):
-        name, kind = contract["ainex"][key]
-        assert ainex_topics[name] == kind
-    signatures = {"so101": topics, "ainex": ainex_topics,
-                  "myagv": _ros_file_entries(SPECS / "myagv" / "ros.yml", "topics")}
-    for kind, topic, topic_type in contract["member_signatures"]:
-        assert signatures[kind][topic] == topic_type
-
-
-@pytest.mark.skipif(not SPECS.is_dir(), reason="no robots_specs/ beside this checkout")
-def test_the_fallback_limits_are_the_urdfs() -> None:
-    """Used only until the robot's own `robot_description` arrives; the URDF's arm limits,
-    and the jaw's shifted by the bringup's 0.174533 rad offset (0 = closed)."""
-    urdf = (SPECS / "so101" / "so101_new_calib.urdf").read_text()
-    limits = _contract()["so101"]["fallback_limits"]
-    for joint, (lo, hi) in limits.items():
-        m = re.search(rf'<joint name="{joint.removesuffix("_joint")}" type="revolute">.*?'
-                      r'lower="([-\d.]+)" upper="([-\d.]+)"', urdf, re.S)
-        urdf_lo, urdf_hi = float(m.group(1)), float(m.group(2))
-        if joint == "gripper_joint":
-            urdf_lo, urdf_hi = urdf_lo + 0.174533, urdf_hi + 0.174533
-        assert (lo, hi) == pytest.approx((urdf_lo, urdf_hi), abs=1e-5)
+# The page's names against the official interfaces (`robots_specs/`) are a workspace test:
+# `../tests/test_contract_parity.py`, class `ViewPage`.
 
 
 def test_view_sh_refuses_what_it_cannot_serve(tmp_path) -> None:

@@ -3,16 +3,15 @@
 Simulator spec §5's rate gate and the discovery-driven validation that feeds it. The
 judging (`fleet.evaluate`) is pure, so most of it is tested on synthetic arrival times;
 two tests run the real stdlib websocket client against the fake bridge. The parity tests
-hold the console's rate table equal to the ROS files, read as text with the stdlib.
+holding the console's rate table equal to the ROS files live in the workspace's
+`../tests/test_contract_parity.py`.
 """
 
 from __future__ import annotations
 
-import re
 import socket
 import threading
 import time
-from pathlib import Path
 from typing import Optional
 
 import pytest
@@ -20,8 +19,6 @@ import pytest
 from robot_console import fleet
 from robot_console.discovery import Member
 from robot_console.fleet import (
-    APERIODIC,
-    OPTIONAL,
     PERIODIC,
     Observation,
     Periodic,
@@ -32,67 +29,11 @@ from robot_console.fleet import (
 )
 from robot_console.topics import namespaced
 
-SPECS = Path(__file__).resolve().parents[2] / "robots_specs"
-ROS_FILES = {"so101": "so101/ros2.yml", "myagv": "myagv/ros.yml", "ainex": "ainex/ros.yml"}
 
-
-# ------------------------------------------------------------------ parity with the ROS files
-
-
-def _ros_topics(path: Path) -> list[dict[str, str]]:
-    """The `topics:` rows of a ROS file as `{field: text}`, read with the stdlib only.
-
-    The files are regular: every row opens with `  - name:` and its fields sit at four
-    spaces; trailing `# comments` are dropped. Deliberately not a YAML parser -- the
-    console installs without one.
-    """
-    rows: list[dict[str, str]] = []
-    inside = False
-    for line in path.read_text().splitlines():
-        if re.match(r"^\S", line):
-            inside = line.startswith("topics:")
-            continue
-        if not inside:
-            continue
-        m = re.match(r"^  - name:\s*(\S+)", line)
-        if m:
-            rows.append({"name": m.group(1)})
-            continue
-        m = re.match(r"^    (\w+):\s*(.*?)\s*(?:#.*)?$", line)
-        if m and rows:
-            rows[-1].setdefault(m.group(1), m.group(2))
-    return rows
-
-
-def _declared_from_file(kind: str):
-    rows = _ros_topics(SPECS / ROS_FILES[kind])
-    assert rows, f"no topics read from {ROS_FILES[kind]}"
-    periodic: dict[str, Periodic] = {}
-    for row in rows:
-        rate = row.get("rate_hz", "")
-        if row.get("direction") == "out" and re.fullmatch(r"\d+(\.\d+)?", rate):
-            hz = float(rate)
-            old = periodic.get(row["name"])
-            periodic[row["name"]] = Periodic(row["type"], (old.hz if old else 0.0) + hz,
-                                             max(old.fastest_hz if old else 0.0, hz))
-    aperiodic: dict[str, str] = {}
-    for row in rows:
-        if row["name"] not in periodic:
-            aperiodic.setdefault(row["name"], row["type"])
-    # image_transport plugin streams the file marks unverified, beside its `compressed`.
-    optional = {r["name"] for r in rows if r.get("unverified") == "true"
-                and re.search(r"/image_raw/(compressedDepth|theora|zstd)$", r["name"])}
-    return periodic, aperiodic, optional
-
-
-@pytest.mark.skipif(not SPECS.is_dir(), reason="no robots_specs/ beside this checkout")
-@pytest.mark.parametrize("kind", sorted(ROS_FILES))
-def test_the_rate_table_is_the_ros_files(kind) -> None:
-    """Every periodic rate the console gates on is its robot's ROS file's, both ways."""
-    periodic, aperiodic, optional = _declared_from_file(kind)
-    assert PERIODIC[kind] == periodic
-    assert APERIODIC[kind] == aperiodic
-    assert set(OPTIONAL.get(kind, ())) == optional
+# ------------------------------------------------------------------ the tables themselves
+#
+# Held equal to the ROS files and the simulator's modules by the workspace test
+# `../tests/test_contract_parity.py` (`PeriodicRates`); these need no sibling checkout.
 
 
 def test_the_rigs_rate_is_ros_settings() -> None:

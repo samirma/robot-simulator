@@ -8,7 +8,8 @@ differ -- the link that encodes `Command` for the wire, the speed envelope, the 
 wording and the what-to-start text.
 
 The robot ids are the console's copy of the ids in `robots_specs/robots.yml` for the
-robots teleop drives. `tests/test_robot_ids.py` holds the two equal by reading that file.
+robots teleop drives. The workspace parity tests (`tests/test_contract_parity.py` at the
+workspace root) hold the two equal by reading that file.
 """
 
 from __future__ import annotations
