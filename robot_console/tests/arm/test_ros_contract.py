@@ -23,7 +23,6 @@ from robot_console.arm.kinematics import ARM_JOINTS, GRIPPER_JOINT, JOINT_ORDER
 from robot_console.topics import namespaced
 from robot_console.arm.ros_settings import (
     ARM_COMMAND_TOPIC,
-    FREE_JOINT_STATES_TOPIC,
     GRIPPER_ACTION,
     GRIPPER_ACTION_TYPE,
     JOINT_STATES_TOPIC,
@@ -79,10 +78,36 @@ def test_every_topic_name_matches_the_simulators() -> None:
     assert s.SERVICE_RESET == RESET_SERVICE
 
 
-def test_the_free_joint_topic_the_console_still_reads_is_not_served() -> None:
-    """Not part of the official interface; the console's consumers of it are pending."""
-    s = _surface()
-    assert FREE_JOINT_STATES_TOPIC not in s.TOPICS
+def test_every_typed_name_the_arm_task_uses_is_the_simulators() -> None:
+    """The SO-101's topics, action and `/reset`, and the rig's, type for type."""
+    from robot_console.arm import ros_settings as rs
+
+    s, ns = _surface(), _namespace()
+    arm = rs.arm_interface("")
+    for topic, kind in arm["topics"].items():
+        assert s.TOPICS[topic][0] == kind, topic
+    for action, kind in arm["actions"].items():
+        assert s.ACTIONS[action][0] == kind
+    assert (s.SERVICE_RESET, s.SRV_TYPE_TRIGGER) == (rs.RESET_SERVICE, rs.RESET_SERVICE_TYPE)
+    published = {ns.ns_topic(s.SCENE_NAMESPACE, t): s.TYPE_SCENE_IMAGE
+                 for t in s.SCENE_CAMERA_TOPICS}
+    published.update({ns.ns_topic(s.SCENE_NAMESPACE, t): s.TYPE_SCENE_CAMERA_INFO
+                      for t in s.SCENE_CAMERA_INFO_TOPICS.values()})
+    published[ns.ns_topic(s.SCENE_NAMESPACE, s.SCENE_TF_STATIC)] = rs.TF_TYPE
+    assert rs.rig_interface() == published
+    assert s.SCENE_ROOT_FRAME == rs.SCENE_ROOT_FRAME
+
+
+def test_the_console_reads_nothing_outside_the_official_interface() -> None:
+    """No free-joint stream, no engine reset: every name is the robot's, `/reset` or the rig's."""
+    import inspect as _inspect
+
+    from robot_console.arm import embodiment, preflight, ros_settings, scorer, vision_success
+
+    for module in (embodiment, preflight, ros_settings, scorer, vision_success):
+        source = _inspect.getsource(module)
+        assert "free_joint" not in source
+        assert "reset_world" not in source
 
 
 def test_the_simulators_publish_no_success_topic() -> None:
@@ -218,11 +243,7 @@ def test_both_sides_agree_the_scene_rig_is_not_the_robot_s() -> None:
     subscribed = {
         spec[0]
         for spec in RosSettings(
-            namespace="so101",
-            extra_cameras=(
-                (SIDE_CAMERA_NAME, SIDE_CAMERA_TOPIC, 640, 480),
-                (WRIST_CAMERA_NAME, WRIST_CAMERA_TOPIC, 640, 480),
-            ),
+            namespace="so101", views=("overhead", SIDE_CAMERA_NAME, WRIST_CAMERA_NAME),
         ).cameras().values()
     }
     assert subscribed == published
@@ -245,7 +266,10 @@ def test_the_arm_settings_put_the_namespace_on_every_wire_name() -> None:
     assert kwargs["command_topic"] == "/so101/joint_trajectory_controller/joint_trajectory"
     assert kwargs["gripper_topic"] == "/so101/gripper_controller/gripper_cmd"
     assert kwargs["reset_service"] == "/so101/reset"
-    assert set(kwargs["cameras"]) == {"overhead", "side"}
+    assert list(kwargs["cameras"]) == ["overhead", "side", "wrist"]
+    assert kwargs["cameras"]["wrist"][0] == "/so101/wrist/image_raw/compressed"
+    assert set(settings.camera_info_topics().values()) == {
+        "/scene/overhead/color/camera_info", "/scene/side/color/camera_info"}
     # The rig's own namespace, not the arm's -- see the test below.
     assert kwargs["cameras"]["overhead"][0] == "/scene/overhead/color/compressed"
 

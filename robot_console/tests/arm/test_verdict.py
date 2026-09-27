@@ -1,22 +1,22 @@
-"""`arm/verdict.py`: the grading that used to be a shell heredoc, now testable."""
+"""`arm/verdict.py`: reading the camera-verdict scorer's grade back out of a log."""
 
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from pathlib import Path
 
 from robot_console.arm import verdict as v
 
+REASON = "held 1.20 s: apple within 0.012 m of the plate centre"
 
-def _log(*, status="success", apple=1.0, reference=1.0, distance=0.0446, error=None,
-         ref_key="reference_success", instruction="put it on the plate") -> dict:
-    epoch = {"apple_on_plate": apple, "apple_plate_distance": distance}
-    if reference is not None:
-        epoch[ref_key] = reference
-    sample = {"epochs": [epoch], "instruction": instruction, "termination_reasons": ["success"]}
+
+def _log(*, status="success", apple=1.0, error=None, reason=REASON,
+         instruction="put it on the plate") -> dict:
+    sample = {"epochs": [{"apple_on_plate": apple}], "instruction": instruction,
+              "termination_reasons": ["max_steps"],
+              "trial_metadata": [{"apple_on_plate": {"reason": reason, "passed": apple >= 1}}]}
     if error:
         sample["error"] = error
     return {"status": status, "samples": [sample]}
@@ -29,39 +29,28 @@ def _write(path: Path, log: dict, *, mtime: float | None = None) -> Path:
     return path
 
 
-def test_a_passing_episode_reads_pass_and_carries_the_closest_approach() -> None:
+def test_a_passing_episode_reads_pass_and_carries_the_scorers_reason() -> None:
     out = v.verdict_from_log(_log())
-    assert (out.outcome, out.reference) == ("PASS", "PASS")
-    assert out.distance_m == 0.0446
-    assert out.detail == "0.0446 m from plate centre"
+    assert out.outcome == "PASS"
+    assert out.detail == REASON
     assert out.instruction == "put it on the plate"
-    assert out.termination == ("success",)
-    assert out.line == "PASS PASS 0.0446 m from plate centre"
+    assert out.termination == ("max_steps",)
+    assert out.line == f"PASS {REASON}"
 
 
 def test_scores_are_floats_and_a_one_point_zero_passes() -> None:
-    # `"1"` string-matching once called this a failure; the score is 1.0 on the wire.
     assert v.verdict_from_log(_log(apple=1.0)).outcome == "PASS"
-    assert v.verdict_from_log(_log(apple=0.0, distance=0.3137)).outcome == "FAIL"
+    assert v.verdict_from_log(_log(apple=0.0, reason="no pose")).outcome == "FAIL"
 
 
-def test_camera_and_pose_reference_can_disagree() -> None:
-    # The camera verdict cannot see height; the pose reference can. Both are reported so
-    # the disagreement is visible, and only the camera's is the grade.
-    out = v.verdict_from_log(_log(apple=1.0, reference=0.0))
-    assert (out.outcome, out.reference) == ("PASS", "FAIL")
-
-
-def test_the_legacy_reference_key_still_reads() -> None:
-    out = v.verdict_from_log(_log(ref_key="sim_task_success", reference=1.0))
-    assert out.reference == "PASS"
-    assert v.verdict_from_log(_log(reference=None)).reference == "n/a"
+def test_a_log_without_the_scorers_grade_is_an_error() -> None:
+    log = _log()
+    log["samples"][0]["epochs"] = [{"reference_success": 1.0}]
+    assert v.verdict_from_log(log).outcome == "ERROR"
 
 
 def test_a_failed_run_status_is_an_error_not_a_zero() -> None:
-    out = v.verdict_from_log(_log(status="error"))
-    assert (out.outcome, out.reference) == ("ERROR", "ERROR")
-    assert math.isnan(out.distance_m)
+    assert v.verdict_from_log(_log(status="error")).outcome == "ERROR"
 
 
 def test_a_sample_error_under_a_successful_status_is_still_an_error() -> None:
@@ -70,13 +59,10 @@ def test_a_sample_error_under_a_successful_status_is_still_an_error() -> None:
     assert out.detail == "EmbodimentFault: no post-publish joint state"
 
 
-def test_find_log_ignores_the_live_snapshot_and_the_preflight_record(tmp_path: Path) -> None:
-    # The old heredoc's glob matched both of these; the snapshot has status `started`.
+def test_find_log_ignores_the_live_snapshot(tmp_path: Path) -> None:
     _write(tmp_path / "apple-on-plate_abc.live.json", {"status": "started", "samples": []})
-    _write(tmp_path / "scene_reset.json", {"url": "ws://x", "reset": True})
     assert v.find_log(tmp_path) is None
     assert v.grade(tmp_path).outcome == "ERROR"
-
     real = _write(tmp_path / "apple-on-plate_abc.json", _log())
     assert v.find_log(tmp_path) == real
     assert v.grade(tmp_path).outcome == "PASS"
@@ -94,13 +80,11 @@ def test_a_missing_directory_is_an_error_with_a_reason(tmp_path: Path) -> None:
     assert out.outcome == "ERROR" and "no eval log" in out.detail
 
 
-def test_the_cli_prints_three_leading_tokens_then_free_text(tmp_path: Path, capsys) -> None:
-    _write(tmp_path / "log.json", _log(apple=1.0, reference=0.0))
+def test_the_cli_prints_the_outcome_then_free_text(tmp_path: Path, capsys) -> None:
+    _write(tmp_path / "log.json", _log(apple=0.0, reason="apple moving at 0.0300 m/s"))
     assert v.main([str(tmp_path)]) == 0
-    line = capsys.readouterr().out.strip()
-    scored, ref, *detail = line.split()
-    assert (scored, ref) == ("PASS", "FAIL")
-    assert " ".join(detail) == "0.0446 m from plate centre"
+    outcome, detail = capsys.readouterr().out.strip().split(" ", 1)
+    assert (outcome, detail) == ("FAIL", "apple moving at 0.0300 m/s")
 
 
 def test_the_cli_can_print_one_field_and_json(tmp_path: Path, capsys) -> None:
@@ -109,4 +93,4 @@ def test_the_cli_can_print_one_field_and_json(tmp_path: Path, capsys) -> None:
     assert capsys.readouterr().out.strip() == "put it on the plate"
     v.main([str(tmp_path), "--json"])
     data = json.loads(capsys.readouterr().out)
-    assert data["outcome"] == "PASS" and data["distance_m"] == 0.0446
+    assert data["outcome"] == "PASS" and data["detail"] == REASON

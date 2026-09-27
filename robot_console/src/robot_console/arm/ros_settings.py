@@ -1,17 +1,16 @@
-"""ROS wiring for the SO-101, in one place.
+"""ROS wiring for the SO-101 and the worktop rig, in one place.
 
 The names, types and joints are the SO-101's official ROS 2 interface as
 ``robots_specs/so101/ros2.yml`` records it (the community ``so_arm101_description``
 bringup with ``hardware_type:=real``, plus ``usb_cam`` in ``/wrist``), and the
 workspace-owned ``/reset`` and ``/scene`` rig from the simulator's spec §3. The
-simulator's contract module (``simulator/shared/ros_surfaces/so101.py``) transcribes
-the same file; ``tests/arm/test_ros_contract.py`` holds the two equal.
+simulator's contract modules (``simulator/shared/ros_surfaces/so101.py`` and
+``simulator/shared/tasks/apple_on_plate.py``) transcribe the same facts;
+``tests/arm/test_ros_contract.py`` holds the two sides equal, because this project
+cannot import that one.
 
-Not yet migrated: the console still reads the apple's pose from
-``/free_joint_publisher/free_joint_states`` (``FREE_JOINT_STATES_TOPIC``), which is
-not part of the official interface and is no longer served, and drives the gripper
-through a stopgap that turns the base adapter's gripper publish into a
-``ParallelGripperCommand`` goal (``ros_client.HeaderStampingClient``).
+Everything the console consumes is here and nothing else: no topic outside the official
+interface, the composed ``/reset`` and the rig is named in this module.
 """
 
 from __future__ import annotations
@@ -22,274 +21,201 @@ from typing import Any
 from robot_console.arm.kinematics import ARM_JOINTS, GRIPPER_JOINT, JOINT_LIMITS
 from robot_console.topics import namespaced
 
-#: rosbridge websocket the simulator exposes.
+#: rosbridge websocket the console connects to by default.
 DEFAULT_URL = "ws://127.0.0.1:9090"
 
-#: ``joint_trajectory_controller`` in ``so_arm_mujoco/config/ros2_controllers.yaml``
-#: drives exactly the five arm joints; the gripper is on a separate controller.
-ARM_COMMAND_TOPIC = "/joint_trajectory_controller/joint_trajectory"
+# ------------------------------------------------------------------ the SO-101
 
-#: ``joint_state_broadcaster`` publishes all six joints — five arm plus the jaw
-#: — on this single topic at ~165 Hz, per ``CONTRACT.md`` section 3 constraint 3.
-#: Its ``name`` array is **alphabetically sorted**, not in contract joint order,
-#: so every consumer must index it by name.
+#: ``joint_trajectory_controller`` drives exactly the five arm joints.
+ARM_COMMAND_TOPIC = "/joint_trajectory_controller/joint_trajectory"
+ARM_COMMAND_TYPE = "trajectory_msgs/msg/JointTrajectory"
+
+#: ``joint_state_broadcaster`` publishes all six joints on this one topic. Its ``name``
+#: array is **alphabetically sorted**, not in contract order, so every consumer indexes
+#: it by name.
 JOINT_STATES_TOPIC = "/joint_states"
+JOINT_STATES_TYPE = "sensor_msgs/msg/JointState"
 
 #: ``gripper_controller`` is a ``parallel_gripper_action_controller/GripperActionController``
 #: on ``gripper_joint``: an action server, goal ``command.position[0]`` in radians.
 GRIPPER_ACTION = "/gripper_controller/gripper_cmd"
 GRIPPER_ACTION_TYPE = "control_msgs/action/ParallelGripperCommand"
-#: What the base adapter builds for its gripper publish; the client turns it into a goal.
-GRIPPER_COMMAND_TYPE = "std_msgs/msg/Float64MultiArray"
 
-#: ``robot_state_publisher`` runs beside the broadcaster in every ros2_control bringup
-#: for this arm, turning those joint angles into frames. ROS 2 spelling of the message,
-#: because this robot is a ROS 2 stack and the myAGV beside it on the same graph is not.
-#: Nothing here consumes the tree -- ``kinematics.py`` does its own FK against the same
-#: description -- but an arm that publishes joint angles and no frames is an arm a
-#: standard client cannot draw, so the fleet check requires it.
+#: ``robot_state_publisher``'s tree. Nothing here consumes it -- ``kinematics.py`` does
+#: its own FK -- but an arm that publishes no frames is one a standard client cannot draw,
+#: so the wire check requires it.
 TF_TOPIC = "/tf"
 TF_STATIC_TOPIC = "/tf_static"
 TF_TYPE = "tf2_msgs/msg/TFMessage"
 
-#: ``task_manager`` publishes its verdict here on every free-joint message.
+#: The eye-in-hand view: ``usb_cam`` in ``/wrist``, 640x480 at 30 Hz, its compressed
+#: stream on ``image_transport``'s ``/wrist/image_raw/compressed``.
+WRIST_CAMERA_NAME = "wrist"
+WRIST_CAMERA_TOPIC = "/wrist/image_raw/compressed"
+WRIST_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
+WRIST_CAMERA_WIDTH = 640
+WRIST_CAMERA_HEIGHT = 480
 
-#: ``FreeJointStatePublisherPlugin`` publishes the pose and twist of every body
-#: in its ``body_names`` -- the apple and, since 02 Sep 2026, the four dressing
-#: bodies too; select ``APPLE_BODY`` by name, never by position. With
-#: no ``frame_id`` parameter set in ``config/mujoco_plugins.yaml``, and an empty
-#: ``header.frame_id`` on the wire, poses are in the **world** frame. The
-#: message field is ``free_joints``, not ``states``.
-FREE_JOINT_STATES_TOPIC = "/free_joint_publisher/free_joint_states"
-FREE_JOINT_STATES_TYPE = "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
-APPLE_BODY = "apple"
+#: The workspace-owned reset (spec §3): ``std_srvs/srv/Trigger`` provided by
+#: ``/simulator``, composed with the SO-101's namespace. It restores the staged world and
+#: the controllers, aborts outstanding goals, and answers once observations of the reset
+#: world are out. It exists only in simulation, which is what makes it the thing the arm
+#: task refuses a wire without.
+RESET_SERVICE = "/reset"
+RESET_SERVICE_TYPE = "std_srvs/srv/Trigger"
 
-#: The overhead camera. The MuJoCo ``CameraPlugin`` publishes a raw
-#: ``sensor_msgs/msg/Image`` on ``/camera_publisher/overhead/color``; an
-#: ``image_transport republish`` node compresses it and its output is remapped
-#: to the contract name below. 5 Hz, 1280x720, JPEG payload.
-#: Where the two scene cameras are, in the arm base frame, metres. This is what a policy
-#: is *told* about the cameras (see `embodiment._DOCS`), so it has to be the truth the
-#: simulator stages: `tests/arm/test_scene_geometry.py` holds it equal to the task module's
-#: `SCENE_CAMERAS`. It went stale once already -- the overhead camera was re-posed from
-#: (0.500, 0.051, 0.614) to (0.795, 0.000, 1.110) and the prose kept the old number for
-#: weeks, which is 0.5 m of height for anything unprojecting pixels from that text.
-#: Re-posed 2026-09-06: overhead 20 % closer along its own optical axis, orientation
-#: unchanged (1.257 -> 1.006 m from its look-at point). Re-posed again 2026-09-08: side
-#: moved *back* along its axis, 0.733 -> 1.233 m, so the whole robot is in the side view
-#: -- see the note on SCENE_CAMERAS in the simulator's apple_on_plate.py. `vision_success`
-#: back-projects through the overhead entry, so a stale copy of it here is not a
-#: documentation error, it is a wrong verdict; the side entry is not graded from.
-SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
-    "overhead": (0.677, 0.000, 0.888),
-    "side": (0.265, 1.110, 0.161),
-}
-#: Down-tilt of each scene camera, degrees below horizontal, for the same text.
-SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
+# ------------------------------------------------------------------ the worktop rig
 
-#: Each scene camera's orientation as MuJoCo `xyaxes` -- image-right and image-up as
-#: vectors in the arm base frame -- alongside its vertical field of view in degrees.
-#: This is rig calibration, not privileged state: it says where the cameras are bolted,
-#: which any deployment knows about its own hardware and which no episode can change.
-#: `vision_success` needs it to undo perspective, because a verdict read off raw pixels
-#: is measurably wrong -- normalising against the plate's own ellipse instead put the
-#: apple 24 mm too far out at the plate and 43 mm too far out at the spawn point, which
-#: on an 80 mm gate is the difference between grading a placement and failing it.
-SCENE_CAMERA_XYAXES: dict[str, tuple[float, ...]] = {
-    "overhead": (0.00000, 1.00000, 0.00000, -0.88295, 0.00000, 0.46947),
-    "side": (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
-}
-SCENE_CAMERA_FOVY_DEG: dict[str, float] = {"overhead": 45.0, "side": 45.0}
-#: The rig's frame rate, the simulator task's ``SCENE_CAMERA_HZ``.
-SCENE_CAMERA_HZ = 10.0
+#: The rig is not the robot's, so the robot's namespace is not its own: it publishes
+#: under this one, with or without an arm bolted beside it.
+SCENE_NAMESPACE = "scene"
+#: The rig's root frame, ``scene/worktop``: the arm base frame its constants are in.
+SCENE_ROOT_FRAME = "worktop"
 
 OVERHEAD_CAMERA_NAME = "overhead"
 OVERHEAD_CAMERA_TOPIC = "/overhead/color/compressed"
+OVERHEAD_CAMERA_INFO_TOPIC = "/overhead/color/camera_info"
 OVERHEAD_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
-#: Measured on the wire 2026-08-30: both views publish 640x480. The overhead
-#: camera was 1280x720 when INTERFACE.md section 3 was written; the simulator
-#: has since changed it. The upstream adapter validates the first frame against
-#: these numbers and raises on a mismatch, so they must track the sim.
 OVERHEAD_CAMERA_WIDTH = 640
 OVERHEAD_CAMERA_HEIGHT = 480
 
-#: A second static third-person view. MolmoAct2 is trained on two *different*
-#: views and consumes them positionally, so duplicating the overhead frame is
-#: off-distribution input, not a harmless stand-in. Confirm the topic against
-#: ``ros2 topic list`` before relying on it -- it is owned by the simulator.
 SIDE_CAMERA_NAME = "side"
 SIDE_CAMERA_TOPIC = "/side/color/compressed"
+SIDE_CAMERA_INFO_TOPIC = "/side/color/camera_info"
 SIDE_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
 SIDE_CAMERA_WIDTH = 640
 SIDE_CAMERA_HEIGHT = 480
 
-#: The eye-in-hand view, riding ``gripper_link``. ``CONTRACT.md`` section 3 has
-#: listed this topic since the beginning; nothing published it until the camera
-#: was added to the arm MJCF, so a comment here used to say it did not exist.
-#:
-#: **``./kitchen.sh serve`` always publishes it** (every member presents all its
-#: cameras); a simulator that does not is refused by ``--require-view``. It used to be
-#: declared but disabled by default, because the MuJoCo plugin renders inside the physics
-#: loop and rate falls for *every* camera when another one is enabled: measured
-#: 4.23/4.15 Hz with it off against 2.94/2.98/2.97 Hz with it on. Selecting this view
-#: against a wire without it fails at reset with a missing-topic timeout, which is
-#: the intended loud failure -- an eye-in-hand policy fed a stale or absent wrist
-#: frame is worse than one that refuses to start.
-#:
-#: The wrist camera is ``usb_cam`` in ``/wrist``: 640x480 (4:3) at 30 Hz, its
-#: compressed stream on ``image_transport``'s ``/wrist/image_raw/compressed``.
-WRIST_CAMERA_NAME = "wrist"
-WRIST_CAMERA_TOPIC = "/wrist/image_raw/compressed"
-WRIST_CAMERA_TYPE = "sensor_msgs/msg/CompressedImage"
-#: usb_cam 0.8.1's defaults (image_width 640, image_height 480, framerate 30).
-WRIST_CAMERA_WIDTH = 640
-WRIST_CAMERA_HEIGHT = 480
+CAMERA_INFO_TYPE = "sensor_msgs/msg/CameraInfo"
+#: The rig's calibrated transforms, under its own namespace.
+SCENE_TF_STATIC_TOPIC = "/tf_static"
 
-# History, so the gap in the record is not mistaken for an oversight: a
-# ``trainlow``/``trainhigh`` pair was defined here and used as the default
-# views. It measured strictly worse for MolmoAct2 (0/5, apple travel 0.000 m)
-# and was deleted from the simulator's scene on 2026-08-31, along with an
-# unused ``policylow``/``policyhigh`` pair. Those topics no longer exist, so
-# the constants are gone too rather than left defined and unsubscribable:
-# ``settings_for_views`` must reject those names, not wire them.
-
-#: Every camera this simulator publishes, as ``name -> (topic, width, height)``,
-#: derived from the constants above so there is exactly one definition of each.
-#:
-#: This exists so a caller can say *which views it wants* and get the matching
-#: subscriptions, instead of naming views in one place and wiring topics in
-#: another. The two have drifted apart before, with a script hard-coding one
-#: pair of view names while ``RosSettings`` subscribed to another: the script
-#: and the policy then silently disagreed about what the model was looking at.
-#:
-#: Only names in here are wirable, so this map is also what stops
-#: ``settings_for_views`` accepting a camera the simulator does not publish.
-#: The worktop's fixed camera rig is not the robot's, so the robot's namespace is not
-#: its own: it publishes under this one. `/so101/*` holds what the SO-101 presents, which
-#: among the cameras is the wrist alone -- the overhead and side views watch the room and
-#: would still be there with the arm unbolted. The simulator owns the matching constant
-#: (`shared/ros_surfaces/so101.py`); `tests/arm/test_ros_contract.py` holds the two equal,
-#: because this project cannot import that one.
-SCENE_NAMESPACE = "scene"
-
-#: Which views belong to the rig rather than to the arm. `cameras()` and the preflight's
-#: reachability check both read this instead of naming the two views again: they disagreed
-#: once already, and a camera under the wrong namespace fails as a timeout that blames the
-#: simulator.
-SCENE_CAMERA_NAMES: frozenset[str] = frozenset()  # filled in below, after the names exist
-
-CAMERA_SPECS: dict[str, tuple[str, int, int]] = {
+#: The rig's mount poses, **duplicated exactly** from the simulator task's
+#: ``SCENE_CAMERAS`` (spec §3): name -> (position, MuJoCo ``xyaxes``, vertical field of
+#: view in degrees, (width, height)), all in the arm base frame (``scene/worktop``).
+#: ``xyaxes`` is image-right then image-up, as vectors in that frame. This is rig
+#: calibration -- where the cameras are bolted -- not episode state, and it is what the
+#: camera-verdict scorer triangulates through, so a stale copy here is a wrong verdict.
+SCENE_CAMERAS: dict[str, tuple[tuple[float, float, float], tuple[float, ...], float,
+                               tuple[int, int]]] = {
     OVERHEAD_CAMERA_NAME: (
-        OVERHEAD_CAMERA_TOPIC,
-        OVERHEAD_CAMERA_WIDTH,
-        OVERHEAD_CAMERA_HEIGHT,
+        (0.677, 0.000, 0.888),
+        (0.00000, 1.00000, 0.00000, -0.88295, 0.00000, 0.46947),
+        45.0,
+        (640, 480),
     ),
+    SIDE_CAMERA_NAME: (
+        (0.265, 1.110, 0.161),
+        (-0.99892, -0.04646, 0.00000, 0.00456, -0.09815, 0.99516),
+        45.0,
+        (640, 480),
+    ),
+}
+#: Views of the table above, as the prose a policy is told reads them.
+SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
+    name: spec[0] for name, spec in SCENE_CAMERAS.items()
+}
+SCENE_CAMERA_XYAXES: dict[str, tuple[float, ...]] = {
+    name: spec[1] for name, spec in SCENE_CAMERAS.items()
+}
+SCENE_CAMERA_FOVY_DEG: dict[str, float] = {name: spec[2] for name, spec in SCENE_CAMERAS.items()}
+#: Down-tilt of each scene camera, degrees below horizontal, for the policy's docs.
+SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
+#: The rig's frame rate, the simulator task's ``SCENE_CAMERA_HZ``.
+SCENE_CAMERA_HZ = 10.0
+
+#: Which views belong to the rig rather than to the arm.
+SCENE_CAMERA_NAMES: frozenset[str] = frozenset({OVERHEAD_CAMERA_NAME, SIDE_CAMERA_NAME})
+#: rig view -> its ``camera_info`` topic, bare.
+SCENE_CAMERA_INFO_TOPICS: dict[str, str] = {
+    OVERHEAD_CAMERA_NAME: OVERHEAD_CAMERA_INFO_TOPIC,
+    SIDE_CAMERA_NAME: SIDE_CAMERA_INFO_TOPIC,
+}
+
+#: Every camera the embodiment can subscribe, ``name -> (topic, width, height)``.
+CAMERA_SPECS: dict[str, tuple[str, int, int]] = {
+    OVERHEAD_CAMERA_NAME: (OVERHEAD_CAMERA_TOPIC, OVERHEAD_CAMERA_WIDTH, OVERHEAD_CAMERA_HEIGHT),
     SIDE_CAMERA_NAME: (SIDE_CAMERA_TOPIC, SIDE_CAMERA_WIDTH, SIDE_CAMERA_HEIGHT),
-    #: Selectable, but only published when the sim was started with --wrist. It is
-    #: deliberately NOT in ``RosSettings.extra_cameras``' default, so no existing
-    #: eval changes behaviour by its presence here.
     WRIST_CAMERA_NAME: (WRIST_CAMERA_TOPIC, WRIST_CAMERA_WIDTH, WRIST_CAMERA_HEIGHT),
 }
 
-SCENE_CAMERA_NAMES = frozenset({OVERHEAD_CAMERA_NAME, SIDE_CAMERA_NAME})
-
 
 def camera_topic(name: str, topic: str, namespace: str) -> str:
-    """`topic` under whichever namespace owns that camera.
-
-    The one place the answer is decided, so a subscriber and a reachability check cannot
-    end up on different topics for the same view -- which is exactly how this would fail
-    if the rule were spelled out twice: silently, as a camera that never delivers a frame.
-    """
+    """`topic` under whichever namespace owns that camera: the rig's, or the robot's."""
     return namespaced(topic, SCENE_NAMESPACE if name in SCENE_CAMERA_NAMES else namespace)
 
 
-#: The workspace-owned reset (spec §3): ``std_srvs/srv/Trigger`` provided by
-#: ``/simulator``, composed with the SO-101's namespace. It restores the staged world
-#: and the controllers, aborts outstanding goals, and answers once observations of the
-#: reset world are out.
-RESET_SERVICE = "/reset"
-TASK_MANAGER_RESET_SERVICE = RESET_SERVICE
+def rig_topic(topic: str) -> str:
+    """A bare rig name as it reaches the wire, under ``/scene``."""
+    return namespaced(topic, SCENE_NAMESPACE)
+
+
+def arm_interface(namespace: str) -> dict[str, dict[str, str]]:
+    """The SO-101's typed interface the arm task uses, composed with ``namespace``.
+
+    ``{"topics": {name: type}, "services": {...}, "actions": {...}}``. The wire check
+    compares this against what ``rosapi`` reports, type for type.
+    """
+    return {
+        "topics": {
+            namespaced(JOINT_STATES_TOPIC, namespace): JOINT_STATES_TYPE,
+            namespaced(ARM_COMMAND_TOPIC, namespace): ARM_COMMAND_TYPE,
+            namespaced(WRIST_CAMERA_TOPIC, namespace): WRIST_CAMERA_TYPE,
+            namespaced(TF_TOPIC, namespace): TF_TYPE,
+            namespaced(TF_STATIC_TOPIC, namespace): TF_TYPE,
+        },
+        "services": {namespaced(RESET_SERVICE, namespace): RESET_SERVICE_TYPE},
+        "actions": {namespaced(GRIPPER_ACTION, namespace): GRIPPER_ACTION_TYPE},
+    }
+
+
+def namespaced_reset(namespace: str) -> str:
+    """The composed ``/reset`` for the SO-101 under ``namespace``."""
+    return namespaced(RESET_SERVICE, namespace)
+
+
+def rig_interface() -> dict[str, str]:
+    """The rig's typed topics, under ``/scene``."""
+    return {
+        rig_topic(OVERHEAD_CAMERA_TOPIC): OVERHEAD_CAMERA_TYPE,
+        rig_topic(OVERHEAD_CAMERA_INFO_TOPIC): CAMERA_INFO_TYPE,
+        rig_topic(SIDE_CAMERA_TOPIC): SIDE_CAMERA_TYPE,
+        rig_topic(SIDE_CAMERA_INFO_TOPIC): CAMERA_INFO_TYPE,
+        rig_topic(SCENE_TF_STATIC_TOPIC): TF_TYPE,
+    }
+
+
+#: The embodiment's default views, in slot order: the two rig views MolmoAct2 takes
+#: positionally, then the wrist.
+DEFAULT_VIEWS: tuple[str, ...] = (OVERHEAD_CAMERA_NAME, SIDE_CAMERA_NAME, WRIST_CAMERA_NAME)
 
 
 @dataclass(frozen=True)
 class RosSettings:
-    """Everything the ROS embodiment needs to talk to this simulator."""
+    """Everything the ``so101_ros`` embodiment needs to talk to an SO-101 and the rig."""
 
     url: str = DEFAULT_URL
-    #: ROS namespace this arm is under. Several robots on one graph each get one -- the
-    #: simulator defaults it to the robot's own name -- so the topics below reach the wire
-    #: as `/so101/joint_states` and the services as `/so101/reset`.
-    #:
-    #: **The fields below stay bare, and the prefix is applied in `base_kwargs()` and
-    #: `cameras()`.** That is deliberate: those constants are transcribed from
-    #: `ros2 topic list -t` run inside the reference container, so they are the record of
-    #: what a real bringup presents, and `tests/arm/test_ros_settings.py` checks them
-    #: against that record. Prefixing them in place would make the record disagree with
-    #: itself; prefixing at the point of use keeps the claim checkable in both forms --
-    #: bare for the hardware contract, namespaced for what actually goes out.
-    #:
-    #: `""` reproduces the single-robot wire exactly.
+    #: The SO-101's ROS namespace. The fields below stay bare -- they are the record of
+    #: the official interface -- and the prefix is applied where a name reaches the wire
+    #: (`topic()`, `cameras()`). `""` is the bare single-robot contract.
     namespace: str = "so101"
     ros_version: int = 2
     joints: tuple[str, ...] = ARM_JOINTS
     joint_states_topic: str = JOINT_STATES_TOPIC
     command_topic: str = ARM_COMMAND_TOPIC
-    command_type: str = "joint_trajectory"
     gripper_joint: str = GRIPPER_JOINT
-    gripper_mode: str = "action"
-    gripper_topic: str = GRIPPER_ACTION
-    object_state_topic: str = FREE_JOINT_STATES_TOPIC
-    object_body: str = APPLE_BODY
-    camera_name: str = OVERHEAD_CAMERA_NAME
-    #: Set to ``None`` to run without images. That clears ``extra_cameras`` too
-    #: (see ``__post_init__``): "no primary camera" means no subscriptions at
-    #: all, so ``--no-camera`` and ``-E camera_topic=`` cannot leave slot 1
-    #: alive. The eval evidence policy wants a screenshot for every model
-    #: tested, so the default is the live camera.
-    camera_topic: str | None = OVERHEAD_CAMERA_TOPIC
-    camera_width: int = OVERHEAD_CAMERA_WIDTH
-    camera_height: int = OVERHEAD_CAMERA_HEIGHT
-    #: Further cameras as ``(name, topic, width, height)``, appended after the
-    #: primary one in declaration order. Order is load-bearing for policies that
-    #: take views positionally, so this is a tuple, not a mapping.
-    #:
-    #: Defaults to the only pair the simulator publishes: slot 0 ``overhead``
-    #: (primary, above), slot 1 ``side``. This matches ``molmoact.DEFAULT_VIEWS``
-    #: so the dataclass default and the eval scripts agree without coordination.
-    extra_cameras: tuple[tuple[str, str, int, int], ...] = (
-        (
-            SIDE_CAMERA_NAME,
-            SIDE_CAMERA_TOPIC,
-            SIDE_CAMERA_WIDTH,
-            SIDE_CAMERA_HEIGHT,
-        ),
-    )
+    gripper_action: str = GRIPPER_ACTION
+    #: Views to subscribe, in slot order. Order is load-bearing for a policy that takes
+    #: views positionally, so this is a tuple, not a set. The two rig views are always
+    #: subscribed whether listed or not: the scorer grades from them.
+    views: tuple[str, ...] = DEFAULT_VIEWS
     #: The workspace-owned ``/reset``: world, controllers and task timers together.
-    reset_service: str | None = TASK_MANAGER_RESET_SERVICE
+    reset_service: str = RESET_SERVICE
     control_hz: float = 10.0
-    #: Minimum simulated-time-per-wall-second the simulator must be running at
-    #: before an episode may start. A stalled or heavily throttled sim clock is
-    #: silent and looks exactly like a broken policy: the
-    #: ``JointTrajectoryController`` interpolates its goal against the ROS clock,
-    #: so with ``use_sim_time`` and a stopped clock it never advances past the
-    #: trajectory's first point and the arm holds its pose -- while the gripper's
-    #: ``ForwardCommandController``, which has no time dependence at all, keeps
-    #: working. "Gripper moves, arm frozen" is that failure, not a policy fault.
-    #: Set to 0 to skip the check.
-    min_real_time_factor: float = 0.10
     obs_timeout_s: float = 10.0
-
-    #: How long a step waits for an observation *newer* than the command it just sent.
-    #: `None` keeps the adapter's own default of 2/control_hz, which is a **rate**
-    #: assumption dressed up as a freshness one: it only holds if the robot publishes
-    #: faster than the control loop runs. A simulator rendering several cameras inside
-    #: its physics loop does not -- measured here at 8-10 Hz against a 10 Hz control rate
-    #: -- and a VLA doing seconds of inference between steps widens the gap further. The
-    #: symptom is an episode dying part-way through with "EmbodimentFault: no
-    #: post-publish joint state within fresh_obs_timeout_s=0.2s". Raising it does not
-    #: weaken the guarantee: a stale observation is still refused, it is just given time
-    #: to arrive.
+    #: How long a step waits for joint state newer than the command it just sent. `None`
+    #: keeps the adapter's 2/control_hz, a rate assumption that a simulator rendering
+    #: cameras beside its physics, with a VLA thinking between steps, does not meet.
     fresh_obs_timeout_s: float | None = None
     staleness_s: float = 3.0
     simulated: bool = True
@@ -297,73 +223,49 @@ class RosSettings:
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # ``camera_topic=None`` is the one way callers say "run without images"
-        # (``rosbridge_eval.py --no-camera``, ``wire_probe.py --no-camera``,
-        # ``-E camera_topic=`` through the registry entry point). Since
-        # ``extra_cameras`` carries a default, honouring only the primary would
-        # leave slot 1 subscribed and the run would still block for
-        # ``obs_timeout_s`` on a camera the caller asked not to have. So no
-        # primary means no cameras at all.
-        if self.camera_topic is None and self.extra_cameras:
-            object.__setattr__(self, "extra_cameras", ())
-        if self.gripper_mode not in ("action", "none"):
-            raise ValueError(
-                f"gripper_mode must be 'action' or 'none', got {self.gripper_mode!r}. "
-                f"The gripper_controller is a GripperActionController on {GRIPPER_ACTION}."
-            )
+        names = tuple(self.views)
+        if len(set(names)) != len(names):
+            raise ValueError(f"duplicate view in {names!r}")
+        unknown = [name for name in names if name not in CAMERA_SPECS]
+        if unknown:
+            raise ValueError(f"unknown camera view(s) {unknown}; known: {sorted(CAMERA_SPECS)}")
+        object.__setattr__(self, "views", names)
 
     @property
     def action_low(self) -> tuple[float, ...]:
-        """Lower arm-joint command bounds, straight from the MJCF ranges."""
         return tuple(JOINT_LIMITS[name][0] for name in self.joints)
 
     @property
     def action_high(self) -> tuple[float, ...]:
-        """Upper arm-joint command bounds, straight from the MJCF ranges."""
         return tuple(JOINT_LIMITS[name][1] for name in self.joints)
 
     def topic(self, name: str) -> str:
-        """One of this settings object's topics or services, as it goes on the wire.
-
-        The single place the namespace is applied, so a caller can never end up
-        subscribing bare while publishing prefixed. Idempotent, so a topic given
-        explicitly (``-E camera_topic=/somewhere/else``) is left exactly as given.
-        """
+        """One of the SO-101's names as it goes on the wire. Idempotent."""
         return namespaced(name, self.namespace)
 
+    def camera_views(self) -> tuple[str, ...]:
+        """The subscribed views: `views`, then any rig view it left out."""
+        extra = tuple(v for v in (OVERHEAD_CAMERA_NAME, SIDE_CAMERA_NAME) if v not in self.views)
+        return (*self.views, *extra)
+
     def cameras(self) -> dict[str, tuple[str, int, int]]:
-        """Camera map in the upstream adapter's ``name -> (topic, height, width)`` form.
-
-        Insertion order is the declaration order, which is what a policy taking
-        views positionally depends on. Topics come out namespaced; the *names* do not --
-        they are slot labels a policy matches on, not addresses.
-
-        Which namespace depends on whose camera it is: the wrist is the robot's, the
-        overhead and side views are the worktop rig's. See `camera_topic`.
-        """
+        """Camera map in the upstream adapter's ``name -> (topic, height, width)`` form."""
         out: dict[str, tuple[str, int, int]] = {}
-        if self.camera_topic is not None:
-            out[self.camera_name] = (
-                camera_topic(self.camera_name, self.camera_topic, self.namespace),
-                self.camera_height,
-                self.camera_width,
-            )
-        for name, topic, width, height in self.extra_cameras:
-            if name in out:
-                raise ValueError(f"duplicate camera name {name!r}")
-            out[name] = (
-                camera_topic(name, topic, self.namespace), int(height), int(width)
-            )
+        for name in self.camera_views():
+            topic, width, height = CAMERA_SPECS[name]
+            out[name] = (camera_topic(name, topic, self.namespace), int(height), int(width))
         return out
+
+    def camera_info_topics(self) -> dict[str, str]:
+        """rig view -> its composed ``camera_info`` topic."""
+        return {name: rig_topic(topic) for name, topic in SCENE_CAMERA_INFO_TOPICS.items()}
 
     def base_kwargs(self) -> dict[str, Any]:
         """Keyword arguments for the upstream ``RosEmbodiment`` constructor.
 
-        The gripper is declared to the base adapter so the action space stays
-        six-dimensional and ``joint_pos`` folds in the measured jaw angle. The
-        adapter resolves ``/joint_states`` **by joint name**, so the
-        simulator's alphabetical ordering is handled there and the action
-        vector keeps the contract order end to end.
+        The gripper is declared so the action space stays six-dimensional and
+        ``joint_pos`` folds in the measured jaw angle. It is commanded through the
+        embodiment's own action client, never as a topic: see ``SO101RosEmbodiment``.
         """
         gripper_low, gripper_high = JOINT_LIMITS[self.gripper_joint]
         kwargs: dict[str, Any] = {
@@ -372,70 +274,25 @@ class RosSettings:
             "joints": self.joints,
             "joint_states_topic": self.topic(self.joint_states_topic),
             "command_topic": self.topic(self.command_topic),
-            "command_type": self.command_type,
+            "command_type": "joint_trajectory",
             "action_low": self.action_low,
             "action_high": self.action_high,
             "cameras": self.cameras(),
             "control_hz": self.control_hz,
-            "reset_service": (None if self.reset_service is None
-                              else self.topic(self.reset_service)),
+            "reset_service": self.topic(self.reset_service),
             "obs_timeout_s": self.obs_timeout_s,
             "fresh_obs_timeout_s": self.fresh_obs_timeout_s,
+            # Every rig frame, not one per control period: the scorer needs the frames
+            # between steps too, and a VLA's steps are seconds apart.
+            "camera_throttle_ms": 0,
             "staleness_s": self.staleness_s,
             "simulated": self.simulated,
             "name": self.name,
+            "gripper_topic": self.topic(self.gripper_action),
+            "gripper_joint": self.gripper_joint,
+            "gripper_low": gripper_low,
+            "gripper_high": gripper_high,
+            "gripper_closed_at": "low",
         }
-        if self.gripper_mode != "none":
-            kwargs.update(
-                gripper_topic=self.topic(self.gripper_topic),
-                gripper_joint=self.gripper_joint,
-                gripper_low=gripper_low,
-                gripper_high=gripper_high,
-                gripper_closed_at="low",
-                gripper_command_type="float64_multi_array",
-            )
         kwargs.update(self.extra)
         return kwargs
-
-
-def settings_for_views(
-    views: tuple[str, ...] | list[str],
-    *,
-    topic_overrides: dict[str, str] | None = None,
-    **kwargs: Any,
-) -> RosSettings:
-    """Subscribe to exactly ``views``, in order: slot 0 primary, the rest extra.
-
-    Policies that consume views **positionally** (MolmoAct2 does; its
-    ``camera_keys`` is ``[]``) need the subscription order to be the view order,
-    so this derives both from one list rather than letting a script state the
-    names and a dataclass default state the topics.
-
-    Unknown names raise: a typo'd view is otherwise a missing-topic timeout at
-    reset, several minutes later and with a less useful message.
-    """
-    names = tuple(views)
-    if not names:
-        raise ValueError("at least one view is required")
-    if len(set(names)) != len(names):
-        raise ValueError(f"duplicate view in {names!r}")
-    overrides = dict(topic_overrides or {})
-    unknown = [name for name in names if name not in CAMERA_SPECS]
-    if unknown:
-        raise ValueError(
-            f"unknown camera view(s) {unknown}; this simulator publishes "
-            f"{sorted(CAMERA_SPECS)}"
-        )
-    resolved = [
-        (name, overrides.get(name, CAMERA_SPECS[name][0]), *CAMERA_SPECS[name][1:])
-        for name in names
-    ]
-    primary = resolved[0]
-    return RosSettings(
-        camera_name=primary[0],
-        camera_topic=primary[1],
-        camera_width=primary[2],
-        camera_height=primary[3],
-        extra_cameras=tuple(resolved[1:]),
-        **kwargs,
-    )

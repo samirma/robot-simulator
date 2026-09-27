@@ -148,15 +148,79 @@ def _rot_z(angle: float) -> Vec:
     )
 
 
-def fk(joints: npt.ArrayLike) -> Vec:
-    """Return the 4x4 world pose of the tool centre point for five arm angles."""
+def gripper_body_pose(joints: npt.ArrayLike) -> Vec:
+    """Return the 4x4 base-frame pose of the ``gripper`` body for five arm angles."""
     angles = np.asarray(joints, dtype=np.float64).reshape(-1)
     if angles.size != len(ARM_JOINTS):
         raise ValueError(f"fk expects {len(ARM_JOINTS)} arm angles, got {angles.size}")
     transform = np.eye(4, dtype=np.float64)
     for link, angle in zip(_LINK_TRANSFORMS, angles, strict=True):
         transform = transform @ link @ _rot_z(float(angle))
-    return transform @ _TCP_TRANSFORM
+    return transform
+
+
+def fk(joints: npt.ArrayLike) -> Vec:
+    """Return the 4x4 world pose of the tool centre point for five arm angles."""
+    return gripper_body_pose(joints) @ _TCP_TRANSFORM
+
+
+# ------------------------------------------------------------------ the two fingers
+#
+# The camera-verdict scorer establishes *release* by placing both fingers in the rig
+# frame and measuring how far each is from the apple centre. The moving jaw is its own
+# body, hinged on `gripper` inside the `gripper` body -- ``so101_new_calib.xml``'s
+# ``moving_jaw_so101_v1`` pos/quat below -- so its pose needs the jaw angle as well.
+
+#: `gripper_joint` on the wire is the official ``gripper`` hinge shifted so its closed
+#: stop reads 0: hinge = wire - this. An exact offset, never a rescale (the simulator's
+#: ``ros_surfaces/so101.py`` applies the same number in both directions).
+GRIPPER_OFFSET_RAD = 0.174533
+
+_MOVING_JAW_TRANSFORM: Vec = _homogeneous(
+    (0.0202, 0.0188, -0.0234), (0.707107, 0.707107, -1.85362e-08, 1.85362e-08)
+)
+
+#: Each finger as a segment, root of its gripping pad to its tip, in its own body's
+#: frame: the fixed finger in ``gripper``, the moving one in ``moving_jaw_so101_v1``. The
+#: tips are the fingertip collision spheres' centres in the simulator's model; the roots
+#: are where each pad starts. With these the closed jaw's tips sit 4 mm apart and open to
+#: 40 mm at a wire position of 0.48 -- the measured aperture curve (38.4 mm) to within
+#: the tip spheres' own size.
+FIXED_FINGER: tuple[tuple[float, float, float], tuple[float, float, float]] = (
+    (-0.0143, 0.0, -0.053),
+    (-0.0081, 0.0, -0.101),
+)
+MOVING_FINGER: tuple[tuple[float, float, float], tuple[float, float, float]] = (
+    (-0.0093, -0.045, 0.0189),
+    (-0.012, -0.078, 0.0192),
+)
+
+
+def _apply(transform: Vec, point) -> Vec:
+    return np.asarray(transform[:3, :3] @ np.asarray(point, dtype=np.float64)
+                      + transform[:3, 3], dtype=np.float64)
+
+
+def finger_segments(arm_joints: npt.ArrayLike, gripper_joint: float) -> tuple[tuple[Vec, Vec], ...]:
+    """Both fingers as ``(root, tip)`` segments in the arm base frame.
+
+    ``gripper_joint`` is the wire position, radians, 0 at the closed stop.
+    """
+    body = gripper_body_pose(arm_joints)
+    jaw = body @ _MOVING_JAW_TRANSFORM @ _rot_z(float(gripper_joint) - GRIPPER_OFFSET_RAD)
+    return (
+        (_apply(body, FIXED_FINGER[0]), _apply(body, FIXED_FINGER[1])),
+        (_apply(jaw, MOVING_FINGER[0]), _apply(jaw, MOVING_FINGER[1])),
+    )
+
+
+def point_segment_distance(point: npt.ArrayLike, a: npt.ArrayLike, b: npt.ArrayLike) -> float:
+    """Shortest distance from ``point`` to the segment ``a``-``b``."""
+    p, a, b = (np.asarray(v, dtype=np.float64) for v in (point, a, b))
+    ab = b - a
+    denom = float(ab @ ab)
+    t = 0.0 if denom <= 0.0 else min(1.0, max(0.0, float((p - a) @ ab) / denom))
+    return float(np.linalg.norm(p - (a + t * ab)))
 
 
 def tcp_position(joints: npt.ArrayLike, *, offset: float = 0.0) -> Vec:
