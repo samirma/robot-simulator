@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
 # Mapping and navigation for a myAGV, simulated or real.
 #
-#   ./bin/slam.sh explore  --out runs/house     map a space autonomously
-#   ./bin/slam.sh map      --out runs/house     drive by hand, map builds live
-#   ./bin/slam.sh navigate --map runs/house     click a point, robot drives there
+#   slam.sh explore  --out <map-dir> [--namespace <ns>] [--url ws://…]
+#                    [--max-duration <s>] [--max-goals <n>] [--safety-timeout <s>]
+#   slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
+#   slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
 #
-#   ./bin/slam.sh explore --host 192.168.1.42   ...against a real myAGV
-#   ./bin/slam.sh map --namespace myagv         ...the base on /myagv/*, without asking
-#   ./bin/slam.sh <mode> --help                 every flag for that mode
+#   explore   frontier exploration; ends `explored` or `limit` (3600 s / 500 goals by
+#             default), saves the map either way and reports elapsed time and goals
+#   map       drive by hand, the map builds live
+#   navigate  click a point on a saved map, the robot drives there
 #
-# The namespace the base is under is read off the wire when --namespace is not given: the
-# simulator names every robot after itself while these constants are the bare vendor
-# contract, and subscribing to the wrong one maps nothing without erroring. `--namespace ''`
-# asks for the bare contract on purpose.
+# A map already in --out is continued, from the robot pose saved with it. The namespace is
+# read off the wire (/rosapi) unless --namespace is given; `--namespace ''` asks for the
+# bare contract. Motion goes through the safety supervisor, which stops the robot if this
+# UI stops heartbeating for --safety-timeout, and you are asked first to confirm that an
+# independent physical emergency stop is armed.
 #
 # Keys (the map window must have focus):
 #   W/S forward-back   A/D strafe   Q/E rotate   Space stop/pause

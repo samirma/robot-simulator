@@ -16,7 +16,9 @@ from robot_console.discovery import (
     DiscoveryError,
     choose,
     discover,
+    discover_from,
     find_robots,
+    survey,
     namespace_of,
 )
 from robot_console.topics import (
@@ -176,9 +178,8 @@ def test_the_namespace_is_whatever_composes_the_signature(topic, signature, expe
     assert namespace_of(topic, signature) == expected
 
 def test_a_transport_failure_is_not_a_discovery_error(monkeypatch) -> None:
-    """The two arrive as different exceptions because the caller treats them differently:
-    a wire that cannot be asked falls back to the bare contract, a wire that answers and
-    holds nothing drivable stops and asks the user.
+    """`discover` lets a transport failure through as itself; the supervisor turns it
+    into the "could not ask /rosapi" error (see the end-to-end cases below).
 
     Patched rather than dialled, because starting roslibpy's process-global reactor in the
     offline suite is exactly what `test_link_roundtrip.py` exists to keep to one place.
@@ -191,3 +192,143 @@ def test_a_transport_failure_is_not_a_discovery_error(monkeypatch) -> None:
     monkeypatch.setattr(fleet, "list_topics", _boom)
     with pytest.raises(ConnectionError):
         discover("ws://127.0.0.1:9090")
+
+
+# ------------------------------------------------------------------ console spec §4 cases
+
+
+def test_a_missing_distinguishing_topic_rules_a_candidate_out_and_says_so() -> None:
+    """A `/cmd_vel` with no `/odom` beside it is some Twist robot, not a myAGV."""
+    present = dict(_myagv("myagv"))
+    del present["/myagv/odom"]
+    found, rejected = survey(present)
+    assert found == []
+    assert [(r.robot, r.namespace) for r in rejected] == [("myagv", "myagv")]
+    with pytest.raises(DiscoveryError) as exc:
+        discover_from(present)
+    assert "missing /myagv/odom" in str(exc.value)
+
+
+def test_a_wrong_type_rules_a_candidate_out_and_says_so() -> None:
+    present = dict(_ainex("ainex"))
+    present["/ainex/walking/set_param"] = "std_msgs/String"
+    with pytest.raises(DiscoveryError) as exc:
+        discover_from(present)
+    assert "std_msgs/String" in str(exc.value)
+    assert "ainex_interfaces/WalkingParam" in str(exc.value)
+
+
+def test_a_wrong_type_does_not_hide_the_good_robot_beside_it() -> None:
+    present = {**_myagv("good"), **_myagv("bad")}
+    present["/bad/cmd_vel"] = "geometry_msgs/TwistStamped"
+    assert discover_from(present).namespace == "good"
+
+
+def test_a_mixed_fleet_is_ambiguous_until_narrowed_and_lists_every_candidate() -> None:
+    present = {**_myagv("myagv"), **_ainex("ainex"), **_so101(), **_scene()}
+    with pytest.raises(DiscoveryError) as exc:
+        discover_from(present)
+    message = str(exc.value)
+    assert "myagv on /myagv/*" in message and "ainex on /ainex/*" in message
+    assert discover_from(present, namespace="ainex").robot == "ainex"
+
+
+def test_naming_a_namespace_that_is_not_there_lists_what_is() -> None:
+    with pytest.raises(DiscoveryError) as exc:
+        discover_from(_myagv("myagv"), namespace="")
+    assert "myagv on /myagv/*" in str(exc.value)
+
+
+# -------------------------------------------------------- end to end, through the supervisor
+
+
+def _supervise(bridge, **kwargs):
+    """Start the real supervisor process against the fake bridge; return (`ready` or the
+    error message it answered with, the link)."""
+    import os
+    import sys
+    from pathlib import Path
+
+    import robot_console
+    from robot_console.supervisor import SupervisedLink, SupervisorError
+
+    src = str(Path(robot_console.__file__).resolve().parents[1])
+    old = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = src
+    link = SupervisedLink(f"ws://127.0.0.1:{bridge.port}", python=sys.executable, **kwargs)
+    try:
+        return link.start(timeout=20), link
+    except SupervisorError as exc:
+        return str(exc), link
+    finally:
+        if old is None:
+            os.environ.pop("PYTHONPATH")
+        else:
+            os.environ["PYTHONPATH"] = old
+
+
+@pytest.mark.parametrize(
+    "topics,kwargs,expected",
+    [
+        (lambda: _myagv(""), {}, ("myagv", "")),
+        (lambda: _ainex("ainex"), {}, ("ainex", "ainex")),
+        (lambda: {**_myagv("myagv"), **_ainex("ainex"), **_scene()}, {"robot": "ainex"},
+         ("ainex", "ainex")),
+    ],
+    ids=["lone-bare", "namespaced", "mixed-fleet-narrowed"],
+)
+def test_the_supervisor_discovers_the_robot(bridge, topics, kwargs, expected) -> None:
+    bridge.topics = topics()
+    ready, link = _supervise(bridge, **kwargs)
+    try:
+        assert isinstance(ready, dict), ready
+        assert (ready["robot"], ready["namespace"]) == expected
+    finally:
+        link.close()
+
+
+@pytest.mark.parametrize(
+    "topics,fragments",
+    [
+        (lambda: {**_myagv("robot_1"), **_myagv("robot_2")},
+         ["robot_1", "robot_2", "--namespace"]),
+        (lambda: {**_myagv("myagv"), **_ainex("ainex")},
+         ["myagv on /myagv/*", "ainex on /ainex/*"]),
+        (lambda: {**_so101(), **_scene()}, ["no robot this console can drive", "none"]),
+        (lambda: {"/myagv/cmd_vel": "std_msgs/String", "/myagv/odom": "nav_msgs/Odometry"},
+         ["std_msgs/String"]),
+        (lambda: {"/myagv/cmd_vel": "geometry_msgs/Twist"}, ["missing /myagv/odom"]),
+    ],
+    ids=["duplicates", "mixed-fleet", "nothing-drivable", "wrong-type", "missing-topic"],
+)
+def test_the_supervisor_refuses_an_ambiguous_wire_naming_the_candidates(
+    bridge, topics, fragments
+) -> None:
+    bridge.topics = topics()
+    error, link = _supervise(bridge)
+    assert isinstance(error, str), error
+    for fragment in fragments:
+        assert fragment in error
+    assert bridge.received == [], "a refused wire must see no publication at all"
+    assert link.wait(5) is not None
+
+
+def test_an_unreachable_rosapi_is_an_error_not_a_guess(bridge) -> None:
+    """No fallback to "a myAGV on the bare contract": with /rosapi unanswerable there are
+    no candidates, and the error says so."""
+    bridge.topics = _myagv("")
+    bridge.rosapi = False
+    error, link = _supervise(bridge)
+    assert isinstance(error, str), error
+    assert "/rosapi/topics failed" in error and "candidates found: none" in error
+    assert bridge.received == []
+
+
+def test_naming_both_robot_and_namespace_needs_no_rosapi(bridge) -> None:
+    bridge.rosapi = False
+    ready, link = _supervise(bridge, robot="myagv", namespace="")
+    try:
+        assert isinstance(ready, dict), ready
+        assert ready["cmd_topic"] == "/cmd_vel"
+    finally:
+        link.close()

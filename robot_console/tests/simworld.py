@@ -270,10 +270,12 @@ def offline_session(
     from robot_console.slam.pose import PoseTracker
     from robot_console.teleop import TeleopState
 
-    options = SlamOptions(
+    settings = dict(
         mode="explore", resolution=resolution, max_range=max_range,
-        speed=speed, no_match=True, camera_window=False, **overrides,
+        speed=speed, no_match=True, camera_window=False,
     )
+    settings.update(overrides)
+    options = SlamOptions(**settings)
     grid = OccupancyGrid(resolution)
     return _Session(
         options, grid, PoseTracker(match_enabled=False),

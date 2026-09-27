@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from robot_console.cli import resolve_topic
 from robot_console.topics import TOPIC_CMD_VEL, TOPIC_ODOM, namespaced
 
 
@@ -61,16 +60,3 @@ def test_a_similar_prefix_is_not_mistaken_for_the_namespace() -> None:
 def test_slashes_around_the_namespace_do_not_matter(namespace: str) -> None:
     assert namespaced("/cmd_vel", namespace) == "/myagv/cmd_vel"
 
-
-def test_an_explicitly_named_topic_beats_the_namespace() -> None:
-    """Naming a topic is more specific than naming a namespace, so it wins.
-
-    `resolve_topic` is the rule the CLIs use, and the reason their topic flags default to
-    `None` rather than to the constant: that is the only way to tell "left alone" from
-    "set to the default value on purpose".
-    """
-    assert resolve_topic(None, TOPIC_CMD_VEL, "myagv") == "/myagv/cmd_vel"
-    assert resolve_topic("/elsewhere/cmd_vel", TOPIC_CMD_VEL, "myagv") == "/elsewhere/cmd_vel"
-    # Relative names given explicitly are still made absolute.
-    assert resolve_topic("elsewhere/cmd_vel", TOPIC_CMD_VEL, "myagv") == "/elsewhere/cmd_vel"
-    assert resolve_topic(None, TOPIC_CMD_VEL, "") == TOPIC_CMD_VEL

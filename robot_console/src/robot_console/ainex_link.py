@@ -167,6 +167,10 @@ class AiNexLink:
         ros.run(timeout=timeout)
         if not ros.is_connected:
             raise ConnectionError(f"could not connect to ws://{self.host}:{self.port}")
+        self.attach(ros)
+
+    def attach(self, ros: "roslibpy.Ros") -> None:
+        """Drive through an already-connected client (the supervisor's one connection)."""
         self._ros = ros
         self._param = roslibpy.Topic(ros, self._param_name, TYPE_WALKING_PARAM)
         self._param.advertise()
@@ -263,14 +267,18 @@ class AiNexLink:
                 ))
 
     def stop(self) -> None:
-        """Stop stepping, explicitly and regardless of believed state.
+        """The AiNex's `stop_command` (robots_specs/ainex/ros.yml): `enable_control`,
+        then `stop`, on `/walking/command`.
 
-        Unconditional where `publish_cmd_vel` deduplicates: this is the exit path, and
+        `stop` alone is accepted and ignored while control is disabled -- the vendor app
+        disables it on entering fall-rise and while an action group plays -- so control is
+        re-enabled first. Unconditional where `publish_cmd_vel` deduplicates: this is the exit path, and
         the cost of a redundant `stop` is nothing against the cost of a robot that keeps
         walking because the link's idea of "already stopped" was stale.
         """
         with self._lock:
             self._walking = False
+        self._call_walking("enable_control")
         self._call_walking("stop")
 
     def _call_walking(self, command: str) -> None:

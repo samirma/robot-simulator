@@ -1,15 +1,14 @@
 """Which robot the console is driving, and everything that differs between them.
 
 Two robots, two contracts with almost nothing in common: the myAGV is a velocity stream
-(`/cmd_vel` at 20 Hz, `/odom` back), the AiNex a walking state machine
-(`/walking/set_param` + a `start`/`stop` service, nothing back but the camera). The
-console keeps one loop, one keymap and one `Command` intent type; a `RobotProfile`
-carries the parts that genuinely differ -- the link that encodes `Command` for the wire,
-the speed envelope, the HUD wording and the what-to-start text.
+(`/cmd_vel`, `/odom` back), the AiNex a walking state machine (`/walking/set_param` + the
+`/walking/command` service, nothing back but the camera). The console keeps one loop, one
+keymap and one `Command` intent type; a `RobotProfile` carries the parts that genuinely
+differ -- the link that encodes `Command` for the wire, the speed envelope, the HUD
+wording and the what-to-start text.
 
-Deliberately one small file, not a plugin system: the myAGV entries point at the same
-objects the console used before there was a second robot, so `--robot` unspecified
-behaves byte-for-byte as it always has.
+The robot ids are the console's copy of the ids in `robots_specs/robots.yml` for the
+robots teleop drives. `tests/test_robot_ids.py` holds the two equal by reading that file.
 """
 
 from __future__ import annotations
@@ -18,19 +17,14 @@ import dataclasses
 from typing import Any, Callable, Mapping, Sequence, Tuple
 
 from robot_console import hud, preflight, teleop
-from robot_console.bridge import RobotLink
 
-# `ainex_link` is imported lazily, inside `profile()`, and that is not a style choice.
-# The AiNex half of this file was committed without the module it depends on, so a
-# module-scope import makes `robot_console.robots` unimportable -- and with it the
-# teleop entry point, which does not need the AiNex at all. Resolving a profile
-# only when it is asked for keeps the myAGV working and turns the gap into an honest
-# error at the point of use.
-_MISSING_AINEX = (
-    "AiNex support is incomplete: robot_console/ainex_link.py is missing from this "
-    "checkout (commit cdba576 added robots.py without it). The myAGV is unaffected -- "
-    "use --robot myagv."
-)
+#: `robots_specs/robots.yml` ids of the robots teleop drives (console spec §2.1).
+MYAGV = "myagv"
+AINEX = "ainex"
+TELEOP_ROBOTS: Tuple[str, ...] = (MYAGV, AINEX)
+
+#: The only robot `slam.sh` maps with: it needs `/scan` and `/odom`.
+SLAM_ROBOT = MYAGV
 
 # The AiNex walks; it does not roll. Same keys, honest words -- plus the arrows, which
 # only this robot has anything to point.
@@ -46,64 +40,70 @@ AINEX_HINTS: Sequence[Tuple[str, str]] = (
     ("Esc", "quit"),
 )
 
+#: Each robot's `stop_command`, as its ROS file states it. The links implement these
+#: (`RobotLink.stop`, `AiNexLink.stop`); the supervisor sends them.
+STOP_COMMANDS: Mapping[str, str] = {
+    MYAGV: "publish a zero geometry_msgs/Twist on /cmd_vel",
+    AINEX: "call /walking/command with 'enable_control', then with 'stop'",
+}
+
 
 @dataclasses.dataclass(frozen=True)
 class RobotProfile:
     """Everything the console needs to know about one kind of robot."""
 
     name: str
-    # (options) -> a connected-shape link: connect/subscribe_camera/publish_cmd_vel/
-    # stop/close/describe. Takes the whole Options so a profile can pick the topic
-    # overrides that apply to it and ignore the rest.
-    make_link: Callable[[Any], Any]
+    # (host, port, namespace, camera_topic) -> an unconnected link with the shape
+    # connect/attach/subscribe_camera/publish_cmd_vel/stop/close. Only the safety
+    # supervisor ever calls it: the UI never holds a link of its own.
+    make_link: Callable[..., Any]
     speed_min: float
     speed_max: float
     speed_step: float
     speed_default: float
     turn_ratio: float
     turn_max: float
-    # False -> the app never subscribes /odom. The AiNex publishes no odometry at all;
-    # subscribing would not error, just never deliver, and the status line would claim
-    # a stream that cannot exist.
+    # False -> nothing subscribes /odom. The AiNex publishes no odometry at all.
     has_odom: bool
-    # False -> the arrow keys do nothing and no link needs `publish_head`. Gated the same
-    # way `has_odom` is, so the myAGV -- which has no head to point -- neither grows the
-    # keys in its banner nor needs a method to ignore them.
+    # False -> the arrow keys do nothing and no link needs `publish_head`.
     has_head: bool
     hints: Sequence[Tuple[str, str]]
     startup_instructions: Callable[[str, int], str]
     # For the --max-speed warning: what the cap is, in the robot's own terms.
     speed_limit_label: str
+    stop_command: str
 
 
-def _make_myagv_link(options: Any) -> RobotLink:
+def _make_myagv_link(host: str, port: int, namespace: str = "", camera_topic=None):
+    from robot_console.bridge import RobotLink
+    from robot_console.topics import (
+        TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_SCAN, namespaced,
+    )
+
     return RobotLink(
-        options.host,
-        options.port,
-        cmd_topic=options.cmd_topic,
-        odom_topic=options.odom_topic,
-        camera_topic=options.camera_topic,
+        host, port,
+        cmd_topic=namespaced(TOPIC_CMD_VEL, namespace),
+        odom_topic=namespaced(TOPIC_ODOM, namespace),
+        camera_topic=camera_topic or namespaced(TOPIC_CAMERA, namespace),
+        scan_topic=namespaced(TOPIC_SCAN, namespace),
     )
 
 
-def _make_ainex_link(options: Any):
-    # --cmd-topic and --odom-topic are myAGV knobs; the AiNex has no equivalent of
-    # either, so only the camera override applies. The namespace does apply, though, and
-    # dropping it here is what left the walking commands on the bare topics while the
-    # camera came from `/ainex/*`: a robot that showed its view and ignored every key.
-    from robot_console.ainex_link import AiNexLink  # noqa: F401  (see _MISSING_AINEX)
+def _make_ainex_link(host: str, port: int, namespace: str = "", camera_topic=None):
+    from robot_console.ainex_link import AiNexLink
+    from robot_console.ainex_topics import TOPIC_CAMERA
+    from robot_console.topics import namespaced
 
     return AiNexLink(
-        options.host,
-        options.port,
-        camera_topic=options.camera_topic,
-        namespace=options.namespace or "",
+        host, port,
+        camera_topic=camera_topic or namespaced(TOPIC_CAMERA, namespace),
+        namespace=namespace,
     )
 
 
-def _myagv_profile() -> "RobotProfile":
+def _myagv_profile() -> RobotProfile:
     return RobotProfile(
-        name="myagv",
+        name=MYAGV,
         make_link=_make_myagv_link,
         speed_min=teleop.SPEED_MIN,
         speed_max=teleop.SPEED_MAX,
@@ -116,16 +116,15 @@ def _myagv_profile() -> "RobotProfile":
         hints=hud.HINTS,
         startup_instructions=preflight.startup_instructions,
         speed_limit_label="the real myAGV limit",
+        stop_command=STOP_COMMANDS[MYAGV],
     )
 
 
-def _ainex_profile() -> "RobotProfile":
-    try:
-        from robot_console import ainex_link
-    except ImportError as exc:  # pragma: no cover - depends on a missing file
-        raise RuntimeError(_MISSING_AINEX) from exc
+def _ainex_profile() -> RobotProfile:
+    from robot_console import ainex_link
+
     return RobotProfile(
-        name="ainex",
+        name=AINEX,
         make_link=_make_ainex_link,
         speed_min=ainex_link.SPEED_MIN,
         speed_max=ainex_link.SPEED_MAX,
@@ -136,48 +135,35 @@ def _ainex_profile() -> "RobotProfile":
         has_odom=False,
         has_head=True,
         hints=AINEX_HINTS,
-        startup_instructions=getattr(
-            preflight, "startup_instructions_ainex", preflight.startup_instructions
-        ),
+        startup_instructions=preflight.startup_instructions_ainex,
         speed_limit_label="the AiNex gait envelope",
+        stop_command=STOP_COMMANDS[AINEX],
     )
 
 
-_FACTORIES = {"myagv": _myagv_profile, "ainex": _ainex_profile}
-
-DEFAULT_ROBOT = "myagv"
+_FACTORIES = {MYAGV: _myagv_profile, AINEX: _ainex_profile}
 
 
-def profile(name: str) -> "RobotProfile":
-    """The `RobotProfile` for `name`, built on demand.
-
-    Raises `RuntimeError` with something actionable when a robot's support is present in
-    this file but its link module is not, rather than an ImportError at interpreter start
-    that takes unrelated robots down with it.
-    """
+def profile(name: str) -> RobotProfile:
+    """The `RobotProfile` for `name`, built on demand."""
     try:
         factory = _FACTORIES[name]
     except KeyError:
-        raise KeyError(f"unknown robot {name!r}; known: {', '.join(sorted(_FACTORIES))}") from None
+        raise KeyError(f"unknown robot {name!r}; known: {', '.join(TELEOP_ROBOTS)}") from None
     return factory()
 
 
 class _Profiles(Mapping):
-    """`PROFILES` as it always was -- a mapping of name to profile -- but resolved lazily.
+    """`PROFILES[name]` -> profile, resolved lazily; iterates the teleop robot ids."""
 
-    Kept as a Mapping because callers legitimately do `sorted(PROFILES)` for `--robot`'s
-    choices and `PROFILES[args.robot]` to pick one. Listing the robots must not require
-    being able to construct every one of them.
-    """
-
-    def __getitem__(self, name: str) -> "RobotProfile":
+    def __getitem__(self, name: str) -> RobotProfile:
         return profile(name)
 
     def __iter__(self):
-        return iter(_FACTORIES)
+        return iter(TELEOP_ROBOTS)
 
     def __len__(self) -> int:
-        return len(_FACTORIES)
+        return len(TELEOP_ROBOTS)
 
 
 PROFILES = _Profiles()
