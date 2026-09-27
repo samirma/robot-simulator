@@ -74,13 +74,7 @@ cd simulator
 ./kitchen.sh serve --mujoco              # MuJoCo window on the kitchen, served on ws://127.0.0.1:9090
 ```
 
-In a second terminal, from the repo root — the camera page in a browser:
-
-```bash
-simulator/kitchen.sh view
-```
-
-and every topic on the wire, as the console sees it:
+In a second terminal, from the repo root — every topic on the wire, as the console sees it:
 
 ```bash
 robot_console/.venv/bin/python -m robot_console.fleet --dump
@@ -118,7 +112,6 @@ cd simulator
 ./kitchen.sh serve --engine robocasa     # the other engine
 ./kitchen.sh serve --robots so101,myagv  # a fleet, one port
 ./kitchen.sh serve --mujoco              # ...with a MuJoCo window
-./kitchen.sh view                        # live camera page
 ```
 
 Drive and task the robots from the console:

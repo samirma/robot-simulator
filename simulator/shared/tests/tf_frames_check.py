@@ -41,6 +41,7 @@ if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
 
 import ainex_model  # noqa: E402
+import robots_spec  # noqa: E402
 from contracts.tf import rpy_to_quat, urdf_fixed_joints, urdf_links  # noqa: E402
 from mujoco_bridge import TransformTree, camera_link_pose  # noqa: E402
 from ros_surfaces import myagv as myagv_surface  # noqa: E402
@@ -121,8 +122,8 @@ def check_robot(label: str, model, tree, urdf_text: str, camera_frames: set[str]
 
 
 def check_myagv() -> None:
-    model = mujoco.MjModel.from_xml_path(str(SHARED / "robots/myagv/model.xml"))
-    text = (SHARED / "robots/myagv/urdf/myAGV.urdf").read_text()
+    model = mujoco.MjModel.from_xml_path(str(robots_spec.model_xml("myagv")))
+    text = robots_spec.urdf_path("myagv").read_text()
     tree = TransformTree(
         model, root_body=myagv_surface.TF_ROOT_BODY, frames=myagv_surface.TF_FRAMES,
         cameras=myagv_surface.TF_CAMERAS,
@@ -140,8 +141,8 @@ def check_myagv() -> None:
 
 
 def check_so101() -> None:
-    model = mujoco.MjModel.from_xml_path(str(SHARED / "robots/so101/model.xml"))
-    text = so101_surface.URDF_PATH.read_text()
+    model = mujoco.MjModel.from_xml_path(str(robots_spec.model_xml("so101")))
+    text = robots_spec.urdf_path("so101").read_text()
     tree = TransformTree(
         model, root_body=so101_surface.TF_ROOT_BODY, frames=so101_surface.TF_FRAMES,
         cameras=so101_surface.TF_CAMERAS, extra_static=urdf_fixed_joints(text),
@@ -151,7 +152,7 @@ def check_so101() -> None:
 
 def check_ainex() -> None:
     model = ainex_model.build_spec().compile()
-    text = ainex_topics.URDF_PATH.read_text()
+    text = robots_spec.urdf_path("ainex").read_text()
     statics = [e for e in urdf_fixed_joints(text) if e[1] != ainex_topics.FRAME_CAMERA]
     tree = TransformTree(
         model, root_body=ainex_topics.TF_ROOT_BODY, frames=ainex_topics.TF_FRAMES,

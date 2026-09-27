@@ -19,10 +19,10 @@ from ros_surfaces.ainex import servos
 from .ainex import CAMERA_FOVY_DEG, CAMERA_NAME, AiNexRobot
 from .ainex_view import AiNexRobotView
 
-#: The hardware description is engine-neutral and lives with the other robots' in
-#: `shared/robots/`, so both engines load the same one. Only the MolmoSpaces
-#: adapter -- this file, `ainex.py` and `ainex_view.py` -- is here.
-ROBOT_DIR = _robots_spec.spec_dir("ainex")
+#: The vendor URDF, as `robots_specs/robots.yml` records it; both engines build the same
+#: model from it (`shared/ainex_model.py`). Only the MolmoSpaces adapter -- this file,
+#: `ainex.py` and `ainex_view.py` -- is here.
+ROBOT_URDF = _robots_spec.urdf_path("ainex")
 
 
 class AiNexCameraSystem(CameraSystemConfig):
@@ -56,8 +56,8 @@ class AiNexRobotConfig(BaseRobotConfig):
 
     # The flattened vendor URDF. `AiNexRobot._load_robot_spec` edits the spec in memory --
     # see its docstring for why a patched copy on disk would be worse.
-    robot_xml_path: Path = Path("urdf/ainex.urdf")
-    robot_dir: Path = ROBOT_DIR
+    robot_xml_path: Path = Path(ROBOT_URDF.name)
+    robot_dir: Path = ROBOT_URDF.parent
 
     # It stands on the floor; there is no pedestal.
     base_size: list[float] | None = None

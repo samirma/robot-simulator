@@ -4,8 +4,8 @@
 #   ./run.sh setup                     install venv + package, fetch default assets
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
 #   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
-#                 [--robot so101]      ...optionally with an out-of-tree robot in it:
-#                                      so101 | myagv | rebot_b601 | ainex
+#                 [--robot so101]      ...optionally with a robot in it: an id that
+#                                      robots_specs/robots.yml marks simulated
 #                 [--ros-port 9090]    the port that robot's own vendor ROS topics are
 #                                      served on -- 9090 unless you say otherwise, and 0
 #                                      to serve nothing:
@@ -179,9 +179,11 @@ do_view() {
   # Deliberately a script, not `-m mujoco.viewer`: see tools/view_scene.py.
   # The path must be absolute, which resolve_scene.py guarantees.
   if [ -n "$robot" ]; then
-    # Spawns an out-of-tree robot (robots/<name>/) into the house. Nothing beyond the
-    # scene and the robot is involved, so this works for robots that have no grasp
-    # library yet.
+    # Spawns one robot from robots_specs/ into the house, through its adapter in
+    # robots/<id>/. Nothing beyond the scene and the robot is involved, so this works for
+    # robots that have no grasp library yet.
+    case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
+    "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
     exec "$MJPY" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --scene "$xml" \
       "${rest[@]+"${rest[@]}"}"
   fi

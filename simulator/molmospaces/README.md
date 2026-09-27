@@ -26,8 +26,8 @@ an external control bridge.
 | `../shared/ros_surfaces/` | per-robot topic sets: `myagv.py`, `so101.py` |
 | `../shared/tasks/` | what a task stages into a scene, and its success predicate |
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
-| `robots/` | out-of-tree robot definitions (so101, myagv, rebot_b601, ainex) |
-| `tools/render_robots.py` | render every loadable robot; doubles as a load test |
+| `robots/` | this engine's adapter for each simulated robot in `robots_specs/robots.yml` |
+| `tools/render_robots.py` | render every simulated robot; doubles as a load test |
 | `tools/test_placement.py` | self-test for where a tabletop arm gets bolted down |
 
 ## Commands
@@ -110,15 +110,13 @@ is running will block until it finishes rather than fail.
 
 ## Robots
 
-**Built into MolmoSpaces** (upstream, not wired into the launcher): `franka` /
-`droid` (Franka FR3), `rby1` (Rainbow RB-Y1), `yam` / `bimanual_yam` (I2RT YAM),
-`rum` (floating gripper).
-
-**Out-of-tree**, in `robots/`: `so101`, `myagv`, `rebot_b601`, `ainex`.
+The robots are the ones `robots_specs/robots.yml` marks `simulated`, each with an
+adapter in `robots/<id>/`; their descriptions and meshes are read from
+`robots_specs/<id>/`.
 
 ```bash
 ./run.sh view --robot so101                      # spawn it in a house, interactive
-./run.sh view --robot myagv                      # ...or any other out-of-tree robot
+./run.sh view --robot myagv                      # ...or any other simulated robot
 python tools/render_robots.py --outdir /tmp/robots     # render them all
 ./run.sh view --robot so101 --ros-port 9090       # ...on its ROS topics (see above)
 python robots/so101/test_attach.py               # self-test in an empty world

@@ -324,8 +324,9 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, camera_size,
     from contracts.tf import TOPIC_TF, urdf_fixed_joints
     from mujoco_bridge import TransformTree
     from ros_surfaces.tf_stream import attach_tf, read_description
+    import robots_spec
 
-    description = read_description(topics.URDF_PATH)
+    description = read_description(robots_spec.urdf_path("ainex"))
     statics = [
         # The vendor bolts `camera_link` to the torso; `ainex_model` step 4 moves it to
         # the head, where the hardware's 2-DOF camera actually is, and the tree follows

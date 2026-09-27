@@ -33,12 +33,11 @@ from __future__ import annotations
 
 import sys
 import time
-from pathlib import Path
 
 import numpy as np
 
-#: The vendor description, `myagv_urdf/urdf/myAGV.urdf`, served as `robot_description`.
-URDF_PATH = Path(__file__).resolve().parents[1] / "robots/myagv/urdf/myAGV.urdf"
+#: The vendor description, `myagv_urdf/urdf/myAGV.urdf`, served as `robot_description`,
+#: is `robots_specs/myagv/myAGV.urdf` (`robots_spec.urdf_path("myagv")`).
 
 #: This robot's root body in a compiled model, and the frame the contract calls it. The
 #: MJCF says `base` and the description says `base_footprint`; the description wins on the
@@ -116,6 +115,7 @@ def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: 
     if model is not None:
         from mujoco_bridge import TransformTree
         from ros_surfaces.tf_stream import attach_tf, read_description
+        import robots_spec
 
         statics = []
         if scan is not None:
@@ -140,7 +140,7 @@ def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: 
             bus,
             TransformTree(model, root_body=f"{prefix}{TF_ROOT_BODY}", frames=TF_FRAMES,
                           prefix=prefix, cameras=TF_CAMERAS, extra_static=statics),
-            read_description(URDF_PATH),
+            read_description(robots_spec.urdf_path("myagv")),
         )
     # The vendor declares `base_up` -- the chassis's top shell -- on a *continuous* joint
     # with no transmission, no controller and no entry in any joint state. A real

@@ -190,9 +190,9 @@ def main() -> int:
         default=[],
         metavar="NAME",
         help="fail unless this camera view is publishing; repeatable. Used by run_task.sh "
-        "to catch an eye-in-hand policy pointed at a simulator started without "
-        "./kitchen.sh serve --cameras both, which would otherwise surface minutes later "
-        "as a missing-topic timeout naming a topic rather than the flag that creates it.",
+        "to catch an eye-in-hand policy pointed at a robot or simulator that does not "
+        "publish that view, which would otherwise surface minutes later as a "
+        "missing-topic timeout.",
     )
     parser.add_argument(
         "--timeout", type=float, default=15.0, help="seconds to wait for the reset to land"

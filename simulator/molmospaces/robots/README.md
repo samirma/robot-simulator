@@ -1,8 +1,10 @@
 # Out-of-tree robots
 
-MolmoSpaces ships only Franka, RB-Y1, YAM and a floating gripper. Robots added here
-live entirely outside the upstream clone: `BaseRobotConfig.robot_dir` accepts an
-external directory, so nothing in `molmospaces/` needs patching.
+The robots this engine spawns are the ones `robots_specs/robots.yml` marks `simulated`;
+their URDF, MJCF and meshes are read from `robots_specs/<id>/` through
+`shared/robots_spec.py`. The adapters here live entirely outside the upstream clone:
+`BaseRobotConfig.robot_dir` accepts an external directory, so nothing in `molmospaces/`
+needs patching.
 
 Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 `molmospaces/examples/add_robot/` (xarm7).
@@ -11,7 +13,6 @@ Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 |---|---|
 | `so101` | spawn, view, joint control (local and over the bridge) |
 | `myagv` | spawn, view, holonomic drive, camera stream, keyboard teleop |
-| `rebot_b601` | spawn, view, arm + gripper (no self-collision) |
 | `ainex` | spawn, view, animated-gait locomotion, two arms + claws, head, action groups |
 
 ## What each robot needs
@@ -27,16 +28,19 @@ Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 4. **A `Robot`** wiring a controller per group, plus **a `BaseRobotConfig`** pointing
    `robot_dir` at the robot's directory.
 
-Register the robot in `tools/spawn_robot.py::ROBOTS` to make it available to
-`run.sh view --robot <name>`.
+Mark the robot `simulated` in `robots_specs/robots.yml` and register its adapter in
+`tools/spawn_robot.py::ADAPTERS` to make it available to `run.sh view --robot <id>`.
 
 ## so101
 
 TheRobotStudio / LeRobot SO-101: a 5-DoF tabletop arm with a single hinged jaw.
 Model from [mujoco_menagerie](https://github.com/google-deepmind/mujoco_menagerie)
-`robotstudio_so101`, kept verbatim as `so101.xml` (Apache 2.0, see `so101/LICENSE`).
+`robotstudio_so101`, kept verbatim as `shared/robots/so101/so101.xml` (Apache 2.0, see
+its `LICENSE`). Its official meshes are loaded from `robots_specs/so101/assets/`; only
+menagerie's additions (gripper collision parts, camera mount) are kept beside it.
 
-`model.xml` is **generated** from it by `make_model.py`, which adds exactly one thing:
+`model.xml` is **generated** from it by `make_model.py`, which points the official
+meshes at `robots_specs/` and adds exactly one thing:
 
 * a `tcp` site in MolmoSpaces convention, positioned at the true grasp centre (the
   midpoint between the jaw tips, ~12 mm from the stock `gripperframe`) and oriented
@@ -96,8 +100,8 @@ The only official model
 ([`elephantrobotics/myagv_ros`](https://github.com/elephantrobotics/myagv_ros), branch
 `myagv_ros_2023Pi`) is visualisation-only: 47 lines, two links joined by a dummy
 `continuous` joint, three COLLADA meshes, and **no wheels, collision geometry, inertia
-or usable scale**. `make_model.py` therefore generates `model.xml`, reusing the meshes
-only for appearance:
+or usable scale**. `make_model.py` therefore generates `shared/robots/myagv/model.xml`,
+reusing the meshes in `robots_specs/myagv/urdf/` only for appearance:
 
 * **DAE → OBJ**, since MuJoCo does not read COLLADA. The meshes carry no real scale
   (~12.3 × 9.0 × 5.2 units), so the scale is derived by matching the published
@@ -195,48 +199,6 @@ actuator. `test_attach.py --scene` places itself on open floor first and drives 
 the middle of the room for the same reason: "drove into a wall and stopped" is correct
 behaviour that would otherwise read as a failure.
 
-## rebot_b601
-
-[Seeed Studio reBot Arm B601-DM](https://www.seeedstudio.com/reBot-Arm-B601-DM-p-6740.html):
-6-DoF arm, 767 mm reach, plus a two-finger prismatic gripper. Built from the vendor
-URDF at [`vectorBH6/reBotArm_control_py`](https://github.com/vectorBH6/reBotArm_control_py),
-a raw SolidWorks export — real geometry, limits and inertias, but no actuators, no TCP
-frame and no MuJoCo tuning.
-
-A convenient accident of the CAD: **link6's frame already matches the MolmoSpaces
-gripper convention** (+z approach, fingers separating along y), so the TCP site needs
-only an offset, no rotation.
-
-Three URDF-import behaviours worth knowing:
-
-* MuJoCo **strips the directory from mesh filenames**, so `meshdir` must be set to
-  `../meshes` — and a patched copy elsewhere on disk would silently fail to find them.
-* MuJoCo **merges the URDF root link into the worldbody** when it has no joint, so
-  `base_link` vanishes and `link1` becomes the root. The mocap pedestal replaces its
-  visual, as for the SO-101.
-* **`spec.compile()` clears the name table of elements added before it.** Anything named
-  must be added *after* the measurement pass, or it comes out anonymous and cannot be
-  looked up.
-
-Gains are sized per joint from two competing requirements: stiffness from the URDF's own
-effort limits (36 N·m shoulder/elbow, 14 N·m wrist), clamped by the explicit-integrator
-stability bound `kv·dt/I < 2` against the inertia measured from `dof_M0`. Hardcoding a
-`kv` is exactly what fails — the wrist inertias are ~1e-3 kg·m², so a value that looks
-sensible beside the shoulder's makes joints 4–6 oscillate instead of hold.
-
-### Known limitations
-
-* **Self-collision is disabled.** MuJoCo collides the convex hull of each visual mesh,
-  and on a raw CAD export those hulls overlap wherever parts nest — the gripper fingers
-  worst of all, driving joint6 a full radian off target with 81 N·m fighting them.
-  Excluding only the pairs touching at rest was not enough, since more collide as the arm
-  moves. The arm can therefore pass through itself. Collision with the world is
-  unaffected. A proper fix is convex decomposition (`coacd`) of the collision meshes.
-* `add_robot_to_scene` forces the implicit integrator: the gains assume it, and a bare
-  `MjSpec` defaults to Euler, where the wrist goes NaN. Every MolmoSpaces house already
-  uses `implicitfast`, so this only matters for standalone scenes.
-* Collision uses per-link convex hulls, which are coarser than the visual meshes.
-
 ## ainex
 
 [Hiwonder AiNex](https://www.hiwonder.com/products/ainex): a 24-DoF biped humanoid,
@@ -253,9 +215,9 @@ python robots/ainex/test_ros.py                      # self-test of the ROS surf
 ```
 
 It is the first robot here that walks rather than rolls, and the first whose ROS contract
-has nothing in common with the myAGV's. Both facts drive everything below. Provenance and
-the vendored files are in
-[shared/robots/ainex/urdf/PROVENANCE.md](../../shared/robots/ainex/urdf/PROVENANCE.md).
+has nothing in common with the myAGV's. Both facts drive everything below. Provenance of
+the vendor files (`robots_specs/ainex/`) is in
+[shared/robots/ainex/PROVENANCE.md](../../shared/robots/ainex/PROVENANCE.md).
 
 ### It does not actually walk
 
@@ -353,7 +315,7 @@ gait; `/camera/image_raw/compressed` as `image_transport`'s standard companion t
   `robot_state_publisher` in `ainex_description/launch/display.launch`,
   `ainex_gazebo/launch/position_controller.launch` and `ainex_peripherals/launch/imu.launch`
   (the last behind a `debug` arg that defaults false), each loading `robot_description`
-  from the same `ainex.urdf.xacro` vendored here — while the boot chain,
+  from the same `ainex.urdf.xacro` that `robots_specs/ainex/ainex.urdf` flattens — while the boot chain,
   `ainex_bringup/service/start_app_node.service` → `bringup.launch`, contains no tf
   broadcaster and sets no such parameter. So this is a departure from the *rosbridge
   surface a client meets on a real robot*, and a match to the vendor's own simulation. The

@@ -1,11 +1,12 @@
 #!/usr/bin/env python
-"""Render every loadable robot on a neutral stage, one PNG each.
+"""Render every simulated robot on a neutral stage, one PNG each.
 
 Doubles as a smoke test: a robot that cannot be attached and compiled shows up as a
-failure line rather than a missing image.
+failure line rather than a missing image. The robots are the ones
+`robots_specs/robots.yml` marks simulated.
 
     python tools/render_robots.py --outdir /tmp/robots
-    python tools/render_robots.py --only so101,rby1
+    python tools/render_robots.py --only so101,myagv
 """
 
 from __future__ import annotations
@@ -24,28 +25,14 @@ if str(SIM_ROOT) not in sys.path:
 
 
 def robot_registry() -> dict[str, tuple]:
-    """label -> (config class, human description). Imported lazily; molmo_spaces is slow."""
-    from molmo_spaces.configs import robot_configs as rc
+    """id -> (config class, human description), for every simulated robot."""
+    from tools.spawn_robot import load_robot  # puts simulator/shared on the path
 
-    from robots.ainex import AiNexRobotConfig
-    from robots.myagv import MyAGVRobotConfig
-    from robots.rebot_b601 import B601RobotConfig
-    from robots.so101 import SO101RobotConfig
+    import robots_spec
 
     return {
-        "franka_droid": (rc.FrankaRobotConfig, "Franka FR3 + Robotiq 2F-85 (DROID)"),
-        "franka_cap": (rc.FrankaCAPRobotConfig, "Franka FR3 + CAP gripper"),
-        "mobile_franka": (rc.MobileFrankaRobotConfig, "Franka on a mobile base"),
-        "rby1": (rc.RBY1Config, "Rainbow Robotics RB-Y1"),
-        "rby1m": (rc.RBY1MConfig, "Rainbow Robotics RB-Y1M"),
-        "yam": (rc.I2rtYamRobotConfig, "I2RT YAM"),
-        "bimanual_yam": (rc.BimanualYamRobotConfig, "I2RT YAM (bimanual)"),
-        "rum": (rc.FloatingRUMRobotConfig, "Floating RUM gripper"),
-        "floating_robotiq": (rc.FloatingRobotiq2f85RobotConfig, "Floating Robotiq 2F-85"),
-        "so101": (SO101RobotConfig, "TheRobotStudio SO-101 (out-of-tree)"),
-        "myagv": (MyAGVRobotConfig, "Elephant Robotics myAGV Pi (out-of-tree)"),
-        "rebot_b601": (B601RobotConfig, "Seeed reBot Arm B601-DM (out-of-tree)"),
-        "ainex": (AiNexRobotConfig, "Hiwonder AiNex 24-DoF humanoid (out-of-tree)"),
+        rid: (load_robot(rid)[0], robots_spec.robot(rid).name)
+        for rid in robots_spec.simulated_ids()
     }
 
 

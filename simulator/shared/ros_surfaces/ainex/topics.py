@@ -36,7 +36,6 @@ Departures from the hardware are marked below and listed in `robots/README.md`.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 # --- console -> robot ------------------------------------------------------------------
 
@@ -139,10 +138,10 @@ TF_ROOT_FRAME = TF_ROOT_BODY
 # same convention rather than inventing a second one.
 FRAME_LASER = "laser_frame"
 
-#: The vendor description, and the frames read off it. `ainex_description`'s URDF is what
-#: `robot_description` carries; every link name below is the description's own, and the
-#: compiled model uses the same names because the model is built from that file.
-URDF_PATH = Path(__file__).resolve().parents[2] / "robots/ainex/urdf/ainex.urdf"
+#: The frames read off the vendor description. `ainex_description`'s URDF
+#: (`robots_specs/ainex/ainex.urdf`) is what `robot_description` carries; every link name
+#: below is the description's own, and the compiled model uses the same names because the
+#: model is built from that file.
 #: The 24 moving links, one per servo, plus the torso they hang off. Derived from
 #: `JOINT_NAMES` rather than typed again: the vendor names each link after its joint, so
 #: a link table typed by hand would be 24 more chances to disagree with the joint table

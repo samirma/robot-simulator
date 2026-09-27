@@ -579,8 +579,8 @@ def _camera_frame(topic: str) -> str:
     """`/overhead/color/compressed` -> `overhead`; the contract's name for that view.
 
     `image_transport republish` appends `/color/compressed` to the camera's own name, so
-    stripping that suffix recovers it -- the same rule `simulator/live_cameras.html` uses
-    to label a stream it discovered.
+    stripping that suffix recovers it -- the same rule a client uses to label a stream it
+    discovered.
     """
     name = topic.strip("/")
     for suffix in ("/color/compressed", "/image_raw/compressed", "/compressed"):

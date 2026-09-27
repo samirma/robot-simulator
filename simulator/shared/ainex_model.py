@@ -1,6 +1,6 @@
 """The AiNex's MuJoCo model, built from the vendor URDF -- shared by every engine.
 
-`shared/robots/ainex/` holds what Hiwonder ship: a flattened URDF and its meshes. What
+`robots_specs/ainex/` holds what Hiwonder ship: a flattened URDF and its meshes. What
 they ship is not directly usable, and the gap is measured rather than guessed -- real
 per-joint limits from the servo table, a holonomic base the URDF has no joint for,
 collision cut back to the torso and the hands, the camera moved to the head where the
@@ -32,19 +32,18 @@ from mujoco_bridge import is_loose
 from ros_surfaces.ainex import servos
 from ros_surfaces.ainex.gait import LegGeometry
 
-#: The vendor description, in the shared spec tree every engine reads.
-URDF_PATH = robots_spec.spec_dir("ainex") / "urdf" / "ainex.urdf"
+#: The vendor description, as `robots_specs/robots.yml` records it.
+URDF_PATH = robots_spec.urdf_path("ainex")
 
 # The torso. `base_link` sits above it in the URDF but carries no joint and no geometry,
 # so MuJoCo merges it into the worldbody on import -- and would merge `body_link` too, for
-# the same reason, if the virtual joints below did not give it a DoF. See PROVENANCE.md:
+# the same reason, if the virtual joints below did not give it a DoF. See
+# shared/robots/ainex/PROVENANCE.md:
 # compiling the vendor file untouched yields five disconnected root bodies.
 TORSO_BODY = "body_link"
 
-# Where the 25 STLs live, relative to the URDF. See `_load_robot_spec`.
-
-# Where the 25 STLs live, relative to the URDF. See `_load_robot_spec`.
-MESHDIR = "meshes"
+# Where the 25 STLs live, as `robots_specs/robots.yml` records them. See `build_spec`.
+MESHDIR = robots_spec.mesh_dirs("ainex")[0]
 
 # The vendor URDF bolts the camera here; step 4 moves it to the head.
 
@@ -146,15 +145,7 @@ TORQUE_SMALL = 1.18
 
 SMALL_SERVO_JOINTS = frozenset(servos.GRIPPER_JOINTS + servos.HEAD_JOINTS)
 
-# The b601 lesson, at a smaller scale. Two competing requirements:
-#   * stiffness -- the joint should command full torque at STIFFNESS_ERROR of error;
-#   * stability -- with an explicit integrator, kv*dt/I < 2, i.e. kp <= ~I/dt^2.
-# The AiNex's ankle and head links are of order 1e-4 kg.m^2, so a kv that looks sensible
-# beside the hip makes them oscillate instead of hold. Hence kp is clamped against the
-# measured inertia and kv follows from critical damping.
-
-
-# The b601 lesson, at a smaller scale. Two competing requirements:
+# Two competing requirements:
 #   * stiffness -- the joint should command full torque at STIFFNESS_ERROR of error;
 #   * stability -- with an explicit integrator, kv*dt/I < 2, i.e. kp <= ~I/dt^2.
 # The AiNex's ankle and head links are of order 1e-4 kg.m^2, so a kv that looks sensible
@@ -186,9 +177,9 @@ def build_spec(urdf_path: Path | None = None) -> MjSpec:
 
     # MuJoCo strips the directory from URDF mesh filenames, so `l_knee_link.STL` is
     # looked up in meshdir and nowhere else -- see robots/URDF.md, where this is the
-    # first of the two import behaviours that bite every time. Relative to the URDF's
-    # own directory, which is where MuJoCo resolves it from.
-    spec.meshdir = MESHDIR
+    # first of the two import behaviours that bite every time. Absolute, so it does not
+    # matter which directory MuJoCo would resolve a relative one from.
+    spec.meshdir = str(MESHDIR)
 
     # Keep visual-only geoms. MuJoCo's URDF importer defaults `discardvisual` to true,
     # which throws away every geom that can neither collide nor be picked -- and step 3
@@ -379,8 +370,8 @@ def _reparent_camera(spec: MjSpec, urdf_path=None) -> None:
     The offset is read back out of the URDF rather than measured off the compiled
     model, because `camera_link` does not survive the import: it carries no joint and
     no geometry, so MuJoCo merges it into `body_link` exactly as it merges `base_link`
-    (see PROVENANCE.md). Parsing the vendor file keeps the number sourced rather than
-    retyped -- change the description and this follows.
+    (see shared/robots/ainex/PROVENANCE.md). Parsing the vendor file keeps the number
+    sourced rather than retyped -- change the description and this follows.
     """
     camera_in_torso, camera_rpy = _urdf_camera_origin(urdf_path)
     if any(camera_rpy):

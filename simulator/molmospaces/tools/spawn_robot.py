@@ -41,12 +41,16 @@ _SHARED = SIM_ROOT.parent / "shared"
 if _SHARED.is_dir() and str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
-# name -> (module, config class, robot class), kept lazy so importing one robot does
-# not require the others to be installed.
-ROBOTS = {
+import robots_spec  # noqa: E402
+
+# The robots this engine spawns are the ones robots_specs/robots.yml marks simulated;
+# `robots_spec.check_simulated` is what every robot argument is held to.
+#
+# id -> (module, config class, robot class): this engine's adapter for that robot, kept
+# lazy so importing one robot does not require the others to be installed.
+ADAPTERS = {
     "so101": ("robots.so101", "SO101RobotConfig", "SO101Robot"),
     "myagv": ("robots.myagv", "MyAGVRobotConfig", "MyAGVRobot"),
-    "rebot_b601": ("robots.rebot_b601", "B601RobotConfig", "B601Robot"),
     "ainex": ("robots.ainex", "AiNexRobotConfig", "AiNexRobot"),
 }
 
@@ -102,13 +106,12 @@ SCAN_DEFAULTS = {
 # animated over a planar base rather than balanced. See robots/ainex/ainex.py.
 HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
 
-# Arms: no base of their own, so they are bolted to a work surface rather than stood on
-# the floor. A robot with both an arm and wheels places as a mobile base.
-TABLETOP_ROBOTS = {"so101", "rebot_b601", "ainex"}
+# Robots whose `placement` in robots.yml is `worktop`: they are put on a work surface
+# rather than stood on the floor.
+TABLETOP_ROBOTS = set(robots_spec.worktop_ids())
 
 # The annulus on that surface the arm can comfortably work in. The SO-101 is a ~0.4 m
-# tabletop arm (robots/so101/so101_config.py:41); the B601 has 767 mm of reach
-# (robots/rebot_b601/b601_config.py:32). Both are kept short of the full figure: the last
+# tabletop arm (robots/so101/so101_config.py:41), kept short of the full figure: the last
 # few centimetres of reach are a straight-out arm with no usable orientation left.
 # The AiNex's numbers below are measured off the compiled model at its init pose, not
 # read off a datasheet: standing height 0.4027 m (sole to crown), footprint radius
@@ -128,14 +131,14 @@ TABLETOP_ROBOTS = {"so101", "rebot_b601", "ainex"}
 # The AiNex is a humanoid and "reach annulus" is a stretch for it, but the mount
 # search needs one and this is the honest one: the same fraction of full extension
 # the SO-101's (0.15, 0.35) is of its ~0.40 m arm, applied to the measured 0.289.
-ARM_REACH = {"so101": (0.15, 0.35), "rebot_b601": (0.25, 0.60), "ainex": (0.11, 0.25)}
+ARM_REACH = {"so101": (0.15, 0.35), "ainex": (0.11, 0.25)}
 
 # Room the arm itself needs around its mount, and how far up it needs it. Not the same as
 # the base it stands on: a counter is against a wall, and it is the arm -- not the riser --
 # that hits it. The height bounds which geometry counts as in the way at all, so that a
 # wall does and the ceiling above it does not.
-ARM_BODY_RADIUS = {"so101": 0.20, "rebot_b601": 0.35, "ainex": 0.19}
-ARM_BODY_HEIGHT = {"so101": 0.45, "rebot_b601": 0.90, "ainex": 0.46}
+ARM_BODY_RADIUS = {"so101": 0.20, "ainex": 0.19}
+ARM_BODY_HEIGHT = {"so101": 0.45, "ainex": 0.46}
 
 # Replaces the floor pedestal (`base_size`) once the arm stands on the table itself: just
 # enough to read as a mount, not enough to matter to the workspace.
@@ -209,9 +212,14 @@ class _Instance:
 
 
 def load_robot(name: str):
-    if name not in ROBOTS:
-        raise SystemExit(f"unknown robot {name!r}; available: {', '.join(sorted(ROBOTS))}")
-    module_name, config_attr, robot_attr = ROBOTS[name]
+    try:
+        robots_spec.check_simulated([name])
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+    if name not in ADAPTERS:
+        raise SystemExit(f"robots.yml marks {name!r} simulated, but this engine has no "
+                         "adapter for it in robots/")
+    module_name, config_attr, robot_attr = ADAPTERS[name]
     import importlib
 
     module = importlib.import_module(module_name)
@@ -1010,9 +1018,9 @@ def _pick_camera(args, model, ns: str) -> str | None:
     """The MJCF camera a mobile base streams, resolved against its own prefix.
 
     `--camera` names one for every robot, which is only meaningful when there is one.
-    With a fleet each base falls back to its own `front_camera`, which is what makes
-    `--cameras robot` mean "each robot's own official camera" without a per-robot flag:
-    the fallback already is per-robot.
+    With a fleet each base falls back to its own `front_camera`, which is what gives every
+    robot its own official camera without a per-robot flag: the fallback already is
+    per-robot.
 
     An unknown name is refused here rather than three steps later. It used to be returned
     verbatim, and `mj_name2id` then answered -1 for the fovy lookup, which numpy reads as
@@ -1041,7 +1049,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "robot",
-        help=f"one of: {', '.join(sorted(ROBOTS))}. A comma-separated list spawns several "
+        help=f"one of: {', '.join(robots_spec.simulated_ids())} (the simulated robots in "
+             "robots_specs/robots.yml). A comma-separated list spawns several "
              "into the same scene, sharing one --ros-port: `so101,myagv` mounts the arm on "
              "a work surface and puts the base on the floor. That is one ROS graph with a "
              "namespace per robot, which is what a real multi-robot bringup is.",
@@ -1239,12 +1248,10 @@ def main() -> int:
 
     from tools.scene_placement import apply_init_qpos, describe, find_robot_placement
 
-    names = [n.strip() for n in args.robot.split(",") if n.strip()]
-    if not names:
-        raise SystemExit("no robot named")
-    unknown = [n for n in names if n not in ROBOTS]
-    if unknown:
-        raise SystemExit(f"unknown robot(s) {unknown}; available: {', '.join(sorted(ROBOTS))}")
+    try:
+        names = robots_spec.check_simulated(args.robot)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
 
     # The ROS namespace defaults to the robot's own name, which is what makes a topic list
     # readable at a glance. Duplicates would collide on the wire exactly as bare names do,

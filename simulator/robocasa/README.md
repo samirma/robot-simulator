@@ -8,11 +8,10 @@ the shared architecture (engines feed the one wire bridge in
 ```bash
 ./run.sh setup                    # clone upstream robosuite/robocasa + editable install
 ./run.sh assets                   # kitchen assets (~10 GB) into upstream/robocasa/.../assets
-./run.sh --layout 1 --style 3     # open that kitchen in the MuJoCo viewer
-./run.sh view --layout 2 --style 7 --robot PandaMobile --timeout 10
 ./run.sh shell
 
-# A shared robot in the kitchen, on the real hardware's interface:
+# A simulated robot (robots_specs/robots.yml) in a kitchen, on the real hardware's interface:
+./run.sh view --robot so101 --layout 2 --style 7     # that kitchen in the MuJoCo viewer
 ./run.sh view --robot myagv --ros-port 9090          # myAGV vendor ROS topics
 ./run.sh view --robot so101 --ros-port 9091          # SO-101 on its ROS topics
 ./run.sh view --robot so101 --objects bowl,apple     # ...with objects in its reach
@@ -24,6 +23,8 @@ the shared architecture (engines feed the one wire bridge in
   `upstream/robocasa/robocasa/models/scenes/scene_registry.py`). Both default
   to 1.
 - `./run.sh <flags>` without a subcommand is shorthand for `view <flags>`.
+- `view` always takes `--robot <id>`, an id `robots_specs/robots.yml` marks `simulated`.
+  RoboCasa is a scene provider only: no robosuite robot is ever loaded.
 - On macOS the viewer runs under `mjpython` (main-thread constraint, same as
   the molmospaces engine); everything else runs under plain `python`.
 
@@ -33,8 +34,6 @@ the shared architecture (engines feed the one wire bridge in
   `lite_physics`/`load_model_on_init`, which no v1.5.x tag accepts) and
   robocasa `v1.0`. The venv installs both as *editable* packages, so these
   directories must stay put. **Never modify `upstream/`.**
-- `tools/view_kitchen.py` — builds the `Kitchen` env for one layout/style pair
-  and opens the passive viewer. `--timeout N` makes it smoke-testable.
 - `tools/download_lightwheel_assets.py` — fetches the fixture/object assets
   the v1.0 downloader misses (renamed nvidia HF repo, base `fixtures.zip`);
   run by `./run.sh assets`.
@@ -45,7 +44,8 @@ the shared architecture (engines feed the one wire bridge in
 ## Shared robots in a kitchen
 
 `tools/spawn_robot.py` is the RoboCasa counterpart of the MolmoSpaces tool of the
-same name: it puts a robot from `../shared/robots/` into a kitchen and presents
+same name: it puts a simulated robot from `robots_specs/` (built through
+`../shared/robots_spec.py` and `../shared/robots/`) into a kitchen and presents
 it on the *hardware's* interface, so `robot_console` drives it with the same
 client and the same flags it uses against engine #1.
 

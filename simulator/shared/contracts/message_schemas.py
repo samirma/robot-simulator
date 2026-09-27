@@ -5,7 +5,7 @@ the `.msg` files installed on the robot. There is no ROS install here and nothin
 so the definitions live in this table -- **transcribed, not authored**. Every entry is
 copied from the manufacturer's own definition file for that embodiment, or from the ROS
 distribution's for the standard packages, and the block below records where each came
-from. That is the same standing the vendored STLs have (`shared/robots/ainex/urdf/
+from. That is the same standing the vendor STLs have (`shared/robots/ainex/
 PROVENANCE.md`): a definition that is not verbatim would be indistinguishable from the
 vendor's afterwards, and a client generating code against it would be generating it
 against a guess.

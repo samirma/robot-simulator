@@ -13,13 +13,14 @@ from molmo_spaces.configs.robot_configs import BaseRobotConfig
 from molmo_spaces.robots.abstract import Robot
 from molmo_spaces.robots.robot_views.abstract import RobotViewFactory
 
-from robots_spec import spec_dir
+import robots_spec
 
 from .myagv import MyAGVRobot
 from .myagv_view import MyAGVRobotView
 
-# The model.xml + meshes are the engine-neutral spec, shared across simulator engines.
-ROBOT_DIR = spec_dir("myagv")
+# The generated model.xml, shared across simulator engines, built from the official
+# meshes in robots_specs/myagv/ by make_model.py.
+ROBOT_XML = robots_spec.model_xml("myagv")
 
 
 class MyAGVCameraSystem(CameraSystemConfig):
@@ -47,8 +48,8 @@ class MyAGVRobotConfig(BaseRobotConfig):
     robot_namespace: str = "robot_0/"
     name: str = "myagv"
 
-    robot_xml_path: Path = Path("model.xml")
-    robot_dir: Path = ROBOT_DIR
+    robot_xml_path: Path = Path(ROBOT_XML.name)
+    robot_dir: Path = ROBOT_XML.parent
 
     # It drives on the floor; there is no pedestal to stand it on.
     base_size: list[float] | None = None

@@ -3,18 +3,18 @@
 #
 #   ./run.sh setup                       clone upstream + venv + editable install
 #   ./run.sh assets                      download the kitchen assets (~10 GB)
-#   ./run.sh view [--layout 1] [--style 3] [--robot PandaOmron]
-#                                        open a kitchen in the MuJoCo viewer;
+#   ./run.sh view --robot <id> [--layout 1] [--style 3]
+#                                        one robot in a kitchen in the MuJoCo viewer, on
+#                                        the real hardware's interface. <id> is a robot
+#                                        robots_specs/robots.yml marks simulated;
 #                                        layout 1-60, style 1-60
-#                 [--robot myagv|so101]  ...with a shared robot in it instead, on the
-#                                        real hardware's interface:
 #                 [--ros-port 9090]      the port the vendor ROS topics are served on --
 #                                        9090 unless you say otherwise, 0 for none;
 #                                        myagv -> cmd_vel in, odom + camera + /scan out
 #                 [--task apple_on_plate]  stage a task into the kitchen
 #                 [--headless]           ...with no window (displayless hosts, checks)
 #                 [--render out.png]     ...or just write a PNG and exit
-#   ./run.sh --layout 1 --style 3        shorthand for `view --layout 1 --style 3`
+#   ./run.sh --robot so101 --layout 1    shorthand for `view --robot so101 --layout 1`
 #   ./run.sh shell                       interactive shell inside the venv
 #   ./run.sh repair                      re-point the venv at this checkout after it has
 #                                        been moved; every command does this anyway
@@ -136,24 +136,17 @@ do_view() {
     esac
   done
 
-  # `--robot` is overloaded, and deliberately so: the two robot vocabularies here are
-  # disjoint, and making the user learn two flag names to say "put this robot in the
-  # kitchen" would be worse. A shared robot goes to spawn_robot.py and gets the vendor
-  # wire contracts; anything else is a robosuite robot name for the plain viewer, which
-  # is where `--robot PandaOmron` has always gone.
-  case "$robot" in
-    myagv|so101|ainex)
-      local py="$MJPY"
-      [ "$headless" = 1 ] && py="$PY"
-      exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" "${rest[@]+"${rest[@]}"}"
-      ;;
-    "") ;;
-    *) rest+=(--robot "$robot") ;;
-  esac
+  # RoboCasa is a scene provider only: the robot is always one of robots_specs/, never a
+  # robosuite robot, and it is held to robots.yml's simulated ids by the shared loader.
+  [ -n "$robot" ] || die "view needs --robot <id> (try: ./run.sh help)"
+  case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
+  "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
 
-  # Deliberately a script, not `-m mujoco.viewer`, and under mjpython on macOS:
-  # the passive viewer must own the main thread. See tools/view_kitchen.py.
-  exec "$MJPY" "$SIM_ROOT/tools/view_kitchen.py" "${rest[@]+"${rest[@]}"}"
+  # Under mjpython on macOS when there is a window: the passive viewer must own the main
+  # thread. Nothing windowless needs it.
+  local py="$MJPY"
+  [ "$headless" = 1 ] && py="$PY"
+  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" "${rest[@]+"${rest[@]}"}"
 }
 
 # ---------------------------------------------------------------- shell
@@ -181,7 +174,7 @@ case "$cmd" in
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
     ;;
   -*)
-    # `./run.sh --layout 1 --style 3` == `./run.sh view --layout 1 --style 3`
+    # `./run.sh --robot so101 --layout 1` == `./run.sh view --robot so101 --layout 1`
     do_view "$cmd" "$@"
     ;;
   *) die "unknown command '$cmd' (try: ./run.sh help)" ;;

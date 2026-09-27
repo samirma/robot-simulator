@@ -55,12 +55,12 @@ if _SHARED.is_dir() and str(_SHARED) not in sys.path:
     sys.path.insert(0, str(_SHARED))
 
 from mujoco_bridge import PlanarJointBase  # noqa: E402
-from robots_spec import model_xml  # noqa: E402
+import robots_spec  # noqa: E402
 
-# Robots this engine can spawn. Kept to the shared specs: anything here must also spawn
-# in the MolmoSpaces engine, since that is what "the console cannot tell them apart"
-# means in practice.
-ROBOTS = ("myagv", "so101", "ainex")
+# The robots this engine spawns are the ones robots_specs/robots.yml marks simulated --
+# the same set the MolmoSpaces engine spawns, since that is what "the console cannot tell
+# them apart" means in practice. `robots_spec.check_simulated` holds every robot argument
+# to it.
 
 # name -> (module, function) presenting that robot's own vendor ROS topics. Only mobile
 # bases have one; an arm is served over the control protocol instead.
@@ -99,13 +99,12 @@ SCAN_DEFAULTS = {
 # Robots grafted in at the origin and then *driven* to their spawn pose, because their
 # base joints are world-aligned slides.
 HOLONOMIC_BASE_ROBOTS = {"myagv", "ainex"}
-# Arms: no base of their own, so they are bolted to a work surface. In a kitchen that is
-# a countertop rather than a table.
-# Robots that go *on* a worktop rather than on the floor. The AiNex is both this and
+# Robots whose `placement` in robots.yml is `worktop`: they go *on* a worktop -- in a
+# kitchen, a countertop -- rather than on the floor. The AiNex is both this and
 # holonomic: it stands on the counter where an arm would be bolted, and gets there on the
 # same world-aligned slide joints the myAGV drives on. The two sets are read
 # independently -- one chooses where a robot is put, the other how it is moved.
-TABLETOP_ROBOTS = {"so101", "ainex"}
+TABLETOP_ROBOTS = set(robots_spec.worktop_ids())
 
 # Footprint radius used when searching for somewhere to stand. The myAGV chassis is
 # 311 x 230 mm, so its half-diagonal is 0.193 m; the margin is what keeps a spawn from
@@ -697,7 +696,7 @@ def robot_spec(robot: str):
         import ainex_model
 
         return ainex_model.build_spec(), ainex_model.robot_model_root_name()
-    return mujoco.MjSpec.from_file(str(model_xml(robot))), "base"
+    return mujoco.MjSpec.from_file(str(robots_spec.model_xml(robot))), "base"
 
 
 def gripper_bodies(robot: str) -> tuple[str, ...]:
@@ -1011,9 +1010,9 @@ def _pick_camera(args, model, prefix: str) -> str | None:
     """The MJCF camera a mobile base streams, resolved against its own prefix.
 
     `--camera` names one for every robot, which is only meaningful when there is one.
-    With a fleet each base falls back to its own `front_camera`, which is what makes
-    `--cameras robot` mean "each robot's own official camera" without a per-robot flag:
-    the fallback already is per-robot.
+    With a fleet each base falls back to its own `front_camera`, which is what gives every
+    robot its own official camera without a per-robot flag: the fallback already is
+    per-robot.
 
     An unknown name is refused here rather than three steps later. It used to be returned
     verbatim, and `mj_name2id` then answered -1 for the fovy lookup, which numpy reads as
@@ -1042,7 +1041,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument(
         "robot",
-        help=f"one of: {', '.join(ROBOTS)}. A comma-separated list spawns several into "
+        help=f"one of: {', '.join(robots_spec.simulated_ids())} (the simulated robots in "
+             "robots_specs/robots.yml). A comma-separated list spawns several into "
              "the same kitchen, sharing one --ros-port: `so101,myagv` mounts the arm on a "
              "worktop and puts the base on the floor. One ROS graph, a namespace per "
              "robot -- which is what a real multi-robot bringup is.",
@@ -1172,6 +1172,11 @@ def main() -> int:
                          "physics loop; see the MolmoSpaces engine for the measurements.")
     args = ap.parse_args()
 
+    try:
+        names = robots_spec.check_simulated(args.robot)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from None
+
     if args.task and not args.ros_port and not args.render and args.headless:
         raise SystemExit(
             "--task needs --ros-port, --render or a viewer: the task publishes its objects "
@@ -1190,13 +1195,6 @@ def main() -> int:
             "--wrist-camera as well if the eye-in-hand view is the one you want on its own."
         )
 
-
-    names = [n.strip() for n in args.robot.split(",") if n.strip()]
-    if not names:
-        raise SystemExit("no robot named")
-    unknown = [n for n in names if n not in ROBOTS]
-    if unknown:
-        raise SystemExit(f"unknown robot(s) {unknown}; available: {', '.join(ROBOTS)}")
 
     if args.ros_namespace is None:
         namespaces = list(names)

@@ -13,10 +13,10 @@ The result navigates reliably, never falls, and puts its feet where a walking ro
 -- see `gait.py` on why the stance foot does not skate. What it does not do is balance.
 The arms, grippers and head are genuinely actuated and are what grasping uses.
 
-The vendor URDF is loaded untouched and the spec edited in memory, as for `rebot_b601`:
-MuJoCo strips the directory from URDF mesh filenames, so a patched copy
-elsewhere on disk would silently fail to find the 25 STLs
-(`robots/URDF.md`). See `robots/ainex/urdf/PROVENANCE.md` for what was vendored.
+The vendor URDF (`robots_specs/ainex/ainex.urdf`) is loaded untouched and the spec edited
+in memory: MuJoCo strips the directory from URDF mesh filenames, so a patched copy
+elsewhere on disk would silently fail to find the 25 STLs (`robots/URDF.md`). See
+`shared/robots/ainex/PROVENANCE.md` for the vendor files and what the simulator corrects.
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ class AiNexRobot(Robot):
 
         # The gains assume an implicit integrator, and every MolmoSpaces house already
         # uses `implicitfast` -- but a bare MjSpec defaults to Euler, where 24 servos on
-        # ~1e-4 kg.m^2 links go NaN. The same trap b601 records; it only bites in
+        # ~1e-4 kg.m^2 links go NaN. It only bites in
         # standalone scenes such as test_attach.py's empty world.
         spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
 

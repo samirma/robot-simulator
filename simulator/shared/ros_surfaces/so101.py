@@ -33,7 +33,6 @@ from __future__ import annotations
 import os
 import sys
 import threading
-from pathlib import Path
 
 import numpy as np
 
@@ -129,11 +128,6 @@ SCENE_NAMESPACE = "scene"
 WRIST_CAMERA: dict[str, tuple[str, int, int]] = {
     "/wrist/color/compressed": ("wrist_cam", 640, 360),
 }
-
-#: The description a real bringup loads into `robot_description` and a client draws the
-#: arm from: TheRobotStudio's own `SO-ARM100/Simulation/SO101`, vendored verbatim beside
-#: the MJCF and verified against upstream by blob SHA (see `robots/README.md`).
-URDF_PATH = Path(__file__).resolve().parents[1] / "robots/so101/urdf/so101_new_calib.urdf"
 
 #: MJCF body -> the frame the description calls it. **The two names differ on every link
 #: of this arm**, because the model is mujoco_menagerie's and the description is
@@ -307,8 +301,11 @@ def attach_ros(
     from contracts.tf import urdf_fixed_joints
     from mujoco_bridge import TransformTree
     from ros_surfaces.tf_stream import attach_tf, read_description
+    import robots_spec
 
-    description = read_description(URDF_PATH)
+    # The description a real bringup loads into `robot_description` and a client draws
+    # the arm from: TheRobotStudio's own `so101_new_calib.urdf`, as robots_specs/ holds it.
+    description = read_description(robots_spec.urdf_path("so101"))
     tf = attach_tf(
         bus,
         TransformTree(

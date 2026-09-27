@@ -8,7 +8,8 @@
 # simulator hosts; the others are physical-only. A composite robot names its base robot's
 # id in `base`; its ROS file then `extends` the base's and lists only what it adds.
 # `meshes` is the folder holding the official meshes the URDF/MJCF reference, laid out as
-# upstream; a `package://<pkg>/` mesh path resolves to the robot's own folder.
+# upstream, or a list of such folders when the URDF and the MJCF use different ones; a
+# `package://<pkg>/` mesh path resolves to the robot's own folder.
 
 robots:
   - id: myagv
@@ -79,7 +80,9 @@ robots:
     base: myagv                  # the base's URDF; no official composite URDF exists
     urdf: myagv_mycobot280/mycobot_280_pi.urdf   # arm only; the arm is driven over a pymycobot socket, not ROS
     mjcf: myagv_mycobot280/xml/mycobot_280jn_mujoco.xml   # official myCobot 280 JetsonNano model; Elephant publishes none for the 280 Pi
-    meshes: myagv_mycobot280/urdf/mycobot_280_pi
+    meshes:
+      - myagv_mycobot280/urdf/mycobot_280_pi   # the URDF's
+      - myagv_mycobot280/meshes_mujoco          # the MJCF's
     ros: myagv_mycobot280/ros.yml
     source:
       repository: https://github.com/elephantrobotics/myagv_ros

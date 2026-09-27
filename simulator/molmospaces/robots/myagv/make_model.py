@@ -36,16 +36,17 @@ import numpy as np
 import trimesh
 
 HERE = Path(__file__).resolve().parent
-# The generated model, meshes and URDF source live in the shared spec dir, so every
-# engine consumes the same MJCF. This adapter (make_model.py) stays engine-side.
+# The generated model and its converted meshes live in shared/robots/myagv/, so every
+# engine consumes the same MJCF; the official COLLADA meshes they are converted from stay
+# in robots_specs/myagv/. This adapter (make_model.py) stays engine-side.
 import sys as _sys
 _sys.path.insert(0, str(HERE.parents[2] / "shared"))
-from robots_spec import spec_dir as _spec_dir  # noqa: E402
+import robots_spec  # noqa: E402
 
-SPEC = _spec_dir("myagv")
-UPSTREAM = SPEC / "urdf"
+SPEC = robots_spec.model_dir("myagv")
+UPSTREAM = robots_spec.mesh_dirs("myagv")[0]
 ASSETS = SPEC / "assets"
-OUT = SPEC / "model.xml"
+OUT = robots_spec.model_xml("myagv")
 
 # Published myAGV 2023 Pi specs (elephantrobotics.com/en/myagv-2023-pi-specifications-en/)
 CHASSIS_L = 0.31115  # m, along +x (forward)

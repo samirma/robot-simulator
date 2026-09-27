@@ -51,8 +51,8 @@ DEFAULT_PORT = 9090
 TOPIC_CMD_VEL = "/cmd_vel"
 TOPIC_ODOM = "/odom"
 TOPIC_CAMERA = "/camera/image_raw/compressed"
-# The 2023 Pi AGV ships a YDLidar publishing /scan (its bring-up script is documented in
-# robots/myagv/urdf/UPSTREAM_README.md), so a simulated one belongs on the same topic:
+# The 2023 Pi AGV ships a YDLidar publishing /scan (robots_specs/myagv/ros.yml), so a
+# simulated one belongs on the same topic:
 # anything consuming it works against either robot unchanged.
 TOPIC_SCAN = "/scan"
 TOPIC_DEPTH = "/camera/depth/image_raw"
@@ -484,7 +484,7 @@ class RosBridgeServer:
         Real rosbridge ships `rosapi` alongside it -- `rosbridge_websocket.launch` starts
         `rosapi_node` unconditionally, and a real AiNex's launch file does exactly that
         with every glob set to `[*]` -- so clients written against a real bridge assume
-        all of it. This used to implement two queries, the two `live_cameras.html` made,
+        all of it. This used to implement two queries, the two a camera page made,
         and a client asking anything else got `no service`: not "unknown type", not an
         empty list, but a bridge that could not be asked what a topic's type was. That is
         the largest way a client could tell this simulator from the robot it claims to be

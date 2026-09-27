@@ -2,41 +2,22 @@
 
 Source: [`Hiwonder/ainex`](https://github.com/Hiwonder/ainex), branch `main`, commit
 `e8fe2a816797cf83054135160df5a82ec3596a69`, package
-`src/ainex_simulations/ainex_description`.
+`src/ainex_simulations/ainex_description` — as `robots_specs/robots.yml` records it.
 
 > **No licence stated.** The repository carries no LICENSE file despite describing itself
 > as fully open source, and that covers the URDF, the meshes and `servo_controller.yaml` —
 > not just the action groups. This is the only robot here whose vendor files are not under
-> an identified licence; see the note in [molmospaces/robots/URDF.md](../../../../molmospaces/robots/URDF.md).
+> an identified licence; see the note in [molmospaces/robots/URDF.md](../../../molmospaces/robots/URDF.md).
+
+The vendor files are not copied here. The simulator loads them from `robots_specs/ainex/`:
 
 | File | What it is |
 |---|---|
-| `ainex.urdf.xacro`, `materials.xacro`, `transmissions.xacro` | vendor source, verbatim |
-| `ainex.urdf` | the flattened xacro — **this is what MuJoCo loads** |
-| `meshes/*.STL` | 25 binary STLs, 5.4 MB, verbatim |
-| `flatten_xacro.py` | regenerates `ainex.urdf` from the xacro |
-| `UPSTREAM_README.md` | the vendor's own README, verbatim |
+| `robots_specs/ainex/ainex.urdf` | the vendor's `ainex.urdf.xacro`, flattened — **this is what MuJoCo loads** |
+| `robots_specs/ainex/meshes/*.STL` | 25 binary STLs, 5.4 MB, verbatim, fetched by `fetch_robot_assets.sh` |
 
-## Why the xacro is flattened offline
-
-`ainex.urdf.xacro` is not loadable by MuJoCo directly, and expanding it at load time would
-make a ROS toolchain a hard dependency of viewing a robot — a non-starter on the macOS
-stack this simulator runs on (see the top-level `CLAUDE.md` on why MuJoCo needs the
-Homebrew framework Python). So it is expanded once and the result committed.
-
-`flatten_xacro.py` is not a general xacro implementation and does not need to be. The
-AiNex xacro uses only three constructs: seven scalar `<xacro:property>` definitions, one
-arithmetic substitution (`${M_PI/2}`), and two `<xacro:include>`s — `materials.xacro`
-(colour definitions, no macros) and `transmissions.xacro` (one macro instantiated 24
-times). No conditionals, no loops, no parameterised geometry, so the expansion is
-deterministic.
-
-```bash
-python shared/robots/ainex/urdf/flatten_xacro.py \
-    <ainex_description dir> shared/robots/ainex/urdf/ainex.urdf
-```
-
-Re-run it after pulling a newer vendor description, and re-check the figures below.
+What the simulator builds from them is `shared/ainex_model.py`; there is no generated
+model file.
 
 ## Verified after flattening
 
@@ -51,7 +32,7 @@ Re-run it after pulling a newer vendor description, and re-check the figures bel
 ## Two things about this description that the simulator corrects
 
 **MuJoCo merges *two* links into the worldbody, not one.**
-[`molmospaces/robots/URDF.md`](../../../../molmospaces/robots/URDF.md) records that a
+[`molmospaces/robots/URDF.md`](../../../molmospaces/robots/URDF.md) records that a
 jointless URDF root gets merged; here it happens twice, because `base_link` is jointless
 *and* `body_link` hangs off it by a fixed joint. Compiling the file as-is yields **five
 disconnected root bodies** — both `hip_yaw` links, `head_pan_link` and both `sho_pitch`
@@ -77,7 +58,7 @@ effort="6" velocity="100"`. ±2.0944 rad is *exactly* the 240° full travel of a
 servo, which is the tell that these are a default rather than a per-joint calibration —
 the hips' HX-35HM has 360° and is not distinguished either. The real per-joint limits live
 in `ainex_kinematics/config/servo_controller.yaml` as raw servo counts, and
-`robots/ainex/servos.py` transcribes them. `test_attach.py` asserts that no joint still
+`shared/ros_surfaces/ainex/servos.py` transcribes them. `test_attach.py` asserts that no joint still
 has the placeholder range, since a failure to apply the table is otherwise invisible.
 
 ## Verbatim, and checkable
@@ -92,17 +73,14 @@ python shared/tests/ainex_provenance_check.py --update   # after a vendor pull
 They are **git blob hashes** — sha1 over `blob <bytes>\0` plus the content — so a row
 here can be checked against `git hash-object <file>` or against GitHub's own blob id for
 the upstream file, with no tooling on either side. This robot is the one where it matters
-most: its description is the only hardware source in this repo under no stated licence,
-so "verbatim" is the entire basis on which it is vendored, and a re-export or a nudged
-mesh would otherwise be indistinguishable from the vendor's own file for ever after.
+most: its description is the only hardware source in this workspace under no stated
+licence, so "verbatim" is the entire basis on which it is used, and a re-export or a
+nudged mesh would otherwise be indistinguishable from the vendor's own file for ever
+after. Paths are relative to `robots_specs/ainex/`.
 
 | File | git blob sha1 | |
 |---|---|---|
-| `ainex.urdf.xacro` | `e0c4b4301ac1d9d574e7ef73033cc41f5eca1863` | vendor |
-| `materials.xacro` | `3b656eaee4b1ec5d83f43f2ee315d1967bf94e0c` | vendor |
-| `transmissions.xacro` | `5908d61f28319985f771d9f6a42c3bc647edfe5f` | vendor |
-| `UPSTREAM_README.md` | `e3b7c153d22fd0fdf4e0979f8e8e1f8f0b372bc5` | vendor |
-| `ainex.urdf` | `240884730f10585af0e8c5e2da820c3604ba175e` | generated by `flatten_xacro.py` |
+| `ainex.urdf` | `240884730f10585af0e8c5e2da820c3604ba175e` | the flattened xacro |
 | `meshes/body_link.STL` | `fa6e14a0a993d80aa3ee397193ab9e3f4c14679d` | vendor |
 | `meshes/head_pan_link.STL` | `ade52d35166f5eb7306066b4cfac076931e83b13` | vendor |
 | `meshes/head_tilt_link.STL` | `4c5acb3bbae1f0f5e7b13a875f7ed784d5ff51ff` | vendor |
