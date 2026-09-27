@@ -893,6 +893,12 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
     both the thread-safe `/reset` handoff in `ros_surfaces/so101.py` and `launch_passive`
     require. Do not move any of them onto another.
     """
+    # Hand the GIL back to this thread quickly. Every camera encodes and serialises on a
+    # thread of its own, and at the default 5 ms switch interval this loop, returning from
+    # an `mj_step` that released the GIL, could wait that long to get it back: a
+    # so101,myagv,ainex kitchen measured 0.95-0.98 real time at 5 ms and 1.00 at 0.5 ms.
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(min(switch_interval, SIM_LOOP_SWITCH_INTERVAL_S))
     control_period = 1.0 / control_hz
     sync_period = 1.0 / sync_hz if sync_hz > 0 else None
     next_control = 0.0
@@ -963,6 +969,12 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
                 time.sleep(min(slack, control_period / 4))
     except KeyboardInterrupt:
         pass
+    finally:
+        sys.setswitchinterval(switch_interval)
+
+
+#: The GIL switch interval while `run_sim_loop` runs; see there.
+SIM_LOOP_SWITCH_INTERVAL_S = 0.0005
 
 
 # ------------------------------------------------------------------ the transform tree
