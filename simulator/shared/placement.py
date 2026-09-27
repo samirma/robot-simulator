@@ -212,6 +212,8 @@ def walkable(surface: SurfaceMap, start, goal, stop_short: float) -> bool:
 #: radius), and how close a walking robot's base has to get to one to act on it.
 TaskObjects = dict[str, tuple[np.ndarray, float]]
 WALK_STOP_SHORT = 0.12
+#: How far ahead a second worktop robot's heading is judged by the walk it leaves.
+WALK_LOOKAHEAD = 1.0
 
 
 def blocks_sightline(xy, radius: float, base_z: float, height: float, sightlines) -> bool:
@@ -236,8 +238,8 @@ def _beside(inst: Instance, surface: SurfaceMap, placed: list[Instance],
     worktop under its whole footprint with headroom over it, and a walk over the worktop
     to each staged object. Of those, one out of the rig cameras' lines of sight to the
     objects if there is one -- a robot standing there puts its back in the task's frame --
-    and then the one closest to the farther object. It faces the apple, which is what it
-    would be sent for.
+    and then the one closest to the farther object. It faces towards the apple, which is
+    what it would be sent for, along the longest walk the worktop leaves it.
     """
     r = inst.radius
     height = ROBOT_HEIGHT[inst.name]
@@ -273,7 +275,24 @@ def _beside(inst: Instance, surface: SurfaceMap, placed: list[Instance],
               "nowhere else on this worktop has room for it", file=sys.stderr)
     apple = objects.get("apple", next(iter(objects.values())))[0]
     to = np.asarray(apple) - best
-    return best, float(math.atan2(to[1], to[0]))
+    bearing = math.atan2(to[1], to[0])
+    # Facing the apple, give or take: of the headings within 90 deg of it, the one with the
+    # longest walk ahead over the worktop, so the first steps a client asks for do not take
+    # it straight off an edge or into the robot beside it.
+    blocked = others + [(oxy, orad) for oxy, orad in objects.values()]
+
+    def run(heading: float) -> float:
+        ahead = np.array([math.cos(heading), math.sin(heading)])
+        for d in np.arange(surface.step, WALK_LOOKAHEAD + 1e-9, surface.step):
+            point = best + d * ahead
+            if (not surface.underfoot([point]).all()
+                    or any(float(np.linalg.norm(point - xy)) < rad for xy, rad in blocked)):
+                return d
+        return WALK_LOOKAHEAD
+
+    headings = [bearing + math.radians(k) for k in range(-90, 91, 15)]
+    yaw = max(headings, key=lambda h: (round(run(h), 2), -abs(h - bearing)))
+    return best, float(math.atan2(math.sin(yaw), math.cos(yaw)))
 
 
 def stand_fleet(instances: list[Instance], *, task_robot: str | None,
