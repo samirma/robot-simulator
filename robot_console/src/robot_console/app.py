@@ -7,9 +7,9 @@ worse -- would keep the robot driving while the UI was wedged. With a single loo
 stall stops feeding the command stream and the robot halts, so a freeze degrades into a
 stop rather than a runaway.
 
-Stopping the robot on the way out is not best-effort here. The simulator has a 0.5 s
-watchdog, but the **real myAGV has none**: `myagv_odometry_node` stores the last Twist
-in a global and writes it to the motors at 100 Hz forever, so a console that exits
+Stopping the robot on the way out is not best-effort here. The **myAGV has no command
+watchdog**, real or simulated: `myagv_odometry_node` stores the last Twist in a global
+and writes it to the motors every cycle forever, so a console that exits
 without sending zeros leaves the AGV driving. Hence the signal handlers and the
 `finally`. The same holds harder for the AiNex, which is a state machine: nothing about
 falling silent means "stop walking" -- only the `stop` service call does.

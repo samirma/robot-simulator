@@ -86,12 +86,10 @@ TASKS = {
     "apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate"),
 }
 
-# Per-robot lidar defaults, since the YDLidar X2's mount is meaningless for a robot that
-# does not carry one. Overridden by any explicit --scan-* flag.
+# Per-robot lidar defaults for the robots whose surface takes them from here. Overridden
+# by any explicit --scan-* flag. The myAGV is not one: its X2's geometry and rate are its
+# contract's (`ros_surfaces/myagv.py`).
 SCAN_DEFAULTS = {
-    # Transcribed from ydlidar_ros_driver/launch/X2.launch and the
-    # base_footprint -> laser_frame transform in myagv_active.launch.
-    "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
     # INVENTED, not transcribed: the AiNex has no lidar at all (see robots/README.md).
     # Mid-torso on a 0.46 m robot, centred -- above the leg swing, low enough to see the
     # edges of furniture. The range is cut to the room scale a robot walking at 0.2 m/s
@@ -970,9 +968,11 @@ def _surface_kwargs(args, inst, model, task):
         }
 
     camera = _pick_camera(args, model, ns)
+    if inst.name == "myagv":
+        return _myagv_kwargs(args, inst, model, camera, ns)
     scan_cfg = None
     if not args.no_scan:
-        defaults = SCAN_DEFAULTS.get(inst.name, SCAN_DEFAULTS["myagv"])
+        defaults = SCAN_DEFAULTS[inst.name]
         offset = args.scan_offset or defaults["offset"]
         scan_cfg = {
             "beams": args.scan_beams,
@@ -1006,10 +1006,38 @@ def _surface_kwargs(args, inst, model, task):
     return {
         "view": inst.view, "model": model, "camera": camera,
         "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
-        "control_hz": args.control_hz, "watchdog_s": args.watchdog,
+        # The AiNex surface's signature still takes a watchdog; it does not use one.
+        "control_hz": args.control_hz, "watchdog_s": None,
         "scan": scan_cfg, "depth": depth_cfg,
         "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
         "extra": {"action_dir": args.action_dir},
+        "prefix": ns,
+    }
+
+
+def _myagv_kwargs(args, inst, model, camera, ns: str) -> dict:
+    """The myAGV's bag. Its rates, sizes and lidar geometry are its contract's
+    (`ros_surfaces/myagv.py`), so the only things chosen here are which MJCF camera and
+    which bodies are this robot's in this scene."""
+    if camera is None:
+        raise SystemExit("the myAGV's camera is part of its interface; --camera none "
+                         "cannot remove it")
+    if args.no_scan:
+        raise SystemExit("the myAGV's /scan is part of its interface; --no-scan cannot "
+                         "remove it")
+    return {
+        "view": inst.view, "model": model, "camera": camera,
+        "jpeg_quality": args.jpeg_quality,
+        "lidar": {
+            # Rays start at the robot's own root body and must not range it, or any other
+            # body of its own -- only this robot's: a neighbour is something to see.
+            "body": f"{ns}{inst.robot_cls.robot_model_root_name()}",
+            "exclude_bodies": frozenset(
+                i for i in range(model.nbody)
+                if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
+                and n.startswith(ns)
+            ),
+        },
         "prefix": ns,
     }
 
@@ -1154,7 +1182,10 @@ def main() -> int:
         help="interface the --ros-port server binds (default: all interfaces)",
     )
     ap.add_argument(
-        "--control-hz", type=float, default=20.0, dest="control_hz", help="control loop rate"
+        "--control-hz", type=float, default=20.0, dest="control_hz",
+        help="control rate for the members whose contract does not fix their own. The "
+             "myAGV's surface runs at its contract's rate whatever this says, and the loop "
+             "runs at the fastest member's",
     )
     ap.add_argument(
         "--camera",
@@ -1196,39 +1227,33 @@ def main() -> int:
         help="present each robot on its vendor ROS topics via rosbridge "
              "(default %(default)s; 0 serves nothing)",
     )
-    ap.add_argument(
-        "--watchdog", type=float, default=0.5,
-        help="stop the base if no cmd_vel arrives for this many seconds",
-    )
-    # The lidar defaults are the YDLidar X2's, from ydlidar_ros_driver/launch/X2.launch
-    # and the base_footprint -> laser_frame transform in myagv_active.launch.
+    # No --watchdog: the myAGV has no command watchdog on hardware. It holds its last
+    # /cmd_vel until a zero Twist arrives (robots_specs/myagv/ros.yml).
     ap.add_argument("--scan-beams", type=int, default=360, dest="scan_beams",
-                    help="rays in the simulated lidar's 360 deg sweep, published on /scan. "
-                         "The X2's 3 kHz sample rate at 10 Hz gives ~300; 360 is close and "
-                         "keeps one beam per degree")
-    # These three default per robot (SCAN_DEFAULTS): the X2's figures are the myAGV's
-    # hardware, and the AiNex has no lidar for them to describe.
+                    help="rays in the AiNex's simulated 360 deg sweep, published on /scan")
+    # The myAGV's lidar points, range, mount and rate are its contract's, so these are the
+    # AiNex's only (SCAN_DEFAULTS), which has no lidar on hardware for them to describe.
     ap.add_argument("--scan-range", type=float, default=None, dest="scan_range",
-                    metavar="M", help="lidar maximum range in metres (myagv/X2: 12.0)")
+                    metavar="M", help="AiNex lidar maximum range in metres")
     ap.add_argument("--scan-min-range", type=float, default=None, dest="scan_min_range",
-                    metavar="M", help="lidar minimum range in metres (myagv/X2: 0.1)")
+                    metavar="M", help="AiNex lidar minimum range in metres")
     ap.add_argument("--scan-offset", type=float, nargs=2, default=None,
                     dest="scan_offset", metavar=("X", "Z"),
-                    help="laser origin ahead of and above the base; defaults to the "
-                         "static transform in myagv_active.launch for the myAGV")
+                    help="AiNex laser origin ahead of and above the base")
     ap.add_argument("--scan-hz", type=float, default=10.0, dest="scan_hz",
-                    help="scan rate; the X2 spins at a fixed 10 Hz independent of the "
-                         "control rate")
+                    help="AiNex scan rate (the myAGV's is its contract's)")
     ap.add_argument("--no-scan", action="store_true", dest="no_scan",
-                    help="do not publish /scan")
+                    help="do not publish the AiNex's /scan (the myAGV's is part of its "
+                         "interface and cannot be removed)")
     ap.add_argument("--action-dir", default=None, dest="action_dir", metavar="DIR",
                     help="AiNex only: directory of action groups for /app/set_action. "
                          "Reads Hiwonder's .d6a format, so this can point straight at a "
                          "real robot's ActionGroups directory; defaults to the small "
                          "in-tree set in shared/ros_surfaces/ainex/action_groups")
     ap.add_argument("--depth-hz", type=float, default=5.0, dest="depth_hz",
-                    help="rate for the depth image; 640x480 float over a websocket is "
-                         "1.2 MB a frame, so this is deliberately slower than the control rate")
+                    help="AiNex depth image rate; 640x480 float over a websocket is "
+                         "1.2 MB a frame, so this is deliberately slower than the control "
+                         "rate. The myAGV has no depth camera")
     ap.add_argument("--depth-size", type=int, nargs=2, default=[320, 240], dest="depth_size",
                     metavar=("W", "H"))
     ap.add_argument("--depth-range", type=float, default=8.0, dest="depth_range",
@@ -1236,7 +1261,8 @@ def main() -> int:
                                       "Its own flag, not the lidar's: the two sensors have "
                                       "nothing to do with each other")
     ap.add_argument("--camera-hz", type=float, default=0.0, dest="camera_hz",
-                    help="cap the colour camera's frame rate, independent of --control-hz. "
+                    help="cap the AiNex colour camera's frame rate, independent of "
+                         "--control-hz (the myAGV's is its contract's). "
                          "0 (default) renders one frame per control tick, which is what "
                          "this has always done. The render is the dominant cost of a "
                          "second camera-bearing robot in the same physics loop -- measured "
@@ -1652,7 +1678,8 @@ def main() -> int:
         # could drive it. See shared/contracts/namespace.py.
         from ros_surfaces import RobotFleet
 
-        fleet = RobotFleet(port=args.ros_port, host=args.control_host)
+        fleet = RobotFleet(port=args.ros_port, host=args.control_host,
+                           default_hz=args.control_hz)
         for inst in instances:
             module_name, func_name = ROS_SURFACES[inst.name]
             attach_ros = getattr(importlib.import_module(module_name), func_name)
@@ -1675,8 +1702,8 @@ def main() -> int:
     else:
         controller = None
 
-    control_period = 1.0 / args.control_hz
-    next_control = 0.0
+    # The fleet steps each member at its own rate, so the loop runs at the fastest one.
+    loop_hz = (controller.rate_hz if controller is not None else None) or args.control_hz
 
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
@@ -1687,7 +1714,7 @@ def main() -> int:
             # No window: what an automated console-connectivity check and a displayless
             # host run. Same loop as the viewer path, which is the point -- the ROS
             # server behaves identically either way.
-            run_sim_loop(model, data, controller, control_hz=args.control_hz,
+            run_sim_loop(model, data, controller, control_hz=loop_hz,
                          deadline=deadline, label="headless loop")
         else:
             # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
@@ -1699,7 +1726,7 @@ def main() -> int:
                 viewer.cam.distance = distance
                 viewer.cam.azimuth = azimuth
                 viewer.cam.elevation = args.elevation
-                run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                run_sim_loop(model, data, controller, control_hz=loop_hz,
                              deadline=deadline, viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:

@@ -781,15 +781,28 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
             now = time.monotonic()
             if controller is not None and now >= next_control:
                 controller(data)
-                next_control = now + control_period
+                # Drift-free: the next tick is one period after this one was *due*, not
+                # after it ran, so the long-run rate is `control_hz` rather than a little
+                # under it. A tick or two late is made up on the next passes; a loop
+                # further behind than that re-anchors instead of bursting.
+                next_control += control_period
+                if next_control < now - 2 * control_period:
+                    next_control = now + control_period
 
             target_time = sim_start + (time.monotonic() - wall_start)
             steps = 0
             while data.time < target_time and steps < max_catchup:
                 mujoco.mj_step(model, data)
                 steps += 1
+                # The controller keeps its cadence through a catch-up: a pass that
+                # stepped physics until caught up after a slow tick (a camera frame)
+                # would otherwise push the next tick back by the whole catch-up, and a
+                # fast member's rate would fall with every frame rendered. Physics
+                # resumes catching up on the next pass.
+                if controller is not None and time.monotonic() >= next_control:
+                    break
 
-            if steps >= max_catchup:
+            if steps >= max_catchup or target_time - data.time > 0.25:
                 # Fell more than the cap behind: rebase rather than chase forever.
                 if behind_since is None:
                     behind_since = now

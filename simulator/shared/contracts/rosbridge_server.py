@@ -57,16 +57,12 @@ log = logging.getLogger("rosbridge")
 
 DEFAULT_PORT = 9090
 
-# The topics the myAGV presents, so both ends agree on names and types.
+# A few of the myAGV's names, kept for the standalone echo server below. The myAGV's
+# whole interface is `ros_surfaces/myagv.py`.
 TOPIC_CMD_VEL = "/cmd_vel"
 TOPIC_ODOM = "/odom"
 TOPIC_CAMERA = "/camera/image_raw/compressed"
-# The 2023 Pi AGV ships a YDLidar publishing /scan (robots_specs/myagv/ros.yml), so a
-# simulated one belongs on the same topic:
-# anything consuming it works against either robot unchanged.
 TOPIC_SCAN = "/scan"
-TOPIC_DEPTH = "/camera/depth/image_raw"
-TOPIC_CAMERA_INFO = "/camera/rgb/camera_info"
 
 TYPE_TWIST = "geometry_msgs/Twist"
 TYPE_ODOM = "nav_msgs/Odometry"
@@ -782,6 +778,13 @@ class RosBridgeServer:
     def next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    def has_subscribers(self, topic: str) -> bool:
+        """Whether any client is subscribed to `topic` -- for a publisher that, like
+        `image_transport`'s, only encodes while someone is listening."""
+        topic = normalise(topic)
+        with self._lock:
+            return any(topic in c.subs for c in self._clients.values())
 
     # -- publishing --------------------------------------------------------------
 
@@ -1751,6 +1754,10 @@ class NamespacedBus:
     def next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    def has_subscribers(self, topic: str) -> bool:
+        """Whether any client is subscribed to this robot's `topic`."""
+        return self.server.has_subscribers(self.ns.topic(topic))
 
     @property
     def client_count(self) -> int:

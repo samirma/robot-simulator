@@ -32,9 +32,11 @@ AiNex (Hiwonder) -- `UruBots/ainex-robot-code`, a real AiNex deployment, at
     HeadState.msg, WalkingParam.msg, AppWalkingParam.msg, SetWalkingCommand.srv,
     GetWalkingParam.srv, GetWalkingState.srv, SetBusServosPosition.msg,
     BusServoPosition.msg, GetBusServosPosition.srv
-myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros`, branch `myagv_ros_2023Pi`: uses
-    the standard messages only (Twist, Odometry, CompressedImage, LaserScan, Image,
-    CameraInfo); no vendor package.
+myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros` at c71f3cc5 (branch
+    `myagv_ros_2023Pi`): standard messages, plus the vendored `robot_pose_ekf`'s
+    `srv/GetStatus.srv`. Its standard types not used by another member (std_msgs/Float32,
+    geometry_msgs/Point32, sensor_msgs/ChannelFloat32, sensor_msgs/PointCloud,
+    sensor_msgs/SetCameraInfo) are in the `# --- myAGV` block.
 SO-101 (ros2_control bringup) -- standard ROS 2 messages, plus
     `ros-controls/mujoco_ros2_control` at `mujoco_ros2_control_msgs/msg/`:
     FreeJointStateArray.msg, FreeJointState.msg (the plugin the reference rig runs).
@@ -251,7 +253,34 @@ _SO101: dict[str, list[Field]] = {
     ),
 }
 
-MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101}
+# --- myAGV: its standard types no other member uses, and robot_pose_ekf's service ------
+
+_MYAGV: dict[str, list[Field]] = {
+    "std_msgs/Float32": _h(("data", "float32", SCALAR)),
+    "geometry_msgs/Point32": _h(
+        ("x", "float32", SCALAR), ("y", "float32", SCALAR), ("z", "float32", SCALAR),
+    ),
+    "sensor_msgs/ChannelFloat32": _h(
+        ("name", "string", SCALAR), ("values", "float32", VARIABLE),
+    ),
+    "sensor_msgs/PointCloud": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("points", "geometry_msgs/Point32", VARIABLE),
+        ("channels", "sensor_msgs/ChannelFloat32", VARIABLE),
+    ),
+}
+
+_MYAGV_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    "robot_pose_ekf/GetStatus": ([], _h(("status", "string", SCALAR))),
+    "sensor_msgs/SetCameraInfo": (
+        _h(("camera_info", "sensor_msgs/CameraInfo", SCALAR)),
+        _h(("success", "bool", SCALAR), ("status_message", "string", SCALAR)),
+    ),
+}
+
+# --- end myAGV ---------------------------------------------------------------------------
+
+MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101, **_MYAGV}
 
 #: Services: canonical name -> (request fields, response fields). `rosapi` names the two
 #: halves `<Srv>Request` and `<Srv>Response`, and that is how `typedefs()` labels them.
@@ -273,6 +302,7 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
         _h(("success", "bool", SCALAR),
            ("position", "ros_robot_controller/BusServoPosition", VARIABLE)),
     ),
+    **_MYAGV_SERVICES,
 }
 
 

@@ -12,6 +12,7 @@ from robot_console.slam.scan import (
     DEFAULT_RANGE_MAX,
     DEFAULT_RANGE_MIN,
     LASER_OFFSET_X,
+    LASER_YAW,
     LaserScan,
     nearest_obstacle,
     parse_scan,
@@ -121,6 +122,18 @@ def test_a_scan_from_a_known_spot_reconstructs_the_room():
 
     pose = (1.5, 2.0, 0.6)
     world = transform_points(scan_points(raycast(*pose), offset=(0.0, 0.0)), pose)
+    assert wall_distance(world).max() < 1e-6
+
+
+def test_a_wire_scan_is_read_in_the_half_turned_laser_frame():
+    """`/scan` is in `laser_frame`, which the launch turns a half-turn about z; read as if
+    it were the base frame, every wall would land mirrored through the robot."""
+    from synthetic import wall_distance
+
+    assert LASER_YAW == math.pi, "must match myagv_active.launch's static transform"
+    pose = (1.5, 2.0, 0.6)
+    scan = parse_scan(scan_message(*pose))
+    world = transform_points(scan_points(scan, offset=(0.0, 0.0)), pose)
     assert wall_distance(world).max() < 1e-6
 
 

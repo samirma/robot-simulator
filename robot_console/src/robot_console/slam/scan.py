@@ -14,13 +14,14 @@ from typing import Mapping, Optional, Sequence
 import numpy as np
 
 # base_footprint -> laser_frame, from the static_transform_publisher in
-# myagv_odometry/launch/myagv_active.launch on the myagv_ros_2023Pi branch:
+# myagv_odometry/launch/myagv_active.launch (robots_specs/myagv/ros.yml):
 #   args="0.065 0.0 0.08 3.14159265 0.0 0.0 /base_footprint /laser_frame"
-# Only x matters in 2D. The roll of pi is the mounting flip and is already cancelled by
-# the driver's `inverted: true` (see simulator/robots/README.md), so bearings need no
-# further sign change -- the scan is counter-clockwise in the base frame either way.
+# tf's argument order is `x y z yaw pitch roll`, so laser_frame is the base turned a
+# half-turn about z: a scan's bearing b points along b + pi in the base frame, and the
+# beam at +/-pi is straight ahead.
 LASER_OFFSET_X = 0.065
 LASER_OFFSET_Y = 0.0
+LASER_YAW = math.pi
 
 # ydlidar_ros_driver/launch/X2.launch, used only when a message omits them.
 DEFAULT_RANGE_MIN = 0.1
@@ -38,6 +39,9 @@ class LaserScan:
     range_max: float = DEFAULT_RANGE_MAX
     stamp: float = 0.0
     frame_id: str = ""
+    #: The scan frame's yaw from the base. A scan read off the wire is in `laser_frame`
+    #: (`LASER_YAW`, set by `parse_scan`); one built in the base frame leaves it at 0.
+    mount_yaw: float = 0.0
 
     @property
     def count(self) -> int:
@@ -45,17 +49,22 @@ class LaserScan:
 
     @property
     def angles(self) -> np.ndarray:
-        """Bearing of every beam in the laser frame, valid or not."""
+        """Bearing of every beam in the scan's own frame, valid or not."""
         return self.angle_min + np.arange(self.ranges.size, dtype=np.float64) * self.angle_increment
+
+    @property
+    def base_angles(self) -> np.ndarray:
+        """Bearing of every beam in the base frame."""
+        return self.angles + self.mount_yaw
 
     @property
     def valid(self) -> np.ndarray:
         """Boolean mask of beams that actually returned something.
 
         One test covers every "no return" convention in play: the X2 driver runs with
-        `invalid_range_is_inf: false` and reports **0.0**, a stock driver reports **inf**,
-        and the simulator sends **range_max + 1** because JSON has no infinity. All three
-        fall outside [range_min, range_max], and so does NaN.
+        `invalid_range_is_inf: false` and reports **0.0** (and so does the simulator), a
+        stock driver reports **inf**, and a JSON sender without infinity may use
+        **range_max + 1**. All fall outside [range_min, range_max], and so does NaN.
         """
         with np.errstate(invalid="ignore"):
             return (
@@ -107,6 +116,8 @@ def parse_scan(msg: Mapping) -> LaserScan:
         range_max=_f(msg, "range_max", default=DEFAULT_RANGE_MAX),
         stamp=_f(header, "stamp", "secs") + _f(header, "stamp", "nsecs") * 1e-9,
         frame_id=str(header.get("frame_id", "")) if isinstance(header, Mapping) else "",
+        # The myAGV's /scan is in laser_frame, the half-turned mount.
+        mount_yaw=LASER_YAW,
     )
 
 
@@ -134,7 +145,7 @@ def scan_points(
     if not mask.any():
         return np.empty((0, 2), dtype=np.float64)
     r = scan.ranges[mask]
-    a = scan.angles[mask]
+    a = scan.base_angles[mask]
     return np.column_stack((r * np.cos(a) + offset[0], r * np.sin(a) + offset[1]))
 
 
@@ -161,7 +172,7 @@ def nearest_obstacle(
     """
     if scan.count == 0:
         return math.inf
-    delta = scan.angles - bearing
+    delta = scan.base_angles - bearing
     mask = scan.valid & (np.abs(np.arctan2(np.sin(delta), np.cos(delta))) <= half_angle)
     if not mask.any():
         return math.inf

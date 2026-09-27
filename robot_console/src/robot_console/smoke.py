@@ -41,6 +41,10 @@ MIN_FORWARD = 0.10
 MIN_LATERAL = 0.06
 MIN_YAW = 0.30
 
+# The no-watchdog check: one command, then this long without another.
+HOLD_SPEED = 0.10
+HOLD_SECONDS = 1.0
+
 
 class Check:
     def __init__(self, name: str) -> None:
@@ -229,30 +233,31 @@ def execute(host: str, port: int, *, require_camera: bool, quiet: bool = False,
         detail = f"{dyaw:+.3f} rad"
         runner.record(Check("rotate").passed(detail) if dyaw > MIN_YAW else Check("rotate").failed(detail))
 
-        # ------------------------------------------------------------ watchdog
-        # The simulator stops the base 0.5 s after commands stop. A real myAGV does
-        # NOT: myagv_odometry_node keeps writing the last Twist to the motors forever,
-        # so on hardware this check is expected to fail and the console's zero-on-exit
-        # is the only thing that stops the robot.
-        watchdog = Check("watchdog")
-        link.publish_cmd_vel(Command(vx=DRIVE_SPEED))
-        time.sleep(1.5)
+        # ------------------------------------------------------------ no watchdog
+        # A myAGV has no command watchdog: myagv_odometry_node keeps executing the last
+        # Twist until a zero one arrives (robots_specs/myagv/ros.yml). So one command
+        # followed by silence must keep the base moving, and the console's own explicit
+        # stop is the only thing that ends it. Kept short: the base is driving blind.
+        holds = Check("holds command")
+        link.publish_cmd_vel(Command(vx=HOLD_SPEED))
+        time.sleep(HOLD_SECONDS)
         moving = runner.pose()
-        detail = f"velocity {moving.vx:.3f} after 1.5 s of silence"
-        if abs(moving.vx) < 1e-6:
-            runner.record(watchdog.passed(detail))
-        elif latest.received == 0:
-            runner.record(watchdog.skip(detail + "; no camera, so likely the standalone --echo server"))
+        detail = f"velocity {moving.vx:.3f} after {HOLD_SECONDS:.1f} s of silence"
+        if abs(moving.vx - HOLD_SPEED) < 1e-3:
+            runner.record(holds.passed(detail))
         else:
-            runner.record(watchdog.failed(detail + "; expected the 0.5 s bridge watchdog to zero it"))
-        runner.settle(0.5)
+            runner.record(holds.failed(detail + f"; expected the last command, {HOLD_SPEED}, "
+                                                "to be held with no timeout"))
 
+        # The explicit stop: one zero Twist, then silence. Nothing else stops the base.
+        link.publish_cmd_vel(Command())
+        time.sleep(0.5)
         zero = runner.pose()
-        detail = f"velocity {zero.vx:.3f}, {zero.wz:.3f}"
+        detail = f"velocity {zero.vx:.3f}, {zero.vy:.3f}, {zero.wz:.3f}"
         runner.record(
-            Check("zero on quit").passed(detail)
-            if abs(zero.vx) < 1e-6 and abs(zero.wz) < 1e-6
-            else Check("zero on quit").failed(detail)
+            Check("explicit stop").passed(detail)
+            if abs(zero.vx) < 1e-6 and abs(zero.vy) < 1e-6 and abs(zero.wz) < 1e-6
+            else Check("explicit stop").failed(detail)
         )
     finally:
         link.close(hard_exit_after=None)

@@ -1,226 +1,811 @@
-"""The myAGV's ROS contract: `cmd_vel` in, `odom` out.
+"""The myAGV's ROS interface: `robots_specs/myagv/ros.yml`, transcribed.
 
-This is what `elephantrobotics/myagv_ros` presents, so one client drives either the
-simulated or the real myAGV without changing a line:
+A ROS 1 (Noetic) graph: the boot launch `myagv_odometry/launch/myagv_active.launch` plus
+the `usb_cam` node run beside it as `camera`. Every name, type, node, frame and periodic
+rate below is that file's; nothing is added and nothing is left out.
 
-    console -> robot   /cmd_vel                        geometry_msgs/Twist
-    robot -> console   /odom                           nav_msgs/Odometry
-    robot -> console   /camera/image_raw/compressed    sensor_msgs/CompressedImage
-    robot -> console   /scan                           sensor_msgs/LaserScan
-    robot -> console   /tf, /tf_static                 tf2_msgs/TFMessage
+    topic                              type                        dir  node                     Hz
+    /cmd_vel                           geometry_msgs/Twist         in   myagv_odometry_node      event
+    /odom                              nav_msgs/Odometry           out  myagv_odometry_node      100
+    /imu                               sensor_msgs/Imu             out  myagv_odometry_node      100
+    /Voltage                           std_msgs/Float32            out  myagv_odometry_node      100
+    /voltage_backup                    std_msgs/Float32            out  myagv_odometry_node      100
+    /joint_states                      sensor_msgs/JointState      out  joint_state_publisher    10
+    /tf                                tf2_msgs/TFMessage          out  robot_state_publisher    10
+    /tf_static                         tf2_msgs/TFMessage          out  robot_state_publisher    latched
+    /tf                                tf2_msgs/TFMessage          out  base2camera_link         20
+    /tf                                tf2_msgs/TFMessage          out  base2imu_link            20
+    /tf                                tf2_msgs/TFMessage          out  base2laser_link          100
+    /robot_pose_ekf/odom_combined      nav_msgs/Odometry           out  robot_pose_ekf           30
+    /tf                                tf2_msgs/TFMessage          out  robot_pose_ekf           30
+    /scan                              sensor_msgs/LaserScan       out  ydlidar_lidar_publisher  30
+    /point_cloud                       sensor_msgs/PointCloud      out  ydlidar_lidar_publisher  30
+    /camera/image_raw                  sensor_msgs/Image           out  camera                   30
+    /camera/camera_info                sensor_msgs/CameraInfo      out  camera                   30
+    /camera/image_raw/compressed       sensor_msgs/CompressedImage out  camera                   30
 
-Those names are the *bare* contract, and they stay bare here because they are the record
-of what the vendor stack actually publishes. When several robots share one graph each one
-gets a namespace and these become `/myagv/cmd_vel` and friends -- applied by the
-`NamespacedBus` this surface is handed, never spelled out at a call site. See
-`contracts/namespace.py`.
+    service                            type                        node
+    /stop_scan, /start_scan            std_srvs/Empty              ydlidar_lidar_publisher
+    /robot_pose_ekf/get_status         robot_pose_ekf/GetStatus    robot_pose_ekf
+    /camera/start_capture              std_srvs/Empty              camera
+    /camera/stop_capture               std_srvs/Empty              camera
+    /camera/set_camera_info            sensor_msgs/SetCameraInfo   camera
 
-It lives in `shared/` rather than beside one engine's robot adapter because the topic
-set *is* part of the robot definition, and every engine has to present the same one.
-Two copies of this loop would be two chances for the engines to drift far enough apart
-that a console could tell them apart -- which is the one thing the split forbids.
+    frames   odom -> base_footprint (robot_pose_ekf), base_footprint -> base_up
+             (robot_state_publisher), base_footprint -> camera_link / imu_link / laser_frame
+             (the three static_transform_publishers, at the launch's offsets and periods)
 
-What it needs from an engine is small on purpose: a `base` object exposing a 4x4 `pose`
-and a writable `ctrl` triple, which `mujoco_bridge.PlanarJointBase` builds from a raw
-MuJoCo model, and MolmoSpaces' `HoloJointsRobotBaseGroup` already satisfies.
+Parameters are `PARAMETERS` below, plus `/robot_description` (the vendor URDF).
 
-Nothing here is myAGV-specific beyond the topic names and the lidar mount: any holonomic
-base with a camera is the whole of what this contract assumes, so a second one would
-reuse this surface rather than grow its own.
+Behaviour, as the vendor's nodes behave:
+
+* `/cmd_vel` clamps `linear.x`, `linear.y` and `angular.z` to [-1, 1] and the last
+  command is held and executed every cycle, with **no timeout**. A client stops the base
+  by publishing a zero Twist (`STOP_COMMAND`); nothing here stops it for them.
+* `/odom` is `odom -> base_footprint` and broadcasts no transform; `robot_pose_ekf` owns
+  `odom -> base_footprint` on `/tf` and publishes the fused pose on `odom_combined`.
+* `/scan` is in `laser_frame`, which the launch turns a half-turn about z from
+  `base_footprint`: the beam at 180 deg in the scan points along the base's +x. Ranges
+  follow X2.launch: -180..180 deg, 0.1..12.0 m, invalid returns as 0.0, the
+  `ignore_array` wedge -50..50 deg reported as 0.0, and `sample_rate` over the scan rate
+  points per sweep (`SCAN_BEAMS`). `/stop_scan` stops `/scan` and
+  `/point_cloud` until `/start_scan`.
+* The camera publishes `camera_link` frames at 640x480, 30 Hz; `camera_info` is
+  uncalibrated (all-zero intrinsics) until `/camera/set_camera_info` stores one.
+  `/camera/stop_capture` stops all three camera topics until `/camera/start_capture`.
+  The compressed stream encodes only while subscribed.
+
+Names stay bare here; a `NamespacedBus` composes them with the robot's namespace where
+they reach the wire (`contracts/namespace.py`).
+
+This module is stdlib-only at import time -- numpy, MuJoCo and OpenCV are imported inside
+the functions that need them -- so a contract test can load it by path.
 """
 
 from __future__ import annotations
 
+import base64
+import math
 import sys
 import time
 
-import numpy as np
+# ------------------------------------------------------------------------------ nodes
 
-#: The vendor description, `myagv_urdf/urdf/myAGV.urdf`, served as `robot_description`,
-#: is `robots_specs/myagv/myAGV.urdf` (`robots_spec.urdf_path("myagv")`).
+NODE_ODOMETRY = "myagv_odometry_node"
+NODE_ROBOT_STATE_PUBLISHER = "robot_state_publisher"
+NODE_JOINT_STATE_PUBLISHER = "joint_state_publisher"
+NODE_BASE2CAMERA = "base2camera_link"
+NODE_BASE2IMU = "base2imu_link"
+NODE_BASE2LASER = "base2laser_link"
+NODE_EKF = "robot_pose_ekf"
+NODE_LIDAR = "ydlidar_lidar_publisher"
+NODE_CAMERA = "camera"
 
-#: This robot's root body in a compiled model, and the frame the contract calls it. The
-#: MJCF says `base` and the description says `base_footprint`; the description wins on the
-#: wire, which is also what `/odom`'s `child_frame_id` has always said.
-TF_ROOT_BODY = "base"
-TF_FRAMES = {TF_ROOT_BODY: "base_footprint"}
-#: The one camera a myAGV carries, under the frame its images are already stamped with.
-TF_CAMERAS = {"front_camera": "camera"}
+# ------------------------------------------------------------------------------ topics
+
+TOPIC_CMD_VEL = "/cmd_vel"
+TOPIC_ODOM = "/odom"
+TOPIC_IMU = "/imu"
+TOPIC_VOLTAGE = "/Voltage"
+TOPIC_VOLTAGE_BACKUP = "/voltage_backup"
+TOPIC_JOINT_STATES = "/joint_states"
+TOPIC_TF = "/tf"
+TOPIC_TF_STATIC = "/tf_static"
+TOPIC_ODOM_COMBINED = "/robot_pose_ekf/odom_combined"
+TOPIC_SCAN = "/scan"
+TOPIC_POINT_CLOUD = "/point_cloud"
+TOPIC_IMAGE_RAW = "/camera/image_raw"
+TOPIC_CAMERA_INFO = "/camera/camera_info"
+TOPIC_CAMERA = "/camera/image_raw/compressed"
+
+TYPE_TWIST = "geometry_msgs/Twist"
+TYPE_ODOM = "nav_msgs/Odometry"
+TYPE_IMU = "sensor_msgs/Imu"
+TYPE_FLOAT32 = "std_msgs/Float32"
+TYPE_JOINT_STATE = "sensor_msgs/JointState"
+TYPE_TF_MESSAGE = "tf2_msgs/TFMessage"
+TYPE_LASER_SCAN = "sensor_msgs/LaserScan"
+TYPE_POINT_CLOUD = "sensor_msgs/PointCloud"
+TYPE_IMAGE = "sensor_msgs/Image"
+TYPE_CAMERA_INFO = "sensor_msgs/CameraInfo"
+TYPE_COMPRESSED_IMAGE = "sensor_msgs/CompressedImage"
+
+#: A rate that is not periodic.
+EVENT = "event"
+LATCHED = "latched"
+
+#: Every topic, as `(name, type, direction, node, rate_hz)`. `/tf` has one row per
+#: publishing node, each with that node's own rate.
+TOPICS: tuple[tuple[str, str, str, str, float | str], ...] = (
+    (TOPIC_CMD_VEL, TYPE_TWIST, "in", NODE_ODOMETRY, EVENT),
+    (TOPIC_ODOM, TYPE_ODOM, "out", NODE_ODOMETRY, 100.0),
+    (TOPIC_IMU, TYPE_IMU, "out", NODE_ODOMETRY, 100.0),
+    (TOPIC_VOLTAGE, TYPE_FLOAT32, "out", NODE_ODOMETRY, 100.0),
+    (TOPIC_VOLTAGE_BACKUP, TYPE_FLOAT32, "out", NODE_ODOMETRY, 100.0),
+    (TOPIC_JOINT_STATES, TYPE_JOINT_STATE, "out", NODE_JOINT_STATE_PUBLISHER, 10.0),
+    (TOPIC_TF, TYPE_TF_MESSAGE, "out", NODE_ROBOT_STATE_PUBLISHER, 10.0),
+    (TOPIC_TF_STATIC, TYPE_TF_MESSAGE, "out", NODE_ROBOT_STATE_PUBLISHER, LATCHED),
+    (TOPIC_TF, TYPE_TF_MESSAGE, "out", NODE_BASE2CAMERA, 20.0),
+    (TOPIC_TF, TYPE_TF_MESSAGE, "out", NODE_BASE2IMU, 20.0),
+    (TOPIC_TF, TYPE_TF_MESSAGE, "out", NODE_BASE2LASER, 100.0),
+    (TOPIC_ODOM_COMBINED, TYPE_ODOM, "out", NODE_EKF, 30.0),
+    (TOPIC_TF, TYPE_TF_MESSAGE, "out", NODE_EKF, 30.0),
+    (TOPIC_SCAN, TYPE_LASER_SCAN, "out", NODE_LIDAR, 30.0),
+    (TOPIC_POINT_CLOUD, TYPE_POINT_CLOUD, "out", NODE_LIDAR, 30.0),
+    (TOPIC_IMAGE_RAW, TYPE_IMAGE, "out", NODE_CAMERA, 30.0),
+    (TOPIC_CAMERA_INFO, TYPE_CAMERA_INFO, "out", NODE_CAMERA, 30.0),
+    (TOPIC_CAMERA, TYPE_COMPRESSED_IMAGE, "out", NODE_CAMERA, 30.0),
+)
 
 
-def attach_ros(bus, base, model, camera: str | None, camera_size, jpeg_quality: int,
-               control_hz: float, watchdog_s: float, scan: dict | None = None,
-               depth: dict | None = None, scene_option=None, camera_period: float = 0.0,
-               world_reset=None, prefix: str = ""):
-    """Wire this robot onto an already-built bus and return a per-step callback.
+def rate_of(topic: str, node: str) -> float | str:
+    """The declared rate of `topic` as `node` publishes it."""
+    for name, _type, _dir, owner, rate in TOPICS:
+        if name == topic and owner == node:
+            return rate
+    raise KeyError(f"{topic} is not published by {node} on the myAGV")
 
-    The base integrates the commanded `cmd_vel` here rather than in the client: that is
-    what `cmd_vel` means, and it keeps the client identical for real hardware.
 
-    Call the returned function with a `mujoco.MjData` each control period, and with
-    `None` to close this robot's streams. It does **not** stop the server -- the fleet
-    that owns the port does that, once, after every member has closed.
+# ---------------------------------------------------------------------------- services
+
+SERVICE_STOP_SCAN = "/stop_scan"
+SERVICE_START_SCAN = "/start_scan"
+SERVICE_EKF_STATUS = "/robot_pose_ekf/get_status"
+SERVICE_START_CAPTURE = "/camera/start_capture"
+SERVICE_STOP_CAPTURE = "/camera/stop_capture"
+SERVICE_SET_CAMERA_INFO = "/camera/set_camera_info"
+
+SRV_EMPTY = "std_srvs/Empty"
+SRV_GET_STATUS = "robot_pose_ekf/GetStatus"
+SRV_SET_CAMERA_INFO = "sensor_msgs/SetCameraInfo"
+
+#: Every service, as `(name, type, node)`.
+SERVICES: tuple[tuple[str, str, str], ...] = (
+    (SERVICE_STOP_SCAN, SRV_EMPTY, NODE_LIDAR),
+    (SERVICE_START_SCAN, SRV_EMPTY, NODE_LIDAR),
+    (SERVICE_EKF_STATUS, SRV_GET_STATUS, NODE_EKF),
+    (SERVICE_START_CAPTURE, SRV_EMPTY, NODE_CAMERA),
+    (SERVICE_STOP_CAPTURE, SRV_EMPTY, NODE_CAMERA),
+    (SERVICE_SET_CAMERA_INFO, SRV_SET_CAMERA_INFO, NODE_CAMERA),
+)
+
+# -------------------------------------------------------------------------- parameters
+
+#: The vendor description, `myagv_urdf/urdf/myAGV.urdf`, is
+#: `robots_specs/myagv/myAGV.urdf` (`robots_spec.urdf_path("myagv")`).
+PARAM_ROBOT_DESCRIPTION = "/robot_description"
+
+#: Every other parameter, with the value the launch sets.
+PARAMETERS: dict[str, object] = {
+    "/robot_pose_ekf/output_frame": "odom",
+    "/robot_pose_ekf/base_footprint_frame": "base_footprint",
+    "/robot_pose_ekf/freq": 30.0,
+    "/robot_pose_ekf/sensor_timeout": 2.0,
+    "/robot_pose_ekf/odom_used": True,
+    "/robot_pose_ekf/odom_data": "odom",
+    "/robot_pose_ekf/imu_used": True,
+    "/robot_pose_ekf/vo_used": False,
+    "/ydlidar_lidar_publisher/port": "/dev/ttyAMA0",
+    "/ydlidar_lidar_publisher/frame_id": "laser_frame",
+    "/ydlidar_lidar_publisher/ignore_array": "-50,50",
+    "/ydlidar_lidar_publisher/baudrate": 115200,
+    "/ydlidar_lidar_publisher/lidar_type": 1,
+    "/ydlidar_lidar_publisher/device_type": 0,
+    "/ydlidar_lidar_publisher/sample_rate": "3",
+    "/ydlidar_lidar_publisher/abnormal_check_count": 4,
+    "/ydlidar_lidar_publisher/resolution_fixed": True,
+    "/ydlidar_lidar_publisher/auto_reconnect": True,
+    "/ydlidar_lidar_publisher/reversion": False,
+    "/ydlidar_lidar_publisher/inverted": True,
+    "/ydlidar_lidar_publisher/isSingleChannel": True,
+    "/ydlidar_lidar_publisher/intensity": False,
+    "/ydlidar_lidar_publisher/support_motor_dtr": True,
+    "/ydlidar_lidar_publisher/invalid_range_is_inf": False,
+    "/ydlidar_lidar_publisher/point_cloud_preservative": False,
+    "/ydlidar_lidar_publisher/angle_min": -180.0,
+    "/ydlidar_lidar_publisher/angle_max": 180.0,
+    "/ydlidar_lidar_publisher/range_min": 0.1,
+    "/ydlidar_lidar_publisher/range_max": 12.0,
+    "/ydlidar_lidar_publisher/frequency": 10.0,
+    "/camera/camera_frame_id": "camera_link",
+}
+
+# ------------------------------------------------------------------------------ frames
+
+FRAME_ODOM = "odom"
+FRAME_BASE = "base_footprint"
+FRAME_BASE_UP = "base_up"
+FRAME_CAMERA = "camera_link"
+FRAME_IMU = "imu_link"
+FRAME_LASER = "laser_frame"
+
+#: The URDF's one movable joint, `base_up` (continuous), held at its default by
+#: `joint_state_publisher`.
+JOINT_BASE_UP = "base_up"
+
+#: The three `static_transform_publisher`s: node -> (parent, child, xyz, (yaw, pitch,
+#: roll)), each re-published on `/tf` at its node's rate.
+STATIC_TRANSFORMS: dict[str, tuple[str, str, tuple[float, float, float],
+                                   tuple[float, float, float]]] = {
+    NODE_BASE2CAMERA: (FRAME_BASE, FRAME_CAMERA, (0.13, 0.0, 0.131), (0.0, 0.0, 0.0)),
+    NODE_BASE2IMU: (FRAME_BASE, FRAME_IMU, (0.0, 0.0, 0.0), (0.0, math.pi, math.pi)),
+    NODE_BASE2LASER: (FRAME_BASE, FRAME_LASER, (0.065, 0.0, 0.08), (math.pi, 0.0, 0.0)),
+}
+
+# ------------------------------------------------------------------------- behaviour
+
+#: `/cmd_vel` components are each clamped to [-limit, limit].
+CMD_VEL_LIMIT = 1.0
+#: The stop command: a zero Twist on `/cmd_vel`. There is no timeout.
+STOP_COMMAND = {"linear": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}
+
+#: How often this surface is stepped: the fastest periodic topic it presents.
+LOOP_HZ = max(r for *_, r in TOPICS if isinstance(r, float))
+
+#: X2.launch's scan geometry.
+SCAN_ANGLE_MIN = -math.pi
+SCAN_ANGLE_MAX = math.pi
+SCAN_RANGE_MIN = 0.1
+SCAN_RANGE_MAX = 12.0
+#: `ignore_array`: bearings in `laser_frame`, degrees, reported as 0.0.
+SCAN_IGNORE_DEG = ((-50.0, 50.0),)
+#: `invalid_range_is_inf: false`.
+SCAN_INVALID = 0.0
+#: Points per sweep: with `resolution_fixed`, the X2's `sample_rate` (3 kHz) over the
+#: scan rate `/scan` is published at.
+SCAN_BEAMS = round(int(PARAMETERS["/ydlidar_lidar_publisher/sample_rate"]) * 1000
+                   / rate_of(TOPIC_SCAN, NODE_LIDAR))
+
+#: usb_cam's defaults: 640x480, frames converted to rgb8.
+CAMERA_SIZE = (640, 480)
+CAMERA_ENCODING = "rgb8"
+#: What `compressed_image_transport` writes for an rgb8 image encoded as JPEG.
+COMPRESSED_FORMAT = "rgb8; jpeg compressed bgr8"
+
+#: `/Voltage` and `/voltage_backup`, in volts. The simulated battery does not drain, and
+#: carries no backup battery.
+VOLTAGE = 12.0
+VOLTAGE_BACKUP = 0.0
+
+GRAVITY = 9.80665
+
+
+# ---------------------------------------------------------------------- message shapes
+
+
+def _stamp(seq: int, frame_id: str, stamp_s: float) -> dict:
+    return {
+        "seq": int(seq),
+        "stamp": {"secs": int(stamp_s), "nsecs": int((stamp_s % 1) * 1e9)},
+        "frame_id": frame_id,
+    }
+
+
+def _quat_msg(q) -> dict:
+    """`(w, x, y, z)` as a geometry_msgs/Quaternion."""
+    return {"x": float(q[1]), "y": float(q[2]), "z": float(q[3]), "w": float(q[0])}
+
+
+def _yaw_quat(yaw: float) -> tuple[float, float, float, float]:
+    return (math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0))
+
+
+def _ypr_quat(yaw: float, pitch: float, roll: float) -> tuple[float, float, float, float]:
+    """tf's `yaw pitch roll` as `(w, x, y, z)`."""
+    from contracts.tf import rpy_to_quat
+
+    return rpy_to_quat(roll, pitch, yaw)
+
+
+def static_transforms() -> dict[str, tuple[str, str, tuple, tuple]]:
+    """node -> (parent, child, xyz, quat `(w, x, y, z)`), bare frames."""
+    return {
+        node: (parent, child, xyz, _ypr_quat(*ypr))
+        for node, (parent, child, xyz, ypr) in STATIC_TRANSFORMS.items()
+    }
+
+
+def tree(x: float = 0.0, y: float = 0.0, yaw: float = 0.0, base_up: float = 0.0):
+    """The whole transform tree at one pose, as `(parent, child, xyz, quat)`, bare frames."""
+    entries = [
+        (FRAME_ODOM, FRAME_BASE, (x, y, 0.0), _yaw_quat(yaw)),
+        (FRAME_BASE, FRAME_BASE_UP, (0.0, 0.0, 0.0), _yaw_quat(base_up)),
+    ]
+    entries += list(static_transforms().values())
+    return entries
+
+
+def joint_states(seq: int, stamp_s: float) -> dict:
+    """What `joint_state_publisher` sends for the URDF's one movable joint."""
+    return {
+        "header": _stamp(seq, "", stamp_s),
+        "name": [JOINT_BASE_UP],
+        "position": [0.0],
+        "velocity": [],
+        "effort": [],
+    }
+
+
+def uncalibrated_camera_info(seq: int, frame_id: str, stamp_s: float) -> dict:
+    """`usb_cam` with an empty `camera_info_url`: size and frame only, zero intrinsics."""
+    width, height = CAMERA_SIZE
+    return {
+        "header": _stamp(seq, frame_id, stamp_s),
+        "height": height,
+        "width": width,
+        "distortion_model": "",
+        "D": [],
+        "K": [0.0] * 9,
+        "R": [0.0] * 9,
+        "P": [0.0] * 12,
+        "binning_x": 0,
+        "binning_y": 0,
+        "roi": {"x_offset": 0, "y_offset": 0, "height": 0, "width": 0, "do_rectify": False},
+    }
+
+
+def scan_bearings(beams: int) -> list[float]:
+    """Each beam's bearing in `laser_frame`, from `SCAN_ANGLE_MIN` to `SCAN_ANGLE_MAX`."""
+    step = (SCAN_ANGLE_MAX - SCAN_ANGLE_MIN) / (beams - 1)
+    return [SCAN_ANGLE_MIN + i * step for i in range(beams)]
+
+
+def scan_ranges(model, data, x: float, y: float, z: float, yaw: float, beams: int,
+                body: int = -1, exclude_bodies=None) -> list[float]:
+    """One `/scan` sweep, in `laser_frame`, with X2.launch's range conventions applied.
+
+    `x, y, z, yaw` are the base's pose. The laser sits at the `base2laser_link` offset and
+    is turned by its yaw, so bearing `b` in the scan is `yaw + pi + b` in the world.
+    Anything outside [range_min, range_max], and anything in the ignored wedge, is 0.0.
     """
-    from contracts.rosbridge_server import (
-        TOPIC_CAMERA,
-        TOPIC_CAMERA_INFO,
-        TOPIC_CMD_VEL,
-        TOPIC_DEPTH,
-        TOPIC_ODOM,
-        TOPIC_SCAN,
-        TYPE_ODOM,
-        TYPE_TWIST,
-        odometry,
-    )
-    from mujoco_bridge import PlanarSetpoint, SensorStreams, SensorTopics
+    import numpy as np
 
-    command = {"vx": 0.0, "vy": 0.0, "wz": 0.0, "at": 0.0}
+    from mujoco_bridge import laser_scan_ranges
+
+    _parent, _child, (lx, ly, lz), (lyaw, _p, _r) = STATIC_TRANSFORMS[NODE_BASE2LASER]
+    c, s = math.cos(yaw), math.sin(yaw)
+    origin = np.array([x + lx * c - ly * s, y + lx * s + ly * c, z + lz])
+    step = (SCAN_ANGLE_MAX - SCAN_ANGLE_MIN) / (beams - 1)
+    # `laser_scan_ranges` fans `beams` rays over [angle_min, angle_max) -- so one extra
+    # step on the end makes the last ray land exactly on SCAN_ANGLE_MAX.
+    raw = laser_scan_ranges(
+        model, data, origin, yaw + lyaw, beams, SCAN_RANGE_MAX, bodyexclude=body,
+        angle_min=SCAN_ANGLE_MIN, angle_max=SCAN_ANGLE_MAX + step,
+        exclude_bodies=exclude_bodies,
+    )
+    out = []
+    for bearing, r in zip(scan_bearings(beams), raw):
+        deg = math.degrees(bearing)
+        ignored = any(lo <= deg <= hi for lo, hi in SCAN_IGNORE_DEG)
+        valid = SCAN_RANGE_MIN <= r <= SCAN_RANGE_MAX
+        out.append(float(r) if valid and not ignored else SCAN_INVALID)
+    return out
+
+
+def laser_scan(seq: int, ranges, frame_id: str, stamp_s: float, scan_time: float) -> dict:
+    beams = len(ranges)
+    return {
+        "header": _stamp(seq, frame_id, stamp_s),
+        "angle_min": SCAN_ANGLE_MIN,
+        "angle_max": SCAN_ANGLE_MAX,
+        "angle_increment": (SCAN_ANGLE_MAX - SCAN_ANGLE_MIN) / (beams - 1),
+        "time_increment": scan_time / beams,
+        "scan_time": scan_time,
+        "range_min": SCAN_RANGE_MIN,
+        "range_max": SCAN_RANGE_MAX,
+        "ranges": list(ranges),
+        "intensities": [0.0] * beams,
+    }
+
+
+def point_cloud(seq: int, ranges, frame_id: str, stamp_s: float, scan_time: float) -> dict:
+    """The same sweep as points in `laser_frame`, with intensity and stamp channels."""
+    beams = len(ranges)
+    points, intensities, stamps = [], [], []
+    for i, (bearing, r) in enumerate(zip(scan_bearings(beams), ranges)):
+        if r <= 0.0:
+            continue
+        points.append({"x": r * math.cos(bearing), "y": r * math.sin(bearing), "z": 0.0})
+        intensities.append(0.0)
+        stamps.append(i * scan_time / beams)
+    return {
+        "header": _stamp(seq, frame_id, stamp_s),
+        "points": points,
+        "channels": [{"name": "intensities", "values": intensities},
+                     {"name": "stamps", "values": stamps}],
+    }
+
+
+def ekf_status(odom_count: int, imu_count: int, sent: int, prefix: str = "") -> str:
+    """The shape of `robot_pose_ekf`'s own status text."""
+    return (
+        "Input:\n"
+        f" * Odometry sensor\n   - is active\n   - received {odom_count} messages\n"
+        f"   - listens to topic {prefix}{TOPIC_ODOM}\n"
+        f" * IMU sensor\n   - is active\n   - received {imu_count} messages\n"
+        f"   - listens to topic {prefix}{TOPIC_IMU}\n"
+        " * Visual Odometry sensor\n   - is NOT used\n"
+        "Output:\n"
+        f" * Robot pose ekf filter\n   - is active\n   - sent {sent} messages\n"
+        f"   - pulishes on topics {prefix}{TOPIC_ODOM_COMBINED} and {prefix}{TOPIC_TF}\n"
+    )
+
+
+def _clamp(value, limit: float = CMD_VEL_LIMIT) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if v != v:  # NaN
+        return 0.0
+    return max(-limit, min(limit, v))
+
+
+class _Every:
+    """A drift-free clock for one periodic stream.
+
+    Due times advance by exactly one period, so the long-run rate is the declared rate
+    whatever the loop's jitter; `slack` lets a tick that lands a hair early still count.
+    A stream that fell more than a period behind re-anchors instead of bursting.
+    """
+
+    def __init__(self, hz: float, slack: float) -> None:
+        self.period = 1.0 / float(hz)
+        self.slack = slack
+        self.next: float | None = None
+
+    def due(self, now: float) -> bool:
+        if self.next is None:
+            self.next = now
+        if now + self.slack < self.next:
+            return False
+        self.next += self.period
+        if self.next < now - self.period:
+            self.next = now + self.period
+        return True
+
+
+class _Encoder:
+    """One background thread that encodes and publishes camera frames, in order.
+
+    JPEG encoding and serialising a 640x480 rgb8 frame cost the physics thread several
+    milliseconds a frame at 30 Hz; OpenCV releases the GIL while it encodes, so moving
+    them here gives that time back to the simulation. A frame arriving while two are
+    still queued replaces the newest queued one rather than growing a backlog.
+    """
+
+    def __init__(self, work) -> None:
+        import collections
+        import threading
+
+        self._work = work
+        self._queue: collections.deque = collections.deque()
+        self._cv = threading.Condition()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, name="myagv-camera", daemon=True)
+        self._thread.start()
+
+    def submit(self, *job) -> None:
+        with self._cv:
+            if len(self._queue) >= 2:
+                self._queue.pop()
+            self._queue.append(job)
+            self._cv.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cv:
+                while not self._queue and not self._closed:
+                    self._cv.wait()
+                if self._closed and not self._queue:
+                    return
+                job = self._queue.popleft()
+            try:
+                self._work(*job)
+            except Exception as exc:  # a bad frame must not end the stream
+                print(f"myAGV camera encode failed: {exc}", file=sys.stderr)
+
+    def close(self) -> None:
+        with self._cv:
+            self._closed = True
+            self._queue.clear()
+            self._cv.notify()
+        self._thread.join(timeout=1.0)
+
+
+# ------------------------------------------------------------------------- the surface
+
+
+def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
+               lidar: dict | None = None, scene_option=None, world_reset=None,
+               prefix: str = ""):
+    """Wire one myAGV onto `bus` and return the per-step callback.
+
+    `base` exposes a 4x4 `pose` and a writable `ctrl` triple (`mujoco_bridge.
+    PlanarJointBase`, or MolmoSpaces' `HoloJointsRobotBaseGroup`). `camera` is the MJCF
+    camera `/camera/*` renders, and `lidar` names the rays' own body and the bodies they
+    skip (`{"body": name, "exclude_bodies": ids}`). With `model=None` the
+    sensors publish nothing and everything else behaves as usual, which is what a
+    wire-only test wants.
+
+    The returned step carries `rate_hz`, the rate the fleet must call it at; call it with
+    `MjData` each period and with `None` to close this robot's streams.
+
+    `prefix`, the model's MJCF prefix, is accepted with the engines' common arguments and
+    not needed: this robot's transform tree is its launch's and its URDF's, not the
+    model's, and the camera and lidar bodies arrive already resolved.
+    """
+    from contracts.rosbridge_server import odometry
+    from mujoco_bridge import PlanarSetpoint
+
+    import robots_spec
+
+    slack = 0.5 / LOOP_HZ
+
+    # -- declarations: every name, with its node, before the first message ----------
+    for name, mtype, direction, node, _rate in TOPICS:
+        if direction == "out":
+            bus.advertise(name, mtype, node=node)
+    bus.set_param(PARAM_ROBOT_DESCRIPTION,
+                  robots_spec.urdf_path("myagv").read_text(encoding="utf-8"))
+    for name, value in PARAMETERS.items():
+        bus.set_param(name, value)
+
+    # -- /cmd_vel: clamp, hold, no timeout ----------------------------------------
+    command = {"vx": 0.0, "vy": 0.0, "wz": 0.0}
 
     def on_cmd_vel(msg: dict) -> None:
         linear = msg.get("linear") or {}
         angular = msg.get("angular") or {}
-        command["vx"] = float(linear.get("x", 0.0))
-        command["vy"] = float(linear.get("y", 0.0))
-        command["wz"] = float(angular.get("z", 0.0))
-        command["at"] = time.monotonic()
+        command.update(vx=_clamp(linear.get("x", 0.0)), vy=_clamp(linear.get("y", 0.0)),
+                       wz=_clamp(angular.get("z", 0.0)))
 
-    bus.on(TOPIC_CMD_VEL, on_cmd_vel, TYPE_TWIST)
+    bus.on(TOPIC_CMD_VEL, on_cmd_vel, TYPE_TWIST, node=NODE_ODOMETRY)
 
-    sensors = SensorStreams(
-        bus, model, camera, camera_size, jpeg_quality, scan, depth,
-        SensorTopics(TOPIC_CAMERA, TOPIC_SCAN, TOPIC_DEPTH, TOPIC_CAMERA_INFO,
-                     camera_frame=bus.frame("camera"), scan_frame=bus.frame("laser_frame")),
-        scene_option=scene_option,
-        camera_period=camera_period,
-    )
-    setpoint = PlanarSetpoint()
-    odom_frame, base_frame = bus.frame("odom"), bus.frame("base_footprint")
+    # -- services -----------------------------------------------------------------
+    state = {"scanning": True, "capturing": True, "camera_info": None,
+             "odom_count": 0, "imu_count": 0, "ekf_sent": 0}
 
-    # The transform tree. A real myAGV has one: `myagv_active.launch` starts
-    # `robot_state_publisher`, `joint_state_publisher`, `robot_pose_ekf` and three
-    # `static_transform_publisher` nodes, and loads the URDF with
-    # `<param name="robot_description" textfile="$(find myagv_urdf)/urdf/myAGV.urdf"/>`.
-    # Without it `/scan`'s `laser_frame` and `/odom`'s frames named nodes of a tree
-    # nothing ever published, and no client could put a scan in the base frame -- the
-    # first thing a mapping stack does. `slam/` here dead-reckons and hardcodes the 65 mm
-    # mount instead, which is why the absence went unnoticed for so long.
-    #
-    # **`odom -> base_footprint` is the EKF's on real hardware, not the odometry node's.**
-    # `myagv_odometry/src/myAGV.cpp` builds the transform and then does not send it --
-    # `//odomBroadcaster.sendTransform(odom_trans); // robot_pose_ekf ros package instead`
-    # -- leaving the broadcaster member as dead code. So the real robot emits that
-    # transform only once `robot_pose_ekf` has odom *and* IMU and its filter has updated,
-    # while this one emits it from the first tick. A difference in *when*, not in what.
-    tf = None
+    def _setter(key: str, value: bool):
+        def handler(_args: dict) -> dict:
+            state[key] = value
+            return {}
+        return handler
+
+    def set_camera_info(args: dict) -> dict:
+        info = (args or {}).get("camera_info")
+        if not isinstance(info, dict):
+            return {"success": False, "status_message": "no camera_info in the request"}
+        state["camera_info"] = dict(info)
+        return {"success": True, "status_message": ""}
+
+    handlers = {
+        SERVICE_STOP_SCAN: _setter("scanning", False),
+        SERVICE_START_SCAN: _setter("scanning", True),
+        SERVICE_EKF_STATUS: lambda _args: {"status": ekf_status(
+            state["odom_count"], state["imu_count"], state["ekf_sent"],
+            prefix=bus.topic("/").rstrip("/"))},
+        SERVICE_START_CAPTURE: _setter("capturing", True),
+        SERVICE_STOP_CAPTURE: _setter("capturing", False),
+        SERVICE_SET_CAMERA_INFO: set_camera_info,
+    }
+    for name, stype, node in SERVICES:
+        bus.service(name, handlers[name], stype, node=node)
+
+    # -- /tf_static: robot_state_publisher's, latched, and empty (no fixed joints) -
+    bus.publish(TOPIC_TF_STATIC, {"transforms": []}, TYPE_TF_MESSAGE, latched=True,
+                node=NODE_ROBOT_STATE_PUBLISHER)
+
+    # -- the sensors ----------------------------------------------------------------
+    renderer = None
+    lidar_body, lidar_exclude, beams = -1, None, SCAN_BEAMS
     if model is not None:
-        from mujoco_bridge import TransformTree
-        from ros_surfaces.tf_stream import attach_tf, read_description
-        import robots_spec
+        import mujoco
 
-        statics = []
-        if scan is not None:
-            # The same mount the ray-cast uses, so the tree cannot disagree with the scan
-            # it explains. The offset is the vendor's: `myagv_active.launch` puts the X2
-            # at (0.065, 0, 0.08) off `base_footprint`.
-            #
-            # **The rotation is deliberately identity, and the vendor's is not.** That
-            # line reads `args="0.065 0.0 0.08 3.14159265 0.0 0.0"`, and `tf`'s nine-
-            # argument form is `x y z yaw pitch roll` -- so the real robot's lidar frame
-            # is turned a half-turn about z, because the X2 is physically mounted that way
-            # and the driver's `inverted: true` is the other half of the same fact. Ours
-            # is a ray-cast that starts in the base frame and sweeps CCW from -pi with no
-            # mount rotation at all, so identity is the true statement about *these*
-            # ranges. Copying the vendor's quaternion onto data that was never rotated
-            # would put every scan 180 degrees out in any client that used the tree.
-            statics.append(
-                ("base_footprint", "laser_frame",
-                 (scan["offset_x"], 0.0, scan["offset_z"]), (1.0, 0.0, 0.0, 0.0))
-            )
-        tf = attach_tf(
-            bus,
-            TransformTree(model, root_body=f"{prefix}{TF_ROOT_BODY}", frames=TF_FRAMES,
-                          prefix=prefix, cameras=TF_CAMERAS, extra_static=statics),
-            read_description(robots_spec.urdf_path("myagv")),
-        )
-    # The vendor declares `base_up` -- the chassis's top shell -- on a *continuous* joint
-    # with no transmission, no controller and no entry in any joint state. A real
-    # `robot_state_publisher` therefore holds it at zero and publishes it on `/tf` like
-    # any other movable joint, which is exactly this constant on exactly that topic.
-    TOP_SHELL = ("base_footprint", "base_up", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+        if camera is None:
+            raise ValueError("the myAGV's camera is part of its interface; name an MJCF camera")
+        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera) < 0:
+            raise ValueError(f"no camera {camera!r} in this model")
+        width, height = CAMERA_SIZE
+        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+        renderer = mujoco.Renderer(model, height, width)
+        if lidar is None:
+            raise ValueError("the myAGV's lidar is part of its interface; pass `lidar`")
+        lidar_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, lidar["body"])
+        lidar_exclude = frozenset(lidar.get("exclude_bodies") or ())
+
+    frame = bus.frame
+    frames = {name: frame(name) for name in (FRAME_ODOM, FRAME_BASE, FRAME_BASE_UP,
+                                             FRAME_CAMERA, FRAME_IMU, FRAME_LASER)}
+    statics = {node: (frame(p), frame(c), xyz, q)
+               for node, (p, c, xyz, q) in static_transforms().items()}
+    clocks = {
+        "odometry": _Every(rate_of(TOPIC_ODOM, NODE_ODOMETRY), slack),
+        "joint_states": _Every(rate_of(TOPIC_JOINT_STATES, NODE_JOINT_STATE_PUBLISHER), slack),
+        "ekf": _Every(rate_of(TOPIC_ODOM_COMBINED, NODE_EKF), slack),
+        "scan": _Every(rate_of(TOPIC_SCAN, NODE_LIDAR), slack),
+        "camera": _Every(rate_of(TOPIC_IMAGE_RAW, NODE_CAMERA), slack),
+    }
+    for node in STATIC_TRANSFORMS:
+        clocks[node] = _Every(rate_of(TOPIC_TF, node), slack)
+    scan_time = 1.0 / rate_of(TOPIC_SCAN, NODE_LIDAR)
+
+    setpoint = PlanarSetpoint()
+    # Per-publisher sequence numbers, as ROS 1 keeps them.
+    seqs: dict[str, int] = {}
+
+    def seq(key: str) -> int:
+        seqs[key] = seqs.get(key, 0) + 1
+        return seqs[key]
 
     if world_reset is not None:
-        # A world reset -- the arm's `/reset`, on a shared scene -- restores every joint
-        # and every actuator target, this base's included. The integrated setpoint is the
-        # one piece of state that survives it, so without this the base wakes up back at
-        # spawn still holding the target it was driving toward and lunges for a pose it no
-        # longer occupies. Reads as a physics glitch; is a latched controller.
-        def _forget_latched_state() -> None:
+        # `/reset` restores every joint and actuator target, this base's included; the
+        # command and the integrated setpoint are the state it has to drop with them.
+        def _forget() -> None:
             setpoint.reset()
-            command.update(vx=0.0, vy=0.0, wz=0.0, at=0.0)
+            command.update(vx=0.0, vy=0.0, wz=0.0)
 
-        world_reset.on_reset(_forget_latched_state)
+        world_reset.on_reset(_forget)
 
-    dt = 1.0 / control_hz
+    last = {"t": None, "yaw": None, "v": None}
+
+    def publish_tf(key: str, entries, stamp: float, node: str) -> None:
+        from contracts.tf import tf_message
+
+        bus.publish(TOPIC_TF, tf_message(entries, stamp_s=stamp, seq=seq(key)),
+                    TYPE_TF_MESSAGE, node=node)
+
+    def publish_camera(data, stamp: float) -> None:
+        if not state["capturing"]:
+            return
+        want_raw = bus.has_subscribers(TOPIC_IMAGE_RAW)
+        want_jpeg = bus.has_subscribers(TOPIC_CAMERA)
+        n = seq("camera")
+        pixels = None
+        if renderer is not None and (want_raw or want_jpeg):
+            # The render needs the GL context and MjData, so it stays on this thread;
+            # encoding and serialising the frame do not, and go to the encoder thread.
+            renderer.update_scene(data, camera=camera, scene_option=scene_option)
+            pixels = renderer.render()
+        info = state["camera_info"]
+        if info is None:
+            info_msg = uncalibrated_camera_info(n, frames[FRAME_CAMERA], stamp)
+        else:
+            info_msg = dict(info)
+            info_msg["header"] = _stamp(n, frames[FRAME_CAMERA], stamp)
+        encoder.submit(n, stamp, pixels, want_raw, want_jpeg, info_msg)
+
+    def encode_and_publish(n: int, stamp: float, pixels, want_raw: bool, want_jpeg: bool,
+                           info_msg: dict) -> None:
+        width, height = CAMERA_SIZE
+        header = _stamp(n, frames[FRAME_CAMERA], stamp)
+        if pixels is not None and want_raw:
+            bus.publish(TOPIC_IMAGE_RAW, {
+                "header": header,
+                "height": height, "width": width, "encoding": CAMERA_ENCODING,
+                "is_bigendian": 0, "step": width * 3,
+                "data": base64.b64encode(pixels.tobytes()).decode("ascii"),
+            }, TYPE_IMAGE, node=NODE_CAMERA)
+        if pixels is not None and want_jpeg:
+            import cv2
+
+            ok, buf = cv2.imencode(".jpg", cv2.cvtColor(pixels, cv2.COLOR_RGB2BGR),
+                                   [cv2.IMWRITE_JPEG_QUALITY, int(jpeg_quality)])
+            if ok:
+                bus.publish(TOPIC_CAMERA, {
+                    "header": header,
+                    "format": COMPRESSED_FORMAT,
+                    "data": base64.b64encode(buf.tobytes()).decode("ascii"),
+                }, TYPE_COMPRESSED_IMAGE, node=NODE_CAMERA)
+        bus.publish(TOPIC_CAMERA_INFO, info_msg, TYPE_CAMERA_INFO, node=NODE_CAMERA)
+
+    encoder = _Encoder(encode_and_publish)
 
     def step(data):
         if data is None:
-            sensors.close()
+            encoder.close()
+            if renderer is not None:
+                renderer.close()
             return
 
-        # Watchdog. myAGVSub.cpp latches the last cmd_vel and keeps executing it, so a
-        # client that disconnects mid-command would leave the robot driving; stopping is
-        # the behaviour we want even though it is not what the firmware does.
-        vx, vy, wz = command["vx"], command["vy"], command["wz"]
-        if command["at"] and time.monotonic() - command["at"] > watchdog_s:
-            vx = vy = wz = 0.0
+        import numpy as np
 
+        now = time.monotonic()
+        stamp = time.time()
         pose = base.pose
-        x, y = float(pose[0, 3]), float(pose[1, 3])
+        x, y, z = float(pose[0, 3]), float(pose[1, 3]), float(pose[2, 3])
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
-
+        vx, vy, wz = command["vx"], command["vy"], command["wz"]
+        dt = 1.0 / LOOP_HZ
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
 
-        seq = bus.next_seq()
-        bus.publish(
-            TOPIC_ODOM,
-            odometry(seq, x, y, yaw, vx, vy, wz,
-                     frame_id=odom_frame, child_frame_id=base_frame),
-            TYPE_ODOM,
-        )
-        if tf is not None:
-            # `odom -> base_footprint` is the odometry node's transform on real hardware,
-            # and the only one in this tree that is a measurement rather than a reading of
-            # the robot's own geometry -- so it is built from the same x/y/yaw that just
-            # went out on `/odom` and cannot drift from it.
-            quat = (np.cos(yaw / 2.0), 0.0, 0.0, np.sin(yaw / 2.0))
-            tf.publish(data, seq, time.time(),
-                       extra=[(odom_frame, base_frame, (x, y, 0.0), quat),
-                              (bus.frame(TOP_SHELL[0]), bus.frame(TOP_SHELL[1]),
-                               TOP_SHELL[2], TOP_SHELL[3])])
-        sensors.publish(data, seq, x, y, yaw)
+        # -- myagv_odometry_node: odom, imu, voltages -------------------------------
+        if clocks["odometry"].due(now):
+            t = float(getattr(data, "time", now))
+            rate = 0.0
+            accel = (0.0, 0.0)
+            world_v = (vx * math.cos(yaw) - vy * math.sin(yaw),
+                       vx * math.sin(yaw) + vy * math.cos(yaw))
+            if last["t"] is not None and t > last["t"]:
+                h = t - last["t"]
+                rate = math.atan2(math.sin(yaw - last["yaw"]), math.cos(yaw - last["yaw"])) / h
+                ax = (world_v[0] - last["v"][0]) / h
+                ay = (world_v[1] - last["v"][1]) / h
+                # World -> base: rotate by -yaw.
+                accel = (ax * math.cos(yaw) + ay * math.sin(yaw),
+                         -ax * math.sin(yaw) + ay * math.cos(yaw))
+            last.update(t=t, yaw=yaw, v=world_v)
 
+            bus.publish(TOPIC_ODOM, odometry(seq("odom"), x, y, yaw, vx, vy, wz,
+                                             frame_id=frames[FRAME_ODOM],
+                                             child_frame_id=frames[FRAME_BASE]),
+                        TYPE_ODOM, node=NODE_ODOMETRY)
+            state["odom_count"] += 1
+            # imu_link is base_footprint turned a half-turn about z (yaw 0, pitch pi,
+            # roll pi), so the base's x and y read negated and z unchanged.
+            bus.publish(TOPIC_IMU, {
+                "header": _stamp(seq("imu"), frames[FRAME_IMU], stamp),
+                "orientation": _quat_msg(_yaw_quat(yaw + math.pi)),
+                "orientation_covariance": [0.0] * 9,
+                "angular_velocity": {"x": 0.0, "y": 0.0, "z": rate},
+                "angular_velocity_covariance": [0.0] * 9,
+                "linear_acceleration": {"x": -accel[0], "y": -accel[1], "z": GRAVITY},
+                "linear_acceleration_covariance": [0.0] * 9,
+            }, TYPE_IMU, node=NODE_ODOMETRY)
+            state["imu_count"] += 1
+            bus.publish(TOPIC_VOLTAGE, {"data": VOLTAGE}, TYPE_FLOAT32, node=NODE_ODOMETRY)
+            bus.publish(TOPIC_VOLTAGE_BACKUP, {"data": VOLTAGE_BACKUP}, TYPE_FLOAT32,
+                        node=NODE_ODOMETRY)
+
+        # -- the three static_transform_publishers ------------------------------------
+        for node, entry in statics.items():
+            if clocks[node].due(now):
+                publish_tf(node, [entry], stamp, node)
+
+        # -- joint_state_publisher, and robot_state_publisher on each joint state ------
+        if clocks["joint_states"].due(now):
+            bus.publish(TOPIC_JOINT_STATES, joint_states(seq("joint_states"), stamp),
+                        TYPE_JOINT_STATE, node=NODE_JOINT_STATE_PUBLISHER)
+            publish_tf("rsp", [(frames[FRAME_BASE], frames[FRAME_BASE_UP], (0.0, 0.0, 0.0),
+                                (1.0, 0.0, 0.0, 0.0))], stamp, NODE_ROBOT_STATE_PUBLISHER)
+
+        # -- robot_pose_ekf ------------------------------------------------------------
+        if clocks["ekf"].due(now):
+            fused = odometry(seq("ekf"), x, y, yaw, vx, vy, wz,
+                             frame_id=frames[FRAME_ODOM], child_frame_id=frames[FRAME_BASE])
+            bus.publish(TOPIC_ODOM_COMBINED, fused, TYPE_ODOM, node=NODE_EKF)
+            publish_tf("ekf_tf", [(frames[FRAME_ODOM], frames[FRAME_BASE], (x, y, 0.0),
+                                   _yaw_quat(yaw))], stamp, NODE_EKF)
+            state["ekf_sent"] += 1
+
+        # -- ydlidar_lidar_publisher ---------------------------------------------------
+        if clocks["scan"].due(now) and state["scanning"] and model is not None:
+            ranges = scan_ranges(model, data, x, y, z, yaw, beams, lidar_body, lidar_exclude)
+            n = seq("scan")
+            bus.publish(TOPIC_SCAN, laser_scan(n, ranges, frames[FRAME_LASER], stamp,
+                                               scan_time), TYPE_LASER_SCAN, node=NODE_LIDAR)
+            bus.publish(TOPIC_POINT_CLOUD, point_cloud(n, ranges, frames[FRAME_LASER], stamp,
+                                                       scan_time),
+                        TYPE_POINT_CLOUD, node=NODE_LIDAR)
+
+        # -- camera ----------------------------------------------------------------------
+        if clocks["camera"].due(now):
+            publish_camera(data, stamp)
+
+    step.rate_hz = LOOP_HZ
+    print(f"myAGV under namespace {bus.ns or '<bare>'}, stepped at {LOOP_HZ:g} Hz",
+          file=sys.stderr)
     return step
 
 
-def serve_ros(port: int, base, model, camera: str | None, camera_size, jpeg_quality: int,
-              control_hz: float, watchdog_s: float, scan: dict | None = None,
-              depth: dict | None = None, scene_option=None, host: str = "0.0.0.0",
-              namespace: str = "", prefix: str = ""):
-    """The single-robot path: own a server on `port`, put one myAGV on it, start it.
-
-    Kept as a thin wrapper over `attach_ros` so the callers that only ever want one robot
-    -- `run.sh view --robot myagv --ros-port 9090`, and the engine-side adapters in
-    `molmospaces/robots/*/ros_surface.py` -- need no knowledge of fleets. `spawn_robot.py`
-    builds a `RobotFleet` instead, because it may be asked for several robots at once.
-    """
+def serve_ros(port: int, base, model, camera: str | None, *, host: str = "0.0.0.0",
+              namespace: str = "", **kwargs):
+    """The single-robot path: own a server on `port`, put one myAGV on it, start it."""
     from ros_surfaces import RobotFleet
 
     fleet = RobotFleet(port=port, host=host)
-    fleet.attach(namespace, attach_ros, base=base, model=model, camera=camera,
-                 camera_size=camera_size, jpeg_quality=jpeg_quality,
-                 control_hz=control_hz, watchdog_s=watchdog_s, scan=scan, depth=depth,
-                 scene_option=scene_option, prefix=prefix)
+    fleet.attach(namespace, attach_ros, base=base, model=model, camera=camera, **kwargs)
     fleet.start()
-    print(f"myAGV on ws://{host}:{port} under namespace {namespace or '<bare>'}",
-          file=sys.stderr)
     return fleet

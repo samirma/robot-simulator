@@ -70,10 +70,10 @@
       <!-- Mount point for a myCobot 280-class arm (not fitted). -->
       <site name="arm_mount" pos="0 0 0.1139" size="0.01" group="3"/>
 
-      <!-- Forward-facing (+x) camera on the top deck, ~D435 framing. MuJoCo cameras
-           look along -z with +y up, so xyaxes maps -z_cam onto +x_world. -->
+      <!-- Forward-facing (+x) camera at camera_link (myagv_active.launch). MuJoCo
+           cameras look along -z with +y up, so xyaxes maps -z_cam onto +x_world. -->
       <camera name="front_camera" mode="fixed"
-        pos="0.1356 0 0.1421" xyaxes="0 -1 0 0 0 1" fovy="42"/>
+        pos="0.1300 0 0.1310" xyaxes="0 -1 0 0 0 1" fovy="42"/>
     </body>
   </worldbody>
 

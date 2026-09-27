@@ -281,8 +281,8 @@ def test_only_the_robots_that_boot_with_a_tree_are_required_to_have_one() -> Non
     The simulator gives every robot a transform tree. What each *real* robot does differs:
 
     * the myAGV's bringup starts `robot_state_publisher` and `robot_pose_ekf`, so `/tf` is
-      required of a base -- but its static publishers are tf1 and write to `/tf`, and its
-      URDF has no fixed joint, so `/tf_static` is not;
+      required of a base, and so is `robot_state_publisher`'s latched `/tf_static` --
+      empty, because the URDF has no fixed joint, but on the wire;
     * the SO-101's ROS 2 bringups run `robot_state_publisher` beside the controller
       manager, so both are required of an arm;
     * the AiNex's *description package* runs one and its shipped boot chain does not, and
@@ -294,5 +294,5 @@ def test_only_the_robots_that_boot_with_a_tree_are_required_to_have_one() -> Non
     from robot_console.topics import TOPIC_TF, TOPIC_TF_STATIC
 
     assert TOPIC_TF not in CONTRACT_TOPICS and TOPIC_TF_STATIC not in CONTRACT_TOPICS
-    assert TOPIC_TF in BASE_TOPICS and TOPIC_TF_STATIC not in BASE_TOPICS
+    assert TOPIC_TF in BASE_TOPICS and TOPIC_TF_STATIC in BASE_TOPICS
     assert {TF_TOPIC, TF_STATIC_TOPIC} <= set(arm_topics())

@@ -283,9 +283,8 @@ it received in a global and writes it to the motors at 100 Hz forever, so a robo
 to move keeps moving until it is told otherwise -- the vendor's own teleop guards
 against this with a 0.52 s client-side key timeout. The console therefore treats
 stopping as part of quitting rather than as best-effort: it publishes a zero Twist on
-`Esc`, on window close, on an exception, and on `SIGINT`/`SIGTERM`. The simulator's
-0.5 s bridge watchdog makes this invisible there; on hardware it is the only thing that
-stops the robot.
+`Esc`, on window close, on an exception, and on `SIGINT`/`SIGTERM`. The simulator
+behaves the same way, so this is the only thing that stops the robot on either.
 
 ## Checks
 
@@ -305,9 +304,9 @@ accepts -- without needing the simulator checkout.
 
 `smoke` is the live version: it connects, measures the `/odom` and camera rates, decodes
 a frame and checks it is not a flat buffer, then drives forward, back, sideways and
-around, checking the pose moved each time. It also stops publishing for 1.5 s to prove
-the simulator's watchdog fires (skipped against a robot that has none). `--json` emits
-the same results as one object.
+around, checking the pose moved each time. It then sends one command and falls silent
+for 1 s to prove the base holds it (a myAGV has no command watchdog), and stops it with
+an explicit zero Twist. `--json` emits the same results as one object.
 
 ## Layout
 

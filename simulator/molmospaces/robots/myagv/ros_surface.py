@@ -1,12 +1,10 @@
-"""The myAGV's ROS contract, as this engine presents it.
+"""The myAGV's ROS interface, as this engine presents it.
 
-The contract itself -- `cmd_vel` in, `odom`/camera/`/scan` out, on the vendor's topic
-names -- lives in `simulator/shared/ros_surfaces/myagv.py`, because every engine has to
-present exactly the same one and two copies of that loop would be two chances to drift.
-What is left here is the MolmoSpaces-specific half: pulling the base move group out of a
-`RobotView`, which is this engine's way of saying "the thing with a pose and a ctrl".
-
-See the shared module for the topic table and the reasoning about the drive model.
+The interface itself -- every topic, service, parameter, node, frame and rate of
+`robots_specs/myagv/ros.yml` -- lives in `simulator/shared/ros_surfaces/myagv.py`,
+because every engine has to present exactly the same one. What is left here is the
+MolmoSpaces-specific half: pulling the base move group out of a `RobotView`, which is
+this engine's way of saying "the thing with a pose and a ctrl".
 """
 
 from __future__ import annotations
@@ -29,57 +27,26 @@ def _base_of(view):
     return view.get_move_group("base")
 
 
-def attach_ros(bus, view, model, camera: str | None, camera_size, jpeg_quality: int,
-               control_hz: float, watchdog_s: float, scan: dict | None = None,
-               depth: dict | None = None, extra: dict | None = None, scene_option=None,
-               camera_period: float = 0.0, world_reset=None, prefix: str = ""):
-    """Wire this engine's myAGV onto a bus, via the shared contract.
-
-    `extra` is accepted and ignored: `tools/spawn_robot.py` passes the same bag to every
-    ROS surface, and the AiNex is the one that reads it.
-    """
+def attach_ros(bus, view, model, camera: str | None, *, jpeg_quality: int = 80,
+               lidar: dict | None = None, scene_option=None, world_reset=None,
+               prefix: str = ""):
+    """Wire this engine's myAGV onto a bus, via the shared surface."""
     from ros_surfaces.myagv import attach_ros as _attach_ros
 
     return _attach_ros(
-        bus,
-        _base_of(view),
-        model,
-        camera,
-        camera_size,
-        jpeg_quality,
-        control_hz,
-        watchdog_s,
-        scan=scan,
-        depth=depth,
-        scene_option=scene_option,
-        camera_period=camera_period,
+        bus, _base_of(view), model, camera,
+        jpeg_quality=jpeg_quality, lidar=lidar, scene_option=scene_option,
         world_reset=world_reset,
-        # The MJCF prefix, for the transform tree: it is what turns `robot_0/base` into
-        # the `base_footprint` frame on the wire. Topics never see it -- see the note in
-        # `spawn_robot.py` about the two prefixes being different things.
+        # The MJCF prefix. Topics never see it -- see the note in `spawn_robot.py` about
+        # the two prefixes being different things.
         prefix=prefix or getattr(view, "_namespace", "") or "",
     )
 
 
-def serve_ros(port: int, view, model, camera: str | None, camera_size, jpeg_quality: int,
-              control_hz: float, watchdog_s: float, scan: dict | None = None,
-              depth: dict | None = None, extra: dict | None = None,
-              host: str = "0.0.0.0", namespace: str = "", prefix: str = ""):
+def serve_ros(port: int, view, model, camera: str | None, *, host: str = "0.0.0.0",
+              namespace: str = "", **kwargs):
     """The single-robot path, kept for callers that only ever want one robot."""
     from ros_surfaces.myagv import serve_ros as _serve_ros
 
-    return _serve_ros(
-        port,
-        _base_of(view),
-        model,
-        camera,
-        camera_size,
-        jpeg_quality,
-        control_hz,
-        watchdog_s,
-        scan=scan,
-        depth=depth,
-        host=host,
-        namespace=namespace,
-        prefix=prefix or getattr(view, "_namespace", "") or "",
-    )
+    return _serve_ros(port, _base_of(view), model, camera, host=host,
+                      namespace=namespace, **kwargs)

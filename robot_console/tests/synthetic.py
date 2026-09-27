@@ -58,8 +58,15 @@ def raycast(x: float, y: float, yaw: float = 0.0, *, walls: np.ndarray = WALLS) 
 
 
 def scan_message(x: float, y: float, yaw: float = 0.0) -> dict:
-    """The same scan as a rosbridge `sensor_msgs/LaserScan` dict."""
+    """The same scan as a rosbridge `sensor_msgs/LaserScan` dict, in `laser_frame`.
+
+    The wire scan is in the half-turned mount frame, so the beams are rolled by half a
+    sweep: the robot-frame beam at bearing b is the laser-frame beam at b - pi.
+    """
     scan = raycast(x, y, yaw)
+    scan = LaserScan(ranges=np.roll(scan.ranges, BEAMS // 2), angle_min=scan.angle_min,
+                     angle_increment=scan.angle_increment, range_min=scan.range_min,
+                     range_max=scan.range_max)
     return {
         "header": {"seq": 1, "stamp": {"secs": 100, "nsecs": 500000000}, "frame_id": "laser_frame"},
         "angle_min": scan.angle_min,
