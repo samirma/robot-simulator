@@ -43,6 +43,7 @@ Standalone, for protocol testing without the simulator:
 from __future__ import annotations
 
 import base64
+import collections
 import json
 import logging
 import socket
@@ -83,9 +84,13 @@ except ImportError:  # run as a script, with this directory on the path rather t
 __all_namespace__ = ("RobotNamespace", "normalise", "ns_frame", "ns_topic")
 
 
-def header(seq: int, frame_id: str) -> dict:
-    """A std_msgs/Header. rosbridge expects stamp split into secs/nsecs, not a float."""
-    now = time.time()
+def header(seq: int, frame_id: str, stamp_s: float | None = None) -> dict:
+    """A std_msgs/Header. rosbridge expects stamp split into secs/nsecs, not a float.
+
+    Every simulated member passes `stamp_s`, the simulated time (spec §3: one clock on
+    the wire); the wall clock is only the default for a caller outside a simulation.
+    """
+    now = time.time() if stamp_s is None else float(stamp_s)
     return {
         "seq": seq,
         "stamp": {"secs": int(now), "nsecs": int((now % 1) * 1e9)},
@@ -245,7 +250,7 @@ def image(seq: int, data: bytes, encoding: str, width: int, height: int,
 
 
 def camera_info(seq: int, width: int, height: int, fovy_deg: float,
-                frame_id: str = "camera") -> dict:
+                frame_id: str = "camera", stamp_s: float | None = None) -> dict:
     """sensor_msgs/CameraInfo derived from a MuJoCo camera's vertical FOV.
 
     MuJoCo specifies `fovy` in degrees over the image height, so fy follows from it and fx
@@ -257,7 +262,7 @@ def camera_info(seq: int, width: int, height: int, fovy_deg: float,
     fx = fy
     cx, cy = width / 2.0, height / 2.0
     return {
-        "header": header(seq, frame_id),
+        "header": header(seq, frame_id, stamp_s),
         "height": int(height),
         "width": int(width),
         "distortion_model": "plumb_bob",
@@ -289,7 +294,8 @@ ODOM_TWIST_COVARIANCE = list(ODOM_POSE_COVARIANCE)
 
 
 def odometry(seq: int, x: float, y: float, yaw: float, vx: float, vy: float, wz: float,
-             frame_id: str = "odom", child_frame_id: str = "base_footprint") -> dict:
+             frame_id: str = "odom", child_frame_id: str = "base_footprint",
+             stamp_s: float | None = None) -> dict:
     """nav_msgs/Odometry in the frames myagv_odometry uses (odom -> base_footprint).
 
     The frames are arguments rather than literals because a fleet prefixes them: two bases
@@ -300,7 +306,7 @@ def odometry(seq: int, x: float, y: float, yaw: float, vx: float, vy: float, wz:
     import math
 
     return {
-        "header": header(seq, frame_id),
+        "header": header(seq, frame_id, stamp_s),
         "child_frame_id": child_frame_id,
         "pose": {
             "pose": {
@@ -383,7 +389,28 @@ ROS_DISTRO = "jazzy"
 
 
 class _Client:
-    """One websocket's protocol state."""
+    """One websocket's protocol state, and the queue its frames leave through.
+
+    **Nothing that publishes ever waits on a client.** A send on a websocket blocks once
+    the socket's buffer is full, and a client that reads slowly -- a laptop on wifi
+    subscribed to three cameras -- would otherwise block whichever thread published: the
+    simulation loop itself, for most topics, and with it every robot's rate for every
+    client on the port. So each client has a queue and a sender thread of its own. A
+    published topic message is kept per topic, at most `TOPIC_QUEUE` deep, the oldest
+    dropped first -- a slow subscriber to a periodic topic gets fewer, fresher messages,
+    as a ROS subscriber with a short queue does. Everything else (service responses,
+    action frames, statuses, a latched message delivered on subscribe) is queued whole
+    and in order.
+
+    Frames leave in two lanes, small before bulk: a 100 Hz odometry message must not wait
+    behind a megabyte of raw image, which on a real graph travels on a connection of its
+    own. Within a lane, and within a topic, order is kept.
+    """
+
+    #: Topic messages a client may have waiting per topic before the oldest is dropped.
+    TOPIC_QUEUE = 10
+    #: Frames at least this long go in the bulk lane.
+    BULK_BYTES = 65536
 
     def __init__(self, websocket) -> None:
         self.ws = websocket
@@ -398,19 +425,69 @@ class _Client:
         # a client that disconnects leaves its goals running (spec §2.2).
         self.goals: dict[tuple[str, Any], "ActionGoal"] = {}
         self.open = True
+        self.dropped = 0
+        self._cond = threading.Condition()
+        #: What to send next, per lane, in order: (None, frame) for a frame, (topic, None)
+        #: for the oldest waiting message of `topic`. Lane 0 is small frames, 1 bulk.
+        self._lanes = (collections.deque(), collections.deque())
+        self._topics: dict[str, collections.deque] = {}
+        self._sender = threading.Thread(target=self._drain, daemon=True,
+                                        name="rosbridge-client-sender")
+        self._sender.start()
 
     @property
     def latch_key(self) -> tuple:
         return ("client", id(self))
 
-    def send(self, frame: str) -> bool:
+    def send(self, frame: str, topic: str | None = None) -> bool:
+        """Queue `frame` for this client and return at once; False once it has gone.
+
+        With `topic`, the frame is one message of that topic and may be dropped for a
+        newer one if the client falls `TOPIC_QUEUE` messages behind on it.
+        """
         if not self.open:
             return False
-        try:
-            self.ws.send(frame)
-            return True
-        except Exception:
-            return False
+        lane = self._lanes[len(frame) >= self.BULK_BYTES]
+        with self._cond:
+            if topic is None:
+                lane.append((None, frame))
+            else:
+                waiting = self._topics.setdefault(topic, collections.deque())
+                if len(waiting) >= self.TOPIC_QUEUE:
+                    waiting.popleft()
+                    self.dropped += 1
+                waiting.append(frame)
+                lane.append((topic, None))
+            self._cond.notify()
+        return True
+
+    def close(self) -> None:
+        """Stop sending: whatever is still queued is dropped with the connection."""
+        self.open = False
+        with self._cond:
+            for lane in self._lanes:
+                lane.clear()
+            self._topics.clear()
+            self._cond.notify()
+
+    def _drain(self) -> None:
+        while True:
+            with self._cond:
+                while self.open and not (self._lanes[0] or self._lanes[1]):
+                    self._cond.wait()
+                if not self.open:
+                    return
+                topic, frame = (self._lanes[0] or self._lanes[1]).popleft()
+                if topic is not None:
+                    waiting = self._topics.get(topic)
+                    if not waiting:
+                        continue  # its message was dropped for a newer one, already sent
+                    frame = waiting.popleft()
+            try:
+                self.ws.send(frame)
+            except Exception:
+                self.close()
+                return
 
 
 class ActionGoal:
@@ -724,7 +801,7 @@ class RosBridgeServer:
             clients = list(self._clients.values())
             self._clients.clear()
         for client in clients:
-            client.open = False
+            client.close()
             try:
                 client.ws.close()
             except Exception:
@@ -774,9 +851,9 @@ class RosBridgeServer:
                 self._latched.setdefault(topic, {})[latch_key] = frame
             targets = [c for c in self._clients.values() if topic in c.subs]
         for client in targets:
-            # A client that went away is dropped on its handler thread; losing a frame
-            # here must not interrupt the simulation loop.
-            client.send(frame)
+            # Queued, never sent here: a slow or vanished client must not hold up the
+            # thread publishing, which is usually the simulation loop.
+            client.send(frame, topic)
 
     # -- actions, server side ------------------------------------------------------
 
@@ -1196,7 +1273,7 @@ class RosBridgeServer:
 
     def _disconnect(self, client: _Client) -> None:
         """Drop everything the client advertised. Goals it *sent* keep running."""
-        client.open = False
+        client.close()
         with self._lock:
             self._clients.pop(client.ws, None)
             for topic in client.adverts:

@@ -620,6 +620,58 @@ def check_rosapi(check, server: RosBridgeServer, port: int) -> None:
         del schemas.ACTIONS[schemas.canonical(ACTION_TYPE)]
 
 
+def check_slow_client(check, server: RosBridgeServer, port: int) -> None:
+    """A client that stops reading never holds up the publisher, or anyone else (§3)."""
+    topic, n, pad = "/slow/blob", 400, "x" * 262_144
+    slow, fast = Client(port), Client(port)
+    got: list[int] = []
+    done = threading.Event()
+    try:
+        slow.send({"op": "subscribe", "topic": topic, "id": "s"})
+        fast.send({"op": "subscribe", "topic": topic, "id": "f"})
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline and not (
+                server.has_subscribers(topic)
+                and sum(topic in c.subs for c in list(server._clients.values())) == 2):
+            time.sleep(0.01)
+
+        def read_fast() -> None:
+            while not done.is_set():
+                try:
+                    raw = fast.conn.recv(timeout=0.2)
+                except TimeoutError:
+                    continue
+                except Exception:
+                    return
+                msg = json.loads(raw)
+                if msg.get("topic") == topic:
+                    got.append(int(msg["msg"]["data"].split(":", 1)[0]))
+
+        reader = threading.Thread(target=read_fast, daemon=True)
+        reader.start()
+        worst = 0.0
+        start = time.monotonic()
+        for i in range(n):  # 100 MB at a client that reads none of it
+            t0 = time.monotonic()
+            server.publish(topic, {"data": f"{i}:{pad}"}, TYPE_STRING2)
+            worst = max(worst, time.monotonic() - t0)
+        total = time.monotonic() - start
+        check("publishing to a client that stops reading never blocks the publisher",
+              worst < 0.05 and total < 5.0, f"worst {worst * 1000:.1f} ms, total {total:.2f} s")
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline and (not got or got[-1] != n - 1):
+            time.sleep(0.05)
+        check("...a client that reads still gets the newest message",
+              bool(got) and got[-1] == n - 1, f"last {got[-1] if got else None} of {n - 1}")
+        dropped = [c.dropped for c in list(server._clients.values())]
+        check("...and the slow one's backlog is dropped oldest-first, per topic",
+              max(dropped, default=0) > 0, f"dropped {dropped}")
+    finally:
+        done.set()
+        slow.close()
+        fast.close()
+
+
 def run(check: Callable[[str, bool, str], None] | Callable[..., None],
         port: int = PORT) -> None:
     # The server logs every status error it sends; this file provokes dozens on purpose.
@@ -634,6 +686,7 @@ def run(check: Callable[[str, bool, str], None] | Callable[..., None],
         check_actions(check, server, port)
         check_client_providers(check, port)
         check_rosapi(check, server, port)
+        check_slow_client(check, server, port)
     finally:
         server.stop()
 
