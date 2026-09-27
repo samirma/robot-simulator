@@ -31,6 +31,8 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
+from contracts.physical import MESH_DIMENSION_PCT, Figure, percent
+
 # --- node names -------------------------------------------------------------------------
 
 NODE_CONTROLLER = "ainex_controller"
@@ -188,6 +190,52 @@ CAMERA_SIZE = (640, 480)
 CAMERA_ENCODING = "rgb8"
 #: What image_transport's compressed plugin writes into `format` for an rgb8 source.
 CAMERA_COMPRESSED_FORMAT = "rgb8; jpeg compressed bgr8"
+
+# --- physical figures -------------------------------------------------------------------
+
+_PRODUCT_PAGE = "https://www.hiwonder.com/products/ainex"
+_SERVO_PAGE = ("https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/docs/"
+               "5.ROS%20Robot%20Control%20Course.html")
+
+#: The AiNex's published physical figures (spec §3, real-robot fidelity), each measured on
+#: the compiled model by `shared/tests/physical_figures_check.py`. The dimensions are of
+#: the Standard Kit, which is the 24-joint robot the vendor URDF describes, stood straight
+#: (every joint at zero) with its arms hanging (shoulder rolls a quarter turn down).
+#:
+#: Published but not a figure here: the camera's field of view, which the product page
+#: gives as 120 degrees and the course documentation as 170 -- the two cannot both be the
+#: lens, and neither says which angle it is (see `ainex_model.CAMERA_FOVY_DEG`) -- and
+#: the servos' torque and speed (HX-35H 35 kg.cm and 0.18 s/60 deg, HX-12H 12 kg.cm):
+#: which servo drives which joint is not published, and the model's actuators take the
+#: torques as stiffness targets only.
+PHYSICAL_FIGURES: tuple[Figure, ...] = (
+    Figure("dof", "degrees of freedom", 24, "", 0, _PRODUCT_PAGE,
+           "DOF: 20DOF(Starter Kit); 24DOF(Standard Kit)",
+           "servo-driven hinge joints of the compiled model (the virtual base excluded)"),
+    Figure("mass_kg", "product weight", 2.45, "kg", percent(2.45, 5.0), _PRODUCT_PAGE,
+           "Product weight: 2.25kg(Starter); 2.45kg(Standard)",
+           "subtree mass of the torso; every inertial is the vendor URDF's (2.347 kg), which "
+           "sits between the two kits' published weights -- 5% covers the Standard Kit's "
+           "battery, cabling and fasteners the CAD inertials may omit"),
+    Figure("width_m", "width", 0.193, "m", percent(0.193, MESH_DIMENSION_PCT), _PRODUCT_PAGE,
+           "Product size: 193 * 135 * 415mm(Standard Kit)",
+           "y extent of the visual meshes in the torso frame, standing, arms hanging"),
+    Figure("depth_m", "depth", 0.135, "m", percent(0.135, MESH_DIMENSION_PCT), _PRODUCT_PAGE,
+           "Product size: 193 * 135 * 415mm(Standard Kit)",
+           "x extent of the visual meshes in the torso frame, standing, arms hanging"),
+    Figure("height_m", "height", 0.415, "m", percent(0.415, MESH_DIMENSION_PCT),
+           _PRODUCT_PAGE, "Product size: 193 * 135 * 415mm(Standard Kit)",
+           "z extent of the visual meshes in the torso frame, standing, arms hanging"),
+    Figure("walking_speed_mps", "walking speed", 0.21, "m/s", percent(0.21, 10.0),
+           _PRODUCT_PAGE, "Speed: 21cm/s",
+           "forward speed of the compiled base under the vendor's default gait period "
+           "(400 ms) at the envelope's largest stride (gait.planar_velocity: 0.200 m/s); "
+           "the page does not say which gait setting it measured, so 10%"),
+    Figure("servo_travel_deg", "servo travel", 240.0, "deg", 1.0, _SERVO_PAGE,
+           "Rotation range 0-1000 corresponding to 0°~240°",
+           "the widest joint range of the compiled model; the URDF's +/-2.09 rad is the "
+           "travel rounded down to two decimals (0.5 deg short)"),
+)
 
 # --- the joints -------------------------------------------------------------------------
 

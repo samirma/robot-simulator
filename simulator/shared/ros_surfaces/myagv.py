@@ -41,7 +41,9 @@ Behaviour, as the vendor's nodes behave:
 
 * `/cmd_vel` clamps `linear.x`, `linear.y` and `angular.z` to [-1, 1] and the last
   command is held and executed every cycle, with **no timeout**. A client stops the base
-  by publishing a zero Twist (`STOP_COMMAND`); nothing here stops it for them.
+  by publishing a zero Twist (`STOP_COMMAND`); nothing here stops it for them. The base
+  moves no faster than the published maximum movement speed (`MAX_SPEED_MPS`), and
+  `/odom` reports the speed it moves at.
 * `/odom` is `odom -> base_footprint` and broadcasts no transform; `robot_pose_ekf` owns
   `odom -> base_footprint` on `/tf` and publishes the fused pose on `odom_combined`.
 * `/scan` is in `laser_frame`, which the launch turns a half-turn about z from
@@ -67,6 +69,8 @@ from __future__ import annotations
 import base64
 import math
 import sys
+
+from contracts.physical import MESH_DIMENSION_PCT, Figure, percent
 
 # ------------------------------------------------------------------------------ nodes
 
@@ -235,6 +239,55 @@ STATIC_TRANSFORMS: dict[str, tuple[str, str, tuple[float, float, float],
 
 #: `/cmd_vel` components are each clamped to [-limit, limit].
 CMD_VEL_LIMIT = 1.0
+
+# --------------------------------------------------------------- physical figures
+
+_SPECS_PAGE = "https://www.elephantrobotics.com/en/myagv-2023-pi-specifications-en/"
+_DOCS_SPEC_TABLE = ("https://docs.elephantrobotics.com/docs/myagv_pi23_en/"
+                    "2-ProductFeature/2.1-MachineSpecification.html")
+
+#: The myAGV 2023 Pi's published physical figures (spec §3, real-robot fidelity), each
+#: measured on the compiled model by `shared/tests/physical_figures_check.py`.
+PHYSICAL_FIGURES: tuple[Figure, ...] = (
+    Figure("length_m", "chassis length", 0.31115, "m", percent(0.31115, MESH_DIMENSION_PCT),
+           _SPECS_PAGE, "Size（mm）: 311.15*230*110",
+           "x extent of the chassis mesh (myagv_base) in the base frame; the vendor mesh is "
+           "scaled to the published footprint by one uniform factor"),
+    Figure("width_m", "chassis width", 0.230, "m", percent(0.230, MESH_DIMENSION_PCT),
+           _SPECS_PAGE, "Size（mm）: 311.15*230*110",
+           "y extent of the chassis mesh (myagv_base) in the base frame"),
+    Figure("height_m", "chassis height", 0.110, "m", percent(0.110, MESH_DIMENSION_PCT),
+           _SPECS_PAGE, "Size（mm）: 311.15*230*110",
+           "z extent of the chassis mesh (myagv_base) above the wheel contact plane. The top "
+           "deck (myagv_up, to 132 mm) carries the camera the boot launch puts at 131 mm, so "
+           "the published 110 mm is the chassis; at the footprint's scale the vendor mesh "
+           "stands 113.9 mm"),
+    Figure("mass_kg", "net weight", 4.16, "kg", 0.01, _SPECS_PAGE, "Net Weight （KG）: 4.16",
+           "subtree mass of the base body; the model's one inertial is the published figure"),
+    Figure("max_speed_mps", "maximum movement speed", 0.9, "m/s", percent(0.9, 3.0),
+           _DOCS_SPEC_TABLE, "Maximum Movement Speed | 0.9m/s",
+           "planar speed the compiled base reaches under the largest /cmd_vel the driver "
+           "accepts (1.0 on x and y), through the surface's MAX_SPEED_MPS ceiling; 3% "
+           "covers the position servo's tracking lag over the measured second"),
+    Figure("camera_fov_deg", "camera field of view (diagonal)", 65.0, "deg", 1.0,
+           _SPECS_PAGE, "Camera: 5-megapixel resolution, 65-degree field of view",
+           "diagonal field of view of the MJCF camera at the wire's 640x480"),
+)
+
+#: The body's planar speed ceiling. The driver clamps each `/cmd_vel` component to
+#: [-1, 1] and sends it to the base board (myAGV.cpp); what the board makes of a full
+#: command is the published maximum movement speed, so a command beyond it is carried out
+#: at it: the translational part is scaled down, heading kept, and rotation untouched.
+MAX_SPEED_MPS = 0.9
+
+
+def limit_speed(vx: float, vy: float) -> tuple[float, float]:
+    """(vx, vy) scaled to at most `MAX_SPEED_MPS`, direction kept."""
+    speed = math.hypot(vx, vy)
+    if speed <= MAX_SPEED_MPS:
+        return vx, vy
+    scale = MAX_SPEED_MPS / speed
+    return vx * scale, vy * scale
 #: The stop command: a zero Twist on `/cmd_vel`. There is no timeout.
 STOP_COMMAND = {"linear": {"x": 0.0, "y": 0.0, "z": 0.0},
                 "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}
@@ -679,7 +732,8 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
         pose = base.pose
         x, y, z = float(pose[0, 3]), float(pose[1, 3]), float(pose[2, 3])
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
-        vx, vy, wz = command["vx"], command["vy"], command["wz"]
+        vx, vy = limit_speed(command["vx"], command["vy"])
+        wz = command["wz"]
         dt = 1.0 / LOOP_HZ
         base.ctrl = setpoint.step(x, y, yaw, vx, vy, wz, dt)
 

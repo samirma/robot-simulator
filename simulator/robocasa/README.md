@@ -16,6 +16,7 @@ the shared architecture (engines feed the one wire bridge in
 ../kitchen.sh serve --engine robocasa --robots myagv     # on the wire: that is serve's job
 python tools/test_placement.py                       # every robot stands at its placement
 python ../shared/tests/attach_check.py --engine robocasa  # every robot attaches and moves
+python ../shared/tests/physical_figures_check.py --engine robocasa  # descriptions and published figures
 ```
 
 - `--layout` 1-60, `--style` 1-60 (1-10 are the "test" set; see

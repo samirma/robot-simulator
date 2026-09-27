@@ -186,6 +186,12 @@ ahead of a robot that was chasing it: the base settled at roughly a **sixth** of
 commanded speed. The clamp keeps the property that made the old version tempting — a robot
 held up by a wall stops advancing its target instead of winding up a lunge.
 
+Velocity means velocity up to the published **0.9 m/s** maximum movement speed: the driver
+accepts up to 1.0 on each axis, and a command beyond 0.9 m/s is carried out at 0.9 m/s in
+its direction (`ros_surfaces/myagv.py`, `MAX_SPEED_MPS`). `/odom` reports what the base
+does. `shared/tests/physical_figures_check.py` measures it, with the chassis size, mass and
+camera field of view, on the compiled model.
+
 ### Gotcha when testing in a house
 
 The house origin is usually *inside* furniture — in FloorPlan1 it is inside the kitchen

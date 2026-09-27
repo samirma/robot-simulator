@@ -447,7 +447,8 @@ def test_myagv_contract() -> None:
             if t["direction"] == "out":
                 client.send({"op": "subscribe", "topic": ns_topic(ns, t["name"])})
         client.sync()
-        # 2.0 on every axis is clamped to 1.0, and held with no further command.
+        # 2.0 on every axis is clamped to 1.0, and held with no further command; the
+        # base carries (1, -1) out at its published maximum speed, heading kept.
         client.send({"op": "publish", "topic": f"/{ns}/cmd_vel",
                      "msg": {"linear": {"x": 2.0, "y": -2.0, "z": 0.0},
                              "angular": {"x": 0.0, "y": 0.0, "z": 0.5}}})
@@ -456,11 +457,13 @@ def test_myagv_contract() -> None:
         client.quiet(lambda msg: False, window=0.3)
         odoms = [msg["msg"] for msg in client.inbox if msg.get("topic") == f"/{ns}/odom"]
         last = odoms[-1]["twist"]["twist"] if odoms else {}
-        check("cmd_vel is clamped to +/-1 and held with no timeout",
-              last.get("linear", {}).get("x") == 1.0 and last.get("linear", {}).get("y") == -1.0
+        diagonal = m.MAX_SPEED_MPS / math.sqrt(2.0)
+        check("cmd_vel is clamped to +/-1, capped at the published speed, held with no timeout",
+              abs(last.get("linear", {}).get("x", 0.0) - diagonal) < 1e-9
+              and abs(last.get("linear", {}).get("y", 0.0) + diagonal) < 1e-9
               and last.get("angular", {}).get("z") == 0.5, str(last))
         check("...and the base is still being driven 1.5 s later",
-              base.xyz[0] > 1.0, f"x {base.xyz[0]:.3f} m")
+              base.xyz[0] > 0.8, f"x {base.xyz[0]:.3f} m")
 
         seen: dict[str, dict] = {}
         tf_frames = set()

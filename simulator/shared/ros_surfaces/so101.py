@@ -34,6 +34,8 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from contracts.physical import Figure
+
 # ------------------------------------------------------------------------- contract
 
 #: `joints` in ros2.yml, in the bringup's order (servo ids 1-6).
@@ -219,6 +221,23 @@ WRIST_FRAME_ID = "default_cam"
 WRIST_MJCF_CAMERA = "wrist_cam"
 #: usb_cam 0.8.1 with pixel_format `yuyv` publishes YUYV bytes as `yuv422_yuy2`.
 WRIST_ENCODING = "yuv422_yuy2"
+
+#: The SO-101's published physical figures (spec §3, real-robot fidelity), each measured
+#: on the compiled model by `shared/tests/physical_figures_check.py`. TheRobotStudio
+#: publish no dimensions, masses or joint ranges for the arm beyond its URDF and MJCF,
+#: which the same check holds the compiled model to joint for joint and body for body.
+#:
+#: Published but not a figure here: the follower's STS3215 stall torque, "16.5kg.cm at
+#: 6V" for the 7.4V servo the bill of materials lists (the 12V one: 30 kg.cm). The
+#: official MJCF's actuators take their motor parameters from the Open Duck Mini project
+#: and limit every joint to 3.35 N m (34 kg.cm); they are the official model's, not a
+#: simulator addition, so the model follows the MJCF and the conflict is reported instead.
+PHYSICAL_FIGURES: tuple[Figure, ...] = (
+    Figure("servo_joints", "joints, one STS3215 servo each", 6, "", 0,
+           "https://huggingface.co/docs/lerobot/so101",
+           "The follower arm uses 6x STS3215 motors with 1/345 gearing.",
+           "hinge joints of the compiled arm, each driven by exactly one actuator"),
+)
 
 HARDWARE_COMPONENT = "SO_ARM101"
 HARDWARE_PLUGIN = "feetech_ros2_driver/FeetechHardwareInterface"

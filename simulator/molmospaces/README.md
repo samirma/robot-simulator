@@ -122,6 +122,7 @@ python tools/render_robots.py --outdir /tmp/robots     # render them all
 ../kitchen.sh serve --robots so101                # ...on its ROS topics (see above)
 python robots/so101/test_attach.py               # self-test in an empty world
 python tools/test_placement.py                   # every robot stands at its placement
+python ../shared/tests/physical_figures_check.py --engine molmospaces  # descriptions and published figures
 ```
 
 See [robots/README.md](robots/README.md) for how each was added and what its
