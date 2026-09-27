@@ -8,7 +8,7 @@ a live rosbridge: a gate you can re-run against the same bytes after every chang
 only kind that can tell a binding regression from a scene that was always too textureless.
 
 Runs headless under plain `python` -- `mujoco.Renderer` renders offscreen, so unlike
-`tools/view_scene.py` there is no viewer and no `mjpython`.
+`run.sh view` there is no viewer and no `mjpython`.
 
     python tools/capture_trajectory.py --scene assets/scenes/procthor-10k-train/train_40.xml \
         --out /tmp/gate0

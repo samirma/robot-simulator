@@ -3,17 +3,14 @@
 #
 #   ./run.sh setup                       clone upstream + venv + editable install
 #   ./run.sh assets                      download the kitchen assets (~10 GB)
-#   ./run.sh view --robot <id> [--layout 1] [--style 3]
-#                                        one robot in a kitchen in the MuJoCo viewer, on
-#                                        the real hardware's interface. <id> is a robot
-#                                        robots_specs/robots.yml marks simulated;
-#                                        layout 1-60, style 1-60
-#                 [--ros-port 9090]      the port the vendor ROS topics are served on --
-#                                        9090 unless you say otherwise, 0 for none;
-#                                        myagv -> cmd_vel in, odom + camera + /scan out
-#                 [--task apple_on_plate]  stage a task into the kitchen
-#                 [--headless]           ...with no window (displayless hosts, checks)
-#                 [--render out.png]     ...or just write a PNG and exit
+#   ./run.sh view --robot <id> [--layout 1] [--style 1]
+#                                        one robot in a kitchen, in the MuJoCo viewer;
+#                                        serves no wire (kitchen.sh serve is what serves).
+#                                        <id> is a robot robots_specs/robots.yml marks
+#                                        simulated; a worktop robot gets the task staged
+#                                        in front of it. Layout and style 1-60
+#                 [--render out.png]     ...or write one frame to a PNG, headless, and exit
+#                 [--timeout N]          ...closing the window after N seconds
 #   ./run.sh --robot so101 --layout 1    shorthand for `view --robot so101 --layout 1`
 #   ./run.sh shell                       interactive shell inside the venv
 #   ./run.sh repair                      re-point the venv at this checkout after it has
@@ -123,30 +120,27 @@ do_assets() {
 
 do_view() {
   ensure_setup
-  local robot=""
-  local headless=0
+  local robot="" py="$MJPY"
   local -a rest=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --robot) robot="$2"; shift 2 ;;
-      # Both take no window, so they must not be routed through mjpython: it exists
-      # for the main-thread constraint of the passive viewer and nothing else.
-      --headless|--render) headless=1; rest+=("$1"); shift ;;
-      *) rest+=("$1"); shift ;;
+      --robot) [ $# -ge 2 ] || die "--robot needs an id"; robot="$2"; shift 2 ;;
+      --layout|--style) [ $# -ge 2 ] || die "$1 needs a value"; rest+=("$1" "$2"); shift 2 ;;
+      # Windowless, so not through mjpython: it exists for the passive viewer's
+      # main-thread constraint and nothing else.
+      --render) [ $# -ge 2 ] || die "--render needs a path"; py="$PY"
+                rest+=(--render "$2"); shift 2 ;;
+      --timeout) [ $# -ge 2 ] || die "--timeout needs seconds"; rest+=(--timeout "$2"); shift 2 ;;
+      --scene) die "--scene is a MolmoSpaces scene flag; this engine takes --layout N --style N" ;;
+      *) die "unknown view flag '$1' (try: ./run.sh help)" ;;
     esac
   done
-
-  # RoboCasa is a scene provider only: the robot is always one of robots_specs/, never a
-  # robosuite robot, and it is held to robots.yml's simulated ids by the shared loader.
+  # RoboCasa is a scene provider only: the robot is always one of robots_specs/.
   [ -n "$robot" ] || die "view needs --robot <id> (try: ./run.sh help)"
   case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
   "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
-
-  # Under mjpython on macOS when there is a window: the passive viewer must own the main
-  # thread. Nothing windowless needs it.
-  local py="$MJPY"
-  [ "$headless" = 1 ] && py="$PY"
-  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" "${rest[@]+"${rest[@]}"}"
+  # --ros-port 0: a view serves no wire.
+  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --ros-port 0 "${rest[@]+"${rest[@]}"}"
 }
 
 # ---------------------------------------------------------------- shell

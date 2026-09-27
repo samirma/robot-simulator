@@ -3,21 +3,14 @@
 #
 #   ./run.sh setup                     install venv + package, fetch default assets
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
-#   ./run.sh view [--scene ithor:1]    open a house in the MuJoCo viewer
-#                 [--robot so101]      ...optionally with a robot in it: an id that
-#                                      robots_specs/robots.yml marks simulated
-#                 [--ros-port 9090]    the port that robot's own vendor ROS topics are
-#                                      served on -- 9090 unless you say otherwise, and 0
-#                                      to serve nothing:
-#                                      myagv -> cmd_vel in, odom + camera + /scan
-#                                      out; ainex -> /walking/* and /app/* in, joint_states
-#                                      + camera + /scan out (it has no cmd_vel at all)
-#                 [--ros-namespace ''] the namespace each robot is under, its own name by
-#                                      default; '' is the bare single-robot contract.
-#                                      robot_console discovers this off the wire, so it
-#                                      needs telling only when you want it otherwise
-#                 [--task apple_on_plate]  ...and with a task staged into the scene:
-#                                      its objects, its cameras and its success predicate
+#   ./run.sh view --robot <id> [--scene ithor:1]
+#                                      one robot in a house, in the MuJoCo viewer; serves
+#                                      no wire (kitchen.sh serve is what serves). <id> is
+#                                      a robot robots_specs/robots.yml marks simulated; a
+#                                      worktop robot gets the task staged in front of it.
+#                                      --scene takes ithor:<n> or procthor:<n>
+#                 [--render out.png]   ...or write one frame to a PNG, headless, and exit
+#                 [--timeout N]        ...closing the window after N seconds
 #   ./run.sh shell                     interactive shell inside the venv
 #   ./run.sh repair                    re-point the venv and assets/ at this checkout after
 #                                      it has been moved; every command does this anyway
@@ -148,46 +141,38 @@ do_assets() {
 
 do_view() {
   ensure_setup
-  local scene="ithor:1"
-  local robot=""
+  local scene="ithor:1" robot="" py="$MJPY"
   local -a rest=()
   while [ $# -gt 0 ]; do
     case "$1" in
-      --scene) scene="$2"; shift 2 ;;
-      --robot) robot="$2"; shift 2 ;;
-      *) rest+=("$1"); shift ;;
+      --robot) [ $# -ge 2 ] || die "--robot needs an id"; robot="$2"; shift 2 ;;
+      --scene) [ $# -ge 2 ] || die "--scene needs a value"; scene="$2"; shift 2 ;;
+      # Windowless, so not through mjpython: it exists for the passive viewer's
+      # main-thread constraint and nothing else.
+      --render) [ $# -ge 2 ] || die "--render needs a path"; py="$PY"
+                rest+=(--render "$2"); shift 2 ;;
+      --timeout) [ $# -ge 2 ] || die "--timeout needs seconds"; rest+=(--timeout "$2"); shift 2 ;;
+      --layout|--style) die "$1 is a RoboCasa scene flag; this engine takes --scene ithor:<n> or procthor:<n>" ;;
+      *) die "unknown view flag '$1' (try: ./run.sh help)" ;;
     esac
   done
+  [ -n "$robot" ] || die "view needs --robot <id> (try: ./run.sh help)"
+  case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
+  "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
 
+  local dataset="${scene%%:*}" index="${scene##*:}"
+  case "$scene" in
+    ithor:*|procthor:*) ;;
+    *) die "--scene: expected ithor:<n> or procthor:<n>, got '$scene'" ;;
+  esac
+  [ "$dataset" = procthor ] && dataset=procthor-10k
+  echo ">> resolving $scene (downloading if needed)"
   local xml
-  if [ -f "$scene" ]; then
-    case "$scene" in
-      /*) xml="$scene" ;;
-      *)  xml="$PWD/$scene" ;;
-    esac
-    echo ">> using scene file $scene"
-  else
-    local dataset="${scene%%:*}"
-    local index="${scene##*:}"
-    [ "$dataset" = "$index" ] && index=0
-    echo ">> resolving $dataset scene #$index (downloading if needed)"
-    xml="$("$PY" "$SIM_ROOT/tools/resolve_scene.py" "$dataset" "$index")" \
-      || die "could not resolve scene $scene"
-  fi
-  echo ">> $xml"
-
-  # Deliberately a script, not `-m mujoco.viewer`: see tools/view_scene.py.
-  # The path must be absolute, which resolve_scene.py guarantees.
-  if [ -n "$robot" ]; then
-    # Spawns one robot from robots_specs/ into the house, through its adapter in
-    # robots/<id>/. Nothing beyond the scene and the robot is involved, so this works for
-    # robots that have no grasp library yet.
-    case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
-    "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
-    exec "$MJPY" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --scene "$xml" \
-      "${rest[@]+"${rest[@]}"}"
-  fi
-  exec "$MJPY" "$SIM_ROOT/tools/view_scene.py" "$xml" "${rest[@]+"${rest[@]}"}"
+  xml="$("$PY" "$SIM_ROOT/tools/resolve_scene.py" "$dataset" "$index")" \
+    || die "could not resolve scene $scene"
+  # --ros-port 0: a view serves no wire.
+  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --scene "$xml" --ros-port 0 \
+    "${rest[@]+"${rest[@]}"}"
 }
 
 # ---------------------------------------------------------------- shell

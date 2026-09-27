@@ -78,6 +78,9 @@ DRESSING: tuple[tuple[str, tuple[float, float, float], float, float, float], ...
 #: friction changed their residual velocities by nothing to five decimal places until
 #: condim was raised; at 6 the residual speeds fell by about two orders of magnitude.
 DRESSING_CONDIM = 6
+#: How far a dressing object's origin must be from a robot's footprint to be staged: the
+#: largest dressing object's half-extent (the bowl) and a margin.
+DRESSING_CLEARANCE = 0.09
 DRESSING_FRICTION = (1.0, 0.1, 0.02)
 
 #: The reference work surface: a 0.92 x 0.92 m wood slab whose top face is exactly z = 0,
@@ -172,9 +175,8 @@ PLATE_TOP_Z = 2 * PLATE_HALF_HEIGHT  # 0.0204
 #: Where an apple sitting on the plate has its centre: plate top + apple radius.
 RESTING_Z = 0.040
 
-#: The apple's contact parameters, as a block, because an engine that supplies its own
-#: apple (`objects="engine"`) has to put them on that apple's colliders. Every one was
-#: measured: see the sphere geom in `stage()` for what each buys.
+#: The apple's contact parameters, as a block. Every one was measured: see the sphere
+#: geom in `_stage_task_objects` for what each buys.
 APPLE_CONTACT = dict(
     condim=6,
     friction=[2.0, 0.05, 0.001],
@@ -183,17 +185,22 @@ APPLE_CONTACT = dict(
 )
 
 
-def object_poses(swap: bool = False) -> dict[str, tuple[float, float, float]]:
-    """Where the apple and the plate go, in the arm base frame.
+#: Where the apple and the plate are staged, in the arm base frame, for both settings of
+#: the `--swap-objects` staging flag (spec §2.3). Swapped, they exchange places: the plate
+#: at the apple's spawn, the apple where the plate was. Heights stay the objects' own --
+#: an apple rests at its radius wherever it is put, and the plate's centre is on the
+#: surface. Only the poses change: the objects, their sizes and colours never do.
+OBJECT_POSES: dict[bool, dict[str, tuple[float, float, float]]] = {
+    False: {"apple": APPLE_SPAWN, "plate": PLATE_CENTRE},
+    True: {"apple": (PLATE_CENTRE[0], PLATE_CENTRE[1], APPLE_SPAWN[2]),
+           "plate": (APPLE_SPAWN[0], APPLE_SPAWN[1], PLATE_CENTRE[2])},
+}
 
-    ``swap`` exchanges the two: the plate at the apple's spawn, the apple where the plate
-    was. Heights stay the objects' own -- an apple rests at its radius wherever it is put,
-    and the plate's centre is on the surface. One function, so `stage()`, an engine that
-    brings native objects, and the arbiter's report all agree about the layout.
-    """
-    apple = (PLATE_CENTRE[0], PLATE_CENTRE[1], APPLE_SPAWN[2]) if swap else APPLE_SPAWN
-    plate = (APPLE_SPAWN[0], APPLE_SPAWN[1], PLATE_CENTRE[2]) if swap else PLATE_CENTRE
-    return {"apple": apple, "plate": plate}
+
+def object_poses(swap: bool = False) -> dict[str, tuple[float, float, float]]:
+    """`OBJECT_POSES[swap]`: one lookup, so `stage()`, the placement of a second
+    worktop robot and the arbiter's report all agree about the layout."""
+    return dict(OBJECT_POSES[bool(swap)])
 
 #: The pose the episode starts from: five arm joints, radians, contract order.
 #:
@@ -374,8 +381,7 @@ def stage(
     lighting: bool = False,
     extra_lights: bool = False,
     swap: bool = False,
-    objects: str = "task",
-    side_camera_mirror: bool = False,
+    keep_clear=(),
 ) -> list[str]:
     """Add the reference table -- slab, apple, plate, dressing, lights, cameras -- to a spec.
 
@@ -386,14 +392,13 @@ def stage(
     below is placed relative to it, so the contract geometry survives being dropped into
     a kitchen that knows nothing about it.
 
-    `swap` exchanges the apple's and the plate's positions (see `object_poses`).
+    `swap` exchanges the apple's and the plate's positions (see `OBJECT_POSES`). The
+    apple and the plate are always the measured YCB pair below, on every engine: no
+    staging choice changes their sizes or colours.
 
-    `objects` says who supplies the apple and the plate. ``"task"`` stages the measured
-    YCB pair below. ``"engine"`` stages neither: the engine has already put its *own*
-    apple and plate into the spec as top-level free bodies named `APPLE_BODY` and
-    `PLATE_BODY` at `object_poses()`, with `APPLE_CONTACT` on the apple's colliders --
-    and the `task_` prefix is what keeps the workspace clearing below from sinking them.
-    The arbiter reads their geometry off the compiled model either way.
+    `keep_clear` is `(world xy, radius)` circles where another robot stands on the
+    worktop: loose scene objects there are cleared as they are in the working area, and a
+    dressing object that would stand inside one is left out rather than staged into it.
 
     Loose scene objects inside `clear_radius` of the base are sunk under the floor first;
     see `CLEAR_RADIUS`. Only *movable* bodies are touched -- anything without a free joint
@@ -425,7 +430,8 @@ def stage(
     if lighting:
         _apply_visual(spec)
 
-    cleared = _clear_workspace(spec, transform, clear_radius)
+    keep_clear = [(np.asarray(xy, dtype=float)[:2], float(r)) for xy, r in keep_clear]
+    cleared = _clear_workspace(spec, transform, clear_radius, keep_clear)
 
     _add_assets(spec)
 
@@ -446,20 +452,7 @@ def stage(
         )
 
     # ---- apple and plate --------------------------------------------------------
-    poses = object_poses(swap)
-    if objects == "task":
-        _stage_task_objects(spec, transform, base_quat, poses)
-    elif objects == "engine":
-        # The engine put its own apple and plate in already, named APPLE_BODY and
-        # PLATE_BODY; nothing to stage, and the clearing above left them alone.
-        for name in (APPLE_BODY, PLATE_BODY):
-            if not any(b.name == name for b in spec.worldbody.bodies):
-                raise ValueError(
-                    f"objects='engine' but the spec has no top-level body {name!r}: the "
-                    "engine must add its native object under that name before staging"
-                )
-    else:
-        raise ValueError(f"objects must be 'task' or 'engine', not {objects!r}")
+    _stage_task_objects(spec, transform, base_quat, object_poses(swap))
 
     # ---- dressing ---------------------------------------------------------------
     # Same visual/collision split as the apple and the plate, for the same reason: a
@@ -469,6 +462,10 @@ def stage(
     # with a single mesh geom because its scene constrains neither.
     if dressing:
         for name, pos, obj_yaw, mass, scale in DRESSING:
+            where = np.asarray(_apply(transform, pos)[:2])
+            if any(float(np.linalg.norm(where - xy)) < r + DRESSING_CLEARANCE
+                   for xy, r in keep_clear):
+                continue  # a robot stands there
             body = spec.worldbody.add_body(
                 name=f"task_{name}",
                 pos=_apply(transform, pos),
@@ -513,16 +510,6 @@ def stage(
     for name, pos, xyaxes, fovy, resolution in SCENE_CAMERAS:
         right = np.asarray(xyaxes[:3], dtype=np.float64)
         up = np.asarray(xyaxes[3:], dtype=np.float64)
-        if side_camera_mirror and name == "side":
-            # The same camera reflected across the arm's x-z plane: on the -y side of
-            # the surface, looking +y. With the plate at the apple's spawn (`swap`), the
-            # reference side view has the plate between itself and the apple; from
-            # here the apple is the near object and the plate the far one. A reflection
-            # flips handedness, so the right vector is negated after mirroring to keep
-            # the image the right way round: z = right x up must stay the view's back.
-            pos = (pos[0], -pos[1], pos[2])
-            right = -right * np.array([1.0, -1.0, 1.0])
-            up = up * np.array([1.0, -1.0, 1.0])
         rot = transform[:3, :3]
         camera = spec.worldbody.add_camera(
             name=name,
@@ -539,8 +526,7 @@ def stage(
 def _stage_task_objects(spec, transform, base_quat, poses) -> None:
     """The measured YCB apple and plate, at `poses` (arm base frame).
 
-    Split out of `stage()` so an engine can supply its own pair instead
-    (`stage(objects="engine")`); everything in here is otherwise unchanged.
+    Split out of `stage()` to keep that function about the scene.
     """
     # ---- apple ------------------------------------------------------------------
     # Top-level body: MuJoCo refuses a free joint on a nested one.
@@ -749,7 +735,7 @@ def spec_delete(spec, element) -> None:
         spec.delete(element)
 
 
-def _clear_workspace(spec, transform: np.ndarray, radius: float) -> list[str]:
+def _clear_workspace(spec, transform: np.ndarray, radius: float, keep_clear=()) -> list[str]:
     """Sink every loose scene body inside the task's working area. Returns their names.
 
     Walks the body tree accumulating parent transforms, because `MjsBody.pos` is
@@ -774,10 +760,10 @@ def _clear_workspace(spec, transform: np.ndarray, radius: float) -> list[str]:
 
     def inside(point) -> bool:
         local = inverse @ np.array([*point, 1.0])
-        return (
-            float(np.hypot(local[0], local[1])) <= radius
-            and CLEAR_Z_BAND[0] < local[2] < CLEAR_Z_BAND[1]
-        )
+        if not CLEAR_Z_BAND[0] < local[2] < CLEAR_Z_BAND[1]:
+            return False
+        return float(np.hypot(local[0], local[1])) <= radius or any(
+            float(np.linalg.norm(np.asarray(point[:2]) - xy)) <= r for xy, r in keep_clear)
 
     def walk(body, parent: np.ndarray) -> None:
         here = parent @ _homogeneous(body.pos, body.quat)
@@ -998,32 +984,29 @@ class AppleOnPlate:
             # names and must not have to know how a scene spells them.
             yield name, pos, quat, lin, ang
 
-    def reach_report(self, data, reach: tuple[float, float]) -> str:
-        """Where the staged plate and apple actually are, against the arm's reach annulus.
+    def object_positions(self, data) -> dict[str, np.ndarray]:
+        """The staged apple and plate where they are in the world, off the compiled model."""
+        return {"apple": np.array(data.xpos[self._apple]),
+                "plate": np.array(data.xpos[self._plate])}
+
+    def layout_report(self, data) -> str:
+        """Where the staged plate and apple actually are, in the task robot's base frame.
 
         Read from the compiled model through `_base_from_world`, not echoed from the
-        constants: a slab that failed to stage, a plate the workspace clearing sank, or an
-        arm mounted at the wrong height would all print the constants just fine. This is
-        what makes "the plate is in reach" a check rather than an assumption, and it is
-        computed here so that both engines print the identical line.
+        constants: a slab that failed to stage, a plate the workspace clearing sank, or a
+        robot mounted at the wrong height would all print the constants just fine.
+        Whether the SO-101 can grasp them is `reach.report`'s question, not this one's.
         """
         rot = self._base_from_world[:3, :3]
         origin = self._world_from_base[:3, 3]
         parts = []
-        inside = True
         for name, body in (("plate", self._plate), ("apple", self._apple)):
             local = rot @ (np.asarray(data.xpos[body]) - origin)
-            r = float(np.hypot(local[0], local[1]))
-            ok = reach[0] <= r <= reach[1]
-            inside &= ok
-            parts.append(f"{name} r={r:.3f} m")
-        verdict = "both in reach" if inside else "NOT in reach"
+            parts.append(f"{name} at ({local[0]:.3f}, {local[1]:.3f}) r={math.hypot(local[0], local[1]):.3f} m")
         swapped = math.hypot(self._plate_centre[0] - APPLE_SPAWN[0],
                              self._plate_centre[1] - APPLE_SPAWN[1]) < 0.03
-        return (f"{', '.join(parts)} from the arm base "
-                f"(annulus {reach[0]:.2f}-{reach[1]:.2f} m: {verdict}); "
-                f"layout {'swapped' if swapped else 'standard'}, plate centre "
-                f"({self._plate_centre[0]:.3f}, {self._plate_centre[1]:.3f}), apple radius "
+        return (f"{', '.join(parts)} from the task robot's base; "
+                f"layout {'swapped' if swapped else 'standard'}, apple radius "
                 f"{self._apple_radius * 1000:.1f} mm, resting z {self._resting_z:.4f}")
 
     def instantaneous(self, data) -> tuple[bool, str]:
