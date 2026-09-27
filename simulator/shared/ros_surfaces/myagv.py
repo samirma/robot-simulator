@@ -455,63 +455,23 @@ class _Every:
         self.slack = slack
         self.next: float | None = None
 
-    def due(self, now: float) -> bool:
+    def ready(self, now: float) -> bool:
+        """Whether a tick is due, without taking it."""
         if self.next is None:
             self.next = now
-        if now + self.slack < self.next:
-            return False
+        return now + self.slack >= self.next
+
+    def take(self, now: float) -> None:
+        """Take the due tick: the next is one period after this one was due."""
         self.next += self.period
         if self.next < now - self.period:
             self.next = now + self.period
+
+    def due(self, now: float) -> bool:
+        if not self.ready(now):
+            return False
+        self.take(now)
         return True
-
-
-class _Encoder:
-    """One background thread that encodes and publishes camera frames, in order.
-
-    JPEG encoding and serialising a 640x480 rgb8 frame cost the physics thread several
-    milliseconds a frame at 30 Hz; OpenCV releases the GIL while it encodes, so moving
-    them here gives that time back to the simulation. A frame arriving while two are
-    still queued replaces the newest queued one rather than growing a backlog.
-    """
-
-    def __init__(self, work) -> None:
-        import collections
-        import threading
-
-        self._work = work
-        self._queue: collections.deque = collections.deque()
-        self._cv = threading.Condition()
-        self._closed = False
-        self._thread = threading.Thread(target=self._run, name="myagv-camera", daemon=True)
-        self._thread.start()
-
-    def submit(self, *job) -> None:
-        with self._cv:
-            if len(self._queue) >= 2:
-                self._queue.pop()
-            self._queue.append(job)
-            self._cv.notify()
-
-    def _run(self) -> None:
-        while True:
-            with self._cv:
-                while not self._queue and not self._closed:
-                    self._cv.wait()
-                if self._closed and not self._queue:
-                    return
-                job = self._queue.popleft()
-            try:
-                self._work(*job)
-            except Exception as exc:  # a bad frame must not end the stream
-                print(f"myAGV camera encode failed: {exc}", file=sys.stderr)
-
-    def close(self) -> None:
-        with self._cv:
-            self._closed = True
-            self._queue.clear()
-            self._cv.notify()
-        self._thread.join(timeout=1.0)
 
 
 # ------------------------------------------------------------------------- the surface
@@ -537,7 +497,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
     model's, and the camera and lidar bodies arrive already resolved.
     """
     from contracts.rosbridge_server import odometry
-    from mujoco_bridge import PlanarSetpoint
+    from mujoco_bridge import PlanarSetpoint, RenderWorker
 
     import robots_spec
 
@@ -598,7 +558,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
                 node=NODE_ROBOT_STATE_PUBLISHER)
 
     # -- the sensors ----------------------------------------------------------------
-    renderer = None
+    worker = None
     lidar_body, lidar_exclude, beams = -1, None, SCAN_BEAMS
     if model is not None:
         import mujoco
@@ -607,10 +567,10 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
             raise ValueError("the myAGV's camera is part of its interface; name an MJCF camera")
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, camera) < 0:
             raise ValueError(f"no camera {camera!r} in this model")
-        width, height = CAMERA_SIZE
-        model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-        model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-        renderer = mujoco.Renderer(model, height, width)
+        # Rendered off the control loop (see `RenderWorker`): a 640x480 frame is ~12 ms
+        # of GL and readback, and on this thread it held every 100 Hz stream back by it,
+        # and every other member on the port with them.
+        worker = RenderWorker(model, name=f"{bus.ns or 'myagv'} camera")
         if lidar is None:
             raise ValueError("the myAGV's lidar is part of its interface; pass `lidar`")
         lidar_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, lidar["body"])
@@ -657,25 +617,31 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
         bus.publish(TOPIC_TF, tf_message(entries, stamp_s=stamp, seq=seq(key)),
                     TYPE_TF_MESSAGE, node=node)
 
-    def publish_camera(data, stamp: float) -> None:
+    def publish_camera(data, stamp: float) -> bool:
+        """One camera tick. False when the render worker could not take the frame yet,
+        which leaves the tick due for the next step rather than dropping it."""
         if not state["capturing"]:
-            return
+            return True
         want_raw = bus.has_subscribers(TOPIC_IMAGE_RAW)
         want_jpeg = bus.has_subscribers(TOPIC_CAMERA)
+        if worker is not None and (want_raw or want_jpeg) and worker.busy:
+            return False
         n = seq("camera")
-        pixels = None
-        if renderer is not None and (want_raw or want_jpeg):
-            # The render needs the GL context and MjData, so it stays on this thread;
-            # encoding and serialising the frame do not, and go to the encoder thread.
-            renderer.update_scene(data, camera=camera, scene_option=scene_option)
-            pixels = renderer.render()
         info = state["camera_info"]
         if info is None:
             info_msg = uncalibrated_camera_info(n, frames[FRAME_CAMERA], stamp)
         else:
             info_msg = dict(info)
             info_msg["header"] = _stamp(n, frames[FRAME_CAMERA], stamp)
-        encoder.submit(n, stamp, pixels, want_raw, want_jpeg, info_msg)
+        if worker is None or not (want_raw or want_jpeg):
+            encode_and_publish(n, stamp, None, False, False, info_msg)
+            return True
+        width, height = CAMERA_SIZE
+
+        def done(pixels, _stamp_s) -> None:  # on the worker's thread
+            encode_and_publish(n, stamp, pixels, want_raw, want_jpeg, info_msg)
+
+        return worker.submit(data, stamp, [(camera, width, height, scene_option, done)])
 
     def encode_and_publish(n: int, stamp: float, pixels, want_raw: bool, want_jpeg: bool,
                            info_msg: dict) -> None:
@@ -701,13 +667,10 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
                 }, TYPE_COMPRESSED_IMAGE, node=NODE_CAMERA)
         bus.publish(TOPIC_CAMERA_INFO, info_msg, TYPE_CAMERA_INFO, node=NODE_CAMERA)
 
-    encoder = _Encoder(encode_and_publish)
-
     def step(data):
         if data is None:
-            encoder.close()
-            if renderer is not None:
-                renderer.close()
+            if worker is not None:
+                worker.close()
             return
 
         import numpy as np
@@ -791,8 +754,8 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
                         TYPE_POINT_CLOUD, node=NODE_LIDAR)
 
         # -- camera ----------------------------------------------------------------------
-        if clocks["camera"].due(now):
-            publish_camera(data, stamp)
+        if clocks["camera"].ready(now) and publish_camera(data, stamp):
+            clocks["camera"].take(now)
 
     step.rate_hz = LOOP_HZ
     print(f"myAGV under namespace {bus.ns or '<bare>'}, stepped at {LOOP_HZ:g} Hz",

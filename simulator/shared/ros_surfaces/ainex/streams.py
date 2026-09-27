@@ -11,9 +11,10 @@ What that thread publishes is a snapshot. The simulation thread owns MjData and 
 only thing that reads it (`surface.step`); it leaves the body's attitude and the latest
 camera frame here, and the clocks below turn them into messages. So the IMU's *values*
 update at the control rate and its *stream* runs at 100 Hz, which is how a 100 Hz driver
-reads a sensor that changes more slowly than it is polled. The camera is the same: MuJoCo
-can only render on the thread that steps it, so frames are rendered there, at most one per
-control tick and at most 30 a second, and the 30 Hz stream carries the latest one.
+reads a sensor that changes more slowly than it is polled. The camera is the same: the
+simulation thread hands a copy of the state to a render worker (`mujoco_bridge.
+RenderWorker`) at most once per control tick and at most 30 times a second, the worker
+renders it on a thread of its own, and the 30 Hz stream carries the latest frame.
 
 Encoding a 640x480 `sensor_msgs/Image` is 1.2 MB of base64 a frame. Each image topic is
 encoded only while a client is subscribed to it -- what a lazy image_transport publisher
@@ -186,15 +187,15 @@ def has_subscriber(bus, topic: str) -> bool:
 class HeadCamera:
     """usb_cam on the head, plus the rectify nodelet beside it.
 
-    `render` runs on the simulation thread; `publish` on the stream clock. The simulated
+    `render` runs on the simulation thread and only submits the state; the frame is
+    rendered on the render worker's thread, and `publish` runs on the stream clock. The
+    simulated
     lens has no distortion, so the rectified image is the raw one, as image_proc's rectify
     produces for a camera whose calibration has zero distortion.
     """
 
     def __init__(self, bus, model, camera: str | None, fovy_deg: float, jpeg_quality: int,
                  scene_option=None) -> None:
-        import mujoco
-
         self._bus = bus
         self._camera = camera
         self._fovy = float(fovy_deg)
@@ -203,33 +204,43 @@ class HeadCamera:
         self._frame_id = bus.frame(topics.FRAME_CAMERA)
         self._period = 1.0 / topics.RATES_HZ[topics.TOPIC_CAMERA_RAW]
         self._next = 0.0
-        self._frame: np.ndarray | None = None
+        #: `(count, rgb)` of the newest rendered frame, replaced whole so the stream
+        #: thread never pairs one frame with another's count.
+        self._latest: tuple[int, np.ndarray] | None = None
         self._count = 0
         self._cache: dict[str, tuple[int, object]] = {}
         self._seq = 0
-        self._renderer = None
+        self._worker = None
         #: Called with each new frame's (count, rgb) from the stream thread -- the vision
         #: nodes, which subscribe to image_raw on the robot.
         self.frame_listeners: list = []
         if camera is not None:
-            width, height = topics.CAMERA_SIZE
-            model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-            model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-            self._renderer = mujoco.Renderer(model, height, width)
+            from mujoco_bridge import RenderWorker
+
+            # Off the simulation thread: a 640x480 render there is ~12 ms of every tick
+            # it lands on, for this robot and every other member on the port.
+            self._worker = RenderWorker(model, name=f"{bus.ns or 'ainex'} head camera")
         else:
             print(f"no head camera: {bus.topic(topics.TOPIC_CAMERA_RAW)} and its companions "
                   "will not be published", file=sys.stderr)
 
     def render(self, data) -> None:
-        if self._renderer is None:
+        """Submit this tick's state for a frame, if one is due and the worker is free."""
+        if self._worker is None:
             return
         now = time.monotonic()
         if now < self._next:
             return
-        self._next = now + self._period
-        self._renderer.update_scene(data, camera=self._camera, scene_option=self._scene_option)
-        frame = self._renderer.render().copy()
-        self._frame, self._count = frame, self._count + 1
+        width, height = topics.CAMERA_SIZE
+        if self._worker.submit(data, float(getattr(data, "time", 0.0)),
+                               [(self._camera, width, height, self._scene_option,
+                                 self._rendered)]):
+            self._next = now + self._period
+
+    def _rendered(self, rgb: np.ndarray, _stamp_s: float) -> None:
+        """On the render worker's thread: keep the newest frame."""
+        self._count += 1
+        self._latest = (self._count, rgb.copy())
 
     def _encoded(self, kind: str, count: int, frame: np.ndarray, make):
         cached = self._cache.get(kind)
@@ -250,9 +261,10 @@ class HeadCamera:
         }
 
     def publish(self) -> None:
-        frame, count = self._frame, self._count
-        if frame is None:
+        latest = self._latest
+        if latest is None:
             return
+        count, frame = latest
         from contracts.rosbridge_server import camera_info
 
         bus = self._bus
@@ -291,9 +303,9 @@ class HeadCamera:
             return None
 
     def close(self) -> None:
-        if self._renderer is not None:
-            self._renderer.close()
-            self._renderer = None
+        if self._worker is not None:
+            self._worker.close()
+            self._worker = None
 
 
 class Clocks:

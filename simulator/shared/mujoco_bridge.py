@@ -78,9 +78,10 @@ def laser_scan_ranges(
     `origin` is the *laser* origin, not the base origin -- callers add the mount offset.
     Angles are measured in the base frame, so `yaw + angle_min` is the first beam.
 
-    The real 2023 Pi AGV carries a YDLidar X2; this stands in for it. `mj_ray` is the only
-    per-step ranging primitive MuJoCo offers -- rangefinder sensors would mean regenerating
-    the model, and depth rendering costs an order of magnitude more per beam.
+    The real 2023 Pi AGV carries a YDLidar X2; this stands in for it. Ray casting
+    (`mj_multiRay`, and `mj_ray` for re-casts) is the per-step ranging MuJoCo offers --
+    rangefinder sensors would mean regenerating the model, and depth rendering costs an
+    order of magnitude more per beam.
 
     On the beam ordering, which is easy to get backwards: the X2 is launched with
     `inverted: true` because it is mounted upside down, and `myagv_active.launch` then
@@ -98,31 +99,62 @@ def laser_scan_ranges(
     from just past the hit.
     """
     angles = yaw + np.linspace(angle_min, angle_max, beams, endpoint=False)
-    geomid = np.zeros(1, dtype=np.int32)
-    ranges = np.full(beams, max_range + 1.0)
+    vecs = np.zeros((beams, 3))
+    vecs[:, 0] = np.cos(angles)
+    vecs[:, 1] = np.sin(angles)
     origin = np.ascontiguousarray(origin, dtype=np.float64)
     exclude = exclude_bodies or frozenset()
-    # Enough to clear a limb; unbounded re-casting would turn a bad pose into a hang.
-    max_recast = 4
-    nudge = 1e-3
 
-    for i, a in enumerate(angles):
-        vec = np.array([np.cos(a), np.sin(a), 0.0])
-        start = origin
-        travelled = 0.0
-        for _ in range(max_recast + 1):
-            dist = mujoco.mj_ray(model, data, start, vec, None, 1, bodyexclude, geomid)
-            if geomid[0] < 0 or dist < 0.0:
-                break
-            total = travelled + dist
-            if model.geom_bodyid[geomid[0]] in exclude:
-                travelled = total + nudge
-                start = np.ascontiguousarray(origin + vec * travelled, dtype=np.float64)
+    # Every beam in one call: `mj_multiRay` shares the per-geom culling across the fan.
+    # On the iTHOR kitchen a 360-beam sweep went from 5.5 ms as separate `mj_ray` calls
+    # to 2.1 ms, with identical ranges -- at 30 Hz that was ~6 % of the simulation thread.
+    geomids = np.full(beams, -1, dtype=np.int32)
+    dists = np.full(beams, -1.0)
+    _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, max_range)
+    ranges = np.where((geomids >= 0) & (dists >= 0.0) & (dists <= max_range),
+                      dists, max_range + 1.0)
+
+    if exclude:
+        # A beam whose first hit is one of the excluded bodies is re-cast from just past
+        # that hit, one beam at a time; only these few take the slow path.
+        geomid = np.zeros(1, dtype=np.int32)
+        max_recast = 4   # enough to clear a limb; unbounded would turn a bad pose into a hang
+        nudge = 1e-3
+        hit_bodies = model.geom_bodyid[np.maximum(geomids, 0)]
+        for i in np.flatnonzero(geomids >= 0):
+            if int(hit_bodies[i]) not in exclude:
                 continue
-            if total <= max_range:
-                ranges[i] = total
-            break
+            ranges[i] = max_range + 1.0
+            vec = vecs[i]
+            travelled = float(dists[i]) + nudge
+            for _ in range(max_recast):
+                start = np.ascontiguousarray(origin + vec * travelled, dtype=np.float64)
+                dist = mujoco.mj_ray(model, data, start, vec, None, 1, bodyexclude, geomid)
+                if geomid[0] < 0 or dist < 0.0:
+                    break
+                total = travelled + dist
+                if model.geom_bodyid[geomid[0]] in exclude:
+                    travelled = total + nudge
+                    continue
+                if total <= max_range:
+                    ranges[i] = total
+                break
     return ranges
+
+
+def _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, cutoff) -> None:
+    """`mj_multiRay`, across the bindings' two signatures (3.5 added `normal`)."""
+    flat = np.ascontiguousarray(vecs.reshape(-1), dtype=np.float64)
+    n = len(geomids)
+    if _MULTIRAY_HAS_NORMAL:
+        mujoco.mj_multiRay(model, data, origin, flat, None, 1, bodyexclude, geomids, dists,
+                           None, n, float(cutoff))
+    else:
+        mujoco.mj_multiRay(model, data, origin, flat, None, 1, bodyexclude, geomids, dists,
+                           n, float(cutoff))
+
+
+_MULTIRAY_HAS_NORMAL = "normal" in (mujoco.mj_multiRay.__doc__ or "").split(")")[0]
 
 
 class SensorTopics:
@@ -919,9 +951,14 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
             if deadline is not None and time.monotonic() > deadline:
                 break
 
-            slack = (target_time + model.opt.timestep) - (
-                sim_start + (time.monotonic() - wall_start)
-            )
+            # Sleep only while the physics is ahead of the wall clock. Measured from where
+            # the physics *is*, not from the target this pass aimed at: a pass that broke
+            # off its catch-up for a controller tick is behind, and sleeping the rest of a
+            # timestep there held a three-robot fleet at 0.92 real time (0.97-0.99 without).
+            now = time.monotonic()
+            slack = (float(data.time) - sim_start) - (now - wall_start)
+            if controller is not None:
+                slack = min(slack, next_control - now)
             if slack > 0:
                 time.sleep(min(slack, control_period / 4))
     except KeyboardInterrupt:
