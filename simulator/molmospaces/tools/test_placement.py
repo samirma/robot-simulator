@@ -1,10 +1,11 @@
 #!/usr/bin/env python
-"""Self-test for `find_tabletop_mount`: the arm goes at the rim, looking in.
+"""Self-test for placement: every robot stands at its placement (spec §5).
 
-Standalone rather than pytest, like the robot self-tests -- a failure here points at the
-placement rule and nothing else. It runs on synthetic surfaces (rectangles, no compiled
-model), which is the whole point: a rule that only holds on FloorPlan1's island is not a
-rule, and a scene big enough to exercise it is a 13 GB download.
+Two parts. First `find_tabletop_mount`, the rule that chooses where on a worktop the task
+robot goes -- at the rim, looking in -- on synthetic surfaces (rectangles, no compiled
+model): a rule that only holds on FloorPlan1's island is not a rule. Then every simulated
+robot alone and the full fleet in the default house, on the floor or the worktop, without
+interpenetration: `shared/tests/placement_check.py`, the same checks for both engines.
 
     python tools/test_placement.py
 """
@@ -12,6 +13,7 @@ rule, and a scene big enough to exercise it is a 13 GB download.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -186,8 +188,11 @@ def main() -> int:
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")
         return 1
-    print("all checks passed")
-    return 0
+    print("mount rule: all checks passed\n")
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "shared" / "tests"))
+    import placement_check
+
+    return placement_check.run("molmospaces")
 
 
 if __name__ == "__main__":
