@@ -28,14 +28,16 @@ an external control bridge.
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
 | `robots/` | this engine's adapter for each simulated robot in `robots_specs/robots.yml` |
 | `tools/render_robots.py` | render every simulated robot; doubles as a load test |
-| `tools/test_placement.py` | self-test for where a tabletop arm gets bolted down |
+| `tools/test_placement.py` | self-test: the worktop mount rule, and every robot standing at its placement, alone and in the fleet |
 
 ## Commands
 
 ```
 ./run.sh setup                     venv + install + default assets (idempotent)
 ./run.sh assets [ithor|list|<src>] bulk pre-fetch for offline use
-./run.sh view [--scene ithor:1]    a house in the MuJoCo viewer, no robot
+./run.sh view --robot <id> [--scene ithor:1]
+                                   one robot in a house in the MuJoCo viewer; serves no
+                                   wire. --render out.png writes a frame, headless
 ./run.sh shell                     interactive shell in the venv
 ```
 
@@ -46,9 +48,8 @@ presents the ros2_control topic set a real SO-101 bringup presents, so the same 
 drives the simulated arm and a real one:
 
 ```bash
-# terminal 1: the simulator, with the task staged
-./run.sh view --robot so101 --scene ithor:1 --target bowl,apple \
-    --headless --ros-port 9090 --task apple_on_plate
+# terminal 1: the simulator, with the task staged (it is whenever a worktop robot is)
+../kitchen.sh serve --robots so101 --scene ithor:1
 
 # terminal 2: the client
 cd ../../robot_console
@@ -66,9 +67,9 @@ contracts". The two that bite hardest: `/joint_states` comes back **alphabetical
 sorted**, so index by name; and a `JointTrajectory` with no `header` is accepted and
 silently ignored by a real controller.
 
-Policies live in `robot_console`, never here. `--task` additionally stages a task's
-objects, cameras and arbiter into whatever scene the engine compiled — see
-`../shared/tasks/`.
+Policies live in `robot_console`, never here. With a worktop robot in the fleet the
+task's objects, cameras and arbiter are staged into whatever scene the engine compiled —
+see `../shared/tasks/`.
 
 ## Platform notes (macOS)
 
@@ -79,7 +80,7 @@ objects, cameras and arbiter into whatever scene the engine compiled — see
 - **`mjpython -m mujoco.viewer` does not work** — it re-executes the module and
   drops the handle mjpython stamps onto `mujoco.viewer` at startup, failing with
   `RuntimeError: Caught an unknown exception!`. The viewer must be launched from
-  a *script*, which is what `tools/view_scene.py` is for.
+  a *script*, which is what `run.sh view` runs (`tools/spawn_robot.py`).
 - `MUJOCO_GL=glfw` drives both the viewer and offscreen rendering. There is no
   EGL/OSMesa on macOS; use `MUJOCO_GL=cgl` for pure headless rendering.
 - The `mujoco-filament` extra is a Linux-x86_64-only wheel and cannot be used here.
@@ -118,9 +119,9 @@ adapter in `robots/<id>/`; their descriptions and meshes are read from
 ./run.sh view --robot so101                      # spawn it in a house, interactive
 ./run.sh view --robot myagv                      # ...or any other simulated robot
 python tools/render_robots.py --outdir /tmp/robots     # render them all
-./run.sh view --robot so101 --ros-port 9090       # ...on its ROS topics (see above)
+../kitchen.sh serve --robots so101                # ...on its ROS topics (see above)
 python robots/so101/test_attach.py               # self-test in an empty world
-python tools/test_placement.py                   # where the arm gets bolted down
+python tools/test_placement.py                   # every robot stands at its placement
 ```
 
 See [robots/README.md](robots/README.md) for how each was added and what its

@@ -12,19 +12,18 @@ the shared architecture (engines feed the one wire bridge in
 
 # A simulated robot (robots_specs/robots.yml) in a kitchen, on the real hardware's interface:
 ./run.sh view --robot so101 --layout 2 --style 7     # that kitchen in the MuJoCo viewer
-./run.sh view --robot myagv --ros-port 9090          # myAGV vendor ROS topics
-./run.sh view --robot so101 --ros-port 9091          # SO-101 on its ROS topics
-./run.sh view --robot so101 --objects bowl,apple     # ...with objects in its reach
-./run.sh view --robot myagv --headless --ros-port 9090   # no window
-./run.sh view --robot myagv --render /tmp/kitchen.png    # just a PNG
+./run.sh view --robot myagv --render /tmp/kitchen.png    # just a PNG, headless
+../kitchen.sh serve --engine robocasa --robots myagv     # on the wire: that is serve's job
+python tools/test_placement.py                       # every robot stands at its placement
+python ../shared/tests/attach_check.py --engine robocasa  # every robot attaches and moves
 ```
 
 - `--layout` 1-60, `--style` 1-60 (1-10 are the "test" set; see
   `upstream/robocasa/robocasa/models/scenes/scene_registry.py`). Both default
   to 1.
 - `./run.sh <flags>` without a subcommand is shorthand for `view <flags>`.
-- `view` always takes `--robot <id>`, an id `robots_specs/robots.yml` marks `simulated`.
-  RoboCasa is a scene provider only: no robosuite robot is ever loaded.
+- `view` always takes `--robot <id>`, an id `robots_specs/robots.yml` marks `simulated`,
+  and serves no wire. RoboCasa is a scene provider only: no robosuite robot is ever loaded.
 - On macOS the viewer runs under `mjpython` (main-thread constraint, same as
   the molmospaces engine); everything else runs under plain `python`.
 
@@ -43,23 +42,14 @@ the shared architecture (engines feed the one wire bridge in
 
 ## Shared robots in a kitchen
 
-`tools/spawn_robot.py` is the RoboCasa counterpart of the MolmoSpaces tool of the
-same name: it puts a simulated robot from `robots_specs/` (built through
-`../shared/robots_spec.py` and `../shared/robots/`) into a kitchen and presents
-it on the *hardware's* interface, so `robot_console` drives it with the same
-client and the same flags it uses against engine #1.
-
-- `--robot myagv --ros-port 9090` — the vendor `myagv_ros` topics (`/cmd_vel` in;
-  `/odom`, camera, `/scan`, depth out), served by `../shared/ros_surfaces/myagv.py`.
-- `--robot so101 --ros-port PORT` — the ros2_control topic set a real SO-101 bringup
-  presents, served from `../shared/ros_surfaces/so101.py`. The *same* file the other
-  engine uses: the topic set belongs to the arm, so a client cannot tell which engine
-  is hosting it. Add `--task apple_on_plate` to stage the task's objects, cameras and
-  success predicate into the kitchen.
-- `--objects bowl,apple` — RoboCasa objects spawned inside the arm's working
-  annulus. A RoboCasa kitchen is *fixtures*; it ships with no loose objects at
-  all, so an arm gets nothing to reach for until this puts something there.
-- `--headless`, `--render out.png`, `--timeout N` for automated checks.
+`tools/spawn_robot.py` is this engine's half of `../shared/spawn.py`, the spawn tool both
+engines run: how a kitchen is built, which counter is the worktop and where the task
+robot is mounted on it, where the open floor is, and how a shared robot model
+(`../shared/robots/`, `../shared/ainex_model.py`) is grafted in. Everything else --
+the command line, where each robot stands, the task, the ROS interfaces
+(`../shared/ros_surfaces/`), rendering and the loop -- is the shared code, so
+`robot_console` drives a robot here with the same client it uses against engine #1 and
+cannot tell them apart.
 
 **RoboCasa is a scene provider here, not a robot stack.** The kitchen comes from
 `KitchenArena` with `mujoco_robots=[]` — 44 fixtures, 825 geoms, zero actuators —
