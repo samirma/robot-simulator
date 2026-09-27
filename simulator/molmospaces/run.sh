@@ -19,6 +19,8 @@
 #                 [--task apple_on_plate]  ...and with a task staged into the scene:
 #                                      its objects, its cameras and its success predicate
 #   ./run.sh shell                     interactive shell inside the venv
+#   ./run.sh repair                    re-point the venv and assets/ at this checkout after
+#                                      it has been moved; every command does this anyway
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.
 set -euo pipefail
@@ -65,6 +67,7 @@ do_setup() {
     echo ">> creating venv on $py311"
     uv venv --python "$py311" "$VENV_DIR"
   fi
+  do_repair
 
   echo ">> installing molmospaces[mujoco]"
   # mujoco-filament is a linux-x86_64-only wheel; the plain mujoco extra is the
@@ -73,12 +76,27 @@ do_setup() {
 
   echo ">> installing default assets (robots, scene indices)"
   "$PY" -m molmo_spaces.molmo_spaces_constants
+  do_repair
 
   echo ">> setup complete"
 }
 
+# A checkout that has been moved or copied keeps working only after two things are
+# re-pointed at it, and neither fails where it breaks. The venv: uv writes absolute paths
+# into every script's shebang and the editable finder, so `python` starts while `mjpython`
+# does not. The asset tree: assets/ is absolute symlinks into data/, and the installer
+# trusts its own completion markers over the links, so a scene then "fails to download"
+# into a directory that holds it. Both are no-ops when nothing has moved, so every
+# command runs this rather than asking anyone to remember it.
+do_repair() {
+  [ -x "$PY" ] || return 0
+  "$PY" "$SHARED_ROOT/tools/relocate_venv.py" "$VENV_DIR"
+  "$PY" "$SIM_ROOT/tools/relink_assets.py"
+}
+
 ensure_setup() {
   [ -x "$PY" ] || die "not installed yet - run: ./run.sh setup"
+  do_repair
 }
 
 # ---------------------------------------------------------------- assets
@@ -185,6 +203,7 @@ case "$cmd" in
   assets) do_assets "$@" ;;
   view)   do_view "$@" ;;
   shell)  do_shell "$@" ;;
+  repair) do_repair ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the
     # first non-comment line, with the leading "# " stripped.

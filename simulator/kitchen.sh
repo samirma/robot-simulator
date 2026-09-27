@@ -260,6 +260,11 @@ engine_root() { [ "$1" = molmospaces ] && echo "$MOLMO" || echo "$ROBOCASA"; }
 need_engine() {
   [ -x "$1/.venv/bin/python" ] \
     || die "$(basename "$1") is not set up yet - run: cd $1 && ./run.sh setup"
+  # This script starts the engine's python directly rather than through its run.sh, so
+  # it has to ask for the repair a moved checkout needs itself: without it `--mujoco`
+  # dies on mjpython's shebang and MolmoSpaces reports a scene it holds as undownloadable.
+  # A no-op when nothing has moved.
+  "$1/run.sh" repair || die "could not re-point $(basename "$1") at this checkout"
 }
 
 # ---------------------------------------------------------------- engines

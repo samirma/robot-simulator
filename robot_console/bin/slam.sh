@@ -60,6 +60,13 @@ bootstrap() {
   touch "$STAMP"
 }
 
+# A moved or copied checkout leaves the venv's absolute path in every script's shebang
+# and in the editable install, so `python` starts while `inspect-robot` and the package
+# import do not. Re-pointed in place (a no-op when nothing moved) rather than rebuilt,
+# which would re-resolve every dependency. See tools/relocate_venv.py.
+[ ! -x "$PY" ] || "$PY" "$CONSOLE_ROOT/tools/relocate_venv.py" "$VENV_DIR" \
+  || die "could not re-point $VENV_DIR at this checkout"
+
 # Shared with teleop.sh: one venv, one stamp, so switching between the two launchers
 # never triggers a reinstall.
 if [ ! -x "$PY" ] || [ ! -f "$STAMP" ] || [ "$CONSOLE_ROOT/pyproject.toml" -nt "$STAMP" ]; then

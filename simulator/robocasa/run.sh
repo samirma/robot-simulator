@@ -16,6 +16,8 @@
 #                 [--render out.png]     ...or just write a PNG and exit
 #   ./run.sh --layout 1 --style 3        shorthand for `view --layout 1 --style 3`
 #   ./run.sh shell                       interactive shell inside the venv
+#   ./run.sh repair                      re-point the venv at this checkout after it has
+#                                        been moved; every command does this anyway
 #
 # Any flags after the subcommand are forwarded to the underlying entry point.
 set -euo pipefail
@@ -73,6 +75,7 @@ do_setup() {
     echo ">> creating venv on $py311"
     uv venv --python "$py311" "$VENV_DIR"
   fi
+  do_repair
 
   echo ">> installing robosuite + robocasa (editable)"
   # Editable, mirroring the molmospaces engine: out-of-tree robots and engines
@@ -87,9 +90,19 @@ do_setup() {
   echo ">> setup complete; run './run.sh assets' to fetch the kitchen assets"
 }
 
+# A moved or copied checkout: uv writes absolute paths into every script's shebang and
+# into the editable finders for robosuite and robocasa, so `python` still starts while
+# `mjpython` does not and both packages import from the old tree. A no-op when nothing
+# has moved, so every command runs it rather than asking anyone to remember it.
+do_repair() {
+  [ -x "$PY" ] || return 0
+  "$PY" "$SHARED_ROOT/tools/relocate_venv.py" "$VENV_DIR"
+}
+
 ensure_setup() {
   [ -x "$PY" ] || die "not installed yet - run: ./run.sh setup"
   [ -d "$ROBOCASA_DIR" ] || die "upstream clones missing - run: ./run.sh setup"
+  do_repair
 }
 
 # ---------------------------------------------------------------- assets
@@ -158,6 +171,7 @@ case "$cmd" in
   assets) do_assets "$@" ;;
   view)   do_view "$@" ;;
   shell)  do_shell "$@" ;;
+  repair) do_repair ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the
     # first non-comment line, with the leading "# " stripped.
