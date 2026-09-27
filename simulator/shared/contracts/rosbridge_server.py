@@ -20,12 +20,20 @@ would mean migrating the whole molmospaces stack. rosbridge is plain JSON over a
 websocket, so serving it in-process costs far less than that migration — and the real
 robot runs the stock `ros-noetic-rosbridge-suite`, so the client is identical.
 
-Implemented ops: advertise, unadvertise, publish, subscribe, unsubscribe, call_service.
-`advertise_service` and `unadvertise_service` are accepted as no-ops — nothing here
-consumes a client-provided service. TF and `robot_description` are here now: the
-transforms are ordinary topics (`contracts/tf.py`, fed by `ros_surfaces/tf_stream.py`)
-and the description is a parameter `rosapi` answers for. Anything else gets a `status`
-warning rather than an error.
+Accepted ops are exactly the spec's (§3, "Transport protocol"): `advertise`,
+`unadvertise`, `publish`, `subscribe`, `unsubscribe`, `call_service`,
+`advertise_service`, `unadvertise_service`, `set_level`, `status`, and the ROS 2 action
+ops `advertise_action`, `unadvertise_action`, `send_action_goal`, `cancel_action_goal`
+(answered with `action_feedback` and `action_result`, whose `status` is the
+`action_msgs/GoalStatus` code; each transition also goes out on the action's hidden
+`<action>/_action/status` topic). A client that advertised a service or action may also
+send the replies that advertisement implies (`service_response`, `action_feedback`,
+`action_result`). Anything else, and anything malformed, gets a `status` error.
+
+Latched publishers deliver each publisher's last message once to each new subscriber,
+and are never republished. A client's action goal ends only by its result, by
+`cancel_action_goal`, or ABORTED by `/reset` (`abort_goals`); disconnecting leaves it
+running. `serve_rosapi` answers the spec's 31 `rosapi` services.
 
 Standalone, for protocol testing without the simulator:
 
@@ -37,8 +45,10 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import socket
 import threading
 import time
+import uuid
 from typing import Any, Callable
 
 import websockets.sync.server as ws_server
@@ -360,8 +370,233 @@ def odometry(seq: int, x: float, y: float, yaw: float, vx: float, vy: float, wz:
     }
 
 
+# --------------------------------------------------------------------- the transport
+#
+# The protocol side. What a client may send is exactly the list in the spec (§3,
+# "Transport protocol"); everything else, and anything malformed, earns a rosbridge
+# `status` error rather than silence, because silence is what a client cannot debug.
+
+#: The operations a client may send. The first ten are the spec's list; the four action
+#: ops are its ROS 2 additions. `service_response`, `action_feedback` and `action_result`
+#: are accepted only as the other half of a client's own `advertise_service` /
+#: `advertise_action` -- a client that advertised a service has to be able to answer it.
+CLIENT_OPS = frozenset({
+    "advertise", "unadvertise", "publish", "subscribe", "unsubscribe",
+    "call_service", "advertise_service", "unadvertise_service", "set_level", "status",
+    "advertise_action", "unadvertise_action", "send_action_goal", "cancel_action_goal",
+})
+PROVIDER_REPLY_OPS = frozenset({"service_response", "action_feedback", "action_result"})
+
+#: `set_level` thresholds. A client receives a status message when its level is at least
+#: as verbose as the message's; `none` silences everything. rosbridge's default is `error`.
+STATUS_LEVELS = {"none": 0, "error": 1, "warning": 2, "info": 3}
+DEFAULT_STATUS_LEVEL = "error"
+
+
+class GoalStatus:
+    """`action_msgs/msg/GoalStatus`'s enumeration, which `action_result.status` carries."""
+
+    UNKNOWN = 0
+    ACCEPTED = 1
+    EXECUTING = 2
+    CANCELING = 3
+    SUCCEEDED = 4
+    CANCELED = 5
+    ABORTED = 6
+
+    TERMINAL = frozenset({SUCCEEDED, CANCELED, ABORTED})
+
+
+class GlobalName(str):
+    """A node name a `NamespacedBus` must take literally rather than compose.
+
+    Node names are composed with the member's namespace like every other name (a ROS 2
+    bringup under `-r __ns:=/so101` namespaces its nodes too). The exception is a node
+    that is not the vendor's -- `/simulator`, which provides the workspace-owned `/reset`
+    -- and wrapping it in this type is how a surface says so.
+    """
+
+
+#: The node that provides the workspace-owned `/reset` (spec §3).
+SIMULATOR_NODE = GlobalName("/simulator")
+#: The protocol-defined runtime nodes: `rosapi`'s services belong to `/rosapi`, and every
+#: client's advertisement (and subscription) to `/rosbridge_websocket`.
+ROSAPI_NODE = "/rosapi"
+BRIDGE_NODE = "/rosbridge_websocket"
+#: What `/rosapi/get_ros_version` answers. See `serve_rosapi` for why this is ROS 2.
+ROS_VERSION = 2
+ROS_DISTRO = "jazzy"
+
+
+class _Client:
+    """One websocket's protocol state."""
+
+    def __init__(self, websocket) -> None:
+        self.ws = websocket
+        self.level = DEFAULT_STATUS_LEVEL
+        # topic -> subscription ids (None for a subscription that gave none)
+        self.subs: dict[str, set] = {}
+        # topic -> {"type": str, "ids": set, "latched": bool}
+        self.adverts: dict[str, dict] = {}
+        self.services: dict[str, str] = {}   # advertised service -> type
+        self.actions: dict[str, str] = {}    # advertised action -> type
+        # (action, client goal id) -> goal this client sent. Outlives the connection:
+        # a client that disconnects leaves its goals running (spec §2.2).
+        self.goals: dict[tuple[str, Any], "ActionGoal"] = {}
+        self.open = True
+
+    @property
+    def latch_key(self) -> tuple:
+        return ("client", id(self))
+
+    def send(self, frame: str) -> bool:
+        if not self.open:
+            return False
+        try:
+            self.ws.send(frame)
+            return True
+        except Exception:
+            return False
+
+
+class ActionGoal:
+    """One goal on one action, as the surface that executes it sees it.
+
+    A surface's `execute(goal)` runs on a thread of its own, reads `goal.args`, may call
+    `goal.publish_feedback(values)` as often as it likes, and returns the result's values.
+    It should watch `goal.cancel_requested` (or block on `goal.wait_for_cancel(t)`): once
+    a client's `cancel_action_goal` is accepted, returning ends the goal CANCELED rather
+    than SUCCEEDED. It may also end the goal itself with `succeed`, `abort` or `canceled`,
+    from any thread, in which case its return value is ignored.
+
+    A goal aborted by `/reset` (`RosBridgeServer.abort_goals`) is finished at once: its
+    result goes out ABORTED immediately, `cancel_requested` turns true so the executor can
+    stop, and whatever the executor later returns is dropped.
+    """
+
+    def __init__(self, server: "RosBridgeServer", action: str, action_type: str,
+                 args: dict, client: _Client | None, client_id, feedback: bool,
+                 member: str | None) -> None:
+        self._server = server
+        self.uuid = uuid.uuid4().bytes
+        self.id = self.uuid.hex()
+        self.action = action
+        self.action_type = action_type
+        self.args = args
+        self.member = member
+        self._client = client
+        self._client_id = client_id
+        self._feedback = feedback
+        self._status = GoalStatus.ACCEPTED
+        self._cancel = threading.Event()
+        self._done = threading.Event()
+        self._lock = threading.Lock()
+        self.stamp_s = server.now()
+        # For a goal relayed to a client-provided action server: the id it was sent under.
+        self.relay_id: str | None = None
+
+    # -- what a surface reads ---------------------------------------------------------
+
+    @property
+    def status(self) -> int:
+        return self._status
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel.is_set()
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait_for_cancel(self, timeout: float | None = None) -> bool:
+        return self._cancel.wait(timeout)
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until the goal has a result. For tests and for callers that must know."""
+        return self._done.wait(timeout)
+
+    # -- what a surface does ----------------------------------------------------------
+
+    def publish_feedback(self, values: dict) -> None:
+        if self.done:
+            return
+        if self._feedback and self._client is not None:
+            frame = {"op": "action_feedback", "action": self.action, "values": values}
+            if self._client_id is not None:
+                frame["id"] = self._client_id
+            self._client.send(json.dumps(frame))
+
+    def succeed(self, values: dict | None = None) -> bool:
+        return self._finish(GoalStatus.SUCCEEDED, values or {})
+
+    def abort(self, values: dict | None = None) -> bool:
+        return self._finish(GoalStatus.ABORTED, values or {})
+
+    def canceled(self, values: dict | None = None) -> bool:
+        return self._finish(GoalStatus.CANCELED, values or {})
+
+    # -- internals ----------------------------------------------------------------------
+
+    def _set_status(self, status: int) -> None:
+        with self._lock:
+            if self.done or self._status == status:
+                return
+            self._status = status
+        self._server._action_status_changed(self)
+
+    def _finish(self, status: int, values, result: bool = True) -> bool:
+        with self._lock:
+            if self._done.is_set():
+                return False
+            self._status = status
+            self._done.set()
+        # rosbridge's success path: `result: true` with the terminal status, whatever it
+        # is -- a CANCELED or ABORTED goal still has a (possibly empty) result message.
+        frame = {"op": "action_result", "action": self.action, "values": values,
+                 "status": int(status), "result": bool(result)}
+        if self._client_id is not None:
+            frame["id"] = self._client_id
+        if self._client is not None:
+            self._client.send(json.dumps(frame))
+        self._server._goal_finished(self)
+        return True
+
+
+class _ActionServer:
+    """A registered action: a surface's executor, or a client's advertisement."""
+
+    def __init__(self, name: str, action_type: str, *, execute=None, cancel=None,
+                 node: str | None = None, member: str | None = None,
+                 provider: _Client | None = None) -> None:
+        self.name = name
+        self.type = action_type
+        self.execute = execute
+        self.cancel = cancel
+        self.node = node
+        self.member = member
+        self.provider = provider
+
+
 class RosBridgeServer:
-    """Serves the rosbridge protocol on a websocket, for one or more clients."""
+    """Serves the rosbridge protocol on a websocket, for one or more clients.
+
+    The surface-facing API -- what a robot's surface calls, usually through a
+    `NamespacedBus`:
+
+    * `publish(topic, msg, type, latched=False, publisher=node)` -- send to every
+      subscribed client. `latched=True` keeps that publisher's last message and delivers
+      it once to each new subscriber, as a latched / transient-local publisher does; it is
+      never republished.
+    * `advertise(topic, type, node=...)` -- declare a publication before its first message.
+    * `on(topic, callback, type, node=...)` -- consume what clients publish.
+    * `service(name, callback, type, node=...)` -- answer `call_service`.
+    * `action(name, type, execute, cancel=None, node=..., member=...)` -- a ROS 2 action
+      server; see `ActionGoal` for the executor's contract.
+    * `abort_goals(member=None)` -- what `/reset` calls: every outstanding goal (of one
+      member, or all) ends ABORTED now.
+    * `set_param(name, value)`, `set_time(sim_seconds)`.
+    """
 
     def __init__(self, host: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:
         self._host = host
@@ -370,267 +605,151 @@ class RosBridgeServer:
         self._thread: threading.Thread | None = None
         self._shutdown = threading.Event()
 
-        self._lock = threading.Lock()
-        # connection -> set of topics that connection subscribed to
-        self._clients: dict[Any, set[str]] = {}
+        # Guards every table below. Never held while sending to a socket.
+        self._lock = threading.RLock()
+        self._clients: dict[Any, _Client] = {}
         # topic -> callback invoked when a client publishes to it
         self._handlers: dict[str, Callable[[dict], None]] = {}
         # service name -> callback returning the response's `values`
         self._services: dict[str, Callable[[dict], dict]] = {}
-        # topic -> ROS type string, learned from what has actually been published. This
-        # is what `rosapi` answers from; see `serve_rosapi`.
+        # topic -> type, for what the surfaces publish (declared by `advertise`, or learned
+        # from the first `publish` that names a type).
         self._published_types: dict[str, str] = {}
-        # topic -> ROS type string for what this server *accepts*, declared by `on`. Kept
-        # apart from `_published_types` because the two are learned differently: a
-        # publication announces its own type the first time it goes out, a subscription
-        # has to be told.
+        # topic -> type for what the surfaces consume, declared by `on`.
         self._subscribed_types: dict[str, str] = {}
-        # service name -> ROS service type, declared by `service`. The same gap `on` had:
-        # a type is not needed to route a call, and without one `/rosapi/services` can
-        # list names while `/rosapi/service_type` has nothing to answer with.
+        # service name -> type, declared by `service`.
         self._service_types: dict[str, str] = {}
-        # name (topic or service) -> the namespace that declared it, filled by
-        # `NamespacedBus`. It is what lets `publishers`, `subscribers`, `nodes` and
-        # `node_details` answer from something real: a namespace is one robot's surface,
-        # which is what a vendor bringup runs as one node.
-        self._owner: dict[str, str] = {}
-        # parameter name -> value, for the parameters a real bringup would have set.
-        # `robot_description` is the one that matters: `robot_state_publisher` reads the
-        # URDF from it, and so does every client that draws a robot. This server used to
-        # answer `get_param` with the empty string unconditionally, which is what left a
-        # client able to see a robot's joint angles and unable to learn what its body is.
+        # Who provides what, as the node names a real graph would report.
+        self._pub_nodes: dict[str, set[str]] = {}
+        self._sub_nodes: dict[str, set[str]] = {}
+        self._service_nodes: dict[str, str] = {}
+        # name -> node, from the legacy `claim`; used only where no role recorded a node.
+        self._fallback_node: dict[str, str] = {}
+        # parameter name -> value
         self._params: dict[str, Any] = {}
+        # topic -> {publisher key -> the frame it last published latched}
+        self._latched: dict[str, dict[Any, str]] = {}
+        # action name -> server (a surface's or a client's)
+        self._actions: dict[str, _ActionServer] = {}
+        # goal id -> every goal that has not finished
+        self._goals: dict[str, ActionGoal] = {}
+        # relay ids for calls and goals forwarded to a client-provided server
+        self._relay_calls: dict[str, tuple[_Client, Any, str, _Client]] = {}
+        self._relay_goals: dict[str, ActionGoal] = {}
+        self._relay_counter = 0
+        # client-provided services: name -> (client, type)
+        self._client_services: dict[str, tuple[_Client, str]] = {}
+        self._sim_time: float | None = None
+        self._rosapi = False
         self._seq = 0
 
-    # -- lifecycle ---------------------------------------------------------------
+    # -- registration --------------------------------------------------------------
 
     def on(
-        self, topic: str, callback: Callable[[dict], None], message_type: str | None = None
+        self, topic: str, callback: Callable[[dict], None], message_type: str | None = None,
+        *, node: str | None = None,
     ) -> None:
         """Register a handler for messages clients publish to `topic`.
 
         `message_type` is optional only because it is not needed to *route* a message --
-        but pass it, because it is what makes the topic discoverable. A real `rosapi`
-        lists a node's subscriptions alongside its publications, so a client can find out
-        how to command a robot as well as how to observe it; with no type recorded here
-        the command topics are invisible to discovery and only the published ones answer
-        `/rosapi/topics`.
+        but pass it, because it is what makes the topic discoverable through rosapi.
+        Refuses a second handler rather than overwrite: two robots on one topic means the
+        namespaces were not applied, and the first would stop responding in silence.
         """
         topic = normalise(topic)
-        # Refuse rather than overwrite. This dict is one callback per topic, so before
-        # this check a second robot attaching the same surface to the same server took
-        # the first one's `/cmd_vel` away in silence -- the first robot then sat still
-        # while both published `/odom` onto one topic, which reads as a physics bug and
-        # is not one. Namespacing is what makes a fleet legal; a collision means the
-        # namespaces were not applied, and that is worth failing on.
-        if topic in self._handlers:
-            raise ValueError(
-                f"{topic} already has a handler on this server. Two robots sharing one "
-                "bridge must each be namespaced (see ns_topic); without that they "
-                "silently overwrite each other's command topics."
-            )
-        self._handlers[topic] = callback
-        if message_type is not None:
-            self._subscribed_types[topic] = message_type
+        with self._lock:
+            if topic in self._handlers:
+                raise ValueError(
+                    f"{topic} already has a handler on this server. Two robots sharing one "
+                    "bridge must each be namespaced (see ns_topic); without that they "
+                    "silently overwrite each other's command topics."
+                )
+            self._handlers[topic] = callback
+            if message_type is not None:
+                self._subscribed_types[topic] = message_type
+            if node:
+                self._sub_nodes.setdefault(topic, set()).add(node)
+
+    def advertise(self, topic: str, message_type: str, *, node: str | None = None) -> None:
+        """Declare a publication before its first message, so discovery lists it."""
+        topic = normalise(topic)
+        with self._lock:
+            self._published_types.setdefault(topic, message_type)
+            if node:
+                self._pub_nodes.setdefault(topic, set()).add(node)
 
     def service(
-        self, name: str, callback: Callable[[dict], dict], service_type: str | None = None
+        self, name: str, callback: Callable[[dict], dict], service_type: str | None = None,
+        *, node: str | None = None,
     ) -> None:
         """Register a handler for `call_service` on `name`.
 
-        The handler receives the request's `args` and returns the response's `values`.
-        Raising is reported as `result: false` with the message in `values`, which is what
-        rosbridge does for a service that threw -- a caller is blocked on the response, so
-        it needs an answer either way.
-
-        `service_type` is optional only because it is not needed to *route* a call -- but
-        pass it, for the same reason `on` asks for a message type: it is what makes the
-        service discoverable through `/rosapi/services` and `/rosapi/service_type`, and
-        what `/rosapi/service_request_details` resolves the schema from.
-
-        Like `on`, the handler runs on the calling client's reader thread rather than on
-        the simulation thread, so it may only touch small shared state; never MjData.
+        The handler receives the request's `args` and returns the response's `values`;
+        raising is reported as `result: false`. It runs on the calling client's reader
+        thread, so it may only touch small shared state -- never MjData. One provider per
+        name: a second registration raises (spec §3).
         """
         name = normalise(name)
-        if name in self._services:
-            raise ValueError(f"service {name} is already registered on this server")
-        self._services[name] = callback
-        if service_type is not None:
-            self._service_types[name] = service_type
+        with self._lock:
+            if name in self._services or name in self._actions:
+                raise ValueError(f"service {name} is already registered on this server")
+            self._services[name] = callback
+            if service_type is not None:
+                self._service_types[name] = service_type
+            if node:
+                self._service_nodes[name] = node
+
+    def action(
+        self, name: str, action_type: str, execute: Callable[[ActionGoal], dict | None],
+        *, cancel: Callable[[ActionGoal], bool] | None = None, node: str | None = None,
+        member: str | None = None,
+    ) -> None:
+        """Register a ROS 2 action server on `name`.
+
+        `execute(goal)` runs on a thread per goal and returns the result's values (see
+        `ActionGoal`). `cancel(goal)` decides whether a client's cancel is accepted; by
+        default every cancel is. `member` is the namespace `abort_goals` selects by.
+        """
+        name = normalise(name)
+        with self._lock:
+            if name in self._actions or name in self._services:
+                raise ValueError(f"action {name} is already registered on this server")
+            self._actions[name] = _ActionServer(
+                name, action_type, execute=execute, cancel=cancel, node=node, member=member,
+            )
 
     def claim(self, namespace: str, name: str) -> None:
-        """Record that `namespace`'s surface declared `name` (a topic or a service)."""
-        self._owner[normalise(name)] = namespace
+        """Record that `namespace`'s surface declared `name`.
+
+        Kept for callers that predate per-role node names: the namespace, as a node,
+        answers for `name` wherever no role recorded a node of its own.
+        """
+        if namespace:
+            self._fallback_node[normalise(name)] = f"/{namespace.strip('/')}"
 
     def set_param(self, name: str, value: Any) -> None:
-        """Set a ROS parameter, as a bringup's launch file would.
-
-        Refuses to overwrite for the same reason `on` does: two robots writing one
-        `robot_description` means the namespaces were not applied, and the client would
-        then draw both of them with whichever body won.
-        """
+        """Set a ROS parameter, as a bringup's launch file would. Refuses to overwrite."""
         name = normalise(name)
-        if name in self._params:
-            raise ValueError(
-                f"parameter {name} is already set on this server. Two robots sharing one "
-                "bridge must each be namespaced (see ns_topic); without that they "
-                "silently overwrite each other's description."
-            )
-        self._params[name] = value
-
-    def serve_rosapi(self) -> None:
-        """Answer the `rosapi` introspection queries a real rosbridge answers.
-
-        Real rosbridge ships `rosapi` alongside it -- `rosbridge_websocket.launch` starts
-        `rosapi_node` unconditionally, and a real AiNex's launch file does exactly that
-        with every glob set to `[*]` -- so clients written against a real bridge assume
-        all of it. This used to implement two queries, the two a camera page made,
-        and a client asking anything else got `no service`: not "unknown type", not an
-        empty list, but a bridge that could not be asked what a topic's type was. That is
-        the largest way a client could tell this simulator from the robot it claims to be
-        indistinguishable from, and it was found by a client doing nothing unusual.
-
-        Every answer below is true *of this simulator*. Where that differs from what the
-        hardware would say, it is said here rather than papered over:
-
-        * `topics`, `topic_type`, `topics_for_type`, `services`, `service_type` -- from the
-          server's own tables. These *are* the contract, and contract tests already hold
-          them equal to the console's copies.
-        * `message_details`, `service_request_details`, `service_response_details` -- from
-          `message_schemas`, transcribed from each manufacturer's definition files with
-          provenance recorded there.
-        * `publishers`, `subscribers`, `nodes`, `node_details` -- the **namespace** that
-          declared the name. A real robot returns node names (`/ainex_controller`); there
-          are no nodes here, and a namespace -- one robot's surface -- is the closest true
-          statement. No client in this project uses node names.
-        * `get_param_names`, `get_param` -- the parameters a surface actually set, which
-          in practice means each robot's `robot_description`. They answered empty until
-          the transform tree went in, and that was the other half of the same gap: a
-          client could be told a frame's name and never what the body in it looks like.
-          A real robot's parameter server holds a great deal more than one URDF per
-          robot, and none of the rest is here -- a difference, stated.
-        * `action_servers` -- empty, which is true: this simulator runs none by design
-          (the gripper is a topic; see CLAUDE.md).
-        * `get_ros_version` -- 1, the dialect of this rosapi surface itself. The graph
-          carries **two dialects by design** (ROS 1 for the myAGV and AiNex, ROS 2 for the
-          SO-101), so a client must read per-topic types from `topics` and never infer
-          them from this.
-
-        `topics` reports what has actually been published at least once -- not what was
-        advertised, because on this server nothing advertises: publishers are the surface
-        code, not clients -- plus the command topics the surface declared to `on`, which is
-        the half a client needs to discover how to *drive* the robot rather than only how
-        to watch it. `topics_for_type` deliberately answers from publications alone. Its
-        one caller asks for everything publishing CompressedImage and subscribes to the
-        answer, so folding subscriptions in could only ever hand it a topic to listen to
-        that nothing sends.
-        """
-        from contracts import message_schemas as schemas
-
-        # Idempotent: a fleet's owner calls this once, but a single-robot surface used to
-        # call it for itself, and `service()` refuses a duplicate registration.
-        if "/rosapi/topics" in self._services:
-            return
-
-        def _known_topics() -> dict[str, str]:
-            return {**self._subscribed_types, **self._published_types}
-
-        def _owners_of(name: str) -> list[str]:
-            owner = self._owner.get(normalise(name))
-            return [f"/{owner}"] if owner else []
-
-        def topics(_args: dict) -> dict:
-            known = _known_topics()
-            names = sorted(known)
-            return {"topics": names, "types": [known[n] for n in names]}
-
-        def topics_for_type(args: dict) -> dict:
-            wanted = args.get("type")
-            return {"topics": sorted(n for n, t in self._published_types.items() if t == wanted)}
-
-        def topic_type(args: dict) -> dict:
-            return {"type": _known_topics().get(normalise(args.get("topic", "")), "")}
-
-        def services(_args: dict) -> dict:
-            return {"services": sorted(self._services)}
-
-        def service_type(args: dict) -> dict:
-            return {"type": self._service_types.get(normalise(args.get("service", "")), "")}
-
-        def publishers(args: dict) -> dict:
-            name = normalise(args.get("topic", ""))
-            return {"publishers": _owners_of(name) if name in self._published_types else []}
-
-        def subscribers(args: dict) -> dict:
-            name = normalise(args.get("topic", ""))
-            return {"subscribers": _owners_of(name) if name in self._subscribed_types else []}
-
-        def nodes(_args: dict) -> dict:
-            return {"nodes": sorted({f"/{ns}" for ns in self._owner.values()})}
-
-        def node_details(args: dict) -> dict:
-            node = str(args.get("node", "")).lstrip("/")
-            mine = {n for n, ns in self._owner.items() if ns == node}
-            return {
-                "subscribing": sorted(n for n in mine if n in self._subscribed_types),
-                "publishing": sorted(n for n in mine if n in self._published_types),
-                "services": sorted(n for n in mine if n in self._services),
-            }
-
-        def message_details(args: dict) -> dict:
-            return {"typedefs": schemas.typedefs(str(args.get("type", "")))}
-
-        def service_request_details(args: dict) -> dict:
-            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "request")}
-
-        def service_response_details(args: dict) -> dict:
-            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "response")}
-
-        def get_param_names(_args: dict) -> dict:
-            return {"names": sorted(self._params)}
-
-        def get_param(args: dict) -> dict:
-            """rosapi returns a parameter **JSON-encoded**, and a client decodes it.
-
-            `rosapi/GetParam` declares `string value`, and the real node fills it with
-            `json.dumps(rospy.get_param(...))` -- which is why roslibpy's `Param.get`
-            runs the answer back through `json.loads`. Handing back the raw URDF instead
-            would decode as a JSON syntax error at the client, so a robot's description
-            would arrive as a parse failure rather than as a body.
-            """
-            name = normalise(str(args.get("name", "")))
+        with self._lock:
             if name in self._params:
-                return {"value": json.dumps(self._params[name])}
-            # rosapi answers an unset parameter with the caller's own default, verbatim.
-            return {"value": args.get("default", "")}
+                raise ValueError(
+                    f"parameter {name} is already set on this server. Two robots sharing one "
+                    "bridge must each be namespaced (see ns_topic); without that they "
+                    "silently overwrite each other's description."
+                )
+            self._params[name] = value
 
-        def action_servers(_args: dict) -> dict:
-            return {"action_servers": []}
+    # -- time ---------------------------------------------------------------------
 
-        def get_ros_version(_args: dict) -> dict:
-            return {"version": 1, "distro": ""}
+    def set_time(self, sim_seconds: float) -> None:
+        """The simulated clock `/rosapi/get_time` answers from. The fleet feeds it."""
+        self._sim_time = float(sim_seconds)
 
-        for name, handler, stype in (
-            ("/rosapi/topics", topics, "rosapi/Topics"),
-            ("/rosapi/topics_for_type", topics_for_type, "rosapi/TopicsForType"),
-            ("/rosapi/topic_type", topic_type, "rosapi/TopicType"),
-            ("/rosapi/services", services, "rosapi/Services"),
-            ("/rosapi/service_type", service_type, "rosapi/ServiceType"),
-            ("/rosapi/publishers", publishers, "rosapi/Publishers"),
-            ("/rosapi/subscribers", subscribers, "rosapi/Subscribers"),
-            ("/rosapi/nodes", nodes, "rosapi/Nodes"),
-            ("/rosapi/node_details", node_details, "rosapi/NodeDetails"),
-            ("/rosapi/message_details", message_details, "rosapi/MessageDetails"),
-            ("/rosapi/service_request_details", service_request_details,
-             "rosapi/ServiceRequestDetails"),
-            ("/rosapi/service_response_details", service_response_details,
-             "rosapi/ServiceResponseDetails"),
-            ("/rosapi/get_param_names", get_param_names, "rosapi/GetParamNames"),
-            ("/rosapi/get_param", get_param, "rosapi/GetParam"),
-            ("/rosapi/action_servers", action_servers, "rosapi/GetActionServers"),
-            ("/rosapi/get_ros_version", get_ros_version, "rosapi/GetROSVersion"),
-        ):
-            self.service(name, handler, stype)
+    def now(self) -> float:
+        """Simulated time once the loop has reported any; the wall clock before that."""
+        return self._sim_time if self._sim_time is not None else time.time()
+
+    # -- lifecycle ---------------------------------------------------------------
 
     def start(self) -> None:
         self._server = ws_server.serve(
@@ -643,11 +762,12 @@ class RosBridgeServer:
     def stop(self) -> None:
         self._shutdown.set()
         with self._lock:
-            connections = list(self._clients)
+            clients = list(self._clients.values())
             self._clients.clear()
-        for conn in connections:
+        for client in clients:
+            client.open = False
             try:
-                conn.close()
+                client.ws.close()
             except Exception:
                 pass
         if self._server is not None:
@@ -665,131 +785,880 @@ class RosBridgeServer:
 
     # -- publishing --------------------------------------------------------------
 
-    def publish(self, topic: str, msg: dict, message_type: str | None = None) -> None:
-        """Send a message to every client subscribed to `topic`."""
+    def publish(self, topic: str, msg: dict, message_type: str | None = None, *,
+                latched: bool = False, publisher: str | None = None) -> None:
+        """Send a message to every client subscribed to `topic`.
+
+        `latched=True` makes this publisher latched: its last message (one per
+        `publisher`) is delivered once to each client that subscribes later.
+        """
         topic = normalise(topic)
-        if message_type is not None:
-            self._published_types.setdefault(normalise(topic), message_type)
+        if message_type is not None and topic not in self._published_types:
+            with self._lock:
+                self._published_types.setdefault(topic, message_type)
+        if publisher and publisher not in self._pub_nodes.get(topic, ()):
+            with self._lock:
+                self._pub_nodes.setdefault(topic, set()).add(publisher)
         frame = json.dumps({"op": "publish", "topic": topic, "msg": msg})
+        self._deliver(topic, frame, (publisher or "") if latched else None)
+
+    def _deliver(self, topic: str, frame: str, latch_key=None) -> None:
         with self._lock:
-            targets = [c for c, topics in self._clients.items() if topic in topics]
-        for conn in targets:
+            if latch_key is not None:
+                self._latched.setdefault(topic, {})[latch_key] = frame
+            targets = [c for c in self._clients.values() if topic in c.subs]
+        for client in targets:
+            # A client that went away is dropped on its handler thread; losing a frame
+            # here must not interrupt the simulation loop.
+            client.send(frame)
+
+    # -- actions, server side ------------------------------------------------------
+
+    def abort_goals(self, member: str | None = None) -> int:
+        """End every outstanding goal ABORTED, now. What `/reset` calls.
+
+        `member` selects one member's actions by the namespace they were registered
+        under; `None` aborts every goal on the server, including goals relayed to a
+        client-provided action server (which is also told to cancel them). Returns how
+        many goals were aborted.
+        """
+        with self._lock:
+            goals = [g for g in self._goals.values()
+                     if member is None or g.member == member]
+        count = 0
+        for goal in goals:
+            if goal._finish(GoalStatus.ABORTED, {}):
+                count += 1
+            goal._cancel.set()
+            if goal.relay_id is not None:
+                spec = self._actions.get(goal.action)
+                if spec is not None and spec.provider is not None:
+                    spec.provider.send(json.dumps({"op": "cancel_action_goal",
+                                                   "id": goal.relay_id,
+                                                   "action": goal.action}))
+        return count
+
+    def _goal_finished(self, goal: ActionGoal) -> None:
+        with self._lock:
+            self._goals.pop(goal.id, None)
+            if goal.relay_id is not None:
+                self._relay_goals.pop(goal.relay_id, None)
+        self._action_status_changed(goal)
+
+    def _action_status_changed(self, goal: ActionGoal) -> None:
+        """Publish the action's `GoalStatusArray` on its hidden `_action/status` topic.
+
+        That is where a ROS 2 action server reports status, so a client that subscribes
+        to it sees each transition. It is delivered to subscribers only: rosapi does not
+        list an action's hidden topics.
+        """
+        with self._lock:
+            goals = [g for g in self._goals.values() if g.action == goal.action]
+        if goal not in goals:
+            goals.append(goal)
+        status_list = []
+        for g in goals:
+            sec = int(g.stamp_s)
+            status_list.append({
+                "goal_info": {
+                    "goal_id": {"uuid": base64.b64encode(g.uuid).decode("ascii")},
+                    "stamp": {"sec": sec, "nanosec": int(round((g.stamp_s - sec) * 1e9))},
+                },
+                "status": int(g.status),
+            })
+        topic = f"{goal.action}/_action/status"
+        self._deliver(topic, json.dumps({"op": "publish", "topic": topic,
+                                         "msg": {"status_list": status_list}}))
+
+    def _run_goal(self, spec: _ActionServer, goal: ActionGoal) -> None:
+        goal._set_status(GoalStatus.EXECUTING)
+        try:
+            values = spec.execute(goal)
+        except Exception:
+            log.exception("action %s failed", spec.name)
+            goal.abort({})
+            return
+        if goal.done:
+            return
+        if goal.cancel_requested:
+            goal.canceled(values or {})
+        else:
+            goal.succeed(values or {})
+
+    # -- rosapi --------------------------------------------------------------------
+
+    def _topic_type(self, topic: str) -> str | None:
+        with self._lock:
+            if topic in self._published_types:
+                return self._published_types[topic]
+            if topic in self._subscribed_types:
+                return self._subscribed_types[topic]
+            for client in self._clients.values():
+                advert = client.adverts.get(topic)
+                if advert is not None:
+                    return advert["type"]
+        return None
+
+    def _known_topics(self) -> dict[str, str]:
+        with self._lock:
+            known: dict[str, str] = {}
+            for client in self._clients.values():
+                for topic, advert in client.adverts.items():
+                    known.setdefault(topic, advert["type"])
+            known.update(self._subscribed_types)
+            known.update(self._published_types)
+            return known
+
+    def _publishers_of(self, topic: str) -> list[str]:
+        with self._lock:
+            nodes = set(self._pub_nodes.get(topic, ()))
+            if not nodes and topic in self._published_types and topic in self._fallback_node:
+                nodes.add(self._fallback_node[topic])
+            if any(topic in c.adverts for c in self._clients.values()):
+                nodes.add(BRIDGE_NODE)
+        return sorted(nodes)
+
+    def _subscribers_of(self, topic: str) -> list[str]:
+        with self._lock:
+            nodes = set(self._sub_nodes.get(topic, ()))
+            if not nodes and topic in self._subscribed_types and topic in self._fallback_node:
+                nodes.add(self._fallback_node[topic])
+            if any(topic in c.subs for c in self._clients.values()) and \
+                    topic in self._known_topics():
+                nodes.add(BRIDGE_NODE)
+        return sorted(nodes)
+
+    def _service_table(self) -> dict[str, str]:
+        """service name -> type, for every service on the graph (the surfaces' and clients')."""
+        with self._lock:
+            table = {name: self._service_types.get(name, "") for name in self._services}
+            for name, (_client, stype) in self._client_services.items():
+                table.setdefault(name, stype)
+            return table
+
+    def _service_node(self, name: str) -> str:
+        with self._lock:
+            if name in self._service_nodes:
+                return self._service_nodes[name]
+            if name in self._client_services:
+                return BRIDGE_NODE
+            if name in self._services:
+                return self._fallback_node.get(name, "")
+        return ""
+
+    def _action_node(self, name: str) -> str:
+        spec = self._actions.get(name)
+        if spec is None:
+            return ""
+        if spec.provider is not None:
+            return BRIDGE_NODE
+        return spec.node or self._fallback_node.get(name, "")
+
+    def serve_rosapi(self) -> None:
+        """Answer the 31 `rosapi` services the spec lists (§3, "Discovery").
+
+        Topic, service and action answers come from this server's own tables; message,
+        service and action details from `message_schemas`, which records their provenance.
+        Node answers name the node each surface declared for a name (composed with its
+        namespace by `NamespacedBus`), `/rosapi` for these services and
+        `/rosbridge_websocket` for everything a client advertised or subscribed to.
+        Parameter values travel JSON-encoded, both ways.
+
+        **The dialect of this rosapi is ROS 2 Jazzy**, although the graph carries ROS 1
+        members beside ROS 2 ones. The transport is rosbridge 2.x (it speaks the ROS 2
+        action ops) and six of the 31 services -- `get_ros_version` among them -- exist
+        only in the ROS 2 `rosapi_node`, so the node answering them is that one:
+        `get_ros_version` answers `{version: 2, distro: "jazzy"}` exactly as Jazzy's
+        rosapi does from `ROS_VERSION`/`ROS_DISTRO`, and the services both nodes share
+        answer in their ROS 2 shape (`get_time` as `builtin_interfaces/Time`,
+        `get_param` with `successful`/`reason`, `default_value` accepted beside ROS 1's
+        `default`). The two the ROS 2 node lacks, `service_host` and `search_param`,
+        answer in the ROS 1 node's shape. A client must still read each topic's dialect
+        from its type, never from the version.
+        """
+        from contracts import message_schemas as schemas
+
+        with self._lock:
+            if self._rosapi:
+                return
+            self._rosapi = True
+
+        def topics(_args: dict) -> dict:
+            known = self._known_topics()
+            names = sorted(known)
+            return {"topics": names, "types": [known[n] for n in names]}
+
+        def topics_for_type(args: dict) -> dict:
+            wanted = args.get("type")
+            return {"topics": sorted(n for n, t in self._known_topics().items() if t == wanted)}
+
+        def topics_and_raw_types(_args: dict) -> dict:
+            known = self._known_topics()
+            names = sorted(known)
+            return {"topics": names, "types": [known[n] for n in names],
+                    "typedefs_full_text": [schemas.definition_text(known[n]) for n in names]}
+
+        def topic_type(args: dict) -> dict:
+            return {"type": self._topic_type(normalise(str(args.get("topic", "")))) or ""}
+
+        def services(_args: dict) -> dict:
+            return {"services": sorted(self._service_table())}
+
+        def services_for_type(args: dict) -> dict:
+            wanted = args.get("type")
+            return {"services": sorted(n for n, t in self._service_table().items()
+                                       if t == wanted)}
+
+        def service_type(args: dict) -> dict:
+            return {"type": self._service_table().get(normalise(str(args.get("service", ""))), "")}
+
+        def service_providers(args: dict) -> dict:
+            node = self._service_node(normalise(str(args.get("service", ""))))
+            return {"providers": [node] if node else []}
+
+        def service_node(args: dict) -> dict:
+            return {"node": self._service_node(normalise(str(args.get("service", ""))))}
+
+        def service_host(args: dict) -> dict:
+            name = normalise(str(args.get("service", "")))
+            return {"host": socket.gethostname() if name in self._service_table() else ""}
+
+        def publishers(args: dict) -> dict:
+            return {"publishers": self._publishers_of(normalise(str(args.get("topic", ""))))}
+
+        def subscribers(args: dict) -> dict:
+            return {"subscribers": self._subscribers_of(normalise(str(args.get("topic", ""))))}
+
+        def _all_nodes() -> set[str]:
+            known = self._known_topics()
+            nodes = {ROSAPI_NODE, BRIDGE_NODE}
+            for topic in known:
+                nodes.update(self._publishers_of(topic))
+                nodes.update(self._subscribers_of(topic))
+            for name in self._service_table():
+                nodes.add(self._service_node(name))
+            for name in list(self._actions):
+                nodes.add(self._action_node(name))
+            nodes.discard("")
+            return nodes
+
+        def nodes(_args: dict) -> dict:
+            return {"nodes": sorted(_all_nodes())}
+
+        def node_details(args: dict) -> dict:
+            node = normalise(str(args.get("node", "")))
+            known = self._known_topics()
+            return {
+                "subscribing": sorted(t for t in known if node in self._subscribers_of(t)),
+                "publishing": sorted(t for t in known if node in self._publishers_of(t)),
+                "services": sorted(s for s in self._service_table()
+                                   if self._service_node(s) == node),
+            }
+
+        def action_servers(_args: dict) -> dict:
+            with self._lock:
+                return {"action_servers": sorted(self._actions)}
+
+        def interfaces(_args: dict) -> dict:
+            found = set(schemas.interfaces())
+            found.update(schemas.ros2_name(t, "msg") for t in self._known_topics().values())
+            found.update(schemas.ros2_name(t, "srv") for t in self._service_table().values() if t)
+            with self._lock:
+                found.update(schemas.ros2_name(a.type, "action") for a in self._actions.values())
+            return {"interfaces": sorted(found)}
+
+        def action_type(args: dict) -> dict:
+            spec = self._actions.get(normalise(str(args.get("action", ""))))
+            return {"type": spec.type if spec is not None else ""}
+
+        def message_details(args: dict) -> dict:
+            return {"typedefs": schemas.typedefs(str(args.get("type", "")))}
+
+        def service_request_details(args: dict) -> dict:
+            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "request")}
+
+        def service_response_details(args: dict) -> dict:
+            return {"typedefs": schemas.service_typedefs(str(args.get("type", "")), "response")}
+
+        def action_goal_details(args: dict) -> dict:
+            return {"typedefs": schemas.action_typedefs(str(args.get("type", "")), "goal")}
+
+        def action_result_details(args: dict) -> dict:
+            return {"typedefs": schemas.action_typedefs(str(args.get("type", "")), "result")}
+
+        def action_feedback_details(args: dict) -> dict:
+            return {"typedefs": schemas.action_typedefs(str(args.get("type", "")), "feedback")}
+
+        def _param_lookup(name: str) -> tuple[bool, Any]:
+            """A name is a parameter, or a namespace of them (ROS's dict answer)."""
+            with self._lock:
+                if name in self._params:
+                    return True, self._params[name]
+                prefix = name.rstrip("/") + "/"
+                children = {k: v for k, v in self._params.items() if k.startswith(prefix)}
+            if not children:
+                return False, None
+            tree: dict = {}
+            for key, value in children.items():
+                node = tree
+                parts = key[len(prefix):].split("/")
+                for part in parts[:-1]:
+                    node = node.setdefault(part, {})
+                node[parts[-1]] = value
+            return True, tree
+
+        def get_param_names(_args: dict) -> dict:
+            with self._lock:
+                return {"names": sorted(self._params)}
+
+        def get_param(args: dict) -> dict:
+            """The value JSON-encoded, as rosapi sends it; an unset one is the default, verbatim."""
+            name = normalise(str(args.get("name", "")))
+            found, value = _param_lookup(name)
+            if found:
+                return {"value": json.dumps(value), "successful": True, "reason": ""}
+            default = args.get("default_value", args.get("default", ""))
+            return {"value": default, "successful": False,
+                    "reason": f"parameter {name} is not set"}
+
+        def set_param(args: dict) -> dict:
+            name = normalise(str(args.get("name", "")))
             try:
-                conn.send(frame)
-            except Exception:
-                # A client that went away is dropped on its handler thread; losing a
-                # frame here must not interrupt the simulation loop.
-                pass
+                value = json.loads(args.get("value", ""))
+            except (TypeError, ValueError):
+                return {"successful": False, "reason": "value is not JSON-encoded"}
+            with self._lock:
+                self._params[name] = value
+            return {"successful": True, "reason": ""}
+
+        def has_param(args: dict) -> dict:
+            return {"exists": _param_lookup(normalise(str(args.get("name", ""))))[0]}
+
+        def search_param(args: dict) -> dict:
+            # rosapi searches up from its own namespace, which is the root: the answer is
+            # the global name if the key's first segment is set there, else empty.
+            key = str(args.get("name", "")).strip("/")
+            first = key.split("/")[0] if key else ""
+            if first and _param_lookup(f"/{first}")[0]:
+                return {"global_name": f"/{key}"}
+            return {"global_name": ""}
+
+        def delete_param(args: dict) -> dict:
+            name = normalise(str(args.get("name", "")))
+            if name == "/":
+                return {"successful": False, "reason": "the root namespace cannot be deleted"}
+            with self._lock:
+                prefix = name.rstrip("/") + "/"
+                doomed = [k for k in self._params if k == name or k.startswith(prefix)]
+                for key in doomed:
+                    del self._params[key]
+            if not doomed:
+                return {"successful": False, "reason": f"parameter {name} is not set"}
+            return {"successful": True, "reason": ""}
+
+        def get_time(_args: dict) -> dict:
+            now = self.now()
+            sec = int(now)
+            return {"time": {"sec": sec, "nanosec": int(round((now - sec) * 1e9))}}
+
+        def get_ros_version(_args: dict) -> dict:
+            return {"version": ROS_VERSION, "distro": ROS_DISTRO}
+
+        for name, handler, stype in (
+            # the ROS 1 rosapi_node's 25
+            ("topics", topics, "Topics"),
+            ("topics_for_type", topics_for_type, "TopicsForType"),
+            ("topics_and_raw_types", topics_and_raw_types, "TopicsAndRawTypes"),
+            ("topic_type", topic_type, "TopicType"),
+            ("services", services, "Services"),
+            ("services_for_type", services_for_type, "ServicesForType"),
+            ("service_type", service_type, "ServiceType"),
+            ("service_providers", service_providers, "ServiceProviders"),
+            ("service_node", service_node, "ServiceNode"),
+            ("service_host", service_host, "ServiceHost"),
+            ("nodes", nodes, "Nodes"),
+            ("node_details", node_details, "NodeDetails"),
+            ("publishers", publishers, "Publishers"),
+            ("subscribers", subscribers, "Subscribers"),
+            ("action_servers", action_servers, "GetActionServers"),
+            ("message_details", message_details, "MessageDetails"),
+            ("service_request_details", service_request_details, "ServiceRequestDetails"),
+            ("service_response_details", service_response_details, "ServiceResponseDetails"),
+            ("get_param_names", get_param_names, "GetParamNames"),
+            ("get_param", get_param, "GetParam"),
+            ("set_param", set_param, "SetParam"),
+            ("has_param", has_param, "HasParam"),
+            ("search_param", search_param, "SearchParam"),
+            ("delete_param", delete_param, "DeleteParam"),
+            ("get_time", get_time, "GetTime"),
+            # the ROS 2 rosapi_node's 6 more
+            ("interfaces", interfaces, "Interfaces"),
+            ("action_type", action_type, "ActionType"),
+            ("action_goal_details", action_goal_details, "ActionGoalDetails"),
+            ("action_result_details", action_result_details, "ActionResultDetails"),
+            ("action_feedback_details", action_feedback_details, "ActionFeedbackDetails"),
+            ("get_ros_version", get_ros_version, "GetROSVersion"),
+        ):
+            self.service(f"/rosapi/{name}", handler, f"rosapi_msgs/srv/{stype}",
+                         node=ROSAPI_NODE)
 
     # -- protocol ----------------------------------------------------------------
 
     def _handler(self, websocket) -> None:
         log.info("client connected from %s", websocket.remote_address)
+        client = _Client(websocket)
         with self._lock:
-            self._clients[websocket] = set()
+            self._clients[websocket] = client
         try:
             for raw in websocket:
                 try:
                     message = json.loads(raw)
                 except (TypeError, ValueError):
-                    self._status(websocket, "error", "message was not valid JSON")
+                    self._status(client, "error", "message was not valid JSON")
                     continue
-                self._dispatch(websocket, message)
+                try:
+                    self._dispatch(client, message)
+                except Exception as exc:  # a bug here must not end the connection
+                    log.exception("dispatch failed")
+                    self._status(client, "error", f"internal error: {exc}",
+                                 message.get("id") if isinstance(message, dict) else None)
         except Exception as exc:
             log.debug("client loop ended: %s", exc)
         finally:
-            with self._lock:
-                self._clients.pop(websocket, None)
+            self._disconnect(client)
             log.info("client disconnected")
 
-    def _dispatch(self, websocket, message: dict) -> None:
+    def _disconnect(self, client: _Client) -> None:
+        """Drop everything the client advertised. Goals it *sent* keep running."""
+        client.open = False
+        with self._lock:
+            self._clients.pop(client.ws, None)
+            for topic in client.adverts:
+                self._latched.get(topic, {}).pop(client.latch_key, None)
+            for name in client.services:
+                if self._client_services.get(name, (None,))[0] is client:
+                    del self._client_services[name]
+            pending_calls = [(rid, call) for rid, call in self._relay_calls.items()
+                             if call[3] is client]
+            for rid, _ in pending_calls:
+                del self._relay_calls[rid]
+            relayed = []
+            for name in client.actions:
+                spec = self._actions.get(name)
+                if spec is not None and spec.provider is client:
+                    del self._actions[name]
+                    relayed += [g for g in self._goals.values() if g.action == name]
+        for _rid, (caller, call_id, service, _provider) in pending_calls:
+            self._service_response(caller, service, call_id, False,
+                                   f"service {service} went away")
+        for goal in relayed:
+            goal._finish(GoalStatus.ABORTED, {})
+
+    def _dispatch(self, client: _Client, message) -> None:
+        if not isinstance(message, dict):
+            self._status(client, "error", "a rosbridge message is a JSON object")
+            return
         op = message.get("op")
-        topic = normalise(message.get("topic", "")) if message.get("topic") else None
+        mid = message.get("id")
+        if not isinstance(op, str):
+            self._status(client, "error", "message has no 'op'", mid)
+            return
+        if op not in CLIENT_OPS and op not in PROVIDER_REPLY_OPS:
+            self._status(client, "error", f"unsupported op {op!r}", mid)
+            return
+        getattr(self, f"_op_{op}")(client, message, mid)
 
-        if op == "subscribe":
-            with self._lock:
-                self._clients.setdefault(websocket, set()).add(topic)
-            log.info("client subscribed to %s", topic)
+    def _fields(self, client: _Client, message: dict, mid, *names: str) -> bool:
+        """Every named field is present and a non-empty string; otherwise a status error."""
+        for name in names:
+            value = message.get(name)
+            if not isinstance(value, str) or not value:
+                self._status(client, "error",
+                             f"{message.get('op')}: field '{name}' must be a non-empty string",
+                             mid)
+                return False
+        return True
 
-        elif op == "unsubscribe":
-            with self._lock:
-                self._clients.get(websocket, set()).discard(topic)
+    # topics
 
-        elif op == "advertise":
-            # Nothing to allocate: handlers are registered by the simulator, and an
-            # advertise for a topic nobody consumes is harmless.
-            log.info("client advertised %s (%s)", topic, message.get("type"))
+    def _op_subscribe(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "topic"):
+            return
+        topic = normalise(message["topic"])
+        wanted = message.get("type")
+        known = self._topic_type(topic)
+        if wanted and known and schemas_canonical(wanted) != schemas_canonical(known):
+            self._status(client, "error",
+                         f"subscribe: {topic} is {known}, not {wanted}", mid)
+            return
+        with self._lock:
+            new = topic not in client.subs
+            client.subs.setdefault(topic, set()).add(mid)
+            latched = list(self._latched.get(topic, {}).values()) if new else []
+        for frame in latched:
+            client.send(frame)
+        log.info("client subscribed to %s", topic)
 
-        elif op == "unadvertise":
-            pass
+    def _op_unsubscribe(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "topic"):
+            return
+        topic = normalise(message["topic"])
+        with self._lock:
+            ids = client.subs.get(topic)
+            if ids is None or (mid is not None and mid not in ids):
+                missing = True
+            else:
+                missing = False
+                if mid is None:
+                    ids.clear()
+                else:
+                    ids.discard(mid)
+                if not ids:
+                    del client.subs[topic]
+        if missing:
+            self._status(client, "error", f"unsubscribe: not subscribed to {topic}", mid)
 
-        elif op == "publish":
-            handler = self._handlers.get(topic)
-            if handler is None:
-                self._status(websocket, "warning", f"nothing is listening on {topic}")
+    def _op_advertise(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "topic", "type"):
+            return
+        self._client_advertise(client, normalise(message["topic"]), message, mid)
+
+    def _client_advertise(self, client: _Client, topic: str, message: dict, mid) -> bool:
+        mtype = message["type"]
+        known = self._topic_type(topic)
+        if known and schemas_canonical(known) != schemas_canonical(mtype):
+            self._status(client, "error", f"advertise: {topic} is {known}, not {mtype}", mid)
+            return False
+        qos = message.get("qos")
+        latched = bool(message.get("latch")) or (
+            isinstance(qos, dict) and qos.get("durability") == "transient_local")
+        with self._lock:
+            advert = client.adverts.setdefault(
+                topic, {"type": known or mtype, "ids": set(), "latched": latched})
+            advert["ids"].add(mid)
+        log.info("client advertised %s (%s)", topic, mtype)
+        return True
+
+    def _op_unadvertise(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "topic"):
+            return
+        topic = normalise(message["topic"])
+        with self._lock:
+            advert = client.adverts.get(topic)
+            if advert is None or (mid is not None and mid not in advert["ids"]):
+                missing = True
+            else:
+                missing = False
+                if mid is None:
+                    advert["ids"].clear()
+                else:
+                    advert["ids"].discard(mid)
+                if not advert["ids"]:
+                    del client.adverts[topic]
+                    self._latched.get(topic, {}).pop(client.latch_key, None)
+        if missing:
+            self._status(client, "error", f"unadvertise: {topic} is not advertised", mid)
+
+    def _op_publish(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "topic"):
+            return
+        msg = message.get("msg", {})
+        if not isinstance(msg, dict):
+            self._status(client, "error", "publish: 'msg' must be an object", mid)
+            return
+        topic = normalise(message["topic"])
+        if topic not in client.adverts:
+            # rosbridge advertises on first publish, typed from the message or the graph.
+            mtype = message.get("type") or self._topic_type(topic)
+            if not isinstance(mtype, str) or not mtype:
+                self._status(client, "error",
+                             f"publish: {topic} has no known type; advertise it first", mid)
                 return
+            if not self._client_advertise(client, topic, {**message, "type": mtype}, mid):
+                return
+        advert = client.adverts[topic]
+        handler = self._handlers.get(topic)
+        if handler is not None:
             try:
-                handler(message.get("msg") or {})
+                handler(msg)
             except Exception as exc:
                 log.exception("handler for %s failed", topic)
-                self._status(websocket, "error", f"handler for {topic} failed: {exc}")
+                self._status(client, "error", f"handler for {topic} failed: {exc}", mid)
+        frame = json.dumps({"op": "publish", "topic": topic, "msg": msg})
+        self._deliver(topic, frame, client.latch_key if advert["latched"] else None)
 
-        elif op == "call_service":
-            # rosbridge names the field `service`, not `topic`. And unlike `publish` --
-            # where this bridge deliberately ignores ids -- the reply MUST echo `id`: the
-            # caller is blocked waiting on it, so dropping it hangs the client rather than
-            # failing it, which is a much worse failure to debug.
-            name = normalise(message.get("service", ""))
-            call_id = message.get("id")
-            handler = self._services.get(name)
-            if handler is None:
-                self._service_response(
-                    websocket, name, call_id, False, {"message": f"no service {name}"}
-                )
+    # services
+
+    def _op_call_service(self, client: _Client, message: dict, mid) -> None:
+        # The reply MUST echo `id`: the caller is blocked on it, and dropping it hangs the
+        # client rather than failing it.
+        if not self._fields(client, message, mid, "service"):
+            return
+        name = normalise(message["service"])
+        args = message.get("args") or {}
+        handler = self._services.get(name)
+        if handler is not None:
+            if isinstance(args, list):
+                args = self._args_from_list(name, args)
+            if not isinstance(args, dict):
+                self._service_response(client, name, mid, False,
+                                       {"message": "args must be an object or a list"})
                 return
             try:
-                values = handler(message.get("args") or {}) or {}
+                values = handler(args) or {}
             except Exception as exc:
                 log.exception("service %s failed", name)
-                self._service_response(
-                    websocket, name, call_id, False, {"message": str(exc)}
-                )
+                self._service_response(client, name, mid, False, {"message": str(exc)})
                 return
-            self._service_response(websocket, name, call_id, True, values)
+            self._service_response(client, name, mid, True, values)
+            return
+        with self._lock:
+            provided = self._client_services.get(name)
+            if provided is not None:
+                self._relay_counter += 1
+                relay_id = f"service_request:{name}:{self._relay_counter}"
+                self._relay_calls[relay_id] = (client, mid, name, provided[0])
+        if provided is None:
+            self._service_response(client, name, mid, False, {"message": f"no service {name}"})
+            return
+        provided[0].send(json.dumps({"op": "call_service", "id": relay_id,
+                                     "service": name, "args": args}))
 
-        elif op in ("advertise_service", "unadvertise_service"):
-            # A client offering a service of its own. Nothing here consumes one, and
-            # roslibpy advertises eagerly, so this is a no-op like `advertise`.
-            log.info(
-                "client advertised service %s (%s)",
-                message.get("service"),
-                message.get("type"),
-            )
+    def _args_from_list(self, service: str, args: list):
+        from contracts import message_schemas as schemas
 
-        elif op in ("set_level", "status"):
-            pass  # client-side logging controls; nothing to do
+        stype = self._service_types.get(service, "")
+        pair = schemas.SERVICES.get(schemas.canonical(stype))
+        if pair is None:
+            return args
+        return {field[0]: value for field, value in zip(pair[0], args)}
 
-        else:
-            self._status(websocket, "warning", f"unsupported op {op!r}")
+    def _op_advertise_service(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "service", "type"):
+            return
+        name = normalise(message["service"])
+        with self._lock:
+            owner = self._client_services.get(name)
+            refused = name in self._services or (owner is not None and owner[0] is not client)
+            if not refused:
+                self._client_services[name] = (client, message["type"])
+                client.services[name] = message["type"]
+        if refused:
+            self._status(client, "error",
+                         f"advertise_service: {name} already has a provider", mid)
 
-    def _service_response(self, websocket, service: str, call_id, result: bool,
-                          values: dict) -> None:
+    def _op_unadvertise_service(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "service"):
+            return
+        name = normalise(message["service"])
+        with self._lock:
+            ok = client.services.pop(name, None) is not None
+            if ok and self._client_services.get(name, (None,))[0] is client:
+                del self._client_services[name]
+        if not ok:
+            self._status(client, "error", f"unadvertise_service: {name} is not advertised", mid)
+
+    def _op_service_response(self, client: _Client, message: dict, mid) -> None:
+        with self._lock:
+            call = self._relay_calls.get(mid) if isinstance(mid, str) else None
+            if call is not None and call[3] is client:
+                del self._relay_calls[mid]
+            else:
+                call = None
+        if call is None:
+            self._status(client, "error",
+                         f"service_response: no call of yours is pending as {mid!r}", mid)
+            return
+        caller, call_id, name, _provider = call
+        values = message.get("values")
+        self._service_response(caller, name, call_id, bool(message.get("result", True)),
+                               values if values is not None else {})
+
+    # actions
+
+    def _op_advertise_action(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "action", "type"):
+            return
+        name = normalise(message["action"])
+        with self._lock:
+            spec = self._actions.get(name)
+            refused = name in self._services or (
+                spec is not None and spec.provider is not client)
+            if not refused:
+                self._actions[name] = _ActionServer(name, message["type"], provider=client,
+                                                    node=BRIDGE_NODE)
+                client.actions[name] = message["type"]
+        if refused:
+            self._status(client, "error", f"advertise_action: {name} already has a server", mid)
+
+    def _op_unadvertise_action(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "action"):
+            return
+        name = normalise(message["action"])
+        with self._lock:
+            ok = client.actions.pop(name, None) is not None
+            spec = self._actions.get(name)
+            relayed = []
+            if ok and spec is not None and spec.provider is client:
+                del self._actions[name]
+                relayed = [g for g in self._goals.values() if g.action == name]
+        if not ok:
+            self._status(client, "error", f"unadvertise_action: {name} is not advertised", mid)
+        for goal in relayed:
+            goal._finish(GoalStatus.ABORTED, {})
+
+    def _op_send_action_goal(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "action", "action_type"):
+            return
+        name = normalise(message["action"])
+        action_type = message["action_type"]
+        args = message.get("args") or {}
+        spec = self._actions.get(name)
+
+        def fail(reason: str) -> None:
+            # rosbridge's failure shape: result false, status UNKNOWN, the reason as values.
+            frame = {"op": "action_result", "action": name, "values": reason,
+                     "status": GoalStatus.UNKNOWN, "result": False}
+            if mid is not None:
+                frame["id"] = mid
+            client.send(json.dumps(frame))
+
+        if spec is None:
+            fail(f"no action server for {name}")
+            return
+        if schemas_canonical(spec.type) != schemas_canonical(action_type):
+            fail(f"{name} is {spec.type}, not {action_type}")
+            return
+        if isinstance(args, list):
+            from contracts import message_schemas as schemas
+
+            fields = schemas.action_fields(spec.type, "goal")
+            args = {f[0]: v for f, v in zip(fields or [], args)} if fields else None
+        if not isinstance(args, dict):
+            fail("args must be an object, or a list for a known action type")
+            return
+        goal = ActionGoal(self, name, spec.type, args, client, mid,
+                          bool(message.get("feedback", False)), spec.member)
+        with self._lock:
+            self._goals[goal.id] = goal
+            client.goals[(name, mid)] = goal
+            if spec.provider is not None:
+                self._relay_counter += 1
+                goal.relay_id = f"action_goal:{name}:{self._relay_counter}"
+                self._relay_goals[goal.relay_id] = goal
+        self._action_status_changed(goal)
+        if spec.provider is not None:
+            goal._set_status(GoalStatus.EXECUTING)
+            spec.provider.send(json.dumps({
+                "op": "send_action_goal", "id": goal.relay_id, "action": name,
+                "action_type": spec.type, "args": args, "feedback": True,
+            }))
+            return
+        threading.Thread(target=self._run_goal, args=(spec, goal), daemon=True,
+                         name=f"action {name}").start()
+
+    def _op_cancel_action_goal(self, client: _Client, message: dict, mid) -> None:
+        if not self._fields(client, message, mid, "action"):
+            return
+        name = normalise(message["action"])
+        with self._lock:
+            goal = client.goals.get((name, mid))
+        if goal is None or goal.done:
+            self._status(client, "error",
+                         f"cancel_action_goal: no goal {mid!r} of yours is running on {name}",
+                         mid)
+            return
+        if goal.cancel_requested:
+            self._status(client, "error", f"cancel_action_goal: {mid!r} is already canceling",
+                         mid)
+            return
+        spec = self._actions.get(name)
+        if spec is not None and spec.provider is not None:
+            goal._cancel.set()
+            goal._set_status(GoalStatus.CANCELING)
+            spec.provider.send(json.dumps({"op": "cancel_action_goal", "id": goal.relay_id,
+                                           "action": name}))
+            return
+        accept = True
+        if spec is not None and spec.cancel is not None:
+            try:
+                accept = bool(spec.cancel(goal))
+            except Exception:
+                log.exception("cancel callback for %s failed", name)
+                accept = False
+        if not accept:
+            self._status(client, "info", f"cancel of {mid!r} on {name} was rejected", mid)
+            return
+        goal._cancel.set()
+        goal._set_status(GoalStatus.CANCELING)
+
+    def _relayed_goal(self, client: _Client, message: dict, mid) -> ActionGoal | None:
+        with self._lock:
+            goal = self._relay_goals.get(mid) if isinstance(mid, str) else None
+        spec = self._actions.get(goal.action) if goal is not None else None
+        if goal is None or spec is None or spec.provider is not client:
+            self._status(client, "error",
+                         f"{message.get('op')}: no goal of yours is running as {mid!r}", mid)
+            return None
+        return goal
+
+    def _op_action_feedback(self, client: _Client, message: dict, mid) -> None:
+        goal = self._relayed_goal(client, message, mid)
+        if goal is not None:
+            goal.publish_feedback(message.get("values") or {})
+
+    def _op_action_result(self, client: _Client, message: dict, mid) -> None:
+        goal = self._relayed_goal(client, message, mid)
+        if goal is None:
+            return
+        status = message.get("status")
+        if status not in GoalStatus.TERMINAL:
+            status = GoalStatus.SUCCEEDED if message.get("result", True) else GoalStatus.ABORTED
+        values = message.get("values")
+        goal._finish(int(status), values if values is not None else {},
+                     bool(message.get("result", True)))
+
+    # logging controls
+
+    def _op_set_level(self, client: _Client, message: dict, mid) -> None:
+        level = message.get("level")
+        if level not in STATUS_LEVELS:
+            self._status(client, "error",
+                         f"set_level: level must be one of {sorted(STATUS_LEVELS)}", mid)
+            return
+        client.level = level
+
+    def _op_status(self, client: _Client, message: dict, mid) -> None:
+        # A client's own status report: rosbridge logs it and answers nothing.
+        log.info("client status %s: %s", message.get("level"), message.get("msg"))
+
+    # replies
+
+    def _service_response(self, client: _Client, service: str, call_id, result: bool,
+                          values) -> None:
         frame = {"op": "service_response", "service": service,
                  "values": values, "result": result}
         if call_id is not None:
             frame["id"] = call_id
-        try:
-            websocket.send(json.dumps(frame))
-        except Exception:
-            pass
+        client.send(json.dumps(frame))
 
-    def _status(self, websocket, level: str, msg: str) -> None:
-        try:
-            websocket.send(json.dumps({"op": "status", "level": level, "msg": msg}))
-        except Exception:
-            pass
+    def _status(self, client: _Client, level: str, msg: str, mid=None) -> None:
         if level != "info":
             log.warning("%s: %s", level, msg)
+        if STATUS_LEVELS.get(client.level, 1) < STATUS_LEVELS.get(level, 1):
+            return
+        frame = {"op": "status", "level": level, "msg": msg}
+        if mid is not None:
+            frame["id"] = mid
+        client.send(json.dumps(frame))
+
+
+def schemas_canonical(type_name: str) -> str:
+    """One spelling per type, so `sensor_msgs/Image` and `sensor_msgs/msg/Image` agree."""
+    parts = str(type_name).split("/")
+    if len(parts) == 3 and parts[1] in ("msg", "srv", "action"):
+        parts = [parts[0], parts[2]]
+    return "/".join(parts)
 
 
 class NamespacedBus:
@@ -797,9 +1666,15 @@ class NamespacedBus:
 
     A surface takes a bus instead of a server and otherwise keeps its bare topic
     constants: `bus.on(TOPIC_CMD_VEL, ...)` registers `/myagv/cmd_vel`. That is the whole
-    of what a surface has to know about sharing a graph, which is the point -- the
-    alternative was every surface composing prefixes at every call site, where one missed
-    name is a topic silently landing in another robot's namespace.
+    of what a surface has to know about sharing a graph -- the alternative was every
+    surface composing prefixes at every call site, where one missed name is a topic
+    silently landing in another robot's namespace.
+
+    Every registering call takes an optional `node=`: the vendor node that provides the
+    name in the member's source (`"robot_state_publisher"`), composed with the namespace
+    like any other name, or a `GlobalName` (`SIMULATOR_NODE`) taken literally. It is what
+    `/rosapi/publishers`, `subscribers`, `nodes`, `node_details` and `service_node`
+    answer. Omitted, the namespace itself stands in as the node, as it always has.
 
     A bus deliberately does NOT expose `start`/`stop`. The server is owned by whatever
     built it; a surface that stopped it would take every other robot on the port down.
@@ -810,10 +1685,7 @@ class NamespacedBus:
         self.ns = RobotNamespace(namespace)
         self.published: list[str] = []
         self.subscribed: list[str] = []
-        # Per-bus, not per-server. `header.seq` is a per-publisher counter on real ROS 1,
-        # and the console reads it to line video up against the command log
-        # (`robot_console/camera.py:header_seq`). Sharing one counter across robots makes
-        # every robot's seq skip by however many messages its neighbours sent.
+        # Per-bus, not per-server: `header.seq` is a per-publisher counter on real ROS 1.
         self._seq = 0
 
     # -- naming ------------------------------------------------------------------
@@ -824,47 +1696,57 @@ class NamespacedBus:
     def frame(self, frame_id: str) -> str:
         return self.ns.frame(frame_id)
 
-    # There used to be a `sibling(namespace)` here, for the arm's surface to reach the
-    # worktop rig's namespace from inside its own loop. The rig is a fleet member now
-    # (`ros_surfaces/scene.py`), with a bus of its own from `RobotFleet.bus`, so no
-    # surface needs to speak for a name that is not its own any more.
+    def node(self, node: str | None = None) -> str | None:
+        """The composed node name `node` stands for on the wire (see the class notes)."""
+        if node is None:
+            return f"/{self.ns.name.strip('/')}" if self.ns else None
+        if isinstance(node, GlobalName):
+            return normalise(str(node))
+        return self.ns.topic(node)
 
     # -- the server's surface, namespaced ----------------------------------------
 
-    # Every name that goes through here is claimed for this namespace on the server.
-    # That is what `/rosapi/publishers`, `subscribers`, `nodes` and `node_details` answer
-    # from, and it is recorded here rather than in each surface because this is the one
-    # place every name of a robot's already passes.
     def on(self, topic: str, callback: Callable[[dict], None],
-           message_type: str | None = None) -> None:
+           message_type: str | None = None, *, node: str | None = None) -> None:
         name = self.ns.topic(topic)
-        self.server.on(name, callback, message_type)
-        self.server.claim(self.ns.name, name)
+        self.server.on(name, callback, message_type, node=self.node(node))
         self.subscribed.append(name)
 
+    def advertise(self, topic: str, message_type: str, *, node: str | None = None) -> None:
+        name = self.ns.topic(topic)
+        self.server.advertise(name, message_type, node=self.node(node))
+        if name not in self.published:
+            self.published.append(name)
+
     def service(self, name: str, callback: Callable[[dict], dict],
-                service_type: str | None = None) -> None:
-        full = self.ns.service(name)
-        self.server.service(full, callback, service_type)
-        self.server.claim(self.ns.name, full)
+                service_type: str | None = None, *, node: str | None = None) -> None:
+        self.server.service(self.ns.service(name), callback, service_type,
+                            node=self.node(node))
+
+    def action(self, name: str, action_type: str,
+               execute: Callable[[ActionGoal], dict | None], *,
+               cancel: Callable[[ActionGoal], bool] | None = None,
+               node: str | None = None) -> None:
+        """A ROS 2 action server under this namespace; see `RosBridgeServer.action`."""
+        self.server.action(self.ns.service(name), action_type, execute, cancel=cancel,
+                           node=self.node(node), member=self.ns.name)
+
+    def abort_goals(self) -> int:
+        """End this member's outstanding goals ABORTED -- what its `/reset` does."""
+        return self.server.abort_goals(self.ns.name)
 
     def set_param(self, name: str, value: Any) -> None:
-        """Set one of this robot's parameters, namespaced like everything else it has.
-
-        `robot_description` is a relative name in ROS, so a bringup inside
-        `<group ns="myagv">` puts it at `/myagv/robot_description` -- which is where a
-        client that found the robot by namespace then looks for its body.
-        """
+        """Set one of this robot's parameters, namespaced like everything else it has."""
         full = self.ns.topic(name)
         self.server.set_param(full, value)
-        self.server.claim(self.ns.name, full)
 
-    def publish(self, topic: str, msg: dict, message_type: str | None = None) -> None:
+    def publish(self, topic: str, msg: dict, message_type: str | None = None, *,
+                latched: bool = False, node: str | None = None) -> None:
         name = self.ns.topic(topic)
         if message_type is not None and name not in self.published:
             self.published.append(name)
-            self.server.claim(self.ns.name, name)
-        self.server.publish(name, msg, message_type)
+        self.server.publish(name, msg, message_type, latched=latched,
+                            publisher=self.node(node))
 
     def next_seq(self) -> int:
         self._seq += 1
@@ -872,12 +1754,7 @@ class NamespacedBus:
 
     @property
     def client_count(self) -> int:
-        """How many clients the whole server has -- not this robot's share.
-
-        rosbridge does not tell a publisher who is subscribed to what, so per-robot is
-        not a number this transport can produce. The AiNex surface uses it only to decide
-        whether anyone is listening at all, which this answers correctly.
-        """
+        """How many clients the whole server has -- not this robot's share."""
         return self.server.client_count
 
 

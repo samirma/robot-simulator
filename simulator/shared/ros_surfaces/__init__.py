@@ -70,6 +70,9 @@ class RobotFleet:
         self.host = host
         self.server = RosBridgeServer(host=host, port=port)
         self.world_reset = WorldReset()
+        # A world reset aborts every outstanding action goal (spec §3, `/reset`): the
+        # world a goal was pursuing no longer exists.
+        self.world_reset.on_reset(self.server.abort_goals)
         self._members: list[tuple[str, Any, Callable[[Any], None]]] = []
 
     def bus(self, namespace: str):
@@ -113,5 +116,7 @@ class RobotFleet:
                 step(None)
             self.server.stop()
             return
+        # The simulated clock `/rosapi/get_time` answers from.
+        self.server.set_time(float(getattr(data, "time", 0.0)))
         for _, _, step in self._members:
             step(data)

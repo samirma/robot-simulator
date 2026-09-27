@@ -156,17 +156,11 @@ def test_rosapi_surface() -> None:
                 reply = json.loads(conn.recv(timeout=5))
                 return bool(reply.get("result")), reply.get("values") or {}
 
-            real_rosapi = [
-                "/rosapi/topics", "/rosapi/topics_for_type", "/rosapi/topic_type",
-                "/rosapi/services", "/rosapi/service_type", "/rosapi/publishers",
-                "/rosapi/subscribers", "/rosapi/nodes", "/rosapi/node_details",
-                "/rosapi/message_details", "/rosapi/service_request_details",
-                "/rosapi/service_response_details", "/rosapi/get_param_names",
-                "/rosapi/get_param", "/rosapi/action_servers", "/rosapi/get_ros_version",
-            ]
-            refused = [s for s in real_rosapi if not call(s, {"type": "", "topic": "",
-                                                           "service": "", "node": ""})[0]]
-            check("every service a real rosapi ships answers", not refused, str(refused))
+            from contracts.test_transport import ROSAPI_31
+            refused = [s for s in ROSAPI_31 if not call(s, {"type": "", "topic": "",
+                                                          "service": "", "node": ""})[0]]
+            check("every one of the spec's 31 rosapi services answers", not refused,
+                  str(refused))
 
             ok, v = call("/rosapi/topic_type", {"topic": "/a/cmd_vel"})
             check("topic_type answers for a subscribe-only command topic",
@@ -179,7 +173,9 @@ def test_rosapi_surface() -> None:
             check("publishers likewise", v.get("publishers") == ["/b"], str(v))
 
             ok, v = call("/rosapi/nodes")
-            check("nodes are the namespaces", set(v.get("nodes", [])) == {"/a", "/b"}, str(v))
+            check("nodes are the namespaces, beside the bridge's own runtime nodes",
+                  set(v.get("nodes", [])) == {"/a", "/b", "/rosapi", "/rosbridge_websocket"},
+                  str(v))
             ok, v = call("/rosapi/node_details", {"node": "/a"})
             check("node_details keeps one robot's names apart from the other's",
                   v.get("subscribing") == ["/a/cmd_vel"] and v.get("publishing") == ["/a/odom"]
@@ -246,6 +242,11 @@ def main() -> int:
     test_collisions()
     test_routing_and_discovery()
     test_rosapi_surface()
+    # Every transport operation, latching, routing, the action lifecycle and all 31 rosapi
+    # services, over the wire (spec §5, "Contracts"). A sibling module for length only;
+    # it reports into this file's FAILURES.
+    from contracts import test_transport
+    test_transport.run(check)
     print()
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")

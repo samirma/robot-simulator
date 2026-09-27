@@ -68,9 +68,9 @@ _ALIASES = {
 
 
 def canonical(type_name: str) -> str:
-    """One spelling for a type: `pkg/Type`, with any `/msg/` or `/srv/` segment removed."""
+    """One spelling for a type: `pkg/Type`, with any `/msg/`, `/srv/` or `/action/` removed."""
     parts = type_name.split("/")
-    if len(parts) == 3 and parts[1] in ("msg", "srv"):
+    if len(parts) == 3 and parts[1] in ("msg", "srv", "action"):
         parts = [parts[0], parts[2]]
     name = "/".join(parts)
     return _ALIASES.get(name, name)
@@ -276,6 +276,15 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
 }
 
 
+#: Actions: canonical name -> (goal fields, result fields, feedback fields). No member
+#: serves an action yet; a surface that does transcribes its `.action` file here, with its
+#: provenance in the block above, exactly as for messages and services. `rosapi` labels
+#: the three parts `<Action>_Goal`, `<Action>_Result` and `<Action>_Feedback`.
+ACTIONS: dict[str, tuple[list[Field], list[Field], list[Field]]] = {}
+
+_ACTION_PARTS = ("goal", "result", "feedback")
+
+
 def fields_of(type_name: str) -> list[Field] | None:
     """The top-level fields of a message type, or None if it is not one this bridge knows."""
     return MESSAGES.get(canonical(type_name))
@@ -345,6 +354,63 @@ def service_typedefs(service_type: str, half: str) -> list[dict]:
     return _closure(f"{name}{half.capitalize()}", fields)
 
 
+def action_fields(action_type: str, part: str) -> list[Field] | None:
+    """One part (`goal`, `result` or `feedback`) of an action's definition, or None."""
+    triple = ACTIONS.get(canonical(action_type))
+    if triple is None or part not in _ACTION_PARTS:
+        return None
+    return triple[_ACTION_PARTS.index(part)]
+
+
+def action_typedefs(action_type: str, part: str) -> list[dict]:
+    """`/rosapi/action_{goal,result,feedback}_details`, or `[]` if unknown."""
+    fields = action_fields(action_type, part)
+    if fields is None:
+        return []
+    return _closure(f"{canonical(action_type)}_{part.capitalize()}", fields)
+
+
+def _field_line(field: Field) -> str:
+    name, ftype, arraylen = field
+    suffix = "" if arraylen == SCALAR else "[]" if arraylen == VARIABLE else f"[{arraylen}]"
+    return f"{ftype}{suffix} {name}"
+
+
+def definition_text(type_name: str) -> str:
+    """A message's full definition text, as `/rosapi/topics_and_raw_types` answers it.
+
+    `gendeps --cat`'s layout: the type's own fields, then each nested type once, after a
+    line of 80 `=` and `MSG: <type>`. Empty for a type this table does not hold.
+    """
+    name = canonical(type_name)
+    fields = MESSAGES.get(name)
+    if fields is None:
+        return ""
+    blocks = ["\n".join(_field_line(f) for f in fields)]
+    for typedef in _closure(name, fields)[1:]:
+        nested = MESSAGES[typedef["type"]]
+        blocks.append("=" * 80 + f"\nMSG: {typedef['type']}\n"
+                      + "\n".join(_field_line(f) for f in nested))
+    return "\n".join(blocks) + "\n"
+
+
+def ros2_name(type_name: str, category: str) -> str:
+    """`pkg/Type` -> `pkg/<category>/Type`; a name already in ROS 2 form is unchanged."""
+    parts = str(type_name).split("/")
+    if len(parts) == 2:
+        return f"{parts[0]}/{category}/{parts[1]}"
+    return str(type_name)
+
+
+def interfaces() -> list[str]:
+    """`/rosapi/interfaces`: every interface this table holds, in ROS 2 spelling."""
+    return sorted(
+        [ros2_name(t, "msg") for t in MESSAGES]
+        + [ros2_name(t, "srv") for t in SERVICES]
+        + [ros2_name(t, "action") for t in ACTIONS]
+    )
+
+
 def known_types() -> frozenset[str]:
-    """Every canonical message and service type this table can answer for."""
-    return frozenset(MESSAGES) | frozenset(SERVICES)
+    """Every canonical message, service and action type this table can answer for."""
+    return frozenset(MESSAGES) | frozenset(SERVICES) | frozenset(ACTIONS)
