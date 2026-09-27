@@ -36,9 +36,23 @@ def test_run_task_help_needs_no_venv_and_installs_nothing(tmp_path: Path) -> Non
         env=env, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    for flag in ("--instruction-file", "--episodes", "--label", "--policy", "kitchen.sh serve"):
+    for flag in ("--episodes", "--label", "--url", "--robots", "--namespace",
+                 "--instruction", "--instruction-file", "kitchen.sh serve"):
         assert flag in result.stdout
     assert not (tmp_path / "never-light").exists()
+    assert not (tmp_path / "never-vla").exists()
+
+
+def test_run_task_offers_only_the_specified_flags(tmp_path: Path) -> None:
+    """The synopsis is the spec's; the retired flags are unknown now, not ignored."""
+    env = dict(os.environ)
+    env["ROBOT_CONSOLE_VLA_VENV"] = str(tmp_path / "never-vla")
+    for retired in ("--policy", "--steps", "--log-dir", "--wait", "--reinstall"):
+        result = subprocess.run(
+            ["bash", str(ROOT / "run_task.sh"), retired, "x"],
+            env=env, capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 1 and "unknown flag" in result.stderr, retired
     assert not (tmp_path / "never-vla").exists()
 
 

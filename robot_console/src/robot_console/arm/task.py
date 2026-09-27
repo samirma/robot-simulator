@@ -1,97 +1,38 @@
-"""The apple-on-plate benchmark definition.
+"""The ``apple_on_plate`` task: one scene, one instruction, one scorer.
 
-One scene, one fixed layout: the red apple starts on the table at
-``(0.30, 0.10, 0.020)`` and must end up on the plate centred at
-``(0.226, -0.226)``. Both are **world**-frame coordinates and both are
-``CONTRACT.md`` section 4 numbers as amended, confirmed against the compiled
-MJCF in ``simulator/so_arm_mujoco/mjcf/task_scene.xml``:
+The simulator stages it (simulator spec §2.3): a red apple and a white plate on the
+worktop in front of the SO-101. It passes when the camera-verdict scorer
+(``scorer.apple_on_plate``) measures, for at least 1.0 s at the episode's end, the apple
+resting released on the plate. An episode ends when the policy reports the task done, or
+after `MAX_POLICY_STEPS` policy steps.
 
-```
-body apple  world pos [0.3    0.1    0.02]
-body plate  world pos [0.226 -0.226  0.0 ]
-apple radius    0.02
-plate cylinder  size [0.1 0.0102] at z 0.0102  -> plate top z 0.0204
-```
-
-The plate moved from ``(0.40, -0.20)`` by 0.176 m: it is now at bearing -45.0
-deg and 0.3196 m from the base, where it was at -26.6 deg and 0.4472 m. Nothing
-else in the scene moved and no success clause changed.
-
-The apple is a **20 mm-radius** sphere. An earlier revision of this module
-carried 0.03, describing a 60 mm ball that the SO-101's 43 mm jaws could not
-close on; that apple no longer exists in the scene. Section 4 of the contract
-calls a silent change to this number a breach, so it is pinned here and the
-scene target carries it to the policy and the scorers.
+The scene carries no geometry to grade against: where the plate is, and where the apple
+ended up, are measured from the rig's cameras, so a layout the console was never told
+about is graded the same way as the standard one.
 """
 
 from __future__ import annotations
 
-from typing import Any
-
 from inspect_robots import Scene, Target, Task
-
-from robot_console.arm.success import PlateGoal
-
-#: World-frame apple start pose from ``task_scene.xml`` / ``CONTRACT.md`` section 4.
-APPLE_XYZ: tuple[float, float, float] = (0.30, 0.10, 0.020)
-#: World-frame plate centre and the top-face height the *gate* is built on.
-#: The z is 0.020, not the MJCF collision top of 0.0204, because 0.020 is what
-#: ``so_arm_mujoco/task_manager.py`` uses to derive ``RESTING_Z = 0.040``. The
-#: 0.4 mm difference sits well inside clause 2's +/- 0.015 band; matching the
-#: arbiter matters more than matching the mesh.
-PLATE_XYZ: tuple[float, float, float] = (0.226, -0.226, 0.020)
 
 INSTRUCTION = (
     "Move the arm towards the red apple, grasp it, lift it up, and place it on "
     "the white plate."
 )
 
-#: Apple sphere radius in ``task_scene.xml``, and the contract's declared value.
-APPLE_RADIUS = 0.020
+#: An episode ends after this many policy steps if the policy has not said it is done.
+MAX_POLICY_STEPS = 220
 
-#: The two layouts a simulator may stage, as (apple spawn, plate centre). ``standard``
-#: is the contract's; ``swapped`` puts the plate at the apple's spawn and the apple where
-#: the plate was, which is what one engine now serves so the policy is shown the same
-#: objects in a different arrangement rather than the one it could have memorised.
-#: The console does not decide which it is talking to -- the preflight reads the apple's
-#: spawn off the wire and ``layout_of`` names it, so the reference predicate follows the
-#: world instead of a flag that could disagree with it.
-LAYOUTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
-    "standard": (APPLE_XYZ, PLATE_XYZ),
-    "swapped": (
-        (PLATE_XYZ[0], PLATE_XYZ[1], APPLE_XYZ[2]),
-        (APPLE_XYZ[0], APPLE_XYZ[1], PLATE_XYZ[2]),
-    ),
-}
+#: The one scorer, by its registered name.
+SCORER = "apple_on_plate"
 
 #: The arm pose every episode starts from: five arm joints, radians, contract order.
-#: Mirrors the simulator's ``apple_on_plate.START_ARM_QPOS`` -- it is the task's, not the
-#: engine's rest pose, though today the two are the same upright pose. That pose is
-#: outside MolmoAct2's trained state band on ``elbow_flex`` and ``wrist_roll`` -- a
-#: decision, recorded beside the constant on the simulator side. Pinned here so a test
-#: can hold the two sides together; the scripted plan whose first waypoint used to serve
-#: as this record is gone.
+#: Mirrors the simulator task's ``START_ARM_QPOS``; a test holds the two together.
 START_ARM_QPOS: tuple[float, float, float, float, float] = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 
 
-def layout_of(apple_xyz, *, tolerance: float = 0.03) -> str | None:
-    """Name the layout whose apple spawn is within ``tolerance`` of ``apple_xyz``, or None."""
-    import math
-
-    x, y = float(apple_xyz[0]), float(apple_xyz[1])
-    for name, (spawn, _plate) in LAYOUTS.items():
-        if math.hypot(x - spawn[0], y - spawn[1]) <= tolerance:
-            return name
-    return None
-
-
 def resolve_instruction(text: str | None = None, path: str | None = None) -> str:
-    """Pick the instruction from a literal, a file, or the benchmark's default.
-
-    The file form exists because a long prompt does not survive shell quoting
-    intact, and a prompt silently mangled by the shell is indistinguishable from
-    a policy that misunderstood it.
-    """
+    """Pick the instruction from a literal, a file, or the task's default."""
     if text is not None and path is not None:
         raise ValueError("give either an instruction or a file holding one, not both")
     if path is not None:
@@ -102,132 +43,41 @@ def resolve_instruction(text: str | None = None, path: str | None = None) -> str
 
 
 def instruction_warning(instruction: str) -> str | None:
-    """Return the caveat owed to a run given a non-default instruction, or None.
+    """The caveat owed to a run given a non-default instruction, or None.
 
-    Changing the instruction changes what the policy is *told*. It does not
-    change what is *measured*: the three scorers compute apple-on-plate geometry
-    whatever the text says. So a custom-goal run scores 0 against this task, and
-    that 0 is a statement about apple-on-plate geometry rather than about
-    whether the policy did the thing it was asked to do. Reporting it as a task
-    failure would be a false claim, which is why this is loud rather than a
-    footnote in the JSON.
+    Changing the instruction changes what the policy is *told*, not what is *measured*:
+    the scorer grades apple-on-plate whatever the text says.
     """
     if instruction == INSTRUCTION:
         return None
-    lines = [
-        "=" * 78,
-        "CUSTOM INSTRUCTION — READ WHAT THIS DOES NOT CHANGE",
-        "",
-        f"  asked for: {instruction}",
-        f"  benchmark: {INSTRUCTION}",
-        "",
-        "The scorers are unchanged: apple_on_plate_success, reference_success and",
-        "apple_plate_distance all measure apple-on-plate geometry. A 0 from this run",
-        "means the apple did not end up on the plate — it is NOT a measurement of",
-        "whether the policy achieved the goal typed above. This probes instruction",
-        "following, not task success.",
-    ]
-    lines.append("=" * 78)
-    return "\n".join(lines)
-
-
-def apple_on_plate_scene(
-    scene_id: str = "apple-on-plate",
-    *,
-    apple_radius: float = APPLE_RADIUS,
-    apple_xy: tuple[float, float] = (APPLE_XYZ[0], APPLE_XYZ[1]),
-    plate_xyz: tuple[float, float, float] = PLATE_XYZ,
-    goal: PlateGoal | None = None,
-    instruction: str = INSTRUCTION,
-) -> Scene:
-    """Build the single fixed scene, carrying its geometry in the target spec.
-
-    ``apple_radius`` sets both where the apple's centre rests on the table and
-    the success gate derived from it, so a diagnostic run against a modified
-    scene stays self-consistent. At the contract's own radius this reproduces
-    the section 5 gate exactly.
-    """
-    apple_xyz = (apple_xy[0], apple_xy[1], apple_radius)
-    resolved = goal or PlateGoal.for_apple(
-        apple_radius=apple_radius,
-        plate_top_z=plate_xyz[2],
-        center_xy=(plate_xyz[0], plate_xyz[1]),
-        spawn_xy=apple_xy,
+    return (
+        f"custom instruction: {instruction!r}. The {SCORER} scorer still measures "
+        "apple-on-plate, so a 0 means the apple did not end up released on the plate -- "
+        "not whether the policy did what it was told."
     )
+
+
+def apple_on_plate_scene(instruction: str = INSTRUCTION) -> Scene:
     return Scene(
-        id=scene_id,
+        id="apple-on-plate",
         instruction=instruction,
-        target=Target(
-            kind="object_on_receptacle",
-            spec={
-                "object": "apple",
-                "receptacle": "plate",
-                "apple_xyz": list(apple_xyz),
-                "plate_xyz": list(plate_xyz),
-                "plate_center_xy": list(resolved.center_xy),
-                "max_horizontal_distance": resolved.radius,
-                "placed_z_range": [
-                    resolved.center_z - resolved.z_tolerance,
-                    resolved.center_z + resolved.z_tolerance,
-                ],
-                "max_speed_mps": resolved.max_speed,
-                "min_displacement_m": resolved.min_displacement,
-                "apple_radius": apple_radius,
-            },
-        ),
-        metadata={"source": "so_arm_mujoco/mjcf/task_scene.xml", "frame": "world"},
+        target=Target(kind="object_on_receptacle", spec={"object": "apple", "receptacle": "plate"}),
+        metadata={"frame": "scene/worktop"},
     )
 
 
 def apple_on_plate(
-    max_steps: int = 220,
+    max_steps: int = MAX_POLICY_STEPS,
     epochs: int = 1,
-    apple_radius: float = APPLE_RADIUS,
     instruction: str = INSTRUCTION,
-    layout: str = "standard",
-    **_: Any,
 ) -> Task:
-    """The benchmark: one scene, geometric success plus the simulator's own verdict.
-
-    ``instruction`` is what the policy is *told* to do. It changes nothing
-    about scoring: the three scorers measure apple-on-plate geometry whatever
-    the text says, so a run given some other goal scores 0 against *this*
-    task and that 0 is not a verdict on the goal that was typed.
-
-    ``layout`` names which of `LAYOUTS` the simulator staged. The camera verdict
-    finds both objects in the frame and does not care; it is the pose-derived
-    ``reference_success`` column that would otherwise grade a swapped world against
-    the standard plate centre and disagree with the camera on every step.
-    ``run_task.sh`` passes what the preflight measured rather than what anyone typed.
-
-    Both are declared explicitly rather than left to ``**_`` because that
-    catch-all swallows a misspelled keyword in silence -- the run would then
-    use the default text while the caller believed otherwise, and nothing in
-    the log would say so. Callers should still read the instruction back off
-    the returned scene; see the guard in ``scripts/molmoact_eval.py``.
-    """
+    """The task. Unknown ``-T`` options are an error, not silently swallowed."""
     text = str(instruction)
-    if layout not in LAYOUTS:
-        raise ValueError(f"layout must be one of {sorted(LAYOUTS)}, not {layout!r}")
-    spawn, plate = LAYOUTS[layout]
     return Task(
         name="apple_on_plate",
-        scenes=[
-            apple_on_plate_scene(
-                apple_radius=float(apple_radius),
-                apple_xy=(spawn[0], spawn[1]),
-                plate_xyz=plate,
-                instruction=text,
-            )
-        ],
-        scorer=["apple_on_plate_success", "reference_success", "apple_plate_distance"],
+        scenes=[apple_on_plate_scene(instruction=text)],
+        scorer=[SCORER],
         max_steps=int(max_steps),
         epochs=int(epochs),
-        metadata={
-            "robot": "SO-101",
-            "transport": "rosbridge",
-            "instruction": text,
-            "apple_radius_m": float(apple_radius),
-            "layout": layout,
-        },
+        metadata={"robot": "SO-101", "transport": "rosbridge", "instruction": text},
     )
