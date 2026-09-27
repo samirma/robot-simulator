@@ -19,6 +19,26 @@ A robot is identified by a signature **command** topic, confirmed by its disting
 companions, all with the contract's types. Command topics because a robot whose first
 frame has not been encoded yet is still identifiable, and rosapi keeps declared
 subscriptions in its answer precisely so a client can discover how to *drive* something.
+
+There is one table of signatures, `MEMBER_SIGNATURES`, typed and covering every fleet
+member the console knows a contract for. Two questions are asked of it:
+
+* `survey` / `discover`: which robot does teleop drive? Only the kinds with
+  `COMPANIONS` (a myAGV, an AiNex) are candidates, and each must also carry its
+  distinguishing companions.
+* `find_members`: what is on the wire at all? The fleet check and the camera page ask
+  this; it counts every kind, including the ones teleop never drives (an SO-101, the
+  worktop rig), and reports a signature of the wrong type rather than counting it.
+
+The two differ in one respect, on purpose: `find_members` treats a signature rosapi gives
+no type for as wrong (the fleet check exists to prove the typed interface is there),
+while teleop takes an empty type as rosapi not saying and only rejects a stated type that
+contradicts the contract.
+
+The console's camera and control page (`live_cameras.html`, served by `bin/view.sh`)
+identifies members the same way, from a copy of `MEMBER_SIGNATURES` in its `CONTRACT`
+block. The two are duplicated rather than shared because the page is one static file with
+no Python behind it; `tests/test_view_page.py` holds them equal.
 """
 
 from __future__ import annotations
@@ -28,6 +48,8 @@ from typing import List, Mapping, Optional, Sequence, Tuple
 
 from robot_console import ainex_topics
 from robot_console.robots import AINEX, MYAGV
+
+SO101 = "so101"
 from robot_console.topics import (
     TOPIC_CAMERA,
     TOPIC_CMD_VEL,
@@ -37,23 +59,43 @@ from robot_console.topics import (
     namespaced,
 )
 
-#: `(robot, signature topic)`, most specific first. Only robots this console can *drive*
-#: are here: an SO-101 has a signature of its own on the wire and no place in teleop, and
-#: the worktop's camera rig under `scene` is not a robot at all.
-SIGNATURES: Tuple[Tuple[str, str], ...] = (
-    (AINEX, ainex_topics.TOPIC_SET_WALKING_PARAM),
-    (MYAGV, TOPIC_CMD_VEL),
+#: `(member kind, signature topic, its type)`, most specific first: every kind of fleet
+#: member this console knows a contract for. A robot is identified by its signature
+#: **command** topic. Typed, because a name alone is a claim anybody can make -- a
+#: `/cmd_vel` that is a `std_msgs/String` is not a myAGV. Each type is its robot's own
+#: dialect, exactly as its ROS file spells it; the two dialects are never folded together.
+MEMBER_SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
+    (SO101, "/joint_trajectory_controller/joint_trajectory",
+     "trajectory_msgs/msg/JointTrajectory"),
+    (AINEX, ainex_topics.TOPIC_SET_WALKING_PARAM, ainex_topics.TYPE_WALKING_PARAM),
+    (MYAGV, TOPIC_CMD_VEL, TYPE_TWIST),
 )
 
-#: What must be on the wire, with which type, for a signature hit to be that robot: the
-#: command topic itself and the topic that distinguishes the robot from anything else
-#: that happens to take the same command (a Twist base without odometry is not a myAGV).
+#: The worktop's fixed camera rig (simulator spec §3): a workspace-owned member under a
+#: namespace of its own, identified by its overhead view. Not a robot and not drivable.
+RIG_KIND = "scene"
+RIG_NAMESPACE = "scene"
+RIG_SIGNATURE = ("/scene/overhead/color/compressed", "sensor_msgs/msg/CompressedImage")
+
+#: The kinds teleop drives, and the topics besides the signature that must be on the wire,
+#: with which type, for a signature hit to be that robot: what distinguishes it from
+#: anything else that happens to take the same command (a Twist base without odometry is
+#: not a myAGV). An SO-101 has no place in teleop, so it has no entry.
+COMPANIONS: Mapping[str, Mapping[str, str]] = {
+    MYAGV: {TOPIC_ODOM: TYPE_ODOM},
+    AINEX: {ainex_topics.TOPIC_IS_WALKING: ainex_topics.TYPE_BOOL},
+}
+
+#: `(robot, signature topic)` of the drivable kinds, in `MEMBER_SIGNATURES` order.
+SIGNATURES: Tuple[Tuple[str, str], ...] = tuple(
+    (kind, topic) for kind, topic, _ in MEMBER_SIGNATURES if kind in COMPANIONS
+)
+
+#: Everything that must be on the wire for a drivable kind: its signature and companions.
 REQUIRED: Mapping[str, Mapping[str, str]] = {
-    MYAGV: {TOPIC_CMD_VEL: TYPE_TWIST, TOPIC_ODOM: TYPE_ODOM},
-    AINEX: {
-        ainex_topics.TOPIC_SET_WALKING_PARAM: ainex_topics.TYPE_WALKING_PARAM,
-        ainex_topics.TOPIC_IS_WALKING: ainex_topics.TYPE_BOOL,
-    },
+    kind: {topic: topic_type, **COMPANIONS[kind]}
+    for kind, topic, topic_type in MEMBER_SIGNATURES
+    if kind in COMPANIONS
 }
 
 #: Both dialects of the same message type. Two robots on one graph can speak two: the
@@ -79,6 +121,18 @@ class Discovered:
     def describe(self) -> str:
         where = f"/{self.namespace}/*" if self.namespace else "the bare contract (no namespace)"
         return f"{self.robot} on {where}, camera {self.camera_topic}"
+
+
+@dataclasses.dataclass(frozen=True)
+class Member:
+    """One fleet member on the wire: its kind (a `robots.yml` id, or `scene`) and namespace."""
+
+    kind: str
+    namespace: str
+
+    def describe(self) -> str:
+        where = f"/{self.namespace}/*" if self.namespace else "the bare contract"
+        return f"{self.kind} on {where}"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -143,20 +197,31 @@ def _problems(present: Mapping[str, str], robot: str, namespace: str) -> List[st
     return problems
 
 
-def survey(present: Mapping[str, str]) -> Tuple[List[Discovered], List[Rejected]]:
-    """Every drivable robot the wire offers, and every near miss with its reason."""
+def _signature_hits(present: Mapping[str, str]) -> dict:
+    """`{namespace: {kind: (topic, stated type)}}` for every name match of a signature.
+
+    The one scan both questions share; each then decides what a type mismatch means.
+    """
     hits: dict = {}
-    for topic in present:
-        for robot, signature in SIGNATURES:
+    for topic, topic_type in present.items():
+        for kind, signature, _ in MEMBER_SIGNATURES:
             namespace = namespace_of(topic, signature)
             if namespace is not None:
-                hits.setdefault(namespace, set()).add(robot)
+                hits.setdefault(namespace, {})[kind] = (topic, topic_type)
                 break
+    return hits
+
+
+def survey(present: Mapping[str, str]) -> Tuple[List[Discovered], List[Rejected]]:
+    """Every drivable robot the wire offers, and every near miss with its reason."""
+    hits = _signature_hits(present)
     found: List[Discovered] = []
     rejected: List[Rejected] = []
     for namespace in sorted(hits):
         # `SIGNATURES` order decides, not the order rosapi listed the topics in.
-        robot = next(r for r, _ in SIGNATURES if r in hits[namespace])
+        robot = next((r for r, _ in SIGNATURES if r in hits[namespace]), None)
+        if robot is None:
+            continue  # only members teleop does not drive (an SO-101) live here
         problems = _problems(present, robot, namespace)
         if problems:
             rejected.append(Rejected(robot, namespace, "; ".join(problems)))
@@ -168,6 +233,40 @@ def survey(present: Mapping[str, str]) -> Tuple[List[Discovered], List[Rejected]
 def find_robots(present: Mapping[str, str]) -> List[Discovered]:
     """The drivable robots only; see `survey` for the near misses."""
     return survey(present)[0]
+
+
+def find_members(present: Mapping[str, str]) -> Tuple[List[Member], List[str]]:
+    """Every fleet member on the wire, and what looked like one but had the wrong type.
+
+    `present` is `{topic: type}` from `/rosapi/topics`. A member is a namespace composing
+    a `MEMBER_SIGNATURES` topic **with that signature's type**; a name match with any
+    other type (an empty one included) is returned in the second list as
+    `"<topic> is <type>, not <expected>"`, so a caller can fail on it rather than silently
+    ignore it. A namespace holds at most one member, the first kind in `MEMBER_SIGNATURES`
+    that it composes. The rig is a member when its signature is on the wire with its type.
+    Sorted by namespace.
+    """
+    expected = {kind: topic_type for kind, _, topic_type in MEMBER_SIGNATURES}
+    members: List[Member] = []
+    wrong: List[str] = []
+    for namespace, kinds in _signature_hits(present).items():
+        typed = []
+        for kind, (topic, topic_type) in kinds.items():
+            if topic_type == expected[kind]:
+                typed.append(kind)
+            else:
+                wrong.append(f"{topic} is {topic_type or 'untyped'}, not {expected[kind]}")
+        if typed:
+            members.append(Member(next(k for k, _, _ in MEMBER_SIGNATURES if k in typed),
+                                  namespace))
+    rig_topic, rig_type = RIG_SIGNATURE
+    if rig_topic in present:
+        if present[rig_topic] == rig_type:
+            members.append(Member(RIG_KIND, RIG_NAMESPACE))
+        else:
+            wrong.append(f"{rig_topic} is {present[rig_topic] or 'untyped'}, not {rig_type}")
+    members.sort(key=lambda m: (m.namespace, m.kind))
+    return members, sorted(wrong)
 
 
 def choose(

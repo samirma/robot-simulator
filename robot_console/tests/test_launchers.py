@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-LAUNCHERS = [ROOT / "run_task.sh", ROOT / "bin" / "teleop.sh", ROOT / "bin" / "slam.sh"]
+LAUNCHERS = [ROOT / "run_task.sh", ROOT / "bin" / "teleop.sh", ROOT / "bin" / "slam.sh",
+             ROOT / "bin" / "view.sh"]
 
 
 @pytest.mark.parametrize("script", LAUNCHERS, ids=lambda p: p.name)
