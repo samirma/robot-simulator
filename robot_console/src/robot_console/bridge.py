@@ -183,8 +183,8 @@ class RobotLink:
     def stop(self) -> None:
         """Publish an explicit zero Twist.
 
-        The bridge's 0.5 s watchdog would stop the base anyway, but only after half a
-        second of coasting. Saying stop is both faster and unambiguous in the log.
+        This is the only thing that stops a myAGV: it has no command watchdog, and keeps
+        executing the last Twist until a zero one arrives -- real and simulated alike.
         """
         self.publish_cmd_vel(Command())
 

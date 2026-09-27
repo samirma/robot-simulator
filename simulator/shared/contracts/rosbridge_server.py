@@ -57,16 +57,12 @@ log = logging.getLogger("rosbridge")
 
 DEFAULT_PORT = 9090
 
-# The topics the myAGV presents, so both ends agree on names and types.
+# A few of the myAGV's names, kept for the standalone echo server below. The myAGV's
+# whole interface is `ros_surfaces/myagv.py`.
 TOPIC_CMD_VEL = "/cmd_vel"
 TOPIC_ODOM = "/odom"
 TOPIC_CAMERA = "/camera/image_raw/compressed"
-# The 2023 Pi AGV ships a YDLidar publishing /scan (robots_specs/myagv/ros.yml), so a
-# simulated one belongs on the same topic:
-# anything consuming it works against either robot unchanged.
 TOPIC_SCAN = "/scan"
-TOPIC_DEPTH = "/camera/depth/image_raw"
-TOPIC_CAMERA_INFO = "/camera/rgb/camera_info"
 
 TYPE_TWIST = "geometry_msgs/Twist"
 TYPE_ODOM = "nav_msgs/Odometry"

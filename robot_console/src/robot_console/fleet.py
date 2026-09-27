@@ -26,34 +26,20 @@ import argparse
 import sys
 
 from robot_console.ainex_topics import CONTRACT_TOPICS as AINEX_CONTRACT_TOPICS
-from robot_console.topics import (
-    TOPIC_CAMERA,
-    TOPIC_CMD_VEL,
-    TOPIC_ODOM,
-    TOPIC_SCAN,
-    TOPIC_TF,
-    TOPIC_TF_STATIC,
-    namespaced,
-)
+from robot_console.topics import CONTRACT_TOPICS, namespaced
 
 #: Exit codes, so a shell can tell "nothing there" from "the wrong thing is there".
 EXIT_OK = 0
 EXIT_MISSING = 1
 EXIT_TRANSPORT = 2
 
-#: What a mobile base must present, from `topics.py` -- the myAGV contract. `/tf` is the
-#: hardware's: `myagv_active.launch` starts `robot_state_publisher`, `robot_pose_ekf` and
-#: three static publishers, so a base with no tree is a base a mapping stack cannot use.
-#:
-#: **`/tf_static` is deliberately not here, and the reason is the vendor's tf version.**
-#: Those three static publishers are `pkg="tf"`, not `tf2_ros`, and tf1's node
-#: re-publishes onto `/tf` on a period. `robot_state_publisher` has nothing for
-#: `/tf_static` either: the vendor URDF's only joint, `base_up`, is `continuous`, so the
-#: description carries no fixed joint at all. A real myAGV therefore publishes nothing to
-#: `/tf_static`, and requiring it would fail a real robot. The SO-101 is a genuine ROS 2
-#: bringup and does have one -- see `arm_topics`.
-BASE_TOPICS: tuple[str, ...] = (TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_CAMERA, TOPIC_SCAN,
-                                TOPIC_TF)
+#: What a mobile base must present, from `topics.py` -- the myAGV contract
+#: (`robots_specs/myagv/ros.yml`): every topic it lists. `/tf` and `/tf_static` are the
+#: hardware's: `myagv_active.launch` starts `robot_state_publisher` (whose `/tf_static` is
+#: latched and empty -- the URDF has no fixed joint), `robot_pose_ekf` and three static
+#: publishers that re-publish on `/tf`, so a base with no tree is a base a mapping stack
+#: cannot use.
+BASE_TOPICS: tuple[str, ...] = tuple(CONTRACT_TOPICS)
 
 #: What a humanoid must present, from `ainex_topics.py` -- the Hiwonder AiNex contract.
 #: A third kind rather than a second flavour of base: the AiNex is commanded as a walking

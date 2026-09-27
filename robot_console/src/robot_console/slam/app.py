@@ -12,9 +12,9 @@ budget is real and it is checked: `_Budget` watches the loop's own tick time and
 when a tick overruns the publish period, because the failure mode otherwise is a robot
 that drives fine and maps badly with nothing in the log to explain it.
 
-Stopping the robot on the way out is not best-effort. The simulator has a 0.5 s watchdog;
-the **real myAGV has none** -- `myagv_odometry_node` latches the last Twist and writes it
-to the motors at 100 Hz forever. Hence the signal handlers and the `finally`.
+Stopping the robot on the way out is not best-effort. The myAGV has **no command
+watchdog**, real or simulated -- `myagv_odometry_node` latches the last Twist and writes
+it to the motors every cycle forever. Hence the signal handlers and the `finally`.
 """
 
 from __future__ import annotations
@@ -81,9 +81,8 @@ KEYS_NAVIGATE = """  left click   drive to that point   Space  stop / cancel
 class _Budget:
     """Watches tick time against the publish period.
 
-    An overrun means `/cmd_vel` went out late, which on the simulator trips the 0.5 s
-    watchdog and on hardware just means the robot kept its last command for longer than
-    intended. Either way it is worth knowing, and it is invisible without measuring.
+    An overrun means `/cmd_vel` went out late, which means the robot kept its last command
+    for longer than intended. It is worth knowing, and it is invisible without measuring.
     """
 
     def __init__(self, period: float) -> None:

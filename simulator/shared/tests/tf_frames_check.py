@@ -121,23 +121,48 @@ def check_robot(label: str, model, tree, urdf_text: str, camera_frames: set[str]
           f"worst dpos {worst_pos:.2e} m, dquat {worst_quat:.2e}")
 
 
+class _Entries:
+    """A fixed list of transforms in `TransformTree`'s shape, for `check_robot`."""
+
+    def __init__(self, entries) -> None:
+        self._entries = list(entries)
+
+    @property
+    def frames(self) -> tuple[str, ...]:
+        return tuple(sorted({f for p, c, _, _ in self._entries for f in (p, c)}))
+
+    def static(self):
+        return list(self._entries)
+
+    def dynamic(self, _data):
+        return []
+
+
 def check_myagv() -> None:
+    """The myAGV's tree is its launch's and its URDF's, not the model's: `odom ->
+    base_footprint` from robot_pose_ekf, `base_up` from robot_state_publisher, and the three
+    `static_transform_publisher` mounts. So it is checked against the description, and the
+    sensors the model simulates are checked against it -- MuJoCo must render and range
+    from where the tree says the camera and the lidar are."""
     model = mujoco.MjModel.from_xml_path(str(robots_spec.model_xml("myagv")))
     text = robots_spec.urdf_path("myagv").read_text()
-    tree = TransformTree(
-        model, root_body=myagv_surface.TF_ROOT_BODY, frames=myagv_surface.TF_FRAMES,
-        cameras=myagv_surface.TF_CAMERAS,
-        # As the surface builds it: the lidar mount `myagv_active.launch` publishes, and
-        # the top shell the vendor puts on a continuous joint nothing actuates.
-        extra_static=[("base_footprint", "laser_frame", (0.065, 0.0, 0.08), (1, 0, 0, 0)),
-                      ("base_footprint", "base_up", (0, 0, 0), (1, 0, 0, 0))],
-    )
-    # `laser_frame` is no more a link of `myagv_urdf` than the AiNex's is of
-    # `ainex_description`: on the real robot the lidar is a separate driver and its mount
-    # is a `static_transform_publisher` line in `myagv_active.launch`, not a joint in the
-    # chassis description. Same for the camera. A frame outside the URDF is normal; a
-    # frame outside the URDF that nothing declares is the thing this check is looking for.
-    check_robot("myagv", model, tree, text, {"camera", "laser_frame"})
+    entries = [e for e in myagv_surface.tree() if e[0] != myagv_surface.FRAME_ODOM]
+    # camera_link, imu_link and laser_frame are no more links of `myagv_urdf` than the
+    # AiNex's lidar is of `ainex_description`: on the real robot each is a
+    # `static_transform_publisher` line in `myagv_active.launch`, not a joint.
+    launch_frames = {child for _, child, _, _ in myagv_surface.static_transforms().values()}
+    check_robot("myagv", model, _Entries(entries), text, launch_frames)
+
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    cam = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, "front_camera")
+    pos, quat = camera_link_pose(model, cam)
+    _, _, want_pos, want_quat = myagv_surface.static_transforms()[
+        myagv_surface.NODE_BASE2CAMERA]
+    check("the rendered camera sits at camera_link",
+          float(np.linalg.norm(pos - np.asarray(want_pos))) < TOL
+          and quat_error(quat, want_quat) < TOL,
+          f"model {np.round(pos, 4)} vs launch {want_pos}")
 
 
 def check_so101() -> None:

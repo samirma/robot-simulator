@@ -41,9 +41,12 @@ AiNex (Hiwonder) -- `UruBots/ainex-robot-code`, a real AiNex deployment, at
     HeadState.msg, WalkingParam.msg, AppWalkingParam.msg, SetWalkingCommand.srv,
     GetWalkingParam.srv, GetWalkingState.srv, SetBusServosPosition.msg,
     BusServoPosition.msg, GetBusServosPosition.srv
-myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros`, branch `myagv_ros_2023Pi`: uses
-    the standard messages only (Twist, Odometry, CompressedImage, LaserScan, Image,
-    CameraInfo); no vendor package.
+myAGV (Elephant Robotics) -- `elephantrobotics/myagv_ros` at c71f3cc5 (branch
+    `myagv_ros_2023Pi`): standard messages, plus the vendored `robot_pose_ekf`'s
+    `srv/GetStatus.srv`. Its standard types not used by another member (std_msgs/Float32,
+    geometry_msgs/Point32, sensor_msgs/ChannelFloat32, sensor_msgs/PointCloud) are in
+    the `# --- myAGV` block; sensor_msgs/SetCameraInfo is the SO-101 block's, one
+    definition that nests the CameraInfo of whichever dialect it is asked in.
 SO-101 (ros2_control bringup, ROS 2 Jazzy) -- every interface its graph uses, from the
     upstream files at the revisions Jazzy's rosdistro releases (`jazzy/distribution.yaml`):
     `ros-controls/control_msgs` tag `5.10.0` (the `jazzy` branch head, and the release
@@ -539,7 +542,30 @@ _SO101_CONSTANTS: dict[str, list[tuple[str, str, str]]] = {
 
 # --- end SO-101 ----------------------------------------------------------------------------
 
-MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101}
+# --- myAGV: its standard types no other member uses, and robot_pose_ekf's service ------
+
+_MYAGV: dict[str, list[Field]] = {
+    "std_msgs/Float32": _h(("data", "float32", SCALAR)),
+    "geometry_msgs/Point32": _h(
+        ("x", "float32", SCALAR), ("y", "float32", SCALAR), ("z", "float32", SCALAR),
+    ),
+    "sensor_msgs/ChannelFloat32": _h(
+        ("name", "string", SCALAR), ("values", "float32", VARIABLE),
+    ),
+    "sensor_msgs/PointCloud": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("points", "geometry_msgs/Point32", VARIABLE),
+        ("channels", "sensor_msgs/ChannelFloat32", VARIABLE),
+    ),
+}
+
+_MYAGV_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    "robot_pose_ekf/GetStatus": ([], _h(("status", "string", SCALAR))),
+}
+
+# --- end myAGV ---------------------------------------------------------------------------
+
+MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101, **_MYAGV}
 
 #: Constants per definition, as `rosapi`'s `constnames`/`constvalues` carry them. Keyed as
 #: `_SO101_CONSTANTS` documents; a definition with none is simply absent.
@@ -566,6 +592,7 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
            ("position", "ros_robot_controller/BusServoPosition", VARIABLE)),
     ),
     **_SO101_SERVICES,
+    **_MYAGV_SERVICES,
 }
 
 

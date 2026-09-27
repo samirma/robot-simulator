@@ -1,11 +1,14 @@
 #!/usr/bin/env python
-"""Standalone check that the simulated lidar matches the myAGV's YDLidar X2.
+"""Standalone check that the simulated lidar is the myAGV's YDLidar X2, as its launch has it.
 
 The geometry here is the part that silently ruins a map rather than raising: a beam that
 ranges the robot's own chassis, a fan cast from the base centre instead of the laser
-mount, or a scan indexed clockwise. All three produce a plausible-looking /scan.
+mount, a scan not in `laser_frame` (which the launch turns a half-turn from the base), or
+a scan indexed clockwise. All of them produce a plausible-looking /scan.
 
 Built in a box world of known size so every expected range is arithmetic, not a fixture.
+The numbers are read from the contract (`ros_surfaces/myagv.py`), which transcribes
+`robots_specs/myagv/ros.yml`.
 
     python robots/myagv/test_scan.py [--scene /path/to/house.xml]
 """
@@ -13,6 +16,7 @@ Built in a box world of known size so every expected range is arithmetic, not a 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -20,13 +24,13 @@ import mujoco
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "shared"))
 
-# The static transform myagv_active.launch publishes for base_footprint -> laser_frame.
-OFFSET_X = 0.065
-OFFSET_Z = 0.08
-# ydlidar_ros_driver/launch/X2.launch.
-RANGE_MIN = 0.1
-RANGE_MAX = 12.0
+from ros_surfaces import myagv as contract  # noqa: E402
+
+_, _, (OFFSET_X, _, OFFSET_Z), (LASER_YAW, _, _) = contract.STATIC_TRANSFORMS[
+    contract.NODE_BASE2LASER]
+RANGE_MIN, RANGE_MAX = contract.SCAN_RANGE_MIN, contract.SCAN_RANGE_MAX
 
 ROOM = 3.0  # half-width of the test box, in metres
 
@@ -61,10 +65,6 @@ def box_world() -> mujoco.MjSpec:
     return spec
 
 
-def laser_origin(x: float, y: float, yaw: float) -> np.ndarray:
-    return np.array([x + OFFSET_X * np.cos(yaw), y + OFFSET_X * np.sin(yaw), OFFSET_Z])
-
-
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--scene", default=None, help="house MJCF to attach into instead of a box")
@@ -72,7 +72,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from robots.myagv import MyAGVRobot, MyAGVRobotConfig, MyAGVRobotView
-    from tools.spawn_robot import laser_scan_ranges
+    from mujoco_bridge import laser_scan_ranges
 
     config = MyAGVRobotConfig()
     ns = config.robot_namespace
@@ -97,7 +97,7 @@ def main() -> int:
     if args.scene:
         from tools.spawn_robot import find_open_spot
 
-        origin_xy, yaw0 = find_open_spot(args.scene)
+        origin_xy, _yaw0 = find_open_spot(args.scene)
         pose = np.eye(4)
         pose[:2, 3] = origin_xy
         base.pose = pose
@@ -105,77 +105,76 @@ def main() -> int:
         mujoco.mj_forward(model, data)
         print(f"starting from open floor at {np.round(origin_xy, 3)}")
 
-    x, y, yaw = float(origin_xy[0]), float(origin_xy[1]), 0.0
-    ranges = laser_scan_ranges(
-        model, data, laser_origin(x, y, yaw), yaw, args.beams, RANGE_MAX, bodyexclude=body
-    )
+    x, y = float(origin_xy[0]), float(origin_xy[1])
+
+    def sweep(px: float, py: float, yaw: float) -> np.ndarray:
+        return np.array(contract.scan_ranges(model, data, px, py, 0.0, yaw, args.beams, body))
+
+    ranges = sweep(x, y, 0.0)
+    bearings = np.degrees(np.array(contract.scan_bearings(args.beams)))
+    valid = ranges > 0.0
 
     print("\nself-occlusion:")
-    # The chassis half-width is 0.115 m and the box reaches 0.1556 m fore and aft, so
-    # anything ranging under 0.1 m from a laser sitting 65 mm ahead of centre is the robot.
-    check("no beam ranges the robot itself", float(ranges.min()) >= RANGE_MIN,
-          f"closest return {ranges.min():.4f} m")
+    check("no beam ranges the robot itself",
+          float(ranges[valid].min()) >= RANGE_MIN if valid.any() else False,
+          f"closest return {ranges[valid].min():.4f} m" if valid.any() else "no returns")
 
     print("\nexcluding the robot is load-bearing:")
     # Without bodyexclude every beam should hit the chassis, which is the failure mode
     # the exclusion exists to prevent. If this ever stops happening, the check above has
     # become vacuous and the exclusion is no longer being tested by it.
-    unshielded = laser_scan_ranges(
-        model, data, laser_origin(x, y, yaw), yaw, 36, RANGE_MAX, bodyexclude=-1
-    )
+    laser = np.array([x + OFFSET_X, y, OFFSET_Z])
+    unshielded = laser_scan_ranges(model, data, laser, 0.0, 36, RANGE_MAX, bodyexclude=-1)
     check("without bodyexclude the chassis dominates",
           float(np.median(unshielded)) < 0.3, f"median {np.median(unshielded):.4f} m")
 
+    print("\nX2.launch conventions:")
+    check(f"{args.beams} beams, from -180 to 180 deg",
+          ranges.shape == (args.beams,) and abs(bearings[0] + 180) < 1e-9
+          and abs(bearings[-1] - 180) < 1e-9, f"{bearings[0]:.1f}..{bearings[-1]:.1f}")
+    wedge = (bearings >= -50.0) & (bearings <= 50.0)
+    check("the ignore_array wedge -50..50 deg reads 0.0", bool(np.all(ranges[wedge] == 0.0)),
+          f"{int(np.count_nonzero(ranges[wedge]))} non-zero")
+    check("every other value is 0.0 or inside [range_min, range_max]",
+          bool(np.all((ranges == 0.0) | ((ranges >= RANGE_MIN) & (ranges <= RANGE_MAX)))))
+
     if not args.scene:
-        print("\ngeometry in the box world:")
-        step = 2 * np.pi / args.beams
-        # Beam index i points at angle -pi + i*step in the base frame (yaw = 0 here).
+        print("\ngeometry in the box world (laser_frame is the base turned a half-turn):")
+
         def beam(deg: float) -> float:
-            return float(ranges[int(round((np.radians(deg) + np.pi) / step)) % args.beams])
+            return float(ranges[int(np.argmin(np.abs(bearings - deg)))])
 
         # Walls are 0.05 m half-thickness slabs, so their inner faces are at ROOM - 0.05.
         face = ROOM - 0.05
-        ahead = face - OFFSET_X       # laser sits 65 mm forward, so less room ahead...
-        behind = face + OFFSET_X      # ...and more behind
+        ahead = face - OFFSET_X       # the laser sits 65 mm forward of the base centre
         for label, deg, want in (
-            ("forward (+x)", 0.0, ahead),
-            ("left (+y)", 90.0, face),
-            ("backward (-x)", 180.0, behind),
-            ("right (-y)", -90.0, face),
+            ("base +x is bearing 180", 180.0, ahead),
+            ("base +x is bearing -180", -180.0, ahead),
+            ("base +y (left) is bearing -90", -90.0, face),
+            ("base -y (right) is bearing +90", 90.0, face),
         ):
             got = beam(deg)
-            check(f"{label} ranges {want:.3f} m", abs(got - want) < 0.02, f"got {got:.4f} m")
+            check(f"{label}: {want:.3f} m", abs(got - want) < 0.02, f"got {got:.4f} m")
+        # Base -x is bearing 0, inside the blanked wedge; bearing -60 is just outside it,
+        # base direction 120 deg, towards +y and -x.
+        diag = beam(-60.0)
+        want = min((face + OFFSET_X) / abs(math.cos(math.radians(120))),
+                   face / abs(math.sin(math.radians(120))))
+        check("bearing -60 (base 120 deg) ranges the nearer wall", abs(diag - want) < 0.03,
+              f"got {diag:.4f} m, want {want:.4f} m")
 
-        # The asymmetry above is the whole point: it only appears if the fan is cast from
-        # the laser mount rather than the base centre.
-        check("mount offset is applied", abs(beam(180.0) - beam(0.0) - 2 * OFFSET_X) < 0.02,
-              f"back - front = {beam(180.0) - beam(0.0):.4f} m, want {2 * OFFSET_X:.4f}")
-
-        print("\nbeam ordering (counter-clockwise from -pi):")
-        # Rotating the robot +45 deg must move the near wall's bearing by -45 deg in the
-        # scan. A clockwise fan would move it the other way and still look sane.
-        pose = np.eye(4)
-        base.pose = pose
+        print("\nbeam ordering (counter-clockwise in laser_frame):")
+        # Turned +45 deg, 1 m from the +x wall: the wall's normal is at base bearing -45,
+        # which is laser bearing -45 + 180 = 135. A clockwise fan would put it at -135.
         near = np.eye(4)
-        near[:2, 3] = [face - 1.0, 0.0]  # 1 m from the +x wall
+        near[:2, 3] = [face - 1.0, 0.0]
         base.pose = near
         mujoco.mj_forward(model, data)
-        turned = laser_scan_ranges(
-            model, data, laser_origin(face - 1.0, 0.0, np.radians(45.0)), np.radians(45.0),
-            args.beams, RANGE_MAX, bodyexclude=body,
-        )
-        idx = int(np.argmin(turned))
-        bearing = np.degrees(-np.pi + idx * step)
-        check("a +45 deg yaw puts the near wall at -45 deg in the scan",
-              abs(bearing + 45.0) < 3.0, f"bearing {bearing:.1f} deg")
-
-    print("\nrange encoding:")
-    misses = ranges[ranges > RANGE_MAX]
-    check("misses are range_max + 1 (or there are none)",
-          misses.size == 0 or np.allclose(misses, RANGE_MAX + 1.0),
-          f"{misses.size} miss(es)")
-    check("every value is finite", bool(np.isfinite(ranges).all()))
-    check(f"{args.beams} beams returned", ranges.shape == (args.beams,), str(ranges.shape))
+        turned = sweep(face - 1.0, 0.0, math.radians(45.0))
+        masked = np.where(turned > 0.0, turned, np.inf)
+        bearing = float(bearings[int(np.argmin(masked))])
+        check("a +45 deg yaw puts the near wall at bearing 135 deg",
+              abs(bearing - 135.0) < 3.0, f"bearing {bearing:.1f} deg")
 
     print("\nRESULT:", "ok" if not FAIL else f"{len(FAIL)} check(s) failed: {FAIL}")
     return 0 if not FAIL else 1

@@ -84,11 +84,9 @@ ARM_ROS_SURFACES = {"so101"}
 # Tasks an engine can stage into its scene; see simulator/shared/tasks/.
 TASKS = {"apple_on_plate": ("tasks.apple_on_plate", "stage", "AppleOnPlate")}
 
-# Transcribed from ydlidar_ros_driver/launch/X2.launch and the base_footprint ->
-# laser_frame transform in myagv_active.launch. Same numbers as the MolmoSpaces engine;
-# a client that could measure a difference here would have found a regression.
+# Lidar defaults for the robots whose surface takes them from here. The myAGV is not
+# one: its X2's geometry and rate are its contract's (`ros_surfaces/myagv.py`).
 SCAN_DEFAULTS = {
-    "myagv": {"offset": (0.065, 0.08), "min_range": 0.1, "max_range": 12.0},
     # Byte-identical to the MolmoSpaces engine's, deliberately: a client that could
     # measure a different /scan across engines has found the regression the split exists
     # to prevent. The AiNex has no lidar at all -- the topic is an invention both engines
@@ -946,6 +944,29 @@ def _surface_kwargs(args, inst, model, task, scene_option):
         }
 
     camera = _pick_camera(args, model, prefix)
+    if inst.name == "myagv":
+        # The twin of the MolmoSpaces engine's `_myagv_kwargs`: the myAGV's rates, sizes
+        # and lidar geometry are its contract's, so only the camera and the bodies that
+        # are this robot's in this kitchen are chosen here.
+        if camera is None:
+            raise SystemExit("the myAGV's camera is part of its interface; --camera none "
+                             "cannot remove it")
+        if args.no_scan:
+            raise SystemExit("the myAGV's /scan is part of its interface; --no-scan cannot "
+                             "remove it")
+        return {
+            "base": inst.base, "model": model, "camera": camera,
+            "jpeg_quality": args.jpeg_quality, "scene_option": scene_option,
+            "lidar": {
+                "body": f"{prefix}base",
+                "exclude_bodies": frozenset(
+                    i for i in range(model.nbody)
+                    if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
+                    and n.startswith(prefix)
+                ),
+            },
+            "prefix": prefix,
+        }
     scan_cfg = None
     if not args.no_scan:
         defaults = SCAN_DEFAULTS[inst.name]
@@ -982,17 +1003,13 @@ def _surface_kwargs(args, inst, model, task, scene_option):
     bag = {
         "base": inst.base, "model": model, "camera": camera,
         "camera_size": args.camera_size, "jpeg_quality": args.jpeg_quality,
-        "control_hz": args.control_hz, "watchdog_s": args.watchdog,
+        # The AiNex surface's signature still takes a watchdog; it does not use one.
+        "control_hz": args.control_hz, "watchdog_s": None,
         "scan": scan_cfg, "depth": depth_cfg, "scene_option": scene_option,
         "camera_period": (1.0 / args.camera_hz) if args.camera_hz > 0 else 0.0,
-        # Both bases take this now: it is what names the bodies their transform trees
-        # read, and the myAGV's shared surface grew the same keyword the AiNex's had.
         "prefix": prefix,
     }
     if inst.name == "ainex":
-        # A per-robot tail rather than one more key in the common bag: the myAGV's
-        # shared surface is called from here with no adapter in between, so anything
-        # extra in the bag every base gets is a TypeError on that one.
         bag |= {"extra": {"action_dir": args.action_dir}}
     return bag
 
@@ -1115,9 +1132,9 @@ def main() -> int:
                     help="interface the --ros-port server binds (default: all)")
     ap.add_argument(
         "--control-hz", type=float, default=20.0, dest="control_hz",
-        help="control loop rate. Removed by accident with the --control* flags it was "
-             "named after, which left three uses behind and made this engine exit in "
-             "argparse before it ever built a kitchen.",
+        help="control rate for the members whose contract does not fix their own. The "
+             "myAGV's surface runs at its contract's rate whatever this says, and the loop "
+             "runs at the fastest member's",
     )
     ap.add_argument(
         "--task", default=None, choices=sorted(TASKS),
@@ -1136,8 +1153,8 @@ def main() -> int:
         help="also stream the eye-in-hand view (every camera costs control rate, so it "
              "is off unless asked for)",
     )
-    ap.add_argument("--watchdog", type=float, default=0.5,
-                    help="stop the base if no command arrives for this long")
+    # No --watchdog: the myAGV has no command watchdog on hardware. It holds its last
+    # /cmd_vel until a zero Twist arrives (robots_specs/myagv/ros.yml).
     ap.add_argument("--action-dir", default=None, dest="action_dir", metavar="DIR",
                     help="AiNex only: directory of action groups for /app/set_action. "
                          "Reads Hiwonder's .d6a format, so this can point straight at a "
@@ -1150,6 +1167,7 @@ def main() -> int:
     ap.add_argument("--scan-range", type=float, default=None, dest="scan_range")
     ap.add_argument("--scan-min-range", type=float, default=None, dest="scan_min_range")
     ap.add_argument("--scan-offset", type=float, nargs=2, default=None, metavar=("X", "Z"))
+    # The scan and depth flags below are the AiNex's: the myAGV's are its contract's.
     ap.add_argument("--scan-hz", type=float, default=10.0, dest="scan_hz")
     ap.add_argument("--no-scan", action="store_true", dest="no_scan")
     ap.add_argument("--depth-hz", type=float, default=5.0, dest="depth_hz")
@@ -1619,7 +1637,7 @@ def main() -> int:
         from ros_surfaces import RobotFleet
 
         fleet = RobotFleet(port=args.ros_port, host=args.control_host,
-                           control_hz=args.control_hz)
+                           default_hz=args.control_hz)
         for inst in instances:
             module_name, func_name = ROS_SURFACES[inst.name]
             attach_ros = getattr(importlib.import_module(module_name), func_name)
@@ -1642,11 +1660,8 @@ def main() -> int:
         fleet.start()
         controller = fleet
 
-    # A member with a rate of its own (the SO-101 controller manager's 50 Hz) sets
-    # the loop's pace; the fleet steps every other member at --control-hz.
-    loop_hz = max(args.control_hz, getattr(controller, "rate_hz", 0.0) or 0.0)
-    control_period = 1.0 / loop_hz
-    next_control = 0.0
+    # The fleet steps each member at its own rate, so the loop runs at the fastest one.
+    loop_hz = (controller.rate_hz if controller is not None else None) or args.control_hz
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
 
     from mujoco_bridge import run_sim_loop

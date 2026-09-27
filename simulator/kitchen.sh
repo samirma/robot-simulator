@@ -281,6 +281,9 @@ if [ "$MUJOCO" -eq 1 ]; then
   window=" in a window"
 fi
 echo ">> $ENGINE $ROBOTS$window on ws://127.0.0.1:$PORT"
+# `--control-hz` is the rate of the members whose contract does not fix their own; a
+# member that does (the myAGV, from ros_surfaces/myagv.py) runs at its contract's rates
+# whatever this says, and the loop runs at the fastest member's.
 "$ENGINE" "$(engine_python "$([ "$MUJOCO" -eq 1 ] && echo viewer || echo headless)")" \
   ${HEADLESS[@]+"${HEADLESS[@]}"} --ros-port "$PORT" --control-hz 10 \
   ${TASK_FLAGS[@]+"${TASK_FLAGS[@]}"} ${CAMERA_FLAGS[@]+"${CAMERA_FLAGS[@]}"} \

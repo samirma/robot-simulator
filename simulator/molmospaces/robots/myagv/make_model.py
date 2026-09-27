@@ -22,8 +22,9 @@ What this script does:
    contact is fragile and buys nothing, and a holonomic planar base reproduces exactly
    the motion envelope a Mecanum drive has. The wheels stay as visual geometry.
 
-3. **Adds a forward-facing `front_camera`** on the top plate at roughly RealSense D435
-   framing, which is the feed the robot_console teleop tool displays.
+3. **Adds a forward-facing `front_camera`** at `camera_link`, where the boot launch's
+   `base2camera_link` static transform puts it, looking along its +x. That is the
+   camera `/camera/*` renders.
 
 Run:  python robots/myagv/make_model.py
 """
@@ -42,6 +43,10 @@ HERE = Path(__file__).resolve().parent
 import sys as _sys
 _sys.path.insert(0, str(HERE.parents[2] / "shared"))
 import robots_spec  # noqa: E402
+from ros_surfaces.myagv import NODE_BASE2CAMERA, STATIC_TRANSFORMS  # noqa: E402
+
+#: camera_link's offset from base_footprint, as the boot launch publishes it.
+CAMERA_XYZ = STATIC_TRANSFORMS[NODE_BASE2CAMERA][2]
 
 SPEC = robots_spec.model_dir("myagv")
 UPSTREAM = robots_spec.mesh_dirs("myagv")[0]
@@ -163,8 +168,8 @@ TEMPLATE = """<mujoco model="myagv">
       <!-- Mount point for a myCobot 280-class arm (not fitted). -->
       <site name="arm_mount" pos="0 0 {deck_h:.4f}" size="0.01" group="3"/>
 
-      <!-- Forward-facing (+x) camera on the top deck, ~D435 framing. MuJoCo cameras
-           look along -z with +y up, so xyaxes maps -z_cam onto +x_world. -->
+      <!-- Forward-facing (+x) camera at camera_link (myagv_active.launch). MuJoCo
+           cameras look along -z with +y up, so xyaxes maps -z_cam onto +x_world. -->
       <camera name="front_camera" mode="fixed"
         pos="{cam_x:.4f} 0 {cam_z:.4f}" xyaxes="0 -1 0 0 0 1" fovy="42"/>
     </body>
@@ -211,8 +216,9 @@ def main() -> int:
         half_h=half_h,
         box_z=box_z,
         deck_h=deck_h,
-        cam_x=half_l - 0.02,
-        cam_z=total_h + 0.01,
+        # Where `myagv_active.launch`'s base2camera_link puts camera_link.
+        cam_x=CAMERA_XYZ[0],
+        cam_z=CAMERA_XYZ[2],
     )
     OUT.write_text(xml)
     print(f"wrote {OUT}")
