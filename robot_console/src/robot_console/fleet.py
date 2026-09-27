@@ -77,9 +77,7 @@ def arm_topics() -> tuple[str, ...]:
 
     return (
         rs.ARM_COMMAND_TOPIC,
-        rs.GRIPPER_COMMAND_TOPIC,
         rs.JOINT_STATES_TOPIC,
-        rs.FREE_JOINT_STATES_TOPIC,
         rs.TF_TOPIC,
         rs.TF_STATIC_TOPIC,
     )

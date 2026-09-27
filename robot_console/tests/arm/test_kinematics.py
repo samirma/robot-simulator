@@ -1,8 +1,9 @@
 """Re-derive the arm's forward kinematics from MuJoCo and check the transcription.
 
 ``robot_console.arm.kinematics`` hand-copies every link's parent-relative ``pos`` and
-``quat``, and the ``gripperframe`` site's offset, out of
-``so_arm101_description/mjcf/so_arm101.xml``. Nothing checked those numbers. A
+``quat``, and the ``gripperframe`` site's offset, out of TheRobotStudio's official
+``so101_new_calib.xml``, which the simulator's ``model.xml`` reproduces. Nothing
+checked those numbers. A
 slip in any one of them produces a chain that is smooth, self-consistent and
 wrong -- the IK converges happily onto a pose the arm does not actually reach,
 which is indistinguishable from a physics problem right up until the robot
@@ -93,7 +94,7 @@ def test_the_scene_actually_contains_the_site_we_transcribed(model_and_data) -> 
     model, _ = model_and_data
     assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, TCP_SITE) >= 0
     for name in ARM_JOINTS:
-        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) >= 0
+        assert mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, MJCF_JOINT[name]) >= 0
 
 
 def test_zero_pose_matches_mujoco(model_and_data) -> None:
@@ -138,8 +139,7 @@ def test_the_jacobian_agrees_with_mujocos_own(model_and_data) -> None:
         jacp = np.zeros((3, model.nv))
         mujoco.mj_jacSite(model, data, jacp, None, site)
         columns = [
-            int(model.jnt_dofadr[mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)])
-            for name in ARM_JOINTS
+            int(model.jnt_dofadr[model.joint(MJCF_JOINT[name]).id]) for name in ARM_JOINTS
         ]
         np.testing.assert_allclose(position_jacobian(angles), jacp[:, columns], atol=1e-5)
 

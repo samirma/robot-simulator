@@ -213,5 +213,8 @@ def test_the_docs_describe_the_cameras_the_simulator_actually_stages() -> None:
         pytest.skip("sibling simulator checkout not present")
     staged = {name: tuple(pos) for name, pos, *_ in task.SCENE_CAMERAS}
     assert SCENE_CAMERA_POSES == staged
+    from robot_console.arm.ros_settings import SCENE_CAMERA_HZ
+
+    assert SCENE_CAMERA_HZ == task.SCENE_CAMERA_HZ
     for name, (x, y, z) in staged.items():
         assert f"'{name}' at ({x:.3f}, {y:.3f}, {z:.3f})" in _DOCS

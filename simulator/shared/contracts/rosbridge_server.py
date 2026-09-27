@@ -132,12 +132,8 @@ TYPE_JOINT_TRAJECTORY = "trajectory_msgs/msg/JointTrajectory"
 TYPE_FLOAT64_MULTI_ARRAY = "std_msgs/msg/Float64MultiArray"
 TYPE_BOOL = "std_msgs/msg/Bool"
 TYPE_COMPRESSED_IMAGE_ROS2 = "sensor_msgs/msg/CompressedImage"
-# The arm's `/reset` services answer `{success, message}` -- the shape of std_srvs/Trigger,
-# which is what a `mujoco_ros2_control` reset service is on the reference rig.
+# The workspace-owned `/reset` (spec §3) is a std_srvs/srv/Trigger.
 SRV_TYPE_TRIGGER = "std_srvs/srv/Trigger"
-# Namespaced by the publishing plugin in the reference rig, and the client's settings
-# name it in full; it is a custom message, which over rosbridge JSON is just this shape.
-TYPE_FREE_JOINT_STATE_ARRAY = "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
 
 
 def header_ros2(frame_id: str, stamp_s: float) -> dict:
@@ -188,44 +184,6 @@ def joint_state(names, positions, velocities, stamp_s: float, frame_id: str = ""
         "velocity": [float(velocities[i]) for i in order],
         "effort": [],
     }
-
-
-def free_joint_state_array(entries, stamp_s: float, frame_id: str = "world") -> dict:
-    """mujoco_ros2_control_msgs/msg/FreeJointStateArray.
-
-    The field is `free_joints`, **not** `states`, and every consumer selects its body by
-    name rather than by index -- so adding a body to this list is always safe and
-    reordering it is always harmless. `entries` is an iterable of
-    `(name, (x, y, z), (qw, qx, qy, qz), (vx, vy, vz), (wx, wy, wz))`.
-    """
-    free_joints = []
-    for name, pos, quat, lin, ang in entries:
-        stamped = header_ros2(frame_id, stamp_s)
-        free_joints.append(
-            {
-                "name": name,
-                "pose": {
-                    "header": stamped,
-                    "pose": {
-                        "position": {"x": float(pos[0]), "y": float(pos[1]), "z": float(pos[2])},
-                        "orientation": {
-                            "w": float(quat[0]),
-                            "x": float(quat[1]),
-                            "y": float(quat[2]),
-                            "z": float(quat[3]),
-                        },
-                    },
-                },
-                "twist": {
-                    "header": stamped,
-                    "twist": {
-                        "linear": {"x": float(lin[0]), "y": float(lin[1]), "z": float(lin[2])},
-                        "angular": {"x": float(ang[0]), "y": float(ang[1]), "z": float(ang[2])},
-                    },
-                },
-            }
-        )
-    return {"header": header_ros2(frame_id, stamp_s), "free_joints": free_joints}
 
 
 def laser_scan(
@@ -567,12 +525,13 @@ class _ActionServer:
     """A registered action: a surface's executor, or a client's advertisement."""
 
     def __init__(self, name: str, action_type: str, *, execute=None, cancel=None,
-                 node: str | None = None, member: str | None = None,
+                 accept=None, node: str | None = None, member: str | None = None,
                  provider: _Client | None = None) -> None:
         self.name = name
         self.type = action_type
         self.execute = execute
         self.cancel = cancel
+        self.accept = accept
         self.node = node
         self.member = member
         self.provider = provider
@@ -702,20 +661,24 @@ class RosBridgeServer:
     def action(
         self, name: str, action_type: str, execute: Callable[[ActionGoal], dict | None],
         *, cancel: Callable[[ActionGoal], bool] | None = None, node: str | None = None,
-        member: str | None = None,
+        member: str | None = None, accept: Callable[[dict], bool] | None = None,
     ) -> None:
         """Register a ROS 2 action server on `name`.
 
         `execute(goal)` runs on a thread per goal and returns the result's values (see
         `ActionGoal`). `cancel(goal)` decides whether a client's cancel is accepted; by
-        default every cancel is. `member` is the namespace `abort_goals` selects by.
+        default every cancel is. `accept(args)` is the server's goal callback: False
+        rejects the goal before it exists, which rosbridge reports as a failed
+        `action_result` ("Action goal was rejected"). `member` is the namespace
+        `abort_goals` selects by.
         """
         name = normalise(name)
         with self._lock:
             if name in self._actions or name in self._services:
                 raise ValueError(f"action {name} is already registered on this server")
             self._actions[name] = _ActionServer(
-                name, action_type, execute=execute, cancel=cancel, node=node, member=member,
+                name, action_type, execute=execute, cancel=cancel, accept=accept,
+                node=node, member=member,
             )
 
     def claim(self, namespace: str, name: str) -> None:
@@ -778,6 +741,13 @@ class RosBridgeServer:
     def client_count(self) -> int:
         with self._lock:
             return len(self._clients)
+
+    def has_subscribers(self, topic: str) -> bool:
+        """Whether any client subscribes to `topic` -- so a surface can skip rendering a
+        camera nobody is watching, which no client can observe."""
+        topic = normalise(topic)
+        with self._lock:
+            return any(topic in c.subs for c in self._clients.values())
 
     def next_seq(self) -> int:
         self._seq += 1
@@ -1537,6 +1507,16 @@ class RosBridgeServer:
         if not isinstance(args, dict):
             fail("args must be an object, or a list for a known action type")
             return
+        if spec.accept is not None:
+            try:
+                accepted = bool(spec.accept(args))
+            except Exception:
+                log.exception("goal callback for %s failed", name)
+                accepted = False
+            if not accepted:
+                # rosbridge's own words for a goal the server's goal callback refused.
+                fail("Action goal was rejected")
+                return
         goal = ActionGoal(self, name, spec.type, args, client, mid,
                           bool(message.get("feedback", False)), spec.member)
         with self._lock:
@@ -1726,10 +1706,14 @@ class NamespacedBus:
     def action(self, name: str, action_type: str,
                execute: Callable[[ActionGoal], dict | None], *,
                cancel: Callable[[ActionGoal], bool] | None = None,
-               node: str | None = None) -> None:
+               node: str | None = None,
+               accept: Callable[[dict], bool] | None = None) -> None:
         """A ROS 2 action server under this namespace; see `RosBridgeServer.action`."""
         self.server.action(self.ns.service(name), action_type, execute, cancel=cancel,
-                           node=self.node(node), member=self.ns.name)
+                           node=self.node(node), member=self.ns.name, accept=accept)
+
+    def has_subscribers(self, topic: str) -> bool:
+        return self.server.has_subscribers(self.ns.topic(topic))
 
     def abort_goals(self) -> int:
         """End this member's outstanding goals ABORTED -- what its `/reset` does."""

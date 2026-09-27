@@ -1,10 +1,8 @@
-"""The ROS names must match ``simulator/INTERFACE.md``, which is the as-built truth.
+"""The ROS names must be the SO-101's official interface (``robots_specs/so101/ros2.yml``).
 
-Each expected string below is copied from the ``ros2 topic list -t`` /
-``ros2 service list -t`` output recorded in that file, not from ``CONTRACT.md``
-and not from memory. Four of them were wrong before: the free-joint topic was
-missing its plugin namespace, the reset service named the wrong node, the
-gripper was configured as an action, and there was no camera at all.
+Each expected string below is copied from that file (bare, as a single bringup
+presents it), or is the workspace-owned ``/reset`` and ``/scene`` rig of the
+simulator's spec §3 -- not from memory.
 """
 
 from __future__ import annotations
@@ -13,97 +11,82 @@ import pytest
 
 from robot_console.arm import ros_settings as rs
 
-# Verbatim from INTERFACE.md section 6, "ros2 topic list -t".
-AS_BUILT_TOPICS = {
+# From robots_specs/so101/ros2.yml, `topics`.
+OFFICIAL_TOPICS = {
     "/joint_trajectory_controller/joint_trajectory": "trajectory_msgs/msg/JointTrajectory",
-    "/gripper_controller/commands": "std_msgs/msg/Float64MultiArray",
     "/joint_states": "sensor_msgs/msg/JointState",
-    "/free_joint_publisher/free_joint_states": (
-        "mujoco_ros2_control_msgs/msg/FreeJointStateArray"
-    ),
-    # The reference container publishes this and we deliberately do not consume it;
-    # see test_the_success_topic_is_deliberately_not_consumed below. It stays in this
-    # map because the map records what the container offers, not what we take.
-    "/task_success": "std_msgs/msg/Bool",
-    # The only two camera topics the container publishes. The `trainlow`,
-    # `trainhigh`, `policylow` and `policyhigh` cameras were deleted from the
-    # scene on 2026-08-31, so their topics are gone from the wire and from
-    # here; `overhead` and `side` were untouched by that change.
+    "/wrist/image_raw/compressed": "sensor_msgs/msg/CompressedImage",
+    "/tf": "tf2_msgs/msg/TFMessage",
+    "/tf_static": "tf2_msgs/msg/TFMessage",
+}
+# From ros2.yml, `actions`.
+OFFICIAL_ACTIONS = {
+    "/gripper_controller/gripper_cmd": "control_msgs/action/ParallelGripperCommand",
+}
+# Workspace-owned (spec §3).
+SCENE_TOPICS = {
     "/overhead/color/compressed": "sensor_msgs/msg/CompressedImage",
     "/side/color/compressed": "sensor_msgs/msg/CompressedImage",
 }
-AS_BUILT_SERVICES = {
-    "/mujoco_ros2_control_node/reset_world",
-    "/reset",
-}
+WORKSPACE_SERVICES = {"/reset"}
 
 
-def test_every_configured_topic_exists_in_the_running_container() -> None:
+def test_every_configured_name_is_in_the_official_interface() -> None:
     settings = rs.RosSettings()
-    configured = {
-        settings.command_topic,
-        settings.gripper_topic,
-        settings.joint_states_topic,
-        settings.object_state_topic,
-        settings.camera_topic,
-        # extra_cameras carries slot 1 now, so it has to be checked too: a
-        # mis-typed second view is exactly the failure this test exists for.
-        *(topic for _, topic, _, _ in settings.extra_cameras),
-    }
-    assert configured <= set(AS_BUILT_TOPICS)
+    assert {settings.command_topic, settings.joint_states_topic} <= set(OFFICIAL_TOPICS)
+    assert settings.gripper_topic in OFFICIAL_ACTIONS
+    cameras = {settings.camera_topic, *(topic for _, topic, _, _ in settings.extra_cameras)}
+    assert cameras <= set(SCENE_TOPICS)
+    assert rs.WRIST_CAMERA_TOPIC in OFFICIAL_TOPICS
+    assert rs.GRIPPER_ACTION_TYPE == OFFICIAL_ACTIONS[rs.GRIPPER_ACTION]
+    assert (rs.TF_TOPIC, rs.TF_STATIC_TOPIC) == ("/tf", "/tf_static")
 
 
 def test_the_success_topic_is_deliberately_not_consumed() -> None:
-    """The episode is graded from the camera, so nothing subscribes to `/task_success`.
-
-    The reference container publishes it and our simulators no longer do. Grading on it
-    means grading on state no camera can see and no real SO-101 emits, which makes the
-    grader better informed than the policy it is grading. This pins the removal: a
-    setting that quietly reintroduced the topic would put that privileged channel back.
-    """
+    """The episode is graded from the camera, so nothing subscribes to a success topic."""
     assert not hasattr(rs, "TASK_SUCCESS_TOPIC")
     assert not any("success" in name for name in rs.RosSettings().base_kwargs())
 
 
-def test_free_joint_topic_carries_its_plugin_namespace() -> None:
-    # The plugin key in config/mujoco_plugins.yaml becomes a sub-namespace.
-    assert rs.FREE_JOINT_STATES_TOPIC == "/free_joint_publisher/free_joint_states"
+def test_the_reset_service_is_the_workspaces() -> None:
+    assert rs.RESET_SERVICE in WORKSPACE_SERVICES
+    assert rs.RosSettings().reset_service == rs.RESET_SERVICE
+    assert not hasattr(rs, "RESET_WORLD_SERVICE")
 
 
-def test_reset_service_names_the_mujoco_node() -> None:
-    assert rs.RESET_WORLD_SERVICE in AS_BUILT_SERVICES
-    assert rs.RESET_WORLD_SERVICE.startswith("/mujoco_ros2_control_node/")
-    assert rs.TASK_MANAGER_RESET_SERVICE in AS_BUILT_SERVICES
-
-
-def test_gripper_is_a_topic_not_an_action() -> None:
+def test_the_gripper_is_the_parallel_gripper_action() -> None:
     settings = rs.RosSettings()
-    assert settings.gripper_mode == "topic"
-    assert settings.gripper_topic == "/gripper_controller/commands"
-    kwargs = settings.base_kwargs()
-    assert kwargs["gripper_command_type"] == "float64_multi_array"
-    assert not any(key.startswith("gripper_action") for key in kwargs)
-    # The sentinel-topic + send_action_goal indirection is gone entirely.
-    for gone in ("GRIPPER_ACTION", "GRIPPER_ACTION_TYPE", "GRIPPER_SENTINEL_TOPIC"):
-        assert not hasattr(rs, gone), f"{gone} should have been deleted with the action hack"
-    assert not hasattr(settings, "gripper_action")
+    assert settings.gripper_mode == "action"
+    assert settings.gripper_topic == "/gripper_controller/gripper_cmd"
+    # The base adapter still builds a Float64MultiArray; the client turns it into a goal.
+    assert settings.base_kwargs()["gripper_command_type"] == "float64_multi_array"
+    assert not hasattr(rs, "GRIPPER_COMMAND_TOPIC")
 
 
-def test_the_action_gripper_client_is_gone() -> None:
-    import robot_console.arm.embodiment as emb
+def test_the_client_sends_a_gripper_publish_as_an_action_goal() -> None:
+    from robot_console.arm.ros_client import HeaderStampingClient
 
-    assert not hasattr(emb, "ActionGripperClient")
+    sent: list = []
+    client = HeaderStampingClient("ws://127.0.0.1:1",
+                                  gripper_actions={rs.GRIPPER_ACTION: rs.GRIPPER_ACTION_TYPE})
+    client._send = sent.append  # type: ignore[method-assign]
+    client.advertise(rs.GRIPPER_ACTION, message_type="std_msgs/msg/Float64MultiArray")
+    client.publish(rs.GRIPPER_ACTION, {"data": [0.42]})
+    assert len(sent) == 1
+    goal = sent[0]
+    assert goal["op"] == "send_action_goal"
+    assert (goal["action"], goal["action_type"]) == (rs.GRIPPER_ACTION, rs.GRIPPER_ACTION_TYPE)
+    assert goal["args"]["command"]["position"] == [0.42]
 
 
-def test_action_gripper_mode_is_rejected_with_a_reason() -> None:
-    with pytest.raises(ValueError, match="ForwardCommandController"):
-        rs.RosSettings(gripper_mode="action")
+def test_an_unknown_gripper_mode_is_rejected_with_a_reason() -> None:
+    with pytest.raises(ValueError, match="GripperActionController"):
+        rs.RosSettings(gripper_mode="topic")
 
 
 def test_the_default_cameras_are_the_only_published_pair() -> None:
-    # 640x480, measured on the wire 2026-08-30. The overhead camera was 1280x720
-    # when INTERFACE.md was written; the simulator changed it, and the upstream
-    # adapter validates the first frame against this, so it must track.
+    # 640x480, the rig's constants; the upstream adapter validates the first frame
+    # against this, so it must track.
     #
     # overhead+side are the worktop rig, and the default pair a policy is handed.
     # Order is load-bearing: MolmoAct2 consumes views positionally.

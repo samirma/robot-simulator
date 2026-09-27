@@ -6,6 +6,39 @@ All notable changes to this model will be documented in this file.
 
 - Initial release.
 
+## [2026-09-27]
+
+**`model.xml` is now derived from the official `so101_new_calib.xml`, not from
+mujoco_menagerie's `robotstudio_so101`.** `molmospaces/robots/so101/make_model.py` reads
+`robots_specs/so101/so101_new_calib.xml` and keeps its bodies, inertials, joints, visual
+geoms, sites, defaults and actuators unchanged; it adds menagerie's collision set, the
+`tcp` site and `wrist_cam`, and `make_model.py --check` asserts that nothing else moved.
+`so101.xml` (menagerie's file), the camera-mount mesh and menagerie's unused
+`moving_jaw_so101_gripper_v1.stl` are gone; the collision geoms are transcribed into
+`make_model.py` with their provenance. What changed against the menagerie model:
+
+- **`gripperframe` is the official site**, at `-0.0079 -0.000218121 -0.0981274` (the
+  fixed-jaw tip). Menagerie had moved it +19.9 mm along the gripper body's x. The
+  console's `kinematics.py` follows it, with `JAW_CENTER_OFFSET` and the preflight's
+  reach point grown by the same 19.9 mm so the world points it aims at are unchanged.
+- **Actuators are the official ones**: `forcerange="-3.35 3.35"` on all six (menagerie
+  used the `sts3215` class's +/-2.94).
+- **`wrist_roll` is the official -2.7438..+2.8412 rad** (menagerie: symmetric
+  +/-2.7438); the other ranges agree to rounding.
+- **No `camera_mount` body**: `wrist_cam` sits directly in `gripper`, at the same pose.
+  Its 12 g mount mesh -- which, having no `<inertial>`, added mass to the model -- and
+  its two collision boxes are gone. The camera is now **640x480** (4:3, fovy 61.9
+  degrees), not menagerie's 1920x1080 16:9 sensor.
+- **No `<option>`, `<visual>` or mesh `maxhullvert` default**: the official file has
+  none. Menagerie's `implicitfast`, 5 ms, elliptic-cone, `impratio=10` options never
+  reached a simulation (both engines graft the robot's bodies into a scene that brings
+  its own options); they only affect compiling `model.xml` on its own.
+- The official default class is `so101_new_calib` (was `so101`) and the model name is
+  `so101_new_calib`.
+
+The `tcp` site is where it was (`0.0113261 -0.0001 -0.0978094`): it is measured from
+the jaw-tip geoms, which did not move.
+
 ## [2026-09-06]
 
 **The model is now mujoco_menagerie's `robotstudio_so101` and nothing else** --

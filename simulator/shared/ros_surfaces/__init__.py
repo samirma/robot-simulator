@@ -63,7 +63,8 @@ class RobotFleet:
     thread, in attach order.
     """
 
-    def __init__(self, port: int, host: str = "0.0.0.0") -> None:
+    def __init__(self, port: int, host: str = "0.0.0.0",
+                 control_hz: float | None = None) -> None:
         from contracts.rosbridge_server import RosBridgeServer
 
         self.port = port
@@ -73,7 +74,32 @@ class RobotFleet:
         # A world reset aborts every outstanding action goal (spec §3, `/reset`): the
         # world a goal was pursuing no longer exists.
         self.world_reset.on_reset(self.server.abort_goals)
+        # ...and every member runs on the next tick, so the observations a `/reset`
+        # caller waits for are ones taken after the reset.
+        self.world_reset.on_reset(self._rearm)
+        # The rate a member without a rate of its own is stepped at (`--control-hz`).
+        # `None` steps it on every call, which is the single-robot path's behaviour.
+        self.control_hz = control_hz
         self._members: list[tuple[str, Any, Callable[[Any], None]]] = []
+        # Per member: the simulated time its next step is due, or None for "now".
+        self._due: list[float | None] = []
+
+    @property
+    def rate_hz(self) -> float:
+        """How often the loop must call the fleet: its fastest member's rate.
+
+        A member's step may carry a `rate_hz` of its own -- the SO-101's controller
+        manager runs at its `update_rate`, the rig at its cameras' rate -- and the fleet
+        then steps it on that clock whatever the loop's rate is.
+        """
+        rates = [float(r) for r in (getattr(step, "rate_hz", None)
+                                    for _, _, step in self._members) if r]
+        if self.control_hz:
+            rates.append(float(self.control_hz))
+        return max(rates) if rates else 0.0
+
+    def _rearm(self) -> None:
+        self._due = [None] * len(self._members)
 
     def bus(self, namespace: str):
         from contracts.rosbridge_server import NamespacedBus
@@ -92,6 +118,7 @@ class RobotFleet:
         bus = self.bus(namespace)
         step = attach_fn(bus, world_reset=self.world_reset, **kwargs)
         self._members.append((str(bus.ns), bus, step))
+        self._due.append(None)
 
     def start(self) -> None:
         # rosapi is per-server, not per-robot: one topic list answers for the whole fleet,
@@ -117,6 +144,20 @@ class RobotFleet:
             self.server.stop()
             return
         # The simulated clock `/rosapi/get_time` answers from.
-        self.server.set_time(float(getattr(data, "time", 0.0)))
-        for _, _, step in self._members:
+        now = float(getattr(data, "time", 0.0))
+        self.server.set_time(now)
+        for index, (_, _, step) in enumerate(self._members):
+            rate = getattr(step, "rate_hz", None) or self.control_hz
+            if not rate:
+                step(data)
+                continue
+            period = 1.0 / float(rate)
+            due = self._due[index]
+            # A quarter period of slack: the loop's calls jitter around the period, and
+            # a strict comparison would skip every other one of them.
+            if due is not None and now < due - 0.25 * period:
+                continue
             step(data)
+            if index < len(self._due):
+                nxt = (due + period) if due is not None else now + period
+                self._due[index] = nxt if nxt > now - period else now + period

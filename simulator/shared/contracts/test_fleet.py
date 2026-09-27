@@ -236,12 +236,98 @@ def test_rosapi_surface() -> None:
         server.stop()
 
 
+def test_so101_contract() -> None:
+    """`ros_surfaces/so101.py` against `robots_specs/so101/ros2.yml`, name for name.
+
+    Every topic (type, direction, periodic rate, node), service, action and ROS parameter
+    the ROS file lists is in the contract module, and nothing else is -- except the
+    `unverified` image_transport plugin topics, which are left out on purpose and listed
+    in `OMITTED_TOPICS`. Every type the module names must also be one the schema table
+    can answer `message_details` for.
+    """
+    print("SO-101 contract vs robots_specs/so101/ros2.yml")
+    import yaml
+
+    from contracts import message_schemas as schemas
+    from ros_surfaces import so101
+
+    spec = yaml.safe_load((Path(__file__).resolve().parents[3] / "robots_specs" / "so101"
+                           / "ros2.yml").read_text())
+    check("joints are the ROS file's, in its order",
+          list(spec["joints"]) == list(so101.JOINT_ORDER))
+
+    listed = {t["name"]: t for t in spec["topics"]}
+    omitted = {n for n, t in listed.items() if t.get("unverified") and "/image_raw/" in n}
+    check("the omitted topics are exactly the unverified image_transport plugins",
+          omitted == set(so101.OMITTED_TOPICS), str(sorted(omitted)))
+    served = {n: t for n, t in listed.items() if n not in omitted}
+    check("every served topic is in the ROS file and every listed one is served",
+          set(served) == set(so101.TOPICS),
+          f"missing {sorted(set(served) - set(so101.TOPICS))}, "
+          f"extra {sorted(set(so101.TOPICS) - set(served))}")
+    wrong = []
+    for name, t in served.items():
+        mine = so101.TOPICS.get(name)
+        if mine is None:
+            continue
+        rate = t["rate_hz"]
+        if (mine[0], mine[1], mine[3]) != (t["type"], t["direction"], t["node"]) or \
+                (float(mine[2]) != float(rate) if isinstance(rate, (int, float))
+                 else mine[2] != rate):
+            wrong.append((name, mine, (t["type"], t["direction"], rate, t["node"])))
+    check("each topic's type, direction, rate and node are the ROS file's", not wrong,
+          str(wrong))
+
+    services = {s["name"]: (s["type"], s["node"]) for s in spec["services"]}
+    check("services are the ROS file's, with its types and nodes",
+          services == so101.SERVICES,
+          str(set(services.items()) ^ set(so101.SERVICES.items())))
+    actions = {a["name"]: (a["type"], a["node"]) for a in spec["actions"]}
+    check("actions are the ROS file's, with its types and nodes", actions == so101.ACTIONS,
+          str(set(actions.items()) ^ set(so101.ACTIONS.items())))
+
+    params = {}
+    for p in spec["parameters"]:
+        names = [n.strip() for n in str(p["name"]).split(",")]
+        if p["type"] == "mixed":
+            values = [v.strip() for v in str(p["value"]).split("#")[0].split(",")]
+            for n, v in zip(names, values):
+                params[(p["node"], n)] = yaml.safe_load(v)
+        elif "/" not in names[0]:   # SO_ARM101/usb_port is inside the URDF, not a parameter
+            params[(p["node"], names[0])] = p["value"]
+    mismatched = [k for k in set(params) | set(so101.PARAMETERS)
+                  if k not in params or k not in so101.PARAMETERS
+                  or (k[1] != "robot_description" and params[k] != so101.PARAMETERS[k])]
+    check("parameters are the ROS file's, name and value", not mismatched, str(mismatched))
+
+    types = [t for t, *_ in so101.TOPICS.values()] + \
+        [t for t, _ in so101.SERVICES.values()] + [t for t, _ in so101.ACTIONS.values()]
+    unknown = [t for t in types if schemas.canonical(t) not in schemas.known_types()]
+    check("the schema table answers for every type the SO-101 serves", not unknown,
+          str(unknown))
+
+    description = so101.bringup_description(
+        (Path(__file__).resolve().parents[3] / "robots_specs" / "so101"
+         / "so101_new_calib.urdf").read_text())
+    from contracts.tf import UrdfTree
+
+    tree = UrdfTree(description)
+    check("the description's fixed joints are the ROS file's /tf_static "
+          "(world->base_link, gripper_frame_joint)",
+          sorted((p, c) for p, c, *_ in tree.fixed())
+          == [("gripper_link", "gripper_frame_link"), ("world", "base_link")])
+    check("the description's moving joints are the ROS file's joints",
+          sorted(j["name"] for j in tree.joints if j["type"] != "fixed")
+          == sorted(spec["joints"]))
+
+
 def main() -> int:
     print(f"fleet transport check ({threading.active_count()} threads at start)\n")
     test_naming()
     test_collisions()
     test_routing_and_discovery()
     test_rosapi_surface()
+    test_so101_contract()
     # Every transport operation, latching, routing, the action lifecycle and all 31 rosapi
     # services, over the wire (spec §5, "Contracts"). A sibling module for length only;
     # it reports into this file's FAILURES.

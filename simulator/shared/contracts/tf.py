@@ -20,27 +20,23 @@ Three things here are contract decisions rather than implementation:
   `/myagv/tf` unless it is explicitly remapped, and the frames inside carry the matching
   `tf_prefix`. Both halves are what this contract already does with every other name, so
   tf needs no special case: `--ros-namespace ''` gives the bare `/tf` a single-robot
-  bringup presents, which is the contract this simulator claims to be indistinguishable
-  from.
-* **`/tf_static` is a ROS 2 topic, and only the SO-101 has one.** The myAGV's stack is
-  tf1: `myagv_active.launch` runs three `pkg="tf"` `static_transform_publisher` nodes,
-  and that node re-publishes onto **`/tf`** on a period rather than onto `/tf_static`.
-  Its `robot_state_publisher` has nothing to put there either -- the vendor URDF's one
-  joint, `base_up`, is `continuous`, so the description has no fixed joint at all. So a
-  ROS 1 robot here publishes its static transforms on `/tf` on a slow clock and never
-  advertises `/tf_static`, which is what `rostopic list` on the real robot would show.
-* **The static half is repeated, because rosbridge has no latching.** For the SO-101 that
-  is a departure: on real hardware `/tf_static` is latched and a client connecting an hour
-  later still receives it, and rosbridge relays a latched topic to each new subscriber.
-  This bridge has no notion of latching, so a single publication would be missed by every
-  client that arrived afterwards. `STATIC_PERIOD_S` is the smallest honest fix -- the same
-  transforms, more often than a real one would send them. For the ROS 1 robots it is not a
-  departure at all: repeating on a period is exactly what `tf`'s own node does, just at
-  1 s rather than the vendor's 10-50 ms.
+  bringup presents.
+* **A ROS 2 `/tf_static` is latched and sent once.** `robot_state_publisher` publishes
+  the description's fixed joints on `/tf_static` with transient-local durability; the
+  bridge's latched delivery hands that one message to every later subscriber and never
+  republishes it (spec §2.2).
+* **A ROS 1 (tf1) robot's static transforms go out on `/tf`, repeatedly.** The myAGV's and
+  the AiNex's `static_transform_publisher`s are `pkg="tf"` nodes, which re-send onto
+  `/tf` on a period; `/tf_static` carries nothing for them. Here that period is
+  `STATIC_PERIOD_S`.
 * **Both dialects, as everywhere else on this graph.** The myAGV and the AiNex are ROS 1
   stacks (`tf2_msgs/TFMessage`, a `secs`/`nsecs` stamp) and the SO-101 is a ROS 2 one
   (`tf2_msgs/msg/TFMessage`, `sec`/`nanosec`). A client reads the type off `rosapi`, as
   it must for every other topic here.
+
+`UrdfTree` is `robot_state_publisher`'s half for a ROS 2 member: the fixed joints for
+`/tf_static` and the moving-joint transforms for `/tf`, computed from the published
+description and joint positions -- no MuJoCo involved.
 """
 
 from __future__ import annotations
@@ -60,8 +56,8 @@ TYPE_TF_MESSAGE_ROS2 = "tf2_msgs/msg/TFMessage"  # ROS 2: the SO-101
 #: `/robot_description` bare -- exactly where `<group ns>` puts it.
 PARAM_ROBOT_DESCRIPTION = "/robot_description"
 
-#: How often `/tf_static` is repeated. 1 Hz is far below any control rate here, so it
-#: costs nothing, and a client that connects mid-run has its tree within a second.
+#: How often a ROS 1 (tf1) robot re-sends its static transforms on `/tf`. A ROS 2 robot's
+#: `/tf_static` is latched instead, and sent once.
 STATIC_PERIOD_S = 1.0
 
 
@@ -159,3 +155,107 @@ def urdf_fixed_joints(urdf_text: str) -> list[tuple[str, str, tuple, tuple]]:
             )
         )
     return out
+
+
+# ------------------------------------------------------------ robot_state_publisher
+
+
+def quat_mul(a, b) -> tuple[float, float, float, float]:
+    """Hamilton product of two `(w, x, y, z)` quaternions."""
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (
+        aw * bw - ax * bx - ay * by - az * bz,
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+    )
+
+
+def quat_rotate(q, v) -> tuple[float, float, float]:
+    w, x, y, z = q
+    p = quat_mul(quat_mul(q, (0.0, v[0], v[1], v[2])), (w, -x, -y, -z))
+    return (p[1], p[2], p[3])
+
+
+def axis_angle_quat(axis, angle: float) -> tuple[float, float, float, float]:
+    norm = math.sqrt(sum(c * c for c in axis)) or 1.0
+    s = math.sin(angle / 2.0) / norm
+    return (math.cos(angle / 2.0), axis[0] * s, axis[1] * s, axis[2] * s)
+
+
+def compose(a, b):
+    """`a` then `b`, each `(pos, quat)`: the pose of b's frame in a's parent."""
+    pos_a, quat_a = a
+    pos_b, quat_b = b
+    rotated = quat_rotate(quat_a, pos_b)
+    return (tuple(p + r for p, r in zip(pos_a, rotated)), quat_mul(quat_a, quat_b))
+
+
+class UrdfTree:
+    """A description's joints, read as `robot_state_publisher` reads them.
+
+    `fixed()` is the `/tf_static` content; `moving(positions)` the `/tf` content for the
+    non-fixed joints a joint state names (revolute and continuous rotate about the joint
+    axis, prismatic translate along it). A joint the state does not name is left out, as
+    the real node leaves it out.
+    """
+
+    def __init__(self, urdf_text: str) -> None:
+        self.joints: list[dict] = []
+        for joint in ET.fromstring(urdf_text).findall("joint"):
+            parent, child = joint.find("parent"), joint.find("child")
+            if parent is None or child is None:
+                continue
+            origin = joint.find("origin")
+            xyz = (origin.get("xyz", "0 0 0") if origin is not None else "0 0 0").split()
+            rpy = (origin.get("rpy", "0 0 0") if origin is not None else "0 0 0").split()
+            axis_el = joint.find("axis")
+            axis = (axis_el.get("xyz", "1 0 0") if axis_el is not None else "1 0 0").split()
+            self.joints.append({
+                "name": joint.get("name", ""),
+                "type": joint.get("type", "fixed"),
+                "parent": parent.get("link", ""),
+                "child": child.get("link", ""),
+                "pos": tuple(float(v) for v in xyz),
+                "quat": rpy_to_quat(*(float(v) for v in rpy)),
+                "axis": tuple(float(v) for v in axis),
+            })
+        self.links = urdf_links(urdf_text)
+
+    def fixed(self) -> list[tuple[str, str, tuple, tuple]]:
+        return [(j["parent"], j["child"], j["pos"], j["quat"])
+                for j in self.joints if j["type"] == "fixed"]
+
+    def moving(self, positions: dict) -> list[tuple[str, str, tuple, tuple]]:
+        out = []
+        for j in self.joints:
+            if j["type"] == "fixed" or j["name"] not in positions:
+                continue
+            q = float(positions[j["name"]])
+            if j["type"] == "prismatic":
+                motion = (tuple(a * q for a in j["axis"]), (1.0, 0.0, 0.0, 0.0))
+            else:
+                motion = ((0.0, 0.0, 0.0), axis_angle_quat(j["axis"], q))
+            pos, quat = compose((j["pos"], j["quat"]), motion)
+            out.append((j["parent"], j["child"], pos, quat))
+        return out
+
+    def link_poses(self, positions: dict) -> dict:
+        """Every reachable link's `(pos, quat)` in the tree root's frame."""
+        edges = {child: (parent, pos, quat)
+                 for parent, child, pos, quat in self.fixed() + self.moving(positions)}
+        poses: dict = {}
+
+        def pose(link):
+            if link not in poses:
+                if link not in edges:
+                    poses[link] = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0))
+                else:
+                    parent, pos, quat = edges[link]
+                    poses[link] = compose(pose(parent), (pos, quat))
+            return poses[link]
+
+        for link in edges:
+            pose(link)
+        return poses

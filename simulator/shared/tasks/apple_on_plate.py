@@ -281,6 +281,9 @@ SCENE_CAMERAS: tuple[tuple[str, tuple, tuple, float, tuple[int, int]], ...] = (
         (640, 480),
     ),
 )
+#: The rig's frame rate: each scene camera publishes its image and camera_info at this
+#: rate (spec §3). Rendering is inside the physics loop, so this is also a rate budget.
+SCENE_CAMERA_HZ = 10.0
 
 # The conical ring that keeps a delivered apple on the plate, generated once and frozen
 # so the geometry is reproducible: N boxes around a cone of half-angle alpha, inner lip

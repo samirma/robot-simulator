@@ -944,24 +944,11 @@ def _surface_kwargs(args, inst, model, task):
     """
     ns = inst.mjcf
     if inst.name in ARM_ROS_SURFACES:
-        from ros_surfaces.so101 import WRIST_CAMERA
-
-        # Two sets, kept apart all the way to the surface, because they are published
-        # under two different names: the wrist is the robot's and goes out under its
-        # namespace, the worktop rig is the scene's and does not. Merging them here is
-        # what used to put an overhead view of the room on /so101/*.
-        #
-        # The scene cameras sit on the worldbody under their own names; the wrist camera
-        # rides the gripper and so carries the robot's MJCF prefix.
-        cameras = (
-            {t: (f"{ns}{n}", w, h) for t, (n, w, h) in WRIST_CAMERA.items()}
-            if args.wrist_camera else {}
-        )
-        # No scene cameras here: the rig is the scene's and is attached to the fleet
-        # below, whether or not an arm is in the kitchen.
         return {
             "view": inst.view, "model": model, "task": task,
-            "cameras": cameras,
+            # The wrist camera is the robot's own and the surface always
+            # renders it; the flag is off only for tools that serve no wire.
+            "wrist": bool(args.wrist_camera),
             "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
             # The MJCF prefix, which the surface needs only to name the bodies its
             # transform tree reads. It never reaches a topic: see the note above about
@@ -1652,7 +1639,8 @@ def main() -> int:
         # could drive it. See shared/contracts/namespace.py.
         from ros_surfaces import RobotFleet
 
-        fleet = RobotFleet(port=args.ros_port, host=args.control_host)
+        fleet = RobotFleet(port=args.ros_port, host=args.control_host,
+                           control_hz=args.control_hz)
         for inst in instances:
             module_name, func_name = ROS_SURFACES[inst.name]
             attach_ros = getattr(importlib.import_module(module_name), func_name)
@@ -1675,7 +1663,10 @@ def main() -> int:
     else:
         controller = None
 
-    control_period = 1.0 / args.control_hz
+    # A member with a rate of its own (the SO-101 controller manager's 50 Hz) sets
+    # the loop's pace; the fleet steps every other member at --control-hz.
+    loop_hz = max(args.control_hz, getattr(controller, "rate_hz", 0.0) or 0.0)
+    control_period = 1.0 / loop_hz
     next_control = 0.0
 
     deadline = None if args.timeout is None else time.monotonic() + args.timeout
@@ -1687,7 +1678,7 @@ def main() -> int:
             # No window: what an automated console-connectivity check and a displayless
             # host run. Same loop as the viewer path, which is the point -- the ROS
             # server behaves identically either way.
-            run_sim_loop(model, data, controller, control_hz=args.control_hz,
+            run_sim_loop(model, data, controller, control_hz=loop_hz,
                          deadline=deadline, label="headless loop")
         else:
             # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
@@ -1699,7 +1690,7 @@ def main() -> int:
                 viewer.cam.distance = distance
                 viewer.cam.azimuth = azimuth
                 viewer.cam.elevation = args.elevation
-                run_sim_loop(model, data, controller, control_hz=args.control_hz,
+                run_sim_loop(model, data, controller, control_hz=loop_hz,
                              deadline=deadline, viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:
