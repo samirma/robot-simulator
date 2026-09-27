@@ -1156,10 +1156,8 @@ def main() -> int:
     )
     ap.add_argument(
         "--wrist-camera", action="store_true", dest="wrist_camera",
-        help="also stream the eye-in-hand view. Off by default because every enabled "
-             "camera is rendered inside the physics loop, so the control rate falls as "
-             "cameras are added and the cost lands on every client, not just the one "
-             "that wanted the view.",
+        help="also stream the eye-in-hand view. It renders on a thread of its own, off "
+             "the physics loop; only tools that serve no wire leave it off.",
     )
     # On by default, on the port every client here already assumes. A robot spawned
     # without a wire is a robot nothing can drive or watch, and having to remember

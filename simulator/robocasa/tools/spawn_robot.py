@@ -1106,8 +1106,8 @@ def main() -> int:
     )
     ap.add_argument(
         "--wrist-camera", action="store_true", dest="wrist_camera",
-        help="also stream the eye-in-hand view (every camera costs control rate, so it "
-             "is off unless asked for)",
+        help="also stream the eye-in-hand view (rendered off the physics loop; only "
+             "tools that serve no wire leave it off)",
     )
     # No --watchdog: the myAGV has no command watchdog on hardware. It holds its last
     # /cmd_vel until a zero Twist arrives (robots_specs/myagv/ros.yml).

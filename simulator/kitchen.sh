@@ -29,8 +29,8 @@
 #                         the scene's, published by the fleet, not by any robot. A
 #                         kitchen holding only a base gets the room, the robot and its
 #                         camera. Every robot presents all of its cameras. Each renders
-#                         inside the physics loop, so each one costs control rate for
-#                         everyone on the port.
+#                         on a thread of its own, off the physics loop, so a camera
+#                         costs GPU time rather than every other stream's rate.
 #   --mujoco              open a MuJoCo window on the world being served. The window is
 #                         built from the model and data objects in memory, so it belongs
 #                         to the process holding the physics, which is this one: a serve
