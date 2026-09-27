@@ -218,6 +218,36 @@ def test_a_wrong_type_rules_a_candidate_out_and_says_so() -> None:
     assert "ainex_interfaces/WalkingParam" in str(exc.value)
 
 
+@pytest.mark.parametrize("topic", ["/myagv/cmd_vel", "/myagv/odom"])
+def test_an_untyped_signature_or_companion_is_a_wrong_type_and_says_so(topic) -> None:
+    """One typing rule with `find_members`: an empty type is not the contract's type."""
+    present = dict(_myagv("myagv"))
+    present[topic] = ""
+    found, rejected = survey(present)
+    assert found == []
+    assert [(r.robot, r.namespace) for r in rejected] == [("myagv", "myagv")]
+    with pytest.raises(DiscoveryError) as exc:
+        discover_from(present)
+    assert f"{topic} is untyped, not " in str(exc.value)
+
+
+def test_teleop_and_the_fleet_check_agree_on_every_typing_case() -> None:
+    """For each signature typed right, wrong, and not at all, the two questions agree:
+    a candidate teleop drives is a member, and a rejected one is a reported wrong type."""
+    from robot_console.discovery import find_members
+
+    for stated in ("geometry_msgs/Twist", "geometry_msgs/TwistStamped", ""):
+        present = dict(_myagv("myagv"))
+        present["/myagv/cmd_vel"] = stated
+        found, rejected = survey(present)
+        members, wrong = find_members(present)
+        assert bool(found) == bool(members) == (stated == "geometry_msgs/Twist"), stated
+        assert bool(rejected) == bool(wrong) == (stated != "geometry_msgs/Twist"), stated
+        if wrong:
+            detail = wrong[0].split(" is ", 1)[1]
+            assert detail in rejected[0].reason
+
+
 def test_a_wrong_type_does_not_hide_the_good_robot_beside_it() -> None:
     present = {**_myagv("good"), **_myagv("bad")}
     present["/bad/cmd_vel"] = "geometry_msgs/TwistStamped"

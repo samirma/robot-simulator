@@ -30,10 +30,12 @@ member the console knows a contract for. Two questions are asked of it:
   this; it counts every kind, including the ones teleop never drives (an SO-101, the
   worktop rig), and reports a signature of the wrong type rather than counting it.
 
-The two differ in one respect, on purpose: `find_members` treats a signature rosapi gives
-no type for as wrong (the fleet check exists to prove the typed interface is there),
-while teleop takes an empty type as rosapi not saying and only rejects a stated type that
-contradicts the contract.
+Both apply one typing rule (console spec §4, Discovery: wrong types fail, listing the
+candidates found): a name counts only with its contract type, and a type rosapi leaves
+empty is a wrong type, reported as `untyped`. rosapi states the type of every topic it
+lists, so an empty one means the wire could not say what the topic carries -- and a name
+alone is a claim anybody can make. `survey` reports such a candidate in its rejected
+list; `find_members` in its wrong-type list.
 
 The console's camera and control page (`live_cameras.html`, served by `bin/view.sh`)
 identifies members the same way, from a copy of `MEMBER_SIGNATURES` in its `CONTRACT`
@@ -148,6 +150,16 @@ class Rejected:
         return f"{self.robot}? on {where}: {self.reason}"
 
 
+def describe_type(topic_type: Optional[str]) -> str:
+    """A stated type as a message shows it; an empty one is `untyped`."""
+    return topic_type or "untyped"
+
+
+def typed_as(present: Mapping[str, str], topic: str, contract_type: str) -> bool:
+    """The one typing rule: `topic` is on the wire with exactly `contract_type`."""
+    return present.get(topic) == contract_type
+
+
 def namespace_of(topic: str, signature: str) -> Optional[str]:
     """The namespace that makes `topic` be `signature`, or None if it is not.
 
@@ -190,10 +202,9 @@ def _problems(present: Mapping[str, str], robot: str, namespace: str) -> List[st
         name = namespaced(topic, namespace)
         if name not in present:
             problems.append(f"missing {name}")
-        # An empty type is rosapi not saying, not a contradiction; only a stated type
-        # that differs from the contract rules a candidate out.
-        elif present[name] and present[name] != kind:
-            problems.append(f"{name} is {present[name]}, not {kind}")
+        # One rule with `find_members`: an empty type is not the contract type.
+        elif not typed_as(present, name, kind):
+            problems.append(f"{name} is {describe_type(present[name])}, not {kind}")
     return problems
 
 
@@ -252,19 +263,19 @@ def find_members(present: Mapping[str, str]) -> Tuple[List[Member], List[str]]:
     for namespace, kinds in _signature_hits(present).items():
         typed = []
         for kind, (topic, topic_type) in kinds.items():
-            if topic_type == expected[kind]:
+            if typed_as(present, topic, expected[kind]):
                 typed.append(kind)
             else:
-                wrong.append(f"{topic} is {topic_type or 'untyped'}, not {expected[kind]}")
+                wrong.append(f"{topic} is {describe_type(topic_type)}, not {expected[kind]}")
         if typed:
             members.append(Member(next(k for k, _, _ in MEMBER_SIGNATURES if k in typed),
                                   namespace))
     rig_topic, rig_type = RIG_SIGNATURE
     if rig_topic in present:
-        if present[rig_topic] == rig_type:
+        if typed_as(present, rig_topic, rig_type):
             members.append(Member(RIG_KIND, RIG_NAMESPACE))
         else:
-            wrong.append(f"{rig_topic} is {present[rig_topic] or 'untyped'}, not {rig_type}")
+            wrong.append(f"{rig_topic} is {describe_type(present[rig_topic])}, not {rig_type}")
     members.sort(key=lambda m: (m.namespace, m.kind))
     return members, sorted(wrong)
 

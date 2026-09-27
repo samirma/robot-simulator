@@ -57,3 +57,11 @@ def test_a_signature_with_the_wrong_type_is_reported_not_counted() -> None:
 def test_one_namespace_is_one_member_the_most_specific() -> None:
     members, _ = find_members({**_member("myagv", "r"), **_member("ainex", "r")})
     assert members == [Member("ainex", "r")]
+
+
+def test_an_untyped_signature_is_a_wrong_type_not_a_member() -> None:
+    """rosapi states every type; an empty one is reported, never counted."""
+    members, wrong = find_members({"/x/cmd_vel": "", RIG_SIGNATURE[0]: ""})
+    assert members == []
+    assert wrong == sorted(["/x/cmd_vel is untyped, not geometry_msgs/Twist",
+                           f"{RIG_SIGNATURE[0]} is untyped, not {RIG_SIGNATURE[1]}"])
