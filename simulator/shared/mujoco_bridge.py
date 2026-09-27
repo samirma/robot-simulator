@@ -627,13 +627,23 @@ class RenderWorker:
     """Renders cameras on a thread of its own, off the physics loop.
 
     A camera's cost is the GL render and readback (about 12 ms for a 640x480 view of an
-    iTHOR kitchen), and paid on the loop thread it caps every topic on the port at the
-    camera's pace. Here the loop thread only copies `MjData` into the worker's buffer
-    (`submit`, which never blocks: a worker still busy with the last frame refuses, and
-    the caller tries again next tick) and the worker renders, then hands each image to
-    its job's callback -- which publishes, from the worker thread. The renderers are made
-    on that thread, so their GL contexts belong to it. Verified on macOS under both
-    `MUJOCO_GL=glfw` and `cgl`: physics and rendering overlap (MuJoCo releases the GIL).
+    iTHOR kitchen, 17-20 ms with the whole fleet's cameras sharing the GPU), and paid on
+    the loop thread it caps every topic on the port at the camera's pace. Here the loop
+    thread only copies `MjData` into the worker's buffer (`submit`, which never blocks)
+    and the worker renders, then hands each image to its job's callback -- which
+    publishes, from the worker thread. The renderers are made on that thread, so their GL
+    contexts belong to it. Verified on macOS under both `MUJOCO_GL=glfw` and `cgl`:
+    physics and rendering overlap (MuJoCo releases the GIL).
+
+    A worker still busy with the last frame refuses a submit, and the caller tries again
+    on its next tick -- unless the submit passes `queue=True`, which parks that state in a
+    second buffer (one deep) and renders it the moment the current frame is out. That is
+    for a camera whose caller ticks slower than a frame takes: the SO-101's wrist camera
+    is scheduled from the 50 Hz controller manager, so a 30 Hz stream needs frames 20 ms
+    apart two ticks in every five, and a frame that takes 23 ms under a full fleet turned
+    every such pair into 40 ms -- 26.7 Hz on the wire, outside the rate gate. Queued, the
+    frame keeps the state and stamp of the tick it was due on and goes out a few
+    milliseconds late, as a real camera's frames do; the long-run rate is the caller's.
     """
 
     def __init__(self, model, name: str = "render") -> None:
@@ -641,8 +651,12 @@ class RenderWorker:
 
         self._model = model
         self._copy = mujoco.MjData(model)
+        self._spare = mujoco.MjData(model)
         self._jobs: list = []
         self._stamp = 0.0
+        #: `(state, jobs, stamp)` of the one frame queued behind the current one.
+        self._pending: tuple | None = None
+        self._lock = threading.Lock()
         self._wake = threading.Event()
         self._idle = threading.Event()
         self._idle.set()
@@ -654,26 +668,42 @@ class RenderWorker:
     def busy(self) -> bool:
         return not self._idle.is_set()
 
-    def submit(self, data, stamp_s: float, jobs) -> bool:
-        """`jobs`: `(camera, width, height, scene_option, callback(rgb, stamp_s))`."""
-        if self.busy or not jobs:
-            return False
+    @staticmethod
+    def _capture(copy, data) -> None:
         # The state a render needs, not the whole arena: MuJoCo 3.3.1's bindings (the
         # RoboCasa venv) have no `mj_copyData`, and the kinematics are recomputed from
         # these on the worker thread, identically on both engines.
-        copy = self._copy
         copy.qpos[:] = data.qpos
         copy.qvel[:] = data.qvel
         copy.act[:] = data.act
         copy.mocap_pos[:] = data.mocap_pos
         copy.mocap_quat[:] = data.mocap_quat
         copy.time = data.time
-        self._jobs, self._stamp = list(jobs), float(stamp_s)
-        self._idle.clear()
-        self._wake.set()
-        return True
+
+    def submit(self, data, stamp_s: float, jobs, *, queue: bool = False) -> bool:
+        """`jobs`: `(camera, width, height, scene_option, callback(rgb, stamp_s))`.
+
+        True when the frame was taken: started now, or with `queue` parked behind the
+        frame in progress. False when the worker cannot take it (busy, and either not
+        queueing or with a frame already queued); the caller keeps it due.
+        """
+        if not jobs:
+            return False
+        with self._lock:
+            if self.busy:
+                if not queue or self._pending is not None:
+                    return False
+                self._capture(self._spare, data)
+                self._pending = (self._spare, list(jobs), float(stamp_s))
+                return True
+            self._capture(self._copy, data)
+            self._jobs, self._stamp = list(jobs), float(stamp_s)
+            self._idle.clear()
+            self._wake.set()
+            return True
 
     def wait(self, timeout: float | None = None) -> bool:
+        """Until the frame in progress and any queued behind it are out."""
         return self._idle.wait(timeout)
 
     def _run(self) -> None:
@@ -683,33 +713,43 @@ class RenderWorker:
             self._wake.clear()
             if self._stop:
                 break
-            try:
-                mujoco.mj_kinematics(self._model, self._copy)
-                mujoco.mj_comPos(self._model, self._copy)
-                mujoco.mj_camlight(self._model, self._copy)
-            except Exception as exc:
-                print(f"render worker: kinematics: {exc!r}", file=sys.stderr)
-            for camera, width, height, scene_option, callback in self._jobs:
-                try:
-                    renderer = renderers.get((width, height))
-                    if renderer is None:
-                        vis = self._model.vis.global_
-                        vis.offwidth = max(vis.offwidth, width)
-                        vis.offheight = max(vis.offheight, height)
-                        renderer = renderers[(width, height)] = mujoco.Renderer(
-                            self._model, height, width)
-                    if scene_option is not None:
-                        renderer.update_scene(self._copy, camera=camera,
-                                              scene_option=scene_option)
-                    else:
-                        renderer.update_scene(self._copy, camera=camera)
-                    callback(renderer.render(), self._stamp)
-                except Exception as exc:  # a failed frame must not kill the camera
-                    print(f"render worker: {camera}: {exc!r}", file=sys.stderr)
-            self._jobs = []
-            self._idle.set()
+            while True:
+                self._render(renderers)
+                with self._lock:
+                    if self._pending is None or self._stop:
+                        self._jobs, self._pending = [], None
+                        self._idle.set()
+                        break
+                    state, self._jobs, self._stamp = self._pending
+                    self._pending = None
+                    self._spare, self._copy = self._copy, state
         for renderer in renderers.values():
             renderer.close()
+
+    def _render(self, renderers: dict) -> None:
+        try:
+            mujoco.mj_kinematics(self._model, self._copy)
+            mujoco.mj_comPos(self._model, self._copy)
+            mujoco.mj_camlight(self._model, self._copy)
+        except Exception as exc:
+            print(f"render worker: kinematics: {exc!r}", file=sys.stderr)
+        for camera, width, height, scene_option, callback in self._jobs:
+            try:
+                renderer = renderers.get((width, height))
+                if renderer is None:
+                    vis = self._model.vis.global_
+                    vis.offwidth = max(vis.offwidth, width)
+                    vis.offheight = max(vis.offheight, height)
+                    renderer = renderers[(width, height)] = mujoco.Renderer(
+                        self._model, height, width)
+                if scene_option is not None:
+                    renderer.update_scene(self._copy, camera=camera,
+                                          scene_option=scene_option)
+                else:
+                    renderer.update_scene(self._copy, camera=camera)
+                callback(renderer.render(), self._stamp)
+            except Exception as exc:  # a failed frame must not kill the camera
+                print(f"render worker: {camera}: {exc!r}", file=sys.stderr)
 
     def close(self) -> None:
         self._stop = True

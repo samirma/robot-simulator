@@ -1026,12 +1026,17 @@ def attach_ros(bus, view, model, task=None, *, cameras=None, jpeg_quality: int =
             }, TOPICS[TOPIC_WRIST_COMPRESSED][0], node=NODE_WRIST_CAMERA)
 
     def publish_camera(data, stamp: float) -> bool:
-        """Hand one frame to the worker. False when it could not take it (busy)."""
+        """Hand one frame to the worker. False when it could not take it (busy).
+
+        Queued behind a frame still in progress: this step ticks at 50 Hz, so a 30 Hz
+        frame is due 20 ms after the last one two ticks in five, and one render may take
+        longer than that with the whole fleet's cameras on the GPU (see `RenderWorker`).
+        """
         if worker is None or not any(bus.has_subscribers(t) for t in (
                 TOPIC_WRIST_IMAGE, TOPIC_WRIST_COMPRESSED, TOPIC_WRIST_CAMERA_INFO)):
             return True
         return worker.submit(data, stamp, [(cam_name, WRIST_SIZE[0], WRIST_SIZE[1],
-                                            scene_option, camera_frame)])
+                                            scene_option, camera_frame)], queue=True)
 
     # ---- controller_manager introspection / statistics / activity ------------------
     stat_names = []
