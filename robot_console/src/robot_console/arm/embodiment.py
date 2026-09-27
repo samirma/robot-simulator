@@ -373,9 +373,9 @@ def apple_state_from(
     Public because the preflight in ``scripts/scene_reset.py`` must read the
     apple the same way the episode does: a preflight that parsed the pose
     slightly differently could pass on a world the run then measures as
-    something else, which is worse than no preflight. Two other copies of this
-    walk already exist (``scripts/live_viewer.py`` and a JavaScript one in
-    ``scripts/live_cameras.html``); this is the one the score depends on.
+    something else, which is worse than no preflight. This is the one copy of
+    this walk the score depends on (the camera page, ``robot_console/live_cameras.html``,
+    no longer reads free-joint states at all).
 
     Entries are matched **by body name** — the array's order is not guaranteed.
     Any component the message does not carry comes back as ``None`` rather than

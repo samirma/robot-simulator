@@ -37,6 +37,42 @@ just a launcher. It re-installs by itself when `pyproject.toml` changes, and
 Before connecting it checks that something is listening, and prints how to start each
 kind of robot when nothing is. `--no-preflight` skips the check.
 
+## Entry points
+
+Every one takes `--url ws://<host>:<port>` (default `ws://127.0.0.1:9090`).
+
+| Command | What it does |
+|---|---|
+| `bin/teleop.sh` | Keyboard teleoperation of a myAGV or an AiNex, with live camera |
+| `bin/slam.sh` | Mapping (`explore`, `map`) and goal navigation (`navigate`) for a myAGV |
+| `run_task.sh` | The SO-101 `apple_on_plate` task over N episodes, graded |
+| `bin/view.sh` | Browser page with every camera on the wire and per-robot controls |
+
+`bin/view.sh` serves one static page, `live_cameras.html`, on `127.0.0.1` and opens it
+(`--no-open` prints the address instead; `--http-port` fixes the port). The page speaks
+rosbridge itself and is told only the URL: members and cameras come from `/rosapi`,
+matched by name and type in both ROS dialects. A robot's panel sends nothing until its
+**Enable control** box is ticked, and then only bounded commands on the robot's official
+interface: SO-101 trajectory and gripper goals, the AiNex's head and action groups. There
+is no myAGV drive and no AiNex walk — use `bin/teleop.sh`, which guarantees the stop a
+browser tab cannot. Leaving the page cancels every unfinished goal it sent; a reconnect
+re-sends every subscription and advertisement.
+
+`python -m robot_console.fleet` checks a wire against the console's contract:
+
+```bash
+.venv/bin/python -m robot_console.fleet               # discover members, validate each
+.venv/bin/python -m robot_console.fleet --dump        # every topic and type, sorted
+.venv/bin/python -m robot_console.fleet --rates       # time every periodic topic (~35 s)
+.venv/bin/python -m robot_console.fleet --rates --gate   # ...and exit non-zero on a failure
+```
+
+`--rates` is the simulator spec's rate gate: after a 5 s warm-up it observes for the
+greater of 30 s and five periods of the slowest topic, and requires each periodic topic
+within ±10% of the rate its ROS file declares with no gap over three periods, and each
+member's real-time factor (from its header stamps) at a mean in [0.90, 1.10] with no
+10 s window below 0.90.
+
 ## The arm
 
 The SO-101 is driven over **rosbridge**, on the ros2_control topic set a real bringup for
@@ -313,6 +349,8 @@ an explicit zero Twist. `--json` emits the same results as one object.
 ```
 bin/teleop.sh              venv bootstrap + launcher
 bin/slam.sh                the same, dispatching explore | map | navigate
+bin/view.sh                serves live_cameras.html, the camera and control page
+live_cameras.html          one static page speaking rosbridge; no build step
 src/robot_console/
   topics.py                topic names and type strings -- the contract in one place
   teleop.py                keymap, latch state, speed model   (pure)
@@ -322,6 +360,8 @@ src/robot_console/
   ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
   preflight.py             reachability probe + startup instructions
+  discovery.py             which members are on the wire, by typed signature
+  fleet.py                 validate a wire against the contract; --dump; --rates [--gate]
   arm/                     the SO-101, over rosbridge -- see "The arm" above
     ros_client.py          the header-stamping shim (without it the arm never moves)
     ros_settings.py        every topic name, type and camera size, in one place

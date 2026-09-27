@@ -65,8 +65,8 @@ def resolve(options: Options, stream=sys.stderr) -> Optional[Options]:
 
     With `--robot` and `--namespace` both given there is nothing to ask and nothing is
     asked. Otherwise the wire is: `/rosapi/topics` says which robots are on this rosbridge
-    and what each one is called, which is the same question `live_cameras.html` asks and
-    the same way. Returns None when the answer is one the user has to give.
+    and what each one is called, which is the same question the camera page
+    (`live_cameras.html`, served by `bin/view.sh`) asks and the same way. Returns None when the answer is one the user has to give.
 
     A wire that cannot be asked -- no rosapi node, an old bridge, a timeout -- is not an
     error: a real vendor bringup presents the bare contract, which is what the console
