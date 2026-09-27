@@ -892,6 +892,10 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
     `controller`, `mj_step` and `sync()` all run on **this one thread**, which is what
     both the thread-safe `/reset` handoff in `ros_surfaces/so101.py` and `launch_passive`
     require. Do not move any of them onto another.
+
+    **It warns when the real-time factor over a 10 s window falls below 0.90** (spec §4):
+    simulated seconds over wall seconds, over consecutive `RTF_WINDOW_S` windows of wall
+    clock, the measure the rate gate holds a run to.
     """
     # Hand the GIL back to this thread quickly. Every camera encodes and serialises on a
     # thread of its own, and at the default 5 ms switch interval this loop, returning from
@@ -907,6 +911,10 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
     sim_start = float(data.time)
     max_catchup = int(0.25 / model.opt.timestep)  # cap a stall at a quarter second
     behind_since = None
+    rtf_wall, rtf_sim = wall_start, sim_start
+    # The simulated clock the wire is stamped and scheduled with, moved on every physics
+    # step rather than only when the controller runs (see `RobotFleet.advance_clock`).
+    advance_clock = getattr(controller, "advance_clock", None)
 
     try:
         while viewer is None or viewer.is_running():
@@ -926,6 +934,8 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
             while data.time < target_time and steps < max_catchup:
                 mujoco.mj_step(model, data)
                 steps += 1
+                if advance_clock is not None:
+                    advance_clock(float(data.time))
                 # The controller keeps its cadence through a catch-up: a pass that
                 # stepped physics until caught up after a slow tick (a camera frame)
                 # would otherwise push the next tick back by the whole catch-up, and a
@@ -947,6 +957,15 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
                 sim_start = float(data.time)
             else:
                 behind_since = None
+
+            now = time.monotonic()
+            if now - rtf_wall >= RTF_WINDOW_S:
+                rtf = (float(data.time) - rtf_sim) / (now - rtf_wall)
+                if rtf < RTF_WARN_BELOW:
+                    print(f"warning: {label} ran at {rtf:.2f}x real time over the last "
+                          f"{now - rtf_wall:.0f} s (below {RTF_WARN_BELOW:.2f}); every "
+                          "topic's rate falls with it", file=sys.stderr)
+                rtf_wall, rtf_sim = now, float(data.time)
 
             if viewer is not None and sync_period is not None:
                 now = time.monotonic()
@@ -975,6 +994,10 @@ def run_sim_loop(model, data, controller, *, control_hz: float, deadline=None,
 
 #: The GIL switch interval while `run_sim_loop` runs; see there.
 SIM_LOOP_SWITCH_INTERVAL_S = 0.0005
+#: `run_sim_loop` warns when simulated over wall time across this window falls below
+#: `RTF_WARN_BELOW` (spec §4).
+RTF_WINDOW_S = 10.0
+RTF_WARN_BELOW = 0.90
 
 
 # ------------------------------------------------------------------ the transform tree

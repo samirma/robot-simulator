@@ -427,15 +427,20 @@ class Sim:
         return float(np.asarray(self._base.joint_pos)[0])
 
     def run_until(self, done: threading.Event) -> None:
-        period = 1.0 / self.control_hz
-        substeps = int(round(period / self.model.opt.timestep))
-        next_tick = time.monotonic()
+        """Physics pinned to the wall clock, the simulated clock moved on every step and
+        the fleet called at its rate -- what `mujoco_bridge.run_sim_loop` does."""
+        period = 1.0 / (getattr(self.step, "rate_hz", None) or self.control_hz)
+        wall0, sim0 = time.monotonic(), float(self.data.time)
+        next_tick = wall0
         while not done.is_set():
-            for _ in range(substeps):
+            target = sim0 + (time.monotonic() - wall0)
+            while self.data.time < target:
                 mujoco.mj_step(self.model, self.data)
-            self.step(self.data)
-            next_tick += period
-            time.sleep(max(0.0, next_tick - time.monotonic()))
+                self.step.advance_clock(float(self.data.time))
+            if time.monotonic() >= next_tick:
+                self.step(self.data)
+                next_tick += period
+            time.sleep(0.001)
 
 
 def main() -> int:

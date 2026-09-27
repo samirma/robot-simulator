@@ -14,14 +14,13 @@ layers below; a surface is the robot-specific wiring between them.
 `contracts/namespace.py` for why that, and not a port per robot, is the shape. Each
 surface exposes `attach_ros(bus, ...)`, which registers against a `NamespacedBus` and
 returns a per-step closure; the thin `serve_ros(port, ...)` wrapper each surface keeps is
-the single-robot path, and is what `run.sh view --robot myagv --ros-port 9090` and the
+the single-robot path, and is what the robot self-tests (`robots/*/test_ros.py`) and the
 engine-side adapters still call.
 """
 
 from __future__ import annotations
 
 import sys
-import time
 from typing import Any, Callable
 
 
@@ -103,6 +102,16 @@ class RobotFleet:
     def _rearm(self) -> None:
         self._due.clear()
 
+    def advance_clock(self, sim_seconds: float) -> None:
+        """Move the simulated clock on between member steps, as the physics steps.
+
+        The streams that run on threads of their own (the AiNex's drivers) are scheduled
+        by this clock; set only when the fleet is stepped, it would advance in jumps of the
+        fleet's period and a 100 Hz stream behind it could not keep its rate.
+        `mujoco_bridge.run_sim_loop` calls it after every physics step.
+        """
+        self.server.set_time(sim_seconds)
+
     def bus(self, namespace: str):
         from contracts.rosbridge_server import NamespacedBus
 
@@ -144,10 +153,11 @@ class RobotFleet:
                 step(None)
             self.server.stop()
             return
-        # The simulated clock `/rosapi/get_time` answers from.
-        self.server.set_time(float(getattr(data, "time", 0.0)))
+        # The simulated clock `/rosapi/get_time` answers from, every stamp on the wire
+        # carries, and every member is scheduled by.
+        now = float(getattr(data, "time", 0.0))
+        self.server.set_time(now)
         fastest = self.rate_hz
-        now = time.monotonic()
         for index, (_, _, step) in enumerate(self._members):
             rate = self._rate_of(step)
             if not rate or not fastest:
@@ -155,10 +165,16 @@ class RobotFleet:
                 continue
             # Every member on a drift-free clock of its own: due times advance by exactly
             # one period, so its long-run rate is its own whatever the loop's jitter, and
-            # half a loop period of slack lets an early call count. The clock is the wall
-            # clock, which is what a subscriber measures a rate against.
+            # half a loop period of slack lets an early call count. The clock is
+            # SIMULATED time, for every member alike -- as a ROS node's `Rate` under
+            # `use_sim_time` is -- so a run that keeps real time publishes at the
+            # declared rates by the wall clock too, and one that falls behind slows every
+            # topic together and says so in its stamps, rather than some topics keeping
+            # the wall clock and others the simulation's.
             period = 1.0 / rate
             due = self._due.get(index, now)
+            if due > now + 2 * period:  # the clock went back: re-anchor
+                due = now
             if now + 0.5 / fastest < due:
                 continue
             due += period

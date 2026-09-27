@@ -67,7 +67,6 @@ from __future__ import annotations
 import base64
 import math
 import sys
-import time
 
 # ------------------------------------------------------------------------------ nodes
 
@@ -457,7 +456,7 @@ class _Every:
 
     def ready(self, now: float) -> bool:
         """Whether a tick is due, without taking it."""
-        if self.next is None:
+        if self.next is None or self.next > now + 2 * self.period:
             self.next = now
         return now + self.slack >= self.next
 
@@ -675,8 +674,8 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
 
         import numpy as np
 
-        now = time.monotonic()
-        stamp = time.time()
+        # Simulated time: what every stream is scheduled by and every header carries.
+        now = stamp = float(getattr(data, "time", 0.0))
         pose = base.pose
         x, y, z = float(pose[0, 3]), float(pose[1, 3]), float(pose[2, 3])
         yaw = float(np.arctan2(pose[1, 0], pose[0, 0]))
@@ -686,7 +685,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
 
         # -- myagv_odometry_node: odom, imu, voltages -------------------------------
         if clocks["odometry"].due(now):
-            t = float(getattr(data, "time", now))
+            t = now
             rate = 0.0
             accel = (0.0, 0.0)
             world_v = (vx * math.cos(yaw) - vy * math.sin(yaw),
@@ -703,7 +702,8 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
 
             bus.publish(TOPIC_ODOM, odometry(seq("odom"), x, y, yaw, vx, vy, wz,
                                              frame_id=frames[FRAME_ODOM],
-                                             child_frame_id=frames[FRAME_BASE]),
+                                             child_frame_id=frames[FRAME_BASE],
+                                             stamp_s=stamp),
                         TYPE_ODOM, node=NODE_ODOMETRY)
             state["odom_count"] += 1
             # imu_link is base_footprint turned a half-turn about z (yaw 0, pitch pi,
@@ -737,7 +737,8 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
         # -- robot_pose_ekf ------------------------------------------------------------
         if clocks["ekf"].due(now):
             fused = odometry(seq("ekf"), x, y, yaw, vx, vy, wz,
-                             frame_id=frames[FRAME_ODOM], child_frame_id=frames[FRAME_BASE])
+                             frame_id=frames[FRAME_ODOM], child_frame_id=frames[FRAME_BASE],
+                             stamp_s=stamp)
             bus.publish(TOPIC_ODOM_COMBINED, fused, TYPE_ODOM, node=NODE_EKF)
             publish_tf("ekf_tf", [(frames[FRAME_ODOM], frames[FRAME_BASE], (x, y, 0.0),
                                    _yaw_quat(yaw))], stamp, NODE_EKF)

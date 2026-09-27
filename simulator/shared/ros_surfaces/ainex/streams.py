@@ -13,8 +13,9 @@ camera frame here, and the clocks below turn them into messages. So the IMU's *v
 update at the control rate and its *stream* runs at 100 Hz, which is how a 100 Hz driver
 reads a sensor that changes more slowly than it is polled. The camera is the same: the
 simulation thread hands a copy of the state to a render worker (`mujoco_bridge.
-RenderWorker`) at most once per control tick and at most 30 times a second, the worker
-renders it on a thread of its own, and the 30 Hz stream carries the latest frame.
+RenderWorker`) 30 times a second -- the surface is stepped at the camera's rate for
+this, its controller ticking more slowly inside -- the worker renders it on a thread of
+its own, and the 30 Hz stream carries a new frame each time.
 
 Encoding a 640x480 `sensor_msgs/Image` is 1.2 MB of base64 a frame. Each image topic is
 encoded only while a client is subscribed to it -- what a lazy image_transport publisher
@@ -27,7 +28,6 @@ import base64
 import math
 import sys
 import threading
-import time
 
 import numpy as np
 
@@ -65,13 +65,13 @@ JOY_BUTTONS = 21
 JOY_FRAME = "/dev/input/js0"
 
 
-def _stamp() -> dict:
-    now = time.time()
-    return {"secs": int(now), "nsecs": int((now % 1) * 1e9)}
+def _stamp(stamp_s: float) -> dict:
+    return {"secs": int(stamp_s), "nsecs": int((stamp_s % 1) * 1e9)}
 
 
-def _header(seq: int, frame_id: str) -> dict:
-    return {"seq": seq, "stamp": _stamp(), "frame_id": frame_id}
+def _header(seq: int, frame_id: str, stamp_s: float) -> dict:
+    """Stamped with simulated time, as every member on the wire is."""
+    return {"seq": seq, "stamp": _stamp(stamp_s), "frame_id": frame_id}
 
 
 def _vec(v) -> dict:
@@ -112,7 +112,7 @@ class Attitude:
         self.yaw, self.pitch, self.wz, self.wy = yaw, pitch, wz, wy
 
 
-def imu_messages(att: Attitude, seq: int) -> dict[str, dict]:
+def imu_messages(att: Attitude, seq: int, stamp_s: float) -> dict[str, dict]:
     """The board's raw IMU and magnetometer, and the calibrated and filtered IMU.
 
     Built as the three nodes build them: the board fills acceleration and rate and leaves
@@ -128,7 +128,7 @@ def imu_messages(att: Attitude, seq: int) -> dict[str, dict]:
     cal = np.array(topics.MAG_CALIBRATION).reshape(4, 4)
     raw_field = np.linalg.solve(cal, np.append(field, 1.0))[:3]
 
-    header = _header(seq, topics.FRAME_IMU)
+    header = _header(seq, topics.FRAME_IMU, stamp_s)
     raw = {
         "header": header,
         "orientation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 0.0},
@@ -159,10 +159,10 @@ def _yaw_y(yaw: float) -> np.ndarray:
     return np.array([-math.sin(yaw), math.cos(yaw), 0.0])
 
 
-def neutral_joy(seq: int) -> dict:
+def neutral_joy(seq: int, stamp_s: float) -> dict:
     """A gamepad at rest, as joy_node repeats it."""
     return {
-        "header": _header(seq, JOY_FRAME),
+        "header": _header(seq, JOY_FRAME, stamp_s),
         "axes": [0.0] * JOY_AXES,
         "buttons": [0] * JOY_BUTTONS,
     }
@@ -228,14 +228,19 @@ class HeadCamera:
         """Submit this tick's state for a frame, if one is due and the worker is free."""
         if self._worker is None:
             return
-        now = time.monotonic()
-        if now < self._next:
+        now = float(getattr(data, "time", 0.0))
+        if self._next > now + 2 * self._period:  # the clock went back: re-anchor
+            self._next = now
+        # Half a period of slack and a drift-free due time: called at the camera's own
+        # rate with the loop's jitter, a strict `now < next` skips every other call.
+        if now < self._next - 0.5 * self._period:
             return
         width, height = topics.CAMERA_SIZE
         if self._worker.submit(data, float(getattr(data, "time", 0.0)),
                                [(self._camera, width, height, self._scene_option,
                                  self._rendered)]):
-            self._next = now + self._period
+            self._next = (self._next + self._period if self._next > now - self._period
+                          else now + self._period)
 
     def _rendered(self, rgb: np.ndarray, _stamp_s: float) -> None:
         """On the render worker's thread: keep the newest frame."""
@@ -250,17 +255,17 @@ class HeadCamera:
         self._cache[kind] = (count, value)
         return value
 
-    def image_msg(self, seq: int, count: int, frame: np.ndarray) -> dict:
+    def image_msg(self, seq: int, count: int, frame: np.ndarray, stamp_s: float) -> dict:
         width, height = topics.CAMERA_SIZE
         data = self._encoded("raw", count, frame,
                              lambda f: base64.b64encode(f.tobytes()).decode("ascii"))
         return {
-            "header": _header(seq, self._frame_id),
+            "header": _header(seq, self._frame_id, stamp_s),
             "height": height, "width": width, "encoding": topics.CAMERA_ENCODING,
             "is_bigendian": 0, "step": width * 3, "data": data,
         }
 
-    def publish(self) -> None:
+    def publish(self, stamp_s: float) -> None:
         latest = self._latest
         if latest is None:
             return
@@ -271,22 +276,23 @@ class HeadCamera:
         self._seq += 1
         seq = self._seq
         width, height = topics.CAMERA_SIZE
-        info = camera_info(seq, width, height, self._fovy, frame_id=self._frame_id)
+        info = camera_info(seq, width, height, self._fovy, frame_id=self._frame_id,
+                           stamp_s=stamp_s)
         bus.publish(topics.TOPIC_CAMERA_INFO, info, topics.TYPE_CAMERA_INFO,
                     node=topics.NODE_CAMERA)
         if has_subscriber(bus, topics.TOPIC_CAMERA_RAW):
-            bus.publish(topics.TOPIC_CAMERA_RAW, self.image_msg(seq, count, frame),
+            bus.publish(topics.TOPIC_CAMERA_RAW, self.image_msg(seq, count, frame, stamp_s),
                         topics.TYPE_IMAGE, node=topics.NODE_CAMERA)
         if has_subscriber(bus, topics.TOPIC_CAMERA):
             jpeg = self._encoded("jpeg", count, frame, self._jpeg)
             if jpeg is not None:
                 bus.publish(topics.TOPIC_CAMERA, {
-                    "header": _header(seq, self._frame_id),
+                    "header": _header(seq, self._frame_id, stamp_s),
                     "format": topics.CAMERA_COMPRESSED_FORMAT,
                     "data": jpeg,
                 }, topics.TYPE_COMPRESSED_IMAGE, node=topics.NODE_CAMERA)
         if has_subscriber(bus, topics.TOPIC_CAMERA_RECT):
-            bus.publish(topics.TOPIC_CAMERA_RECT, self.image_msg(seq, count, frame),
+            bus.publish(topics.TOPIC_CAMERA_RECT, self.image_msg(seq, count, frame, stamp_s),
                         topics.TYPE_IMAGE, node=topics.NODE_RECTIFY)
         for listener in self.frame_listeners:
             listener(seq, count, frame)
@@ -309,20 +315,27 @@ class HeadCamera:
 
 
 class Clocks:
-    """One thread running several fixed-rate jobs, each on its own schedule."""
+    """One thread running several fixed-rate jobs, each on its own schedule.
 
-    def __init__(self, name: str) -> None:
+    The schedule is **simulated time**, read from `clock` (the server's clock, which the
+    fleet sets to `MjData.time` every call): the drivers these stand in for run on ROS
+    time, and every member of the fleet is scheduled and stamped on the one clock. Each
+    job is called with the simulated time it runs at, which is its messages' stamp.
+    """
+
+    #: Longest the thread sleeps before looking at the simulated clock again.
+    POLL_S = 0.002
+
+    def __init__(self, name: str, clock) -> None:
+        self._clock = clock
         self._jobs: list[list] = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
 
     def every(self, hz: float, job) -> None:
-        self._jobs.append([1.0 / hz, 0.0, job])
+        self._jobs.append([1.0 / hz, None, job])
 
     def start(self) -> None:
-        start = time.monotonic()
-        for job in self._jobs:
-            job[1] = start
         self._thread.start()
 
     def stop(self) -> None:
@@ -332,12 +345,14 @@ class Clocks:
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            now = time.monotonic()
+            now = float(self._clock())
             for job in self._jobs:
                 period, due, fn = job
+                if due is None or due > now + 2 * period:
+                    due = job[1] = now  # the first tick, or the clock went back
                 if now >= due:
                     try:
-                        fn()
+                        fn(now)
                     except Exception as exc:  # noqa: BLE001 -- one bad tick, not a dead clock
                         print(f"ainex stream: {exc!r}", file=sys.stderr)
                     # Keep the schedule rather than drifting by the work's own time; a
@@ -345,4 +360,6 @@ class Clocks:
                     due += period
                     job[1] = due if due > now else now + period
             wake = min(job[1] for job in self._jobs) if self._jobs else now + 0.1
-            self._stop.wait(max(0.0, wake - time.monotonic()))
+            # Simulated seconds are wall seconds when the run keeps real time; when it
+            # does not, waking early and looking again is all that costs.
+            self._stop.wait(min(max(0.0, wake - now), self.POLL_S))

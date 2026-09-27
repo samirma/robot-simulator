@@ -244,7 +244,10 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
     * `camera` -- the head camera's MJCF name, or None for no camera.
 
     Every rate is this robot's own, from `topics.RATES_HZ`; `control_hz` is only the
-    period `step` is called at, which the gait integrates over.
+    controller's tick, which the gait integrates over. The returned step carries
+    `rate_hz`, the head camera's 30 Hz: the fleet calls it that often so a new frame is
+    rendered for every frame the camera publishes, and the controller ticks inside it on
+    a clock of its own at `control_hz`.
     """
     import ainex_model
     from mujoco_bridge import PlanarSetpoint
@@ -515,9 +518,9 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
     attitude = streams.Attitude()
     seqs = {"imu": 0, "joy": 0}
 
-    def publish_imu() -> None:
+    def publish_imu(stamp_s: float) -> None:
         seqs["imu"] += 1
-        msgs = streams.imu_messages(attitude, seqs["imu"])
+        msgs = streams.imu_messages(attitude, seqs["imu"], stamp_s)
         owners = {topics.TOPIC_IMU_RAW: topics.NODE_BOARD,
                   topics.TOPIC_MAG_RAW: topics.NODE_BOARD, topics.TOPIC_MAG: topics.NODE_BOARD,
                   topics.TOPIC_IMU_CORRECTED: topics.NODE_IMU_CALIB,
@@ -527,18 +530,19 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
         for name, msg in msgs.items():
             bus.publish(name, msg, types.get(name, topics.TYPE_IMU), node=owners[name])
 
-    def publish_joy() -> None:
+    def publish_joy(stamp_s: float) -> None:
         seqs["joy"] += 1
-        bus.publish(topics.TOPIC_JOY, streams.neutral_joy(seqs["joy"]), topics.TYPE_JOY,
+        bus.publish(topics.TOPIC_JOY, streams.neutral_joy(seqs["joy"], stamp_s), topics.TYPE_JOY,
                     node=topics.NODE_JOY)
 
-    def publish_button() -> None:
+    def publish_button(_stamp_s: float) -> None:
         # Published every cycle while enabled; the simulated user button is never pressed.
         if button["enabled"]:
             bus.publish(topics.TOPIC_BUTTON_STATE, {"data": False}, topics.TYPE_BOOL,
                         node=topics.NODE_SENSOR)
 
-    clocks = streams.Clocks(f"ainex-streams{'-' + str(bus.ns) if bus.ns else ''}")
+    clocks = streams.Clocks(f"ainex-streams{'-' + str(bus.ns) if bus.ns else ''}",
+                            bus.server.now)
     rate = topics.RATES_HZ
     clocks.every(rate[topics.TOPIC_IMU], publish_imu)
     clocks.every(rate[topics.TOPIC_JOY], publish_joy)
@@ -578,6 +582,12 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
         phase["at"] = 0.0
         held.update({k: v for k, v in rest.items() if k not in servos.HEAD_JOINTS})
 
+    control_period = 1.0 / control_hz
+    due = {"at": None}
+    if world_reset is not None:
+        # The observations a `/reset` caller waits for come from the tick after it.
+        world_reset.on_reset(lambda: due.update(at=None))
+
     def step(data):
         if data is None:
             clocks.stop()
@@ -587,7 +597,21 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
         if not was["started"]:
             was["started"] = True
             clocks.start()
+        # The controller on its own drift-free clock of simulated time; the camera on
+        # every call.
+        now = float(getattr(data, "time", 0.0))
+        if due["at"] is not None and due["at"] > now + 2 * control_period:
+            due["at"] = None  # the clock went back: re-anchor
+        if due["at"] is None or now >= due["at"] - 0.5 / step.rate_hz:
+            control(data)
+            due["at"] = (now if due["at"] is None else due["at"]) + control_period
+            if due["at"] < now - control_period:
+                due["at"] = now + control_period
+        head_camera.render(data)
 
+    step.rate_hz = max(float(topics.RATES_HZ[topics.TOPIC_CAMERA_RAW]), float(control_hz))
+
+    def control(data):
         with ctl.cond:
             writes = dict(ctl.servo_writes)
             ctl.servo_writes.clear()
@@ -676,7 +700,6 @@ def attach_ros(bus, base, model, prefix: str, camera: str | None, jpeg_quality: 
 
         attitude.set(yaw, float(data.qpos[qpos_adr[BASE_PITCH]]), wz,
                      float(data.qvel[pitch_dof]))
-        head_camera.render(data)
 
         with ctl.cond:
             ctl.moving = ctl.running
