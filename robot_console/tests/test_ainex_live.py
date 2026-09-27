@@ -3,7 +3,8 @@
     cd simulator && ./kitchen.sh serve --robots ainex          # or --engine robocasa
     cd robot_console && .venv/bin/python -m pytest -m live tests/test_ainex_live.py
 
-`AINEX_LIVE_URL=ws://127.0.0.1:9791` points it at a serve on another port.
+`AINEX_LIVE_URL=ws://127.0.0.1:9791` (or the suite-wide `ROBOT_CONSOLE_LIVE_URL`) points it at
+a serve on another port.
 
 Nothing else in either project joins these two halves. `test_cli.py` checks the console's
 gait arithmetic with no wire; the simulator's `robots/ainex/test_ros.py` drives the
@@ -52,7 +53,8 @@ from robot_console.topics import namespaced
 pytestmark = pytest.mark.live
 
 #: Where the engine under test serves. The default is the console's own.
-URL = os.environ.get("AINEX_LIVE_URL", f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}")
+URL = (os.environ.get("AINEX_LIVE_URL") or os.environ.get("ROBOT_CONSOLE_LIVE_URL")
+       or f"ws://{DEFAULT_HOST}:{DEFAULT_PORT}")
 HOST = urlparse(URL).hostname or DEFAULT_HOST
 PORT = urlparse(URL).port or DEFAULT_PORT
 

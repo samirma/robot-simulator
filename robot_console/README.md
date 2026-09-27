@@ -119,6 +119,14 @@ task never runs on hardware. `run_task.sh --help` lists the flags.
 one at a time, and `python -m robot_console.arm.verdict RUN_DIR` re-grades a finished
 episode.
 
+`python -m robot_console.arm.audit --truth <log> RUN_DIR...` is the separate audit of
+the camera verdicts (spec §4, Task grading): it applies the same pass criterion to the
+simulator's ground-truth log -- a local file `kitchen.sh serve` writes only when
+`SIMULATOR_TRUTH_LOG` is set, never anything on the wire -- matches each episode to the
+last `/reset` before it, and reports agreement, false PASSes and false FAILs, with the
+triangulated apple's and plate's error. The scorer never sees the truth; the audit is
+not an `inspect_robots` entry point. The log's format is in `arm/audit.py`.
+
 ### torch stays out of `.venv`
 
 `molmoact2` needs torch, transformers and a ~22 GB checkpoint. So `run_task.sh` installs
@@ -318,6 +326,16 @@ round-trips `RobotLink` against `tests/fake_bridge.py`, a small independent rosb
 implementation, which proves the bytes `roslibpy` emits are the bytes the server
 accepts -- without needing the simulator checkout.
 
+The contract parity checks -- the console's copies of topics, types, namespace rule,
+joints, rig calibration, task constants, robot ids and rates against the simulator's
+contract modules and `robots_specs/` -- are workspace tests, because they read both
+source trees: `python3 -m unittest discover tests` from the workspace root, with any
+Python 3.11+ and no venv.
+
+`.venv/bin/python -m pytest -m live` runs the opt-in live tests against a rosbridge,
+among them the compatibility checks in `tests/test_compat_live.py` (discovery, command,
+stop and observation on every member; `ROBOT_CONSOLE_LIVE_URL` picks the wire).
+
 `smoke` is the live version (`--url`, default `ws://127.0.0.1:9090`): through the safety
 supervisor it drives a myAGV 2 s forward, back and sideways at 0.15 m/s and turns it in
 place at 0.5 rad/s for 2 s, and passes when each straight leg covers 0.10 m, the
@@ -353,6 +371,7 @@ src/robot_console/
     vision_success.py      the camera verdict                    (pure)
     scorer.py              the scorer entry point, over the rig samples
     verdict.py             one episode's verdict from its log, for run_task.sh
+    audit.py               camera verdicts against the simulator's truth log, offline
     embodiment.py          so101_ros: the arm behind rosbridge
     preflight.py           discover / check / wait / reset, as run_task.sh runs them
   app.py                   the teleop loop
