@@ -25,7 +25,7 @@ Drive it from another:
 ```bash
 cd robot_console
 ./bin/teleop.sh                        # ws://127.0.0.1:9090
-./bin/teleop.sh --host 192.168.1.42    # a real myAGV on the network
+./bin/teleop.sh --url ws://192.168.1.42:9090   # a real myAGV on the network
 ./bin/teleop.sh --record runs/drive1   # ...writing feed.mp4 + commands.jsonl
 ./bin/teleop.sh --robot ainex          # a different robot; see below
 ```
@@ -178,15 +178,15 @@ collapses it to a small badge.
 **Hold a key to drive; let go and the robot stops.** There is no key-up event to work
 with -- `cv2.waitKey` reports key-down only, and a real one would mean the global hook
 this design rules out. What the OS does give is auto-repeat: holding `W` delivers `w`
-over and over. So a motion is armed by a key press and expires `--hold-timeout` seconds
-(0.6 by default) after the last repeat, which is what a release looks like.
+over and over. So a motion is armed by a key press and expires 0.6 s after the last
+repeat, which is what a release looks like.
 
 That timeout has to clear the OS's *initial* repeat delay or a held key would stutter:
 move, expire, then resume once repeat kicks in. macOS ships 375 ms before the first
 repeat and 90 ms between them, so 0.6 s has margin while costing about 9 cm of coast at
 the default speed. The vendor's own teleop makes the same trade at 0.52 s. If your
-keyboard repeat is disabled or unusually slow, raise `--hold-timeout`, or pass `--latch`
-to keep the old behaviour where a direction persists until `Space` or another key.
+keyboard repeat is disabled or unusually slow, pass `--latch`, where a direction
+persists until `Space`, `Esc` or another motion key.
 
 `+`/`-` step the speed by 0.05 m/s between 0.05 and 0.28; `=` and `_` work too, since
 `+` and `_` need shift on most layouts.
@@ -275,16 +275,20 @@ roslaunch rosbridge_server rosbridge_websocket.launch
 
 `myagv_active.launch` already starts the lidar (it includes
 `ydlidar_ros_driver/launch/X2.launch`) and publishes the `base_footprint -> laser_frame`
-transform, so `/scan` needs nothing extra. Then `./bin/teleop.sh --host <agv-ip>`, or
-`./bin/slam.sh explore --host <agv-ip>`.
+transform, so `/scan` needs nothing extra. Then `./bin/teleop.sh --url ws://<agv-ip>:9090`,
+or `./bin/slam.sh explore --out runs/house --url ws://<agv-ip>:9090`.
 
-**The real myAGV has no command watchdog.** `myagv_odometry_node` stores the last Twist
-it received in a global and writes it to the motors at 100 Hz forever, so a robot told
-to move keeps moving until it is told otherwise -- the vendor's own teleop guards
-against this with a 0.52 s client-side key timeout. The console therefore treats
-stopping as part of quitting rather than as best-effort: it publishes a zero Twist on
-`Esc`, on window close, on an exception, and on `SIGINT`/`SIGTERM`. The simulator
-behaves the same way, so this is the only thing that stops the robot on either.
+**Neither robot has a command watchdog.** `myagv_odometry_node` stores the last Twist
+it received in a global and writes it to the motors at 100 Hz forever, and a walking
+AiNex walks until told `stop`. So the UI never publishes motion itself: a separate
+**safety supervisor** process (`robot_console/supervisor.py`) owns the rosbridge
+connection and every motion publication, and the UI sends it desired commands and a
+heartbeat over a pipe. If the heartbeat, the UI process or the pipe goes away for
+`--safety-timeout` (0.25 s), the supervisor sends the robot's `stop_command` from its ROS
+file three times, 50 ms apart, and exits -- as it does on `Esc`, window close, an
+exception, and `SIGINT`/`SIGTERM`. Before any motion, teleop and every `slam.sh` mode ask
+you to confirm that an independent physical emergency stop or motor-power dead-man is
+armed: that device, not software, is the protection against host failure or network loss.
 
 ## Checks
 
@@ -302,11 +306,11 @@ round-trips `RobotLink` against `tests/fake_bridge.py`, a small independent rosb
 implementation, which proves the bytes `roslibpy` emits are the bytes the server
 accepts -- without needing the simulator checkout.
 
-`smoke` is the live version: it connects, measures the `/odom` and camera rates, decodes
-a frame and checks it is not a flat buffer, then drives forward, back, sideways and
-around, checking the pose moved each time. It then sends one command and falls silent
-for 1 s to prove the base holds it (a myAGV has no command watchdog), and stops it with
-an explicit zero Twist. `--json` emits the same results as one object.
+`smoke` is the live version (`--url`, default `ws://127.0.0.1:9090`): through the safety
+supervisor it drives a myAGV 2 s forward, back and sideways at 0.15 m/s and turns it in
+place at 0.5 rad/s for 2 s, and passes when each straight leg covers 0.10 m, the
+sideways one 0.06 m, the turn 0.30 rad, and a camera frame decodes. The stop command is
+sent on every exit path. `--json` emits the same results as one object.
 
 ## Layout
 
@@ -368,7 +372,7 @@ robot that drives fine and maps badly otherwise leaves nothing in the log to exp
 ## Limitations
 
 - Releasing a key is inferred from OS auto-repeat stopping, so the robot coasts for up
-  to `--hold-timeout` after you let go. A keyboard with repeat disabled will stutter;
+  to 0.6 s after you let go. A keyboard with repeat disabled will stutter;
   `--latch` is the fallback.
 - Real myAGV hardware has not been tested here; only the simulator path has been run.
 - No TF, services, or parameters -- the console uses four topics. The

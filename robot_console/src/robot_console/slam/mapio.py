@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -99,8 +99,13 @@ def crop_to_content(grid: OccupancyGrid, *, border_cells: int = 4) -> OccupancyG
 
 
 def save_map(grid: OccupancyGrid, path: PathLike, *, sidecar: bool = True,
-             crop: bool = True) -> Path:
-    """Write `map.pgm` + `map.yaml` (+ `map.npz`). Returns the yaml path."""
+             crop: bool = True, pose: Optional[Sequence[float]] = None) -> Path:
+    """Write `map.pgm` + `map.yaml` (+ `map.npz`). Returns the yaml path.
+
+    `pose` is the robot's last `(x, y, yaw)` in the map frame; the sidecar keeps it so a
+    later `map` or `explore` run into the same directory can continue the map from where
+    the robot stands (console spec §2.2).
+    """
     yaml_path, pgm_path, npz_path = _resolve(path)
     yaml_path.parent.mkdir(parents=True, exist_ok=True)
     if crop:
@@ -121,13 +126,36 @@ def save_map(grid: OccupancyGrid, path: PathLike, *, sidecar: bool = True,
     )
 
     if sidecar:
+        extra = {}
+        if pose is not None:
+            extra["pose"] = np.asarray(pose, dtype=np.float64)[:3]
         np.savez_compressed(
             npz_path,
             data=grid.data,
             resolution=np.float64(grid.resolution),
             origin=grid.origin,
+            **extra,
         )
     return yaml_path
+
+
+def load_pose(path: PathLike) -> Optional[np.ndarray]:
+    """The robot's last `(x, y, yaw)` saved beside the map, or None."""
+    _, _, npz_path = _resolve(path)
+    if not npz_path.exists():
+        return None
+    try:
+        with np.load(npz_path) as bundle:
+            if "pose" not in bundle.files:
+                return None
+            return np.asarray(bundle["pose"], dtype=np.float64)[:3].copy()
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+def exists(path: PathLike) -> bool:
+    """Is there a saved map at `path` (a directory, yaml or stem)?"""
+    return _resolve(path)[0].exists()
 
 
 def load_map(path: PathLike) -> OccupancyGrid:

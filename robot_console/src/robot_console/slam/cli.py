@@ -1,250 +1,157 @@
-"""Command line for the three SLAM commands.
+"""Command line for the three SLAM modes (console spec §2.2).
 
-They share almost everything -- connection, map geometry, speed, save location -- so they
-share a parser and an options object, with each mode adding only what is genuinely its
-own. `bin/slam.sh explore|map|navigate` and `python -m robot_console.<mode>` both land here.
+    slam.sh explore  --out <map-dir> [--namespace <ns>] [--url ws://…]
+                     [--max-duration <s>] [--max-goals <n>] [--safety-timeout <s>]
+    slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
+    slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
+
+The parser takes exactly those flags. Everything else in `SlamOptions` is a fixed
+constant of the console (the 0.05 m grid among them), kept as a field so tests can build
+a session directly.
 """
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
-import sys
 from pathlib import Path
 from typing import Optional, Sequence
 
 from robot_console import __version__
-from robot_console.cli import DEFAULT_HOST, DEFAULT_PORT, resolve_topic, split_host_port
-from robot_console.slam.explorer import STALL_SECONDS
-from robot_console.slam.frontier import DISTANCE_BIAS_M, MIN_FRONTIER_CELLS
+from robot_console.cli import positive_seconds
+from robot_console.slam import mapio
+from robot_console.slam.explorer import DEFAULT_MAX_GOALS
+from robot_console.slam.frontier import DISTANCE_BIAS_M
 from robot_console.slam.grid import DEFAULT_RESOLUTION
 from robot_console.slam.planner import ROBOT_RADIUS_M
-from robot_console.teleop import HOLD_TIMEOUT, SPEED_DEFAULT, SPEED_MAX, SPEED_MIN
-from robot_console.topics import TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_SCAN
-
-DEFAULT_MAP_DIR = Path("runs/map")
+from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT
+from robot_console.teleop import HOLD_TIMEOUT, SPEED_DEFAULT, SPEED_MAX
+from robot_console.wire import DEFAULT_URL, add_url_argument, parse_url
 
 MODES = ("explore", "map", "navigate")
+DEFAULT_MAX_DURATION = 3600.0
 
 
 @dataclasses.dataclass(frozen=True)
 class SlamOptions:
     mode: str = "map"
+    url: str = DEFAULT_URL
+    # None -> discovered from /rosapi; '' -> the bare contract.
+    namespace: Optional[str] = None
+    out: Optional[Path] = None           # explore, map: where the map is saved/continued
+    load: Optional[Path] = None          # navigate: the map to drive on
+    safety_timeout: float = DEFAULT_SAFETY_TIMEOUT
+    max_duration: float = DEFAULT_MAX_DURATION
+    max_goals: int = DEFAULT_MAX_GOALS
 
-    host: str = DEFAULT_HOST
-    port: int = DEFAULT_PORT
+    # Fixed by the console, not flags.
     preflight: bool = True
     preflight_timeout: float = 1.5
-    connect_timeout: float = 10.0
-
-    # `None` means "not given", and for the namespace that means "ask the wire" -- see
-    # `Options` in `cli.py` and `namespaced_by` below. Resolved before anything connects.
-    namespace: Optional[str] = None
-    cmd_topic: Optional[str] = None
-    odom_topic: Optional[str] = None
-    camera_topic: Optional[str] = None
-    scan_topic: Optional[str] = None
-
-    out: Path = DEFAULT_MAP_DIR
-    load: Optional[Path] = None
-
     resolution: float = DEFAULT_RESOLUTION
     max_range: float = 8.0
     robot_radius: float = ROBOT_RADIUS_M
-
-    publish_hz: float = 20.0
     loop_hz: float = 60.0
     slam_hz: float = 5.0
     speed: float = SPEED_DEFAULT
     max_speed: float = SPEED_MAX
     hold_timeout: Optional[float] = HOLD_TIMEOUT
-
     zoom: int = 4
     camera_window: bool = True
     no_match: bool = False
-    timeout: Optional[float] = None
-    stall_timeout: float = STALL_SECONDS
-    frontier_min_cells: int = MIN_FRONTIER_CELLS
     distance_bias: float = DISTANCE_BIAS_M
     autosave: float = 30.0
-    record: Optional[Path] = None
 
     @property
-    def url(self) -> str:
-        return f"ws://{self.host}:{self.port}"
+    def host(self) -> str:
+        return parse_url(self.url)[0]
 
     @property
-    def needs_discovery(self) -> bool:
-        """True when the namespace the base is under is still the wire's to say."""
-        return self.namespace is None
-
-    def namespaced_by(
-        self, namespace: Optional[str] = None, *, camera_topic: Optional[str] = None
-    ) -> "SlamOptions":
-        """This, with every topic left unnamed resolved under `namespace`.
-
-        The mapping robot is always the myAGV -- SLAM needs `/scan` and `/odom`, and the
-        walking robot has neither -- so unlike teleop there is no robot to settle here,
-        only the name it is under. `camera_topic` is what discovery saw and is the weaker
-        claim: an explicit `--camera-topic` wins. Idempotent.
-        """
-        namespace = self.namespace if namespace is None else namespace
-        namespace = namespace or ""
-        camera = self.camera_topic if self.camera_topic is not None else camera_topic
-        return dataclasses.replace(
-            self,
-            namespace=namespace,
-            cmd_topic=resolve_topic(self.cmd_topic, TOPIC_CMD_VEL, namespace),
-            odom_topic=resolve_topic(self.odom_topic, TOPIC_ODOM, namespace),
-            camera_topic=resolve_topic(camera, TOPIC_CAMERA, namespace),
-            scan_topic=resolve_topic(self.scan_topic, TOPIC_SCAN, namespace),
-        )
+    def port(self) -> int:
+        return parse_url(self.url)[1]
 
     @property
     def map_source(self) -> Optional[Path]:
-        """Where an existing map should be read from, if anywhere."""
-        if self.load is not None:
+        """The saved map this run starts from: `--map` for navigate, and for explore and
+        map a map already in `--out`, which the run continues."""
+        if self.mode == "navigate":
             return self.load
-        return self.out if self.mode == "navigate" else None
+        if self.out is not None and mapio.exists(self.out):
+            return self.out
+        return None
+
+    @property
+    def save_to(self) -> Optional[Path]:
+        return self.load if self.mode == "navigate" else self.out
+
+
+def _positive_int(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return number
+
+
+def _add_mode_arguments(parser: argparse.ArgumentParser, mode: str) -> None:
+    if mode == "navigate":
+        parser.add_argument("--map", dest="load", metavar="MAP_DIR", required=True,
+                            help="the saved map (map.yaml + map.pgm [+ map.npz]) to drive on")
+    else:
+        parser.add_argument("--out", metavar="MAP_DIR", required=True,
+                            help="where map.pgm, map.yaml and map.npz are written; a map "
+                                 "already there is continued, from the robot pose it saved")
+    parser.add_argument(
+        "--namespace", default=None, metavar="NS",
+        help="ROS namespace of the myAGV (default: discovered from /rosapi; '' for the "
+             "bare contract)")
+    add_url_argument(parser)
+    if mode == "explore":
+        parser.add_argument("--max-duration", type=positive_seconds,
+                            default=DEFAULT_MAX_DURATION, metavar="S",
+                            help="hard run limit in seconds (default %(default)s)")
+        parser.add_argument("--max-goals", type=_positive_int, default=DEFAULT_MAX_GOALS,
+                            metavar="N", help="hard limit on goals attempted (default %(default)s)")
+    parser.add_argument("--safety-timeout", type=positive_seconds,
+                        default=DEFAULT_SAFETY_TIMEOUT, metavar="S",
+                        help="the safety supervisor stops the robot after this long without "
+                             "a UI heartbeat (default %(default)s)")
+    parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
+
+
+DESCRIPTIONS = {
+    "explore": "Explore a space autonomously by frontier exploration and build a map of it.",
+    "map": "Drive with the keyboard while the map builds in real time.",
+    "navigate": "Load a map, click a point, and drive the robot there.",
+}
 
 
 def build_parser(mode: Optional[str] = None) -> argparse.ArgumentParser:
-    descriptions = {
-        "explore": "Explore a space autonomously and build a map of it.",
-        "map": "Drive with the keyboard while the map builds in real time.",
-        "navigate": "Load a map, click a point, and drive the robot there.",
-    }
-    parser = argparse.ArgumentParser(
-        prog=f"slam {mode}" if mode else "slam",
-        description=descriptions.get(mode or "", "Occupancy-grid SLAM for the myAGV."),
-    )
-    if mode is None:
-        parser.add_argument("mode", choices=MODES, help="what to do")
-
-    parser.add_argument("--host", default=DEFAULT_HOST, help="rosbridge host, or host:port (default %(default)s)")
-    parser.add_argument("--port", type=int, default=None, help=f"rosbridge port (default {DEFAULT_PORT})")
-    parser.add_argument("--no-preflight", dest="preflight", action="store_false",
-                        help="skip the reachability check")
-    parser.add_argument("--connect-timeout", type=float, default=10.0)
-
-    parser.add_argument("--out", metavar="DIR", default=str(DEFAULT_MAP_DIR),
-                        help="where map.pgm/map.yaml are written (default %(default)s)")
-    parser.add_argument("--map", dest="load", metavar="DIR", default=None,
-                        help="load an existing map from here and keep building on it. "
-                             "`navigate` defaults to --out")
-    parser.add_argument("--record", metavar="DIR", default=None,
-                        help="also record feed.mp4 and commands.jsonl")
-
-    parser.add_argument("--resolution", type=float, default=DEFAULT_RESOLUTION, metavar="M",
-                        help="map cell size in metres (default %(default)s, what myagv_navigation uses)")
-    parser.add_argument("--max-range", type=float, default=8.0, metavar="M",
-                        help="ignore laser returns beyond this. The X2 reaches 12 m, but far "
-                             "beams are the least accurate and the most expensive to trace "
-                             "(default %(default)s)")
-    parser.add_argument("--robot-radius", type=float, default=ROBOT_RADIUS_M, metavar="M",
-                        help="footprint radius used to inflate obstacles (default %(default)s)")
-
-    parser.add_argument("--speed", type=float, default=SPEED_DEFAULT, help="drive speed in m/s (default %(default)s)")
-    parser.add_argument("--max-speed", type=float, default=SPEED_MAX,
-                        help="speed cap in m/s (default %(default)s, the real myAGV limit)")
-    parser.add_argument("--publish-hz", type=float, default=20.0, help="cmd_vel rate (default %(default)s)")
-    parser.add_argument("--slam-hz", type=float, default=5.0,
-                        help="cap on scan-matching rate. This runs on the same thread as the "
-                             "command stream, so it is a budget, not a target (default %(default)s)")
-    parser.add_argument("--hold-timeout", type=float, default=HOLD_TIMEOUT, metavar="SECONDS")
-    parser.add_argument("--latch", action="store_true",
-                        help="manual driving keeps moving until another key, instead of on release")
-
-    parser.add_argument("--zoom", type=int, default=4, help="map window pixels per cell (default %(default)s)")
-    parser.add_argument("--no-camera-window", dest="camera_window", action="store_false",
-                        help="map window only")
-    parser.add_argument("--no-match", action="store_true",
-                        help="trust /odom and skip scan matching. Reasonable against the "
-                             "simulator, where odom is ground truth; not on hardware")
-    parser.add_argument("--timeout", type=float, default=None, metavar="SECONDS",
-                        help="stop after this long (explore defaults to unlimited)")
-    parser.add_argument("--stall-timeout", type=float, default=STALL_SECONDS,
-                        metavar="SECONDS",
-                        help="give up after this long with no new ground mapped "
-                             "(explore; 0 disables)")
-    parser.add_argument("--frontier-min-cells", type=int, default=MIN_FRONTIER_CELLS,
-                        metavar="CELLS",
-                        help="smallest frontier worth driving to; explore relaxes this "
-                             "before it gives up")
-    parser.add_argument("--distance-bias", type=float, default=DISTANCE_BIAS_M,
-                        metavar="METRES",
-                        help="how much a big far frontier is worth against a small near one")
-    parser.add_argument("--autosave", type=float, default=30.0, metavar="SECONDS",
-                        help="save the map this often while running; 0 disables")
-
-    # A namespace, not four flags. Several robots on one rosbridge each get one -- the
-    # simulator names it after the robot -- so `--namespace myagv` reaches
-    # `/myagv/cmd_vel` and friends without spelling any of them out. Applied only to
-    # topics left at their default, so an explicit `--odom-topic` still wins.
-    #
-    # Not given means "ask the wire"; `--namespace ''` asks for the bare contract a real
-    # myAGV bringup presents, on purpose. Those were the same thing when the default was
-    # `''`, and against a namespaced simulator that mapped nothing, silently.
-    parser.add_argument(
-        "--namespace", default=None, metavar="NAME",
-        help="ROS namespace the robot is under, e.g. `myagv` for /myagv/cmd_vel "
-             "(default: discovered from the wire; pass '' for the bare contract)")
-    parser.add_argument("--cmd-topic", default=None)
-    parser.add_argument("--odom-topic", default=None)
-    parser.add_argument("--camera-topic", default=None)
-    parser.add_argument("--scan-topic", default=None)
-    parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
+    if mode is not None:
+        parser = argparse.ArgumentParser(prog=f"slam {mode}", description=DESCRIPTIONS[mode])
+        _add_mode_arguments(parser, mode)
+        return parser
+    parser = argparse.ArgumentParser(prog="slam", description="Occupancy-grid SLAM for the myAGV.")
+    sub = parser.add_subparsers(dest="mode", required=True)
+    for name in MODES:
+        _add_mode_arguments(sub.add_parser(name, description=DESCRIPTIONS[name]), name)
     return parser
 
 
 def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None) -> SlamOptions:
     args = build_parser(mode).parse_args(argv)
-    host, port = split_host_port(args.host, DEFAULT_PORT)
-    if args.port is not None:
-        port = args.port
-
-    max_speed = float(args.max_speed)
-    if max_speed > SPEED_MAX:
-        print(
-            f"warning: --max-speed {max_speed} exceeds the real myAGV limit of {SPEED_MAX} m/s; "
-            "simulated motion above it will not match hardware",
-            file=sys.stderr,
-        )
-    max_speed = max(SPEED_MIN, max_speed)
-
-    options = SlamOptions(
-        mode=mode or args.mode,
-        host=host,
-        port=port,
-        preflight=args.preflight,
-        connect_timeout=float(args.connect_timeout),
+    mode = mode or args.mode
+    return SlamOptions(
+        mode=mode,
+        url=args.url,
         namespace=args.namespace,
-        cmd_topic=args.cmd_topic,
-        odom_topic=args.odom_topic,
-        camera_topic=args.camera_topic,
-        scan_topic=args.scan_topic,
-        out=Path(args.out),
-        load=Path(args.load) if args.load else None,
-        record=Path(args.record) if args.record else None,
-        resolution=max(0.01, float(args.resolution)),
-        max_range=max(0.5, float(args.max_range)),
-        robot_radius=max(0.01, float(args.robot_radius)),
-        publish_hz=float(args.publish_hz),
-        slam_hz=max(0.5, float(args.slam_hz)),
-        speed=min(max_speed, max(SPEED_MIN, float(args.speed))),
-        max_speed=max_speed,
-        hold_timeout=None if args.latch else max(0.05, float(args.hold_timeout)),
-        zoom=max(1, int(args.zoom)),
-        camera_window=args.camera_window,
-        no_match=args.no_match,
-        timeout=float(args.timeout) if args.timeout else None,
-        stall_timeout=float(args.stall_timeout) if args.stall_timeout > 0 else float("inf"),
-        frontier_min_cells=max(1, int(args.frontier_min_cells)),
-        distance_bias=max(0.01, float(args.distance_bias)),
-        autosave=max(0.0, float(args.autosave)),
+        out=Path(args.out) if getattr(args, "out", None) else None,
+        load=Path(args.load) if getattr(args, "load", None) else None,
+        safety_timeout=float(args.safety_timeout),
+        max_duration=float(getattr(args, "max_duration", DEFAULT_MAX_DURATION)),
+        max_goals=int(getattr(args, "max_goals", DEFAULT_MAX_GOALS)),
     )
-    # A run that named its namespace never touches the network to find one.
-    return options if options.needs_discovery else options.namespaced_by()
 
 
 def main(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None) -> int:

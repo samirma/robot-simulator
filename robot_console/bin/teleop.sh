@@ -1,14 +1,21 @@
 #!/usr/bin/env bash
-# Keyboard teleoperation for a mobile robot, simulated or real.
+# Keyboard teleoperation of a myAGV or an AiNex, simulated or real.
 #
-#   ./bin/teleop.sh                        drive whatever robot is on ws://127.0.0.1:9090
-#   ./bin/teleop.sh --robot ainex          ...an AiNex, which walks rather than rolls
-#   ./bin/teleop.sh --namespace myagv      ...the robot on /myagv/*, without asking
-#   ./bin/teleop.sh --namespace ''         ...the bare contract a real bringup presents
-#   ./bin/teleop.sh --host 192.168.1.42    ...a real myAGV on the network
-#   ./bin/teleop.sh --record runs/drive1   ...writing feed.mp4 + commands.jsonl
-#   ./bin/teleop.sh --no-preflight         skip the "is anything listening" check
-#   ./bin/teleop.sh --help                 every flag
+#   teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
+#             [--speed <m/s>] [--max-speed <m/s>] [--latch]
+#             [--safety-timeout <s>] [--no-preflight] [--reinstall]
+#
+#   ./bin/teleop.sh                               drive whatever robot is on ws://127.0.0.1:9090
+#   ./bin/teleop.sh --robot ainex                 ...an AiNex, which walks rather than rolls
+#   ./bin/teleop.sh --namespace ''                ...the bare contract a real bringup presents
+#   ./bin/teleop.sh --url ws://192.168.1.42:9090  ...a real myAGV on the network
+#   ./bin/teleop.sh --record runs/drive1          ...writing feed.mp4 + commands.jsonl
+#
+# Motion is published only by a separate safety supervisor process, which stops the robot
+# (its stop_command, three times) if this UI's heartbeat stops for --safety-timeout
+# (0.25 s). Before any motion you are asked to confirm that an independent physical
+# emergency stop is armed: that device, not software, covers host failure and network
+# loss. --no-preflight and --reinstall skip neither.
 #
 # With neither --robot nor --namespace given, both are read off the wire: /rosapi/topics
 # says which robots are on that rosbridge and what each one is called. It has to be asked,
@@ -75,11 +82,13 @@ fi
 
 for arg in "$@"; do
   if [ "$arg" = "--reinstall" ]; then
+    # Rebuild, then carry on: the flag is forwarded and ignored by Python, and it skips
+    # neither the safety supervisor nor the emergency-stop confirmation.
     bootstrap
-    exit 0
+    break
   fi
 done
 
-# exec, so Ctrl-C reaches Python directly -- which is what stops a real AGV, since it
-# has no command watchdog of its own.
+# exec, so Ctrl-C reaches the UI directly; it asks the safety supervisor to stop the
+# robot, which has no command watchdog of its own.
 exec "$PY" -m robot_console "$@"

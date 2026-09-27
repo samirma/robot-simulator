@@ -264,10 +264,11 @@ def test_a_zero_command_stops_the_gait(server, walker):
 
 def test_stop_is_unconditional(server, walker):
     """`publish_cmd_vel` deduplicates; `stop()` must not. It is the exit path, and a
-    stale idea of "already stopped" is how a robot is left walking."""
+    stale idea of "already stopped" is how a robot is left walking. It is the ROS file's
+    stop_command: `enable_control` first, since `stop` is ignored while control is off."""
     calls_before = len(_await_calls(server, 0, timeout=0.0))
     walker.stop()
-    assert _await_calls(server, calls_before + 1)[calls_before:] == ["stop"]
+    assert _await_calls(server, calls_before + 2)[calls_before:] == ["enable_control", "stop"]
 
 
 # ------------------------------------------------------- discovery, then the link

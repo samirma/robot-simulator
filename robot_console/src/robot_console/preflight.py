@@ -79,7 +79,7 @@ Or a kitchen with a fleet in it:
     ./kitchen.sh serve --robots myagv --port {port}
 
 The robot and its namespace are then read off the wire; --robot and --namespace override
-that. On real hardware, point --host at the robot instead.
+that. On real hardware, point --url ws://<robot-ip>:{port} at the robot instead.
 
 Bypass this check with --no-preflight."""
 
@@ -102,7 +102,7 @@ Or, on a real myAGV over the network:
     roslaunch myagv_odometry myagv_active.launch
     roslaunch rosbridge_server rosbridge_websocket.launch
     # then, here
-    ./bin/teleop.sh --host <agv-ip>
+    ./bin/teleop.sh --url ws://<agv-ip>:{port}
 
 Bypass this check with --no-preflight."""
 
@@ -119,7 +119,7 @@ Or, on a real AiNex over the network:
     # on the robot (the vendor stack brings rosbridge up itself)
     roslaunch ainex_bringup bringup.launch
     # then, here
-    --host <ainex-ip>
+    ./bin/teleop.sh --robot ainex --url ws://<ainex-ip>:{port}
 
 Bypass this check with --no-preflight."""
 

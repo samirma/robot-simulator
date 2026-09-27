@@ -1,20 +1,16 @@
-"""The loop all three SLAM commands are modes of.
+"""The loop all three SLAM modes are modes of.
 
-Same shape as `robot_console.app`, and for the same reasons: **one loop, on the main
-thread**. `cv2.imshow`/`waitKey` must own the main thread on macOS, and a second thread
-publishing `/cmd_vel` would keep the robot driving while the UI was wedged. Here that
-matters more than in teleop, because an autonomous mode has no human noticing that the
-window has stopped repainting -- a UI stall must starve the command stream and stop the
-robot, not free it to keep going.
+Same shape as `robot_console.app`, and for the same reasons (console spec §3): **one
+loop, on the main thread**, which never publishes motion itself. Every command goes over
+a pipe to the safety supervisor (`robot_console.supervisor`), which owns the rosbridge
+connection. The loop heartbeats every tick; a wedged loop -- and an autonomous mode has no
+human watching the window repaint -- stops heartbeating, and the supervisor sends the
+myAGV's stop command. That is also why the expensive part of SLAM is keyframed: a tick
+that overruns the safety timeout stops the robot, and `_Budget` says when ticks get close.
 
-Which is also why the expensive part of SLAM is keyframed rather than run every tick. The
-budget is real and it is checked: `_Budget` watches the loop's own tick time and says so
-when a tick overruns the publish period, because the failure mode otherwise is a robot
-that drives fine and maps badly with nothing in the log to explain it.
-
-Stopping the robot on the way out is not best-effort. The myAGV has **no command
-watchdog**, real or simulated -- `myagv_odometry_node` latches the last Twist and writes
-it to the motors every cycle forever. Hence the signal handlers and the `finally`.
+Stopping on the way out is not best-effort: the myAGV has no command watchdog. Every exit
+path here (Esc, window close, `explored`, `limit`, exception, SIGINT/SIGTERM) closes the
+supervisor link, and the supervisor sends the stop command three times.
 """
 
 from __future__ import annotations
@@ -29,35 +25,37 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
-from robot_console.bridge import Odom, RobotLink, quiet_roslibpy_logging
-from robot_console.camera import LatestFrame, decode_compressed_image, header_seq
+from robot_console.camera import LatestFrame, decode_compressed_image
 from robot_console.hud import draw_overlay, placeholder as camera_placeholder
 from robot_console.preflight import preflight
-from robot_console.recorder import Recorder
+from robot_console.robots import SLAM_ROBOT
 from robot_console.slam import frontier as frontier_mod
 from robot_console.slam import mapio
 from robot_console.slam.cli import SlamOptions
 from robot_console.slam.controller import PathFollower, scale_to_limits
-from robot_console.slam.explorer import SWEEP_RATE, Explorer
+from robot_console.slam.explorer import LIMIT, SWEEP_RATE, Explorer
 from robot_console.slam.grid import OccupancyGrid
 from robot_console.slam.mapview import MapView, placeholder as map_placeholder
 from robot_console.slam.planner import CLEARANCE_M, CostMap, costmap_for, plan
 from robot_console.slam.pose import PoseTracker
 from robot_console.slam.scan import LaserScan, parse_scan, scan_points, transform_points
+from robot_console.supervisor import SupervisedLink, SupervisorError
 from robot_console.teleop import Action, Command, TeleopState, action_for_key
 
 MAP_WINDOW = "robot_console - map"
 CAMERA_WINDOW = "robot_console - camera"
 
 KEY_SAVE = ord("m")
-KEY_PLAN = ord("p")
 
-# How far the robot may be from the last planned-against pose before the path is stale.
 REPLAN_DISTANCE_M = 0.6
 REPLAN_SECONDS = 3.0
 
 # Map redraw rate. Well below the loop rate on purpose -- see the render call.
 MAP_RENDER_HZ = 15.0
+
+# The desired command is re-sent to the supervisor at least this often; it re-publishes
+# to the robot at its own 20 Hz in between.
+RESEND_S = 0.2
 
 BANNER = """robot_console {version} -- {mode}  ->  {url}
 
@@ -79,10 +77,10 @@ KEYS_NAVIGATE = """  left click   drive to that point   Space  stop / cancel
 
 
 class _Budget:
-    """Watches tick time against the publish period.
+    """Watches tick time against half the safety timeout.
 
-    An overrun means `/cmd_vel` went out late, which means the robot kept its last command
-    for longer than intended. It is worth knowing, and it is invisible without measuring.
+    A tick longer than the safety timeout is a missed heartbeat, and the supervisor stops
+    the robot for it; this says so before it happens rather than after.
     """
 
     def __init__(self, period: float) -> None:
@@ -98,80 +96,56 @@ class _Budget:
             if not self._warned and self.overruns > 5:
                 self._warned = True
                 print(
-                    f"\nwarning: SLAM ticks are overrunning the {self.period * 1000:.0f} ms "
-                    f"publish period (worst {self.worst * 1000:.0f} ms). Lower --slam-hz, "
-                    f"raise --resolution, or lower --max-range.",
+                    f"\nwarning: SLAM ticks are taking up to {self.worst * 1000:.0f} ms, "
+                    f"close to the safety timeout; the supervisor stops the robot on a "
+                    f"missed heartbeat. Raise --safety-timeout if this is expected.",
                     file=stream,
                 )
 
 
-def resolve(options: SlamOptions, stream=sys.stderr) -> Optional[SlamOptions]:
-    """Find the namespace the base is under, unless `--namespace` already said.
-
-    The teleop half of this is `app.resolve`, and the reasoning is there: the simulator
-    names every robot after itself and the console's constants are the bare hardware
-    contract, so the two only meet if somebody asks. SLAM wants the myAGV specifically --
-    it maps `/scan` and dead-reckons `/odom`, neither of which a walking robot has.
-    """
-    if not options.needs_discovery:
-        return options
-
-    from robot_console.discovery import DiscoveryError, discover
-
-    try:
-        found = discover(options.url, "myagv", options.namespace)
-    except DiscoveryError as exc:
-        print(f"error: {exc}", file=stream)
-        return None
-    except Exception as exc:  # noqa: BLE001 - every transport failure means the same thing
-        print(
-            f"warning: could not ask {options.url} what is on it ({exc}); assuming a myagv "
-            "on the bare contract. Name its namespace with --namespace.",
-            file=stream,
-        )
-        return options.namespaced_by("")
-
-    print(f"discovered {found.describe()}")
-    return options.namespaced_by(found.namespace, camera_topic=found.camera_topic)
-
-
 def run(options: SlamOptions) -> int:
-    quiet_roslibpy_logging()
+    from robot_console.app import ESTOP_PROMPT, CvFrontend
 
-    if options.preflight and not preflight(
-        options.host, options.port, timeout=options.preflight_timeout
-    ):
+    if options.preflight and not preflight(options.host, options.port,
+                                           timeout=options.preflight_timeout):
         return 2
 
-    resolved = resolve(options)
-    if resolved is None:
-        return 2
-    options = resolved
-
-    grid = _initial_grid(options)
-    tracker = PoseTracker(match_enabled=not options.no_match, min_interval=1.0 / options.slam_hz)
-
-    link = RobotLink(
-        options.host,
-        options.port,
-        cmd_topic=options.cmd_topic,
-        odom_topic=options.odom_topic,
-        camera_topic=options.camera_topic,
-        scan_topic=options.scan_topic,
-    )
     try:
-        link.connect(timeout=options.connect_timeout)
-    except Exception as exc:
-        print(f"error: could not connect to {options.url}: {exc}", file=sys.stderr)
-        if not options.preflight:
-            print("(--no-preflight was given, so the reachability check was skipped)", file=sys.stderr)
+        grid, seed_pose = _initial_grid(options)
+    except SystemExit as exc:
+        print(exc, file=sys.stderr)
         return 2
+
+    if not CvFrontend().confirm_estop(ESTOP_PROMPT):
+        print("error: motion needs a confirmed independent emergency stop; not starting.",
+              file=sys.stderr)
+        return 2
+
+    link = SupervisedLink(options.url, robot=SLAM_ROBOT, namespace=options.namespace,
+                          safety_timeout=options.safety_timeout)
+    try:
+        ready = link.start()
+    except SupervisorError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    print(f"discovered {ready['robot']} on "
+          f"{'/' + ready['namespace'] + '/*' if ready['namespace'] else 'the bare contract'}")
+    link.enable_motion()
+    try:
+        return _run(options, grid, seed_pose, link, ready)
+    finally:
+        link.close()
+
+
+def _run(options: SlamOptions, grid: OccupancyGrid, seed_pose, link: SupervisedLink,
+         ready: dict) -> int:
+    tracker = PoseTracker(match_enabled=not options.no_match, min_interval=1.0 / options.slam_hz)
 
     latest_scan = LatestFrame()
     latest_frame = LatestFrame()
     odom_box: dict = {"value": None, "count": 0}
 
-    def on_odom(odom: Odom) -> None:
+    def on_odom(odom) -> None:
         odom_box["value"] = odom
         odom_box["count"] += 1
 
@@ -180,35 +154,15 @@ def run(options: SlamOptions) -> int:
     if options.camera_window:
         link.subscribe_camera(latest_frame.offer)
 
-    state = TeleopState(
-        speed=options.speed, speed_max=options.max_speed, hold_timeout=options.hold_timeout
-    )
+    state = TeleopState(speed=options.speed, speed_max=options.max_speed,
+                        hold_timeout=options.hold_timeout)
     follower = PathFollower(speed=options.speed, speed_max=options.max_speed)
     view = MapView(zoom=options.zoom)
 
     keys = {"explore": KEYS_EXPLORE, "navigate": KEYS_NAVIGATE}.get(options.mode, KEYS_MANUAL)
-    print(BANNER.format(
-        version=__import__("robot_console").__version__,
-        mode=options.mode, url=options.url, keys=keys,
-    ))
-    print(f"map -> {options.out}")
-
-    recorder: Optional[Recorder] = None
-    t0 = time.monotonic()
-    if options.record:
-        recorder = Recorder(options.record, t0=t0)
-        recorder.start({
-            "mode": options.mode,
-            "host": options.host,
-            "port": options.port,
-            "topics": {
-                "cmd_vel": options.cmd_topic, "odom": options.odom_topic,
-                "camera": options.camera_topic, "scan": options.scan_topic,
-            },
-            "resolution": options.resolution,
-            "map_out": str(options.out),
-            "robot_console_version": __import__("robot_console").__version__,
-        })
+    print(BANNER.format(version=__import__("robot_console").__version__,
+                        mode=options.mode, url=options.url, keys=keys))
+    print(f"map -> {options.save_to}")
 
     def _bail(signum, _frame):
         state.running = False
@@ -220,36 +174,45 @@ def run(options: SlamOptions) -> int:
         except (ValueError, OSError):
             pass
 
-    cv2.namedWindow(MAP_WINDOW, cv2.WINDOW_AUTOSIZE)
-    cv2.setMouseCallback(MAP_WINDOW, view.on_mouse)
-    cv2.imshow(MAP_WINDOW, map_placeholder(f"waiting for {options.scan_topic} ..."))
-    if options.camera_window:
-        cv2.namedWindow(CAMERA_WINDOW, cv2.WINDOW_AUTOSIZE)
-        cv2.imshow(CAMERA_WINDOW, camera_placeholder(message=f"waiting for {options.camera_topic} ..."))
-
-    session = _Session(options, grid, tracker, follower, view, link, state, recorder)
-    budget = _Budget(1.0 / options.publish_hz)
+    session = _Session(options, grid, tracker, follower, view, link, state, None,
+                       seed_pose=seed_pose)
+    budget = _Budget(options.safety_timeout / 2.0)
     tick_ms = max(1, int(1000.0 / options.loop_hz))
-    publish_period = 1.0 / options.publish_hz
-    next_publish = time.monotonic()
     last_status = 0.0
     last_autosave = time.monotonic()
     map_render_period = 1.0 / MAP_RENDER_HZ
     next_render = 0.0
     map_image = None
     exit_reason = "esc"
-    frame = camera_placeholder(message=f"waiting for {options.camera_topic} ...")
+    code = 0
+    last_sent: Optional[Command] = None
+    last_resend = 0.0
+    frame = camera_placeholder(message=f"waiting for {ready.get('camera_topic')} ...")
+
+    cv2.namedWindow(MAP_WINDOW, cv2.WINDOW_AUTOSIZE)
+    cv2.setMouseCallback(MAP_WINDOW, view.on_mouse)
+    cv2.imshow(MAP_WINDOW, map_placeholder(f"waiting for {ready.get('scan_topic')} ..."))
+    if options.camera_window:
+        cv2.namedWindow(CAMERA_WINDOW, cv2.WINDOW_AUTOSIZE)
+        cv2.imshow(CAMERA_WINDOW, frame)
 
     try:
         while state.running:
             key = cv2.waitKey(tick_ms)
-            # Timed from *after* waitKey: its up-to-`tick_ms` wait is deliberate idle, and
-            # counting it as work makes every tick look like an overrun on a loop that is
-            # keeping up perfectly well.
             tick_started = time.monotonic()
             now = tick_started
+            if not link.alive:
+                exit_reason = "supervisor"
+                print(f"\nerror: the safety supervisor stopped the robot "
+                      f"({link.stopped_reason or 'it exited'}).", file=sys.stderr)
+                code = 1
+                break
+            link.heartbeat()
 
             action = action_for_key(key)
+            if action is Action.QUIT:
+                exit_reason = "esc"
+                break
             if action is not Action.NONE:
                 state.apply(action, now)
                 session.on_action(action, now)
@@ -261,32 +224,21 @@ def run(options: SlamOptions) -> int:
                 exit_reason = "window_closed"
                 break
 
-            # Odom before the scan, not after: integrating a scan needs a pose to put it
-            # at, and taking them the other way round silently drops the first scan --
-            # and with it the first frontier the explorer would have aimed for.
+            # Odom before the scan: integrating a scan needs a pose to put it at.
             odom = odom_box["value"]
             if odom is not None:
-                tracker.update_odom(odom)
-                if recorder and odom_box["count"] != session.last_odom_logged:
-                    recorder.add_odom(odom, t=now)
-                    session.last_odom_logged = odom_box["count"]
+                session.on_odom(odom)
 
             pending = latest_scan.take()
             if pending is not None:
                 session.on_scan(parse_scan(pending[0]), now)
+                link.heartbeat()
 
             command = session.decide(now)
-
-            if now >= next_publish:
+            link.heartbeat()
+            if command != last_sent or now - last_resend >= RESEND_S:
                 link.publish_cmd_vel(command)
-                if recorder:
-                    recorder.add_command(
-                        command, speed=state.speed, action=session.activity, t=now
-                    )
-                next_publish += publish_period
-                if next_publish < now:
-                    # After a stall, resync rather than firing a catch-up burst.
-                    next_publish = now + publish_period
+                last_sent, last_resend = command, now
 
             if options.camera_window:
                 pending_frame = latest_frame.take()
@@ -294,8 +246,6 @@ def run(options: SlamOptions) -> int:
                     decoded = decode_compressed_image(pending_frame[0])
                     if decoded is not None:
                         frame = decoded
-                        if recorder:
-                            recorder.add_frame(frame, t=pending_frame[1], seq=header_seq(pending_frame[0]))
                 if not _window_alive(CAMERA_WINDOW):
                     exit_reason = "window_closed"
                     break
@@ -304,9 +254,6 @@ def run(options: SlamOptions) -> int:
                     speed_max=state.speed_max, moving=not command.is_zero(),
                 ))
 
-            # The map is redrawn at MAP_RENDER_HZ, not at the loop rate. Rebuilding and
-            # rescaling a house-sized grid 60 times a second is the single most expensive
-            # thing in the loop and nobody can see the difference above ~15 Hz.
             if now >= next_render:
                 next_render = now + map_render_period
                 map_image = session.render(keys.splitlines())
@@ -317,9 +264,6 @@ def run(options: SlamOptions) -> int:
                 last_autosave = now
                 session.save("autosave", quiet=True)
 
-            if options.timeout and now - t0 >= options.timeout:
-                exit_reason = "timeout"
-                break
             if session.finished:
                 exit_reason = session.finished
                 break
@@ -329,44 +273,38 @@ def run(options: SlamOptions) -> int:
                 session.print_status()
 
             budget.sample(time.monotonic() - tick_started)
-
     except KeyboardInterrupt:
         exit_reason = "interrupt"
     finally:
-        # Order matters: stop the robot before spending time on file handles.
-        try:
-            link.stop()
-        except Exception:
-            pass
+        # Stop the robot before anything slow.
+        link.close()
         saved = session.save(exit_reason)
-        if recorder:
-            recorder.add_event("quit", reason=exit_reason)
-            summary = recorder.close()
-            print(f"\nrecorded {summary.get('frames', 0)} frames, "
-                  f"{summary.get('commands', 0)} commands to {options.record}")
         try:
             cv2.destroyAllWindows()
             cv2.waitKey(1)
         except cv2.error:
             pass
-        link.close()
 
     print(f"\nstopped ({exit_reason}).")
+    if options.mode == "explore":
+        print(session.report(time.monotonic()))
     if saved:
         print(f"map saved: {saved}")
         detail = mapio.describe(saved)
         if detail:
             print(f"  {detail}")
     if budget.overruns:
-        print(f"note: {budget.overruns} tick(s) overran the publish period, "
+        print(f"note: {budget.overruns} tick(s) took over half the safety timeout, "
               f"worst {budget.worst * 1000:.0f} ms")
-    return 0
+    return code
 
 
 class _Session:
-    """Per-mode behaviour, kept out of the loop above so the loop stays readable."""
+    """Per-mode behaviour, kept out of the loop above so the loop stays readable and so a
+    whole run can be driven offline (`tests/simworld.py`)."""
 
-    def __init__(self, options, grid, tracker, follower, view, link, state, recorder):
+    def __init__(self, options, grid, tracker, follower, view, link, state, recorder,
+                 *, seed_pose=None):
         self.options = options
         self.grid: OccupancyGrid = grid
         self.tracker: PoseTracker = tracker
@@ -384,33 +322,35 @@ class _Session:
         self.frontiers: List = []
         self.trail: List[np.ndarray] = []
         self.finished: Optional[str] = None
-        # `--robot-radius` used to be parsed, clamped and then dropped on the floor: every
-        # costmap was built from the module default regardless of what was asked for.
         self._plan_radius = float(options.robot_radius) + CLEARANCE_M
-        self.explorer = Explorer(
-            min_cells=options.frontier_min_cells,
-            distance_bias=options.distance_bias,
-            stall_seconds=options.stall_timeout,
-        )
+        self.explorer = Explorer(distance_bias=options.distance_bias,
+                                 max_goals=options.max_goals)
         self.last_odom_logged = -1
         self.scans = 0
         self.integrated = 0
         self.activity = "idle"
         self.note = ""
+        self.started: Optional[float] = None
+        self._area_cache = (-1, 0.0)
         self._planned_at: Optional[np.ndarray] = None
         self._planned_when = 0.0
         self._followed_goal: Optional[np.ndarray] = None
-        self._localized = options.mode != "navigate" or options.map_source is None
+        # A continued or loaded map is in its own frame; the saved pose says where the
+        # robot is in it. Navigate additionally refines that by one scan match.
+        self._seed_pose = None if seed_pose is None else np.asarray(seed_pose, dtype=np.float64)
+        self._localized = options.map_source is None
         # Exploring starts driving by itself; the other two wait to be told.
         self.auto = options.mode == "explore"
 
     # ------------------------------------------------------------------ inputs
 
+    def on_odom(self, odom) -> None:
+        self.tracker.update_odom(odom)
+
     def on_action(self, action: Action, now: float) -> None:
         if action is Action.QUIT:
             self.state.running = False
         elif action is Action.STOP:
-            # Space means stop, and in an autonomous mode it also means "stop deciding".
             if self.options.mode == "explore":
                 self.auto = not self.auto
                 self.note = "paused" if not self.auto else "exploring"
@@ -418,8 +358,6 @@ class _Session:
             self.path = None
         elif action in (Action.FORWARD, Action.BACK, Action.STRAFE_LEFT,
                         Action.STRAFE_RIGHT, Action.ROT_LEFT, Action.ROT_RIGHT):
-            # Any manual input takes precedence: a human reaching for the keys while the
-            # robot is driving itself wants it to stop driving itself.
             if self.options.mode == "explore":
                 self.auto = False
                 self.note = "manual"
@@ -434,10 +372,10 @@ class _Session:
             return
 
         if not self._localized:
-            # A loaded map's frame has nothing to do with the odom frame the robot booted
-            # in. Seed at the odom origin and let one unrestricted match find the offset.
-            self.tracker.seed(self.tracker.pose)
-            self.tracker.refine(self.grid, self.points, now=now)
+            self.tracker.seed(self._seed_pose if self._seed_pose is not None
+                              else self.tracker.pose)
+            if self.options.mode == "navigate":
+                self.tracker.refine(self.grid, self.points, now=now)
             self._localized = True
 
         if self.tracker.keyframe_due(now):
@@ -452,7 +390,20 @@ class _Session:
 
     # ------------------------------------------------------------------ decision
 
+    def area(self) -> float:
+        revision = getattr(self.grid, "revision", None)
+        if revision is None or revision != self._area_cache[0]:
+            self._area_cache = (revision if revision is not None else -1,
+                                frontier_mod.explored_area(self.grid))
+        return self._area_cache[1]
+
     def decide(self, now: float) -> Command:
+        if self.options.mode == "explore" and self.finished is None and self.started is not None:
+            if now - self.started >= self.options.max_duration:
+                self._apply(self.explorer.stop_for_limit(
+                    f"--max-duration {self.options.max_duration:g} s reached"))
+                return Command()
+
         if self.state.is_moving:
             self.activity = "manual"
             return self.state.command()
@@ -462,8 +413,6 @@ class _Session:
         if self.options.mode == "navigate" and self.goal is not None:
             return self._navigate(now)
 
-        # `map` mode, and the others when idle: read the mouse anyway so a click always
-        # does something predictable.
         click = self.view.take_click()
         if click is not None and self.options.mode == "navigate":
             self._set_goal(click, now)
@@ -475,54 +424,54 @@ class _Session:
 
     def _explore(self, now: float) -> Command:
         if not self.tracker.has_odom or self.integrated == 0:
-            # Nothing has been mapped yet, so "no frontiers" would mean "no data", not
-            # "finished". Waiting a tick for the first scan is the difference between
-            # exploring a house and exiting immediately.
+            # Nothing mapped yet: "no frontiers" would mean "no data", not "finished".
             return Command()
+        if self.started is None:
+            self.started = now
         pose = self.tracker.pose
+        self.activity = "explore"
 
         if self.explorer.sweeping(now):
-            self.activity = "explore"
             return Command(wz=SWEEP_RATE)
 
+        if self.explorer.track(self.grid, pose, now, area=self.area()) == "timeout":
+            self.path = None
+            self.goal = None
+            self.note = "goal blacklisted: no progress"
+            self.follower.reset()
+
         if self.explorer.needs_replan(pose, now):
-            self.cost = costmap_for(
-                self.grid, self.cost, allow_unknown=True, radius=self._plan_radius
-            )
-            self._apply(self.explorer.replan(self.grid, self.cost, pose, now))
+            self.cost = costmap_for(self.grid, self.cost, allow_unknown=True,
+                                    radius=self._plan_radius)
+            self._apply(self.explorer.replan(self.grid, self.cost, pose, now, area=self.area()))
         if self.finished is not None:
             return Command()
+        if self.explorer.sweeping(now):
+            return Command(wz=SWEEP_RATE)
         if self.path is None:
-            return Command(wz=SWEEP_RATE) if self.explorer.sweeping(now) else Command()
+            return Command()
 
         result = self.follower.step(pose, self.path, scan=self.scan, now=now)
         if result.arrived:
-            self.note = "reached frontier"
-            self.explorer.on_arrived(now)
+            fruitless = self.explorer.on_arrived(self.grid, now, area=self.area())
+            self.note = "reached a fruitless goal" if fruitless else "reached frontier"
             self.path = None
             return Command()
         if self.follower.is_stuck(now):
-            # Real failure: time has passed and the robot got no closer.
-            strikes = self.explorer.on_stuck(now)
+            # Not a blacklisting on its own: the goal's 90 s / 300 s clock does that.
+            self.explorer.on_stuck(now)
             self.path = None
-            self.goal = None
-            self.note = f"stuck, trying elsewhere (strike {strikes})"
+            self.note = "stuck, rerouting"
             self.follower.reset()
             return Command()
         if result.should_replan:
-            # Only a local obstruction. It says nothing about whether the frontier is a
-            # good goal, so the goal is kept and just the route is redrawn -- suppressing
-            # it here burns through every frontier in the house in a couple of seconds
-            # while the robot never moves.
             self.explorer.on_blocked(now)
             self.path = None
             self.note = "blocked, rerouting"
             return Command()
-        self.activity = "explore"
         return scale_to_limits(result.command, self.options.max_speed)
 
     def _apply(self, decision) -> None:
-        """Fold an `Explorer.Decision` into the session's own state."""
         self.path = decision.path
         self.goal = decision.goal
         self.frontiers = decision.frontiers
@@ -567,11 +516,11 @@ class _Session:
         self._replan_goal(self.tracker.pose, now, announce=True)
 
     def _replan_goal(self, pose, now: float, *, announce: bool = False) -> None:
+        """Navigate plans with unknown space blocked (explore plans with it free)."""
         if self.goal is None:
             return
-        self.cost = costmap_for(
-            self.grid, self.cost, allow_unknown=False, radius=self._plan_radius
-        )
+        self.cost = costmap_for(self.grid, self.cost, allow_unknown=False,
+                                radius=self._plan_radius)
         self.path = plan(self.cost, pose[:2], self.goal)
         self._planned_at = np.asarray(pose[:2]).copy()
         self._planned_when = now
@@ -583,13 +532,7 @@ class _Session:
             self.note = f"driving to ({self.goal[0]:.2f}, {self.goal[1]:.2f})"
 
     def _reset_follower_for(self, goal) -> None:
-        """Clear the stuck watchdog only when the goal genuinely changed.
-
-        Resetting on every replan looks harmless and is not: a robot pinned against
-        something reroutes to the *same* goal every tick, and each reset restarts the
-        watchdog, so `is_stuck` can never fire and the robot spins in place forever
-        instead of blacklisting the goal and going elsewhere.
-        """
+        """Clear the stuck watchdog only when the goal genuinely changed."""
         goal = np.asarray(goal, dtype=np.float64)[:2]
         if self._followed_goal is None or float(np.hypot(*(goal - self._followed_goal))) > 1e-6:
             self._followed_goal = goal.copy()
@@ -605,21 +548,26 @@ class _Session:
     # ------------------------------------------------------------------ output
 
     def save(self, reason: str, *, quiet: bool = False) -> Optional[Path]:
-        if self.options.mode == "navigate" and reason not in ("manual",):
-            # Navigating updates the map with whatever it sees, but the saved map is the
-            # user's artefact; overwriting it on every exit would let one bad run corrupt
-            # a map that took a full exploration to build.
+        target = self.options.save_to
+        if target is None:
+            return None
+        if self.options.mode == "navigate" and reason != "manual":
+            # The navigated map is the user's artefact; only M overwrites it.
             return None
         try:
-            path = mapio.save_map(self.grid, self.options.out)
+            path = mapio.save_map(self.grid, target,
+                                  pose=self.tracker.pose if self.tracker.has_odom else None)
         except OSError as exc:
             print(f"\nwarning: could not save map: {exc}", file=sys.stderr)
             return None
         if not quiet and reason == "manual":
             print(f"\nsaved {path}")
-        if self.recorder:
-            self.recorder.add_event("map_saved", reason=reason, path=str(path))
         return path
+
+    def report(self, now: float) -> str:
+        elapsed = 0.0 if self.started is None else now - self.started
+        return (f"explore ended: {self.finished or 'interrupted'} after {elapsed:.1f} s, "
+                f"{self.explorer.attempted} goals attempted")
 
     def render(self, hints) -> np.ndarray:
         pose = self.tracker.pose if self.tracker.has_odom else None
@@ -627,29 +575,22 @@ class _Session:
             transform_points(self.points, pose) if pose is not None and len(self.points) else None
         )
         return self.view.render(
-            self.grid,
-            pose=pose,
-            path=self.path,
-            goal=self.goal,
-            scan_points=world_points,
+            self.grid, pose=pose, path=self.path, goal=self.goal, scan_points=world_points,
             frontiers=self.frontiers if self.options.mode == "explore" else None,
-            trail=self.trail,
-            status=self._status_lines(),
-            hints=hints,
+            trail=self.trail, status=self._status_lines(), hints=hints,
         )
 
     def _status_lines(self) -> List[str]:
         pose = self.tracker.pose
         stats = self.tracker.stats
-        area = frontier_mod.explored_area(self.grid)
         match = "off" if self.options.no_match else (
             f"{stats.matches}/{stats.keyframes} score {stats.last_score:.2f}"
         )
         lines = [
             f"{self.options.mode}  pose {pose[0]:+.2f} {pose[1]:+.2f} {math.degrees(pose[2]):+.0f}deg"
-            f"   mapped {area:.1f} m2   scans {self.scans}",
+            f"   mapped {self.area():.1f} m2   scans {self.scans}",
             f"match {match}   slam {stats.last_ms:.0f} ms (worst {stats.worst_ms:.0f})"
-            f"   {self.activity}",
+            f"   {self.activity}   goals {self.explorer.attempted}",
         ]
         if self.note:
             lines.append(self.note)
@@ -659,33 +600,42 @@ class _Session:
         pose = self.tracker.pose
         sys.stdout.write(
             f"\r{self.options.mode:9s} pose {pose[0]:+.2f} {pose[1]:+.2f} "
-            f"{math.degrees(pose[2]):+6.1f}deg  mapped {frontier_mod.explored_area(self.grid):6.1f} m2  "
-            f"scans {self.scans:5d}  {self.activity:9s} {self.note[:40]:40s}"
+            f"{math.degrees(pose[2]):+6.1f}deg  mapped {self.area():6.1f} m2  "
+            f"goals {self.explorer.attempted:4d}  {self.activity:9s} {self.note[:40]:40s}"
         )
         sys.stdout.flush()
 
 
-def _initial_grid(options: SlamOptions) -> OccupancyGrid:
+def _initial_grid(options: SlamOptions):
+    """The grid to start from and the robot pose saved with it (or None)."""
     source = options.map_source
     if source is not None:
         try:
             grid = mapio.load_map(source)
-            print(f"loaded map from {source}: {mapio.describe(source)}")
-            return grid
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, KeyError) as exc:
             if options.mode == "navigate":
                 raise SystemExit(
                     f"error: navigate needs a map and could not load one from {source}: {exc}\n"
                     f"Build one first with `slam.sh explore --out {source}`."
                 )
             print(f"warning: could not load {source} ({exc}); starting a new map", file=sys.stderr)
-    return OccupancyGrid(options.resolution)
+        else:
+            pose = mapio.load_pose(source)
+            print(f"loaded map from {source}: {mapio.describe(source)}"
+                  + ("" if pose is None else
+                     f"; the robot is assumed to start at the saved pose "
+                     f"({pose[0]:+.2f}, {pose[1]:+.2f}, {math.degrees(pose[2]):+.0f} deg)"))
+            return grid, pose
+    elif options.mode == "navigate":
+        raise SystemExit("error: navigate needs --map")
+    return OccupancyGrid(options.resolution), None
 
 
 def _window_alive(name: str) -> bool:
-    """The window's close button is a legitimate quit, and ignoring it leaves a headless
-    loop still driving the robot."""
     try:
         return cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE) >= 1
     except cv2.error:
         return False
+
+
+__all__ = ["run", "LIMIT"]

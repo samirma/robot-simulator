@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Dict, List, Optional, Set, Tuple
 
 from websockets.sync.server import serve
@@ -43,6 +44,13 @@ class FakeBridge:
         # reports it. Empty unless a test says otherwise, which is a wire with nothing
         # discoverable on it -- itself a case worth being able to reproduce.
         self.topics: Dict[str, str] = {}
+        # False makes `/rosapi/topics` fail the way rosbridge answers a service nobody
+        # provides: `result: false`. That is an unreachable `/rosapi` to a client.
+        self.rosapi = True
+        # Wall-clock arrival of every publish and service call, parallel to `received`
+        # and `service_calls`, for the motion-safety timing tests.
+        self._received_at: List[float] = []
+        self._service_at: List[float] = []
         self._event = threading.Event()
 
     # ---------------------------------------------------------------- lifecycle
@@ -91,6 +99,7 @@ class FakeBridge:
                 elif op == "publish" and topic:
                     with self._lock:
                         self._received.append((topic, message.get("msg") or {}))
+                        self._received_at.append(time.time())
                     self._event.set()
                 elif op == "call_service":
                     # rosbridge names the field `service`, not `topic`, and the caller is
@@ -117,14 +126,19 @@ class FakeBridge:
         name = normalise(name) if isinstance(name, str) and name else ""
         with self._lock:
             self._service_calls.append((name, message.get("args") or {}))
+            self._service_at.append(time.time())
             topics = dict(self.topics)
         self._event.set()
-        values: dict = {}
+        values: object = {}
+        result = True
         if name == "/rosapi/topics":
-            # `types` is positional against `topics`, which is the shape the real rosapi
-            # answers in and the shape the console pads against.
-            values = {"topics": list(topics), "types": [topics[t] for t in topics]}
-        response = {"op": "service_response", "service": name, "values": values, "result": True}
+            if self.rosapi:
+                # `types` is positional against `topics`, which is the shape the real
+                # rosapi answers in and the shape the console pads against.
+                values = {"topics": list(topics), "types": [topics[t] for t in topics]}
+            else:
+                values, result = "Service /rosapi/topics does not exist", False
+        response = {"op": "service_response", "service": name, "values": values, "result": result}
         if message.get("id") is not None:
             response["id"] = message["id"]
         try:
@@ -150,6 +164,20 @@ class FakeBridge:
     def received(self) -> List[Tuple[str, dict]]:
         with self._lock:
             return list(self._received)
+
+    def timed_on(self, topic: str) -> List[Tuple[float, dict]]:
+        """`(time.time() of arrival, msg)` for every publish on `topic`."""
+        name = normalise(topic)
+        with self._lock:
+            pairs = list(zip(self._received_at, self._received))
+        return [(t, msg) for t, (topic_, msg) in pairs if topic_ == name]
+
+    def timed_calls_on(self, service: str) -> List[Tuple[float, dict]]:
+        """`(time.time() of arrival, args)` for every call of `service`."""
+        name = normalise(service)
+        with self._lock:
+            pairs = list(zip(self._service_at, self._service_calls))
+        return [(t, args) for t, (s, args) in pairs if s == name]
 
     def received_on(self, topic: str) -> List[dict]:
         name = normalise(topic)

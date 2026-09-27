@@ -132,6 +132,10 @@ class RobotLink:
         ros.run(timeout=timeout)
         if not ros.is_connected:
             raise ConnectionError(f"could not connect to ws://{self.host}:{self.port}")
+        self.attach(ros)
+
+    def attach(self, ros: "roslibpy.Ros") -> None:
+        """Drive through an already-connected client (the supervisor's one connection)."""
         self._ros = ros
         self._cmd = roslibpy.Topic(ros, self._cmd_name, TYPE_TWIST)
         # The bridge treats `advertise` as a no-op and never acks, so this is only for
@@ -156,6 +160,13 @@ class RobotLink:
             raise RuntimeError("not connected")
         self._odom = roslibpy.Topic(self._ros, self._odom_name, TYPE_ODOM)
         self._odom.subscribe(lambda msg: callback(parse_odom(msg)))
+
+    def subscribe_odom_raw(self, callback: Callable[[dict], None]) -> None:
+        """The raw `nav_msgs/Odometry` dicts, for forwarding (the safety supervisor)."""
+        if self._ros is None:
+            raise RuntimeError("not connected")
+        self._odom = roslibpy.Topic(self._ros, self._odom_name, TYPE_ODOM)
+        self._odom.subscribe(callback)
 
     def subscribe_camera(self, callback: Callable[[dict], None]) -> None:
         if self._ros is None:

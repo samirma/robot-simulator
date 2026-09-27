@@ -1,40 +1,36 @@
-"""The teleop loop.
+"""The teleop UI loop.
 
-One loop, on the main thread, doing everything: read a key, fold it into the state,
-publish `/cmd_vel`, draw the frame. `cv2.imshow`/`waitKey` must own the main thread on
-macOS, and a second publisher thread would need a lock around the teleop state and --
-worse -- would keep the robot driving while the UI was wedged. With a single loop, a UI
-stall stops feeding the command stream and the robot halts, so a freeze degrades into a
-stop rather than a runaway.
+One loop, on the main thread (console spec §3): read a key, fold it into the state, tell
+the safety supervisor what motion is wanted, draw the frame. `cv2.imshow`/`waitKey` must
+own the main thread on macOS, and this loop **never publishes motion itself**: every
+command goes over a pipe to `robot_console.supervisor`, which owns the rosbridge
+connection and is the only thing that talks to the robot.
 
-Stopping the robot on the way out is not best-effort here. The **myAGV has no command
-watchdog**, real or simulated: `myagv_odometry_node` stores the last Twist in a global
-and writes it to the motors every cycle forever, so a console that exits
-without sending zeros leaves the AGV driving. Hence the signal handlers and the
-`finally`. The same holds harder for the AiNex, which is a state machine: nothing about
-falling silent means "stop walking" -- only the `stop` service call does.
+The loop sends a heartbeat every tick, from the loop itself. If it freezes, the heartbeat
+stops and the supervisor stops the robot within `--safety-timeout`; if it dies, the pipe
+closes and the same happens. Neither robot has a command watchdog, so that -- and the
+explicit quit on every exit path here (Esc, window close, exception, SIGINT/SIGTERM) -- is
+what stops it.
 
-Which robot is being driven is a `robots.RobotProfile`, resolved once here. Everything
-that differs -- the link, the speed envelope, the on-screen wording, whether there is any
-odometry to subscribe to -- comes from it, so this loop stays one loop.
+Display and keyboard come from a `Frontend`, so the same loop runs against OpenCV windows
+for a person and against a script for tests and scripted sessions, with no window.
 """
 
 from __future__ import annotations
 
+import queue
 import signal
 import sys
 import time
 from typing import Optional
 
-import cv2
-
-from robot_console.bridge import Odom, quiet_roslibpy_logging
-from robot_console.camera import LatestFrame, decode_compressed_image, header_seq
+from robot_console.camera import decode_compressed_image, header_seq
 from robot_console.cli import Options
 from robot_console.hud import draw_overlay, placeholder
-from robot_console.preflight import preflight, startup_instructions_any
+from robot_console.preflight import probe_tcp, startup_instructions_any
 from robot_console.recorder import Recorder
-from robot_console.robots import DEFAULT_ROBOT, PROFILES, RobotProfile
+from robot_console.robots import PROFILES, RobotProfile
+from robot_console.supervisor import SupervisedLink, SupervisorError
 from robot_console.teleop import (
     HEAD_ACTIONS,
     Action,
@@ -50,96 +46,159 @@ BANNER = """robot_console {version}  ->  {url}   [{robot}]
 
 {keys}
 
-Hold a key to keep moving; the robot stops shortly after you let go.
+Hold a key to keep moving; the robot stops {release}.
 The camera window must have focus for keys to register.
 """
 
+ESTOP_PROMPT = (
+    "Before any motion: confirm that an independent physical emergency stop or motor-power\n"
+    "dead-man is armed and within reach of the operator. It is the only protection against\n"
+    "host failure or network loss -- software on the failed path cannot stop the robot.\n"
+    "Type 'yes' to confirm: "
+)
+
+
+class Frontend:
+    """Display and keyboard. The OpenCV one is below; tests supply a scripted one."""
+
+    def confirm_estop(self, prompt: str) -> bool:
+        raise NotImplementedError
+
+    def open(self, title: str) -> None:
+        raise NotImplementedError
+
+    def poll_key(self, timeout_ms: int) -> int:
+        raise NotImplementedError
+
+    def show(self, image) -> None:
+        raise NotImplementedError
+
+    def is_open(self) -> bool:
+        raise NotImplementedError
+
+    def close(self) -> None:
+        raise NotImplementedError
+
+
+class CvFrontend(Frontend):
+    """An OpenCV window, and the terminal for the emergency-stop confirmation."""
+
+    def __init__(self) -> None:
+        self.title = WINDOW
+
+    def confirm_estop(self, prompt: str) -> bool:
+        try:
+            sys.stderr.write(prompt)
+            sys.stderr.flush()
+            answer = sys.stdin.readline()
+        except (OSError, ValueError, KeyboardInterrupt):
+            return False
+        return answer.strip().lower() in ("yes", "y")
+
+    def open(self, title: str) -> None:
+        import cv2
+
+        self.title = title
+        cv2.namedWindow(title, cv2.WINDOW_AUTOSIZE)
+
+    def poll_key(self, timeout_ms: int) -> int:
+        import cv2
+
+        # waitKeyEx, not waitKey: the arrows need the untruncated code, because their
+        # low byte collides with a letter (see teleop.KEYMAP_EXTENDED).
+        return cv2.waitKeyEx(timeout_ms)
+
+    def show(self, image) -> None:
+        import cv2
+
+        cv2.imshow(self.title, image)
+
+    def is_open(self) -> bool:
+        import cv2
+
+        try:
+            return cv2.getWindowProperty(self.title, cv2.WND_PROP_VISIBLE) >= 1
+        except cv2.error:
+            return False
+
+    def close(self) -> None:
+        import cv2
+
+        try:
+            cv2.destroyAllWindows()
+            cv2.waitKey(1)
+        except cv2.error:
+            pass
+
 
 def _banner_keys(profile: RobotProfile) -> str:
-    """The key block, in the robot's own words -- the AiNex walks where the AGV drives."""
     return "\n".join(f"  {key:<7s} {text}" for key, text in profile.hints)
 
 
-def resolve(options: Options, stream=sys.stderr) -> Optional[Options]:
-    """Settle which robot is being driven, and under which names, before connecting.
+def run(options: Options, frontend: Optional[Frontend] = None,
+        link: Optional[SupervisedLink] = None) -> int:
+    frontend = frontend or CvFrontend()
 
-    With `--robot` and `--namespace` both given there is nothing to ask and nothing is
-    asked. Otherwise the wire is: `/rosapi/topics` says which robots are on this rosbridge
-    and what each one is called, which is the same question `live_cameras.html` asks and
-    the same way. Returns None when the answer is one the user has to give.
+    if options.preflight:
+        probe = probe_tcp(options.host, options.port, options.preflight_timeout)
+        if not probe.ok:
+            print(f"error: no rosbridge on {options.url} ({probe.detail})\n", file=sys.stderr)
+            instructions = (PROFILES[options.robot].startup_instructions
+                            if options.robot else startup_instructions_any)
+            print(instructions(options.host, options.port), file=sys.stderr)
+            return 2
 
-    A wire that cannot be asked -- no rosapi node, an old bridge, a timeout -- is not an
-    error: a real vendor bringup presents the bare contract, which is what the console
-    assumed before it could ask, so that assumption is what it falls back to. It says so,
-    because the alternative is the silent black window this whole path exists to remove.
-    """
-    if not options.needs_discovery:
-        return options
-
-    from robot_console.discovery import DiscoveryError, discover
-
-    try:
-        found = discover(options.url, options.robot, options.namespace)
-    except DiscoveryError as exc:
-        print(f"error: {exc}", file=stream)
-        return None
-    except Exception as exc:  # noqa: BLE001 - every transport failure means the same thing
-        print(
-            f"warning: could not ask {options.url} what is on it ({exc}); "
-            f"assuming a {options.robot or DEFAULT_ROBOT} on the bare contract. "
-            "Name the robot with --robot and its namespace with --namespace.",
-            file=stream,
-        )
-        return options.resolved(options.robot or DEFAULT_ROBOT, "")
-
-    print(f"discovered {found.describe()}")
-    return options.resolved(found.robot, found.namespace, camera_topic=found.camera_topic)
-
-
-def run(options: Options) -> int:
-    quiet_roslibpy_logging()
-
-    if options.preflight and not preflight(
-        options.host,
-        options.port,
-        timeout=options.preflight_timeout,
-        # Before discovery the robot is not known, and telling someone to start a myAGV
-        # when they meant something else is worse than saying nothing specific.
-        instructions=(
-            PROFILES[options.robot].startup_instructions
-            if options.robot
-            else startup_instructions_any
-        ),
-    ):
+    # Asked before the supervisor exists, so a person thinking about it does not count
+    # against the heartbeat. `--no-preflight` and `--reinstall` do not skip it.
+    if not frontend.confirm_estop(ESTOP_PROMPT):
+        print("error: motion needs a confirmed independent emergency stop; not starting.",
+              file=sys.stderr)
         return 2
 
-    resolved = resolve(options)
-    if resolved is None:
-        return 2
-    options = resolved
-    profile = PROFILES[options.robot]
-
-    link = profile.make_link(options)
+    link = link or SupervisedLink(
+        options.url, robot=options.robot, namespace=options.namespace,
+        safety_timeout=options.safety_timeout,
+    )
     try:
-        link.connect(timeout=options.connect_timeout)
-    except Exception as exc:
-        print(f"error: could not connect to {options.url}: {exc}", file=sys.stderr)
+        ready = link.start()
+    except SupervisorError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         if not options.preflight:
             print("(--no-preflight was given, so the reachability check was skipped)", file=sys.stderr)
         return 2
+    options = options.resolved(ready["robot"], ready["namespace"],
+                               camera_topic=ready.get("camera_topic"))
+    print(f"discovered {ready['robot']} on "
+          f"{'/' + ready['namespace'] + '/*' if ready['namespace'] else 'the bare contract'}; "
+          f"stop command: {ready.get('stop_command')}")
+    link.enable_motion()
 
-    latest = LatestFrame()
+    try:
+        return _loop(options, PROFILES[options.robot], frontend, link)
+    finally:
+        # Every exit path: the supervisor sends the stop command three times and goes.
+        link.close()
+        if link.stopped_reason:
+            print(f"robot stopped ({link.stopped_reason}).")
+
+
+def _loop(options: Options, profile: RobotProfile, frontend: Frontend, link: SupervisedLink) -> int:
+    frames: "queue.Queue" = queue.Queue(maxsize=64)
     odom_box: dict = {"value": None, "count": 0}
 
-    def on_odom(odom: Odom) -> None:
+    def on_frame(msg: dict) -> None:
+        try:
+            frames.put_nowait((msg, time.monotonic()))
+        except queue.Full:
+            pass
+
+    def on_odom(odom) -> None:
         odom_box["value"] = odom
         odom_box["count"] += 1
 
-    # The AiNex publishes no odometry at all, and its link raises rather than shrug when
-    # asked: a status line claiming a stream that cannot exist is worse than saying none.
     if profile.has_odom:
         link.subscribe_odom(on_odom)
-    link.subscribe_camera(latest.offer)
+    link.subscribe_camera(on_frame)
 
     state = TeleopState(
         speed=options.speed,
@@ -150,58 +209,38 @@ def run(options: Options) -> int:
         turn_ratio=profile.turn_ratio,
         turn_max=profile.turn_max,
     )
-    # None for a robot with nothing to point, which is what makes the arrow keys inert
-    # there and spares `RobotLink` a `publish_head` it would only ever ignore.
     head: Optional[HeadPose] = None
     if profile.has_head:
         from robot_console import ainex_topics
         from robot_console.ainex_link import HEAD_RATE
 
-        head = HeadPose(
-            pan_limit=ainex_topics.HEAD_PAN_LIMIT,
-            tilt_limit=ainex_topics.HEAD_TILT_LIMIT,
-            rate=HEAD_RATE,
-        )
+        head = HeadPose(pan_limit=ainex_topics.HEAD_PAN_LIMIT,
+                        tilt_limit=ainex_topics.HEAD_TILT_LIMIT, rate=HEAD_RATE)
+
     recorder: Optional[Recorder] = None
     t0 = time.monotonic()
-
     if options.record:
-        recorder = Recorder(options.record, fps=options.record_fps, t0=t0)
-        # Only the topics this run actually touches: a header naming /cmd_vel and /odom
-        # on an AiNex recording would describe a session that never happened. `has_odom`
-        # is the right test for both because the split is one contract, not two knobs --
-        # the Twist robots have odometry and the gait robot has neither.
+        recorder = Recorder(options.record, t0=t0)
         topics = {"camera": options.camera_topic}
-        if profile.has_odom:
-            topics["cmd_vel"] = options.cmd_topic
-            topics["odom"] = options.odom_topic
-        recorder.start(
-            {
-                "robot": profile.name,
-                "host": options.host,
-                "port": options.port,
-                "topics": topics,
-                "speed": options.speed,
-                "speed_max": options.max_speed,
-                "publish_hz": options.publish_hz,
-                "hold_timeout": options.hold_timeout,
-                "robot_console_version": __import__("robot_console").__version__,
-            }
-        )
+        recorder.start({
+            "robot": profile.name,
+            "url": options.url,
+            "namespace": options.namespace,
+            "topics": topics,
+            "speed": options.speed,
+            "speed_max": options.max_speed,
+            "hold_timeout": options.hold_timeout,
+            "safety_timeout": options.safety_timeout,
+            "robot_console_version": __import__("robot_console").__version__,
+        })
 
-    print(
-        BANNER.format(
-            version=__import__("robot_console").__version__,
-            url=options.url,
-            robot=profile.name,
-            keys=_banner_keys(profile),
-        )
-    )
+    release = ("when you press another motion key, Space or Esc" if options.latch
+               else "0.6 s after you let go")
+    print(BANNER.format(version=__import__("robot_console").__version__, url=options.url,
+                        robot=profile.name, keys=_banner_keys(profile), release=release))
     if recorder:
         print(f"recording to {options.record}")
 
-    # A console killed with Ctrl-C or SIGTERM must still stop a real AGV, which has no
-    # watchdog of its own to fall back on.
     def _bail(signum, _frame):
         state.running = False
         raise KeyboardInterrupt
@@ -212,41 +251,42 @@ def run(options: Options) -> int:
         except (ValueError, OSError):
             pass
 
-    # The title carries the robot, so two consoles side by side are tellable apart.
     window = f"{WINDOW} ({profile.name})"
-    cv2.namedWindow(window, cv2.WINDOW_AUTOSIZE)
+    frontend.open(window)
     frame = placeholder(message=f"waiting for {options.camera_topic} ...")
-    cv2.imshow(
-        window,
-        draw_overlay(frame, show_help=state.show_help, speed=state.speed, hints=profile.hints,
-                     head=None if head is None else (head.pan, head.tilt)),
-    )
+    head_pose = None if head is None else (head.pan, head.tilt)
+    frontend.show(draw_overlay(frame, show_help=state.show_help, speed=state.speed,
+                               hints=profile.hints, head=head_pose))
 
     tick_ms = max(1, int(1000.0 / options.loop_hz))
-    publish_period = 1.0 / options.publish_hz
-    next_publish = time.monotonic()
+    last_sent = None
+    last_resend = 0.0
     last_odom_logged = -1
     last_status = 0.0
     last_head_key = time.monotonic()
     exit_reason = "esc"
+    code = 0
 
     try:
         while state.running:
-            # waitKeyEx, not waitKey: the arrows need the untruncated code, because their
-            # low byte collides with a letter (see teleop.KEYMAP_EXTENDED). Identical to
-            # waitKey for every ASCII key, so nothing else changes.
-            key = cv2.waitKeyEx(tick_ms)
-            action = action_for_key(key)
+            key = frontend.poll_key(tick_ms)
             now = time.monotonic()
+            if not link.alive:
+                exit_reason = "supervisor"
+                print(f"\nerror: the safety supervisor stopped the robot "
+                      f"({link.stopped_reason or 'it exited'}); quitting.", file=sys.stderr)
+                code = 1
+                break
+            link.heartbeat()
+
+            action = action_for_key(key)
             if action is not Action.NONE:
                 state.apply(action, now)
                 if action is Action.QUIT:
                     exit_reason = "esc"
+                    break
                 if recorder and action in (Action.FASTER, Action.SLOWER):
                     recorder.add_event("speed", speed=round(state.speed, 4), t=now)
-                # The head is a position and has no watchdog, so it goes out on change
-                # rather than on the publish clock. `head` is None for a robot without
-                # one, which is why `RobotLink` needs no `publish_head` at all.
                 if head is not None and action in HEAD_ACTIONS:
                     if head.apply(action, now - last_head_key):
                         link.publish_head(head.pan, head.tilt)
@@ -256,39 +296,31 @@ def run(options: Options) -> int:
                     last_head_key = now
 
             # No key-up event exists, so a held key is recognised by its OS auto-repeat
-            # and the motion is dropped once the repeats stop.
+            # and the motion is dropped 0.6 s after the repeats stop (unless latched).
             if state.expire(now) and recorder:
                 recorder.add_event("release", t=now)
 
-            # The window's close button is a legitimate way to quit, and ignoring it
-            # would leave a headless loop still driving the robot.
-            try:
-                if cv2.getWindowProperty(window, cv2.WND_PROP_VISIBLE) < 1:
-                    exit_reason = "window_closed"
-                    break
-            except cv2.error:
+            if not frontend.is_open():
                 exit_reason = "window_closed"
                 break
 
-            if now >= next_publish:
-                command = state.command()
+            # The desired command goes to the supervisor when it changes and at 5 Hz
+            # anyway; the heartbeat above is what keeps it alive between.
+            command = state.command()
+            if command != last_sent or now - last_resend >= 0.2:
                 link.publish_cmd_vel(command)
-                if recorder:
-                    recorder.add_command(
-                        command,
-                        speed=state.speed,
-                        action=state.last_action.value,
-                        key=key_label(key),
-                        t=now,
-                    )
-                next_publish += publish_period
-                if next_publish < now:
-                    # After a stall, resync rather than firing a catch-up burst.
-                    next_publish = now + publish_period
+                if recorder and command != last_sent:
+                    recorder.add_command(command, speed=state.speed,
+                                         action=state.last_action.value,
+                                         key=key_label(key), t=now)
+                last_sent = command
+                last_resend = now
 
-            pending = latest.take()
-            if pending is not None:
-                message, arrival = pending
+            while True:
+                try:
+                    message, arrival = frames.get_nowait()
+                except queue.Empty:
+                    break
                 decoded = decode_compressed_image(message)
                 if decoded is not None:
                     frame = decoded
@@ -300,69 +332,46 @@ def run(options: Options) -> int:
                 recorder.add_odom(odom, t=now)
                 last_odom_logged = odom_box["count"]
 
-            cv2.imshow(
-                window,
-                draw_overlay(
-                    frame,
-                    show_help=state.show_help,
-                    speed=state.speed,
-                    speed_max=state.speed_max,
-                    moving=state.is_moving,
-                    hints=profile.hints,
-                    head=None if head is None else (head.pan, head.tilt),
-                ),
-            )
+            frontend.show(draw_overlay(
+                frame, show_help=state.show_help, speed=state.speed,
+                speed_max=state.speed_max, moving=state.is_moving, hints=profile.hints,
+                head=None if head is None else (head.pan, head.tilt),
+            ))
 
             if now - last_status >= 1.0:
                 last_status = now
-                _print_status(state, odom, latest, has_odom=profile.has_odom)
-
+                _print_status(state, odom, has_odom=profile.has_odom)
     except KeyboardInterrupt:
         exit_reason = "interrupt"
     finally:
-        # Order matters: stop the robot before spending time on file handles.
-        try:
-            link.stop()
-        except Exception:
-            pass
+        # Stop the robot before anything slow: the supervisor sends the stop command.
+        link.close()
         if recorder:
             recorder.add_event("quit", reason=exit_reason)
             summary = recorder.close()
-            print(
-                f"\nrecorded {summary.get('frames', 0)} frames, "
-                f"{summary.get('commands', 0)} commands to {options.record}"
-            )
+            print(f"\nrecorded {summary.get('frames', 0)} frames, "
+                  f"{summary.get('commands', 0)} commands to {options.record}")
             if not summary.get("frames"):
                 print("(no camera frames arrived, so no feed.mp4 was written)")
-        try:
-            cv2.destroyAllWindows()
-            cv2.waitKey(1)
-        except cv2.error:
-            pass
-        link.close()
+        frontend.close()
 
     print("stopped.")
-    return 0
+    return code
 
 
-def _print_status(
-    state: TeleopState, odom: Optional[Odom], latest: LatestFrame, *, has_odom: bool = True
-) -> None:
+def _print_status(state: TeleopState, odom, *, has_odom: bool = True) -> None:
     command = state.command()
     speed_note = ""
     if state.at_max_speed:
         speed_note = " (max)"
     elif state.speed <= state.speed_min + 1e-9:
         speed_note = " (min)"
-    camera = f"{latest.rate_hz:4.1f} Hz" if latest.received else "  none"
     if odom is not None:
         pose = f"x={odom.x:+.2f} y={odom.y:+.2f} yaw={odom.yaw:+.2f}"
     else:
-        # "no odom" on a robot that has none reads as a dropped stream; it is not one.
         pose = "no odom" if has_odom else "odom n/a"
     sys.stdout.write(
         f"\rspeed {state.speed:.2f}{speed_note:6s} "
-        f"cmd [{command.vx:+.2f} {command.vy:+.2f} {command.wz:+.2f}]  "
-        f"camera {camera}  {pose}    "
+        f"cmd [{command.vx:+.2f} {command.vy:+.2f} {command.wz:+.2f}]  {pose}    "
     )
     sys.stdout.flush()
