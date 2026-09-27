@@ -8,8 +8,9 @@ draw the robot at all. Without it a client gets `frame_id` strings -- `myagv/odo
 `ainex/base_footprint` -- naming the nodes of a tree that was never published, which is a
 promise this contract made and did not keep.
 
-Stdlib only, for the same reason `namespace.py` is: the console's cross-project contract
-test loads these files by path and can only import what the console itself can. The
+Stdlib only, for the same reason `namespace.py` is: the workspace parity tests (`tests/`
+at the repository root) read these files as data, parsed rather than imported, and can
+evaluate only what the standard library provides. The
 MuJoCo half -- turning a compiled model into transforms -- is
 `mujoco_bridge.TransformTree`; the loop that publishes them is `ros_surfaces/tf_stream.py`.
 

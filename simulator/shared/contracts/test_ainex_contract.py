@@ -10,8 +10,9 @@ node, every parameter with its type and -- where the file gives one -- its value
 joint list and the two frames. Every type it names must also resolve to a schema, or
 `/rosapi/message_details` would answer a client with nothing.
 
-`topics.py` is loaded by path, as the console's parity test loads it: it is stdlib-only,
-and this check should not need the rest of the surface (or MuJoCo) to run.
+`topics.py` is loaded by path, outside its package: it imports only the standard library
+and `contracts/physical.py`, and this check should not need the rest of the surface (or
+MuJoCo) to run.
 """
 
 from __future__ import annotations

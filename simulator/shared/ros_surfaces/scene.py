@@ -20,7 +20,7 @@ from __future__ import annotations
 import math
 import sys
 
-# Defined in the SO-101's contract module, which the console's contract test loads by path.
+# Defined in the SO-101's contract module, where the workspace parity tests read them.
 from ros_surfaces.so101 import (  # noqa: F401
     SCENE_CAMERA_INFO_TOPICS,
     SCENE_CAMERA_TOPICS,

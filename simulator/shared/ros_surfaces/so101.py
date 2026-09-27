@@ -21,8 +21,9 @@ zstd) are not served. Beside the vendor interface, the workspace-owned `/reset`
 (`scene.py`, whose names are defined here) are the only additions (spec §3).
 
 Everything above is a bare vendor name; the fleet's `NamespacedBus` composes the robot's
-namespace where a name reaches the wire. The constants are stdlib-only at import, because
-the console's contract test loads this file by path with no MuJoCo installed.
+namespace where a name reaches the wire. The constants are plain Python, because the
+workspace parity tests (`tests/` at the repository root) read them as data, parsed rather
+than imported, with no MuJoCo or numpy.
 """
 
 from __future__ import annotations

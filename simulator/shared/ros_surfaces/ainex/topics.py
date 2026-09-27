@@ -379,9 +379,10 @@ COLOR_TRACK_PID = {"pid1_p": 0.13, "pid1_i": 0.0, "pid1_d": 0.003,
 def _servos():
     """`servos.py`, whether this module was imported in its package or loaded by path.
 
-    The console's parity test loads this file on its own, outside any package, because
-    that project must run with no simulator checkout; `servos.py` is stdlib-only, so it is
-    loaded beside it the same way.
+    `contracts/test_ainex_contract.py` loads this file on its own, outside its package, so
+    that the check needs neither the rest of the surface nor MuJoCo; `servos.py` is
+    stdlib-only, so it is loaded beside it the same way. (The workspace parity tests read
+    this file as data and never call this.)
     """
     try:
         from . import servos  # noqa: PLC0415

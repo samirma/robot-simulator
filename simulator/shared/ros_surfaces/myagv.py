@@ -60,8 +60,10 @@ Behaviour, as the vendor's nodes behave:
 Names stay bare here; a `NamespacedBus` composes them with the robot's namespace where
 they reach the wire (`contracts/namespace.py`).
 
-This module is stdlib-only at import time -- numpy, MuJoCo and OpenCV are imported inside
-the functions that need them -- so a contract test can load it by path.
+numpy, MuJoCo and OpenCV are imported inside the functions that need them, so the
+constants stay plain Python: the workspace parity tests (`tests/` at the repository root)
+read them as data, parsed rather than imported, and a constant that needed a third-party
+import there could not be compared.
 """
 
 from __future__ import annotations

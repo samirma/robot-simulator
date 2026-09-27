@@ -1,10 +1,11 @@
 """How a topic, a service and a frame are named when several robots share one graph.
 
-Stdlib only, and deliberately so: `robot_console/tests/arm/test_ros_contract.py` loads
-files out of this tree by path to hold the two projects' halves of the contract together,
-and it can only import what the console itself can. Keeping the composition rule here --
-rather than inside `rosbridge_server`, which needs `websockets` -- is what lets that test
-pin *the rule*, not just the bare constant names.
+Stdlib only, and deliberately so: the workspace parity test (`tests/test_contract_parity.py`
+at the repository root) reads this file as data -- parsed, never imported -- and runs these
+functions against the console's copy of the rule, and it can compile a function only
+from what the standard library provides. Keeping the composition rule here -- rather than
+inside `rosbridge_server`, which needs `websockets` -- is what lets that test pin *the
+rule*, not just the bare constant names.
 
 The rule is ROS's own. Several robots on one graph is not several servers; it is one
 graph, one bridge and a namespace per robot -- `ROS_NAMESPACE=robot1` / `<group

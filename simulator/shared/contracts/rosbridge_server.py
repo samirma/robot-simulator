@@ -73,8 +73,9 @@ TYPE_IMAGE = "sensor_msgs/Image"
 TYPE_CAMERA_INFO = "sensor_msgs/CameraInfo"
 
 
-# The namespacing rule lives in `namespace.py`, which is stdlib-only so the console's
-# cross-project contract test can load it by path and pin the rule itself. Re-exported
+# The namespacing rule lives in `namespace.py`, which is stdlib-only so the workspace
+# parity test (`tests/` at the repository root) can compile it from its source and pin
+# the rule itself. Re-exported
 # here because every existing caller imports these two from this module.
 try:
     from contracts.namespace import RobotNamespace, normalise, ns_frame, ns_topic
