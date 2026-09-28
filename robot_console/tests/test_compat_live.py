@@ -110,7 +110,8 @@ def test_discovery_finds_every_member_typed_and_nothing_wrong(present, members) 
     assert kinds, f"no fleet member on {URL}"
     if EXPECTED:
         assert kinds - {RIG_KIND} == set(EXPECTED)
-        assert (RIG_KIND in kinds) == ("so101" in EXPECTED)
+        # The rig is the worktop's, staged for every robot that stands at one.
+        assert (RIG_KIND in kinds) == bool({"so101", "ainex"} & set(EXPECTED))
     assert kinds <= {k for k, _t, _y in MEMBER_SIGNATURES} | {RIG_KIND}
     _found, problems = validate(present)
     assert problems == [], "\n".join(problems)
