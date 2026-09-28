@@ -67,12 +67,13 @@ SO101_REST_GRIPPER = (1.2,)
 def build_parser(engine) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog=f"{engine.name}/tools/spawn_robot.py",
-        description=f"Spawn robots into a {engine.name} scene and serve them.")
+        description=f"Spawn robots into a {engine.name} scene and serve them.",
+        formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument(
         "robot",
-        help=f"comma-separated ids of simulated robots in robots_specs/robots.yml "
-             f"({', '.join(robots_spec.simulated_ids())}); they share one scene, one port "
-             "and one ROS graph, each under its own namespace")
+        help="comma-separated ids of simulated robots in robots_specs/robots.yml, as read "
+             "from it now; they share one scene, one port and one ROS graph, each under "
+             "its own namespace:\n" + robots_spec.describe_simulated("  "))
     ap.add_argument(
         "--ros-namespace", default=None, dest="ros_namespace", metavar="NS",
         help="put a lone robot under NS instead of its id; '' serves the bare vendor "

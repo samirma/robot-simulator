@@ -8,6 +8,8 @@ the copy equals the file is a workspace test (`../tests/test_contract_parity.py`
 
 from __future__ import annotations
 
+import pytest
+
 from robot_console.cli import build_parser
 from robot_console.robots import (
     AINEX, MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS, SLAM_ROBOT, STOP_COMMANDS, TELEOP_ROBOTS,
@@ -16,8 +18,12 @@ from robot_console.robots import (
 
 
 def test_the_robot_flag_takes_exactly_these_ids() -> None:
-    action = next(a for a in build_parser()._actions if "--robot" in a.option_strings)
-    assert tuple(action.choices) == TELEOP_ROBOTS
+    parser = build_parser()
+    for robot in TELEOP_ROBOTS:
+        assert parser.parse_args(["--robot", robot]).robot == robot
+    for refused in ("so101", "rover"):
+        with pytest.raises(SystemExit):
+            parser.parse_args(["--robot", refused])
 
 
 def test_teleop_drives_every_mobile_robot_and_slam_the_base() -> None:

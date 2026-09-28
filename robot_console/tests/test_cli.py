@@ -67,37 +67,18 @@ def test_the_wire_fills_in_what_was_not_given():
     assert parse_args([]).resolved("myagv", "").camera_topic == TOPIC_CAMERA
 
 
-def test_speeds_are_reclamped_into_the_robot_the_wire_named():
+def test_the_speeds_settle_in_the_robot_the_wire_named():
     import robot_console.ainex_link as ainex
 
-    options = parse_args(["--speed", "99"])
-    assert options.speed == pytest.approx(SPEED_MAX)
-    assert options.resolved("ainex", "ainex").speed == pytest.approx(ainex.SPEED_MAX)
+    options = parse_args(["--speed", "0.15"])
+    assert options.resolved("ainex", "ainex").speed == pytest.approx(0.15)
+    assert parse_args([]).resolved("ainex", "ainex").max_speed == pytest.approx(ainex.SPEED_MAX)
+    # A speed below the envelope's floor is raised to it.
+    assert parse_args(["--speed", "0"]).speed == pytest.approx(SPEED_MIN)
 
 
 def test_record_becomes_a_path():
     assert parse_args(["--record", "runs/drive1"]).record == Path("runs/drive1")
-
-
-def test_speed_is_clamped_into_range():
-    assert parse_args(["--speed", "99"]).speed == pytest.approx(SPEED_MAX)
-    assert parse_args(["--speed", "0"]).speed == pytest.approx(SPEED_MIN)
-
-
-def test_max_speed_override(capsys):
-    options = parse_args(["--max-speed", "0.6", "--speed", "0.5"])
-    assert options.max_speed == pytest.approx(0.6)
-    assert options.speed == pytest.approx(0.5)
-    assert "exceeds the real myAGV limit" in capsys.readouterr().err
-
-
-@pytest.mark.parametrize(
-    "robot, fragment",
-    [("myagv", "the real myAGV limit"), ("ainex", "the AiNex gait envelope")],
-)
-def test_the_max_speed_warning_names_the_right_robots_limit(robot, fragment, capsys):
-    parse_args(["--robot", robot, "--max-speed", "9"])
-    assert fragment in capsys.readouterr().err
 
 
 def test_release_after_0_6_s_unless_latched():
@@ -192,5 +173,4 @@ def test_speed_defaults_and_caps_follow_the_robot(robot, module):
     options = parse_args(["--robot", robot])
     assert options.speed == pytest.approx(envelope.SPEED_DEFAULT)
     assert options.max_speed == pytest.approx(envelope.SPEED_MAX)
-    assert parse_args(["--robot", robot, "--speed", "99"]).speed == pytest.approx(envelope.SPEED_MAX)
     assert parse_args(["--robot", robot, "--speed", "0"]).speed == pytest.approx(envelope.SPEED_MIN)

@@ -6,10 +6,9 @@ does touches the base's topics. So the multi-robot claim needs its own check, an
 it -- one `/rosapi/topics` call, compared against **the console's own contract
 constants**, namespaced.
 
-    python -m robot_console.fleet [--url ws://127.0.0.1:9090]   # validate what is there
-    python -m robot_console.fleet --expect myagv                # ...only this robot id
-    python -m robot_console.fleet --dump                        # print every topic, sorted
-    python -m robot_console.fleet --rates [--gate]              # time every periodic topic
+    python -m robot_console.fleet [--url ws://…] [--expect <id>] [--dump] [--rates [--gate]]
+
+That synopsis is console spec §2.5, and the parser takes exactly those flags.
 
 **Validation** discovers the members (`discovery.find_members`: typed signatures, so a
 `/cmd_vel` that is not a `geometry_msgs/Twist` is reported rather than counted) and
@@ -32,7 +31,7 @@ a failure into a non-zero exit.
 
 Checking against our own constants rather than a list typed into a shell script is the
 point: if the wire and the console disagree, a run was going to fail later and less
-legibly. `--dump` and validation use roslibpy (a base dependency); `--rates` speaks the
+legibly. Validation uses roslibpy (a base dependency); `--dump` and `--rates` speak the
 websocket itself with the standard library, because it must read a few hundred MB/s of
 camera frames while decoding only each message's first bytes -- a JSON parse of every
 raw image would measure this process, not the wire.
@@ -50,11 +49,12 @@ import socket
 import statistics
 import struct
 import sys
+import textwrap
 import time
 from typing import Iterable, Mapping, Optional
 from urllib.parse import urlsplit
 
-from robot_console.discovery import MEMBER_SIGNATURES
+from robot_console.robot_ids import ROBOT_IDS, listing, refusal
 from robot_console.topics import namespaced
 from robot_console.wire import add_url_argument, parse_url
 
@@ -64,12 +64,6 @@ EXIT_MISSING = 1
 EXIT_TRANSPORT = 2
 #: `--rates --gate` measured something outside the gate (or could not measure it).
 EXIT_RATE = 3
-
-#: The `robots_specs/robots.yml` ids of every robot the console holds a contract for:
-#: every `simulated` one, which the workspace parity tests hold to that file. `--expect`
-#: takes one of these, and so does `run_task.sh --robot`.
-ROBOT_IDS: tuple[str, ...] = tuple(kind for kind, _, _ in MEMBER_SIGNATURES)
-
 
 # ------------------------------------------------------------------ the contract, timed
 
@@ -906,9 +900,10 @@ def format_report(report: RateReport, url: str) -> str:
     return "\n".join(lines)
 
 
-def measure_rates(url: str, warmup_s: float = WARMUP_S, window_s: Optional[float] = None,
+def measure_rates(url: str, warmup_s: Optional[float] = None, window_s: Optional[float] = None,
                   timeout_s: float = 10.0, required_s: Optional[float] = None) -> RateReport:
     """Discover, validate and time a live wire. Raises `WireError`/`OSError` on transport."""
+    warmup_s = WARMUP_S if warmup_s is None else warmup_s
     wire = Wire(url, timeout_s)
     try:
         present = _topic_table(wire.call("/rosapi/topics", timeout_s=timeout_s))
@@ -926,52 +921,149 @@ def measure_rates(url: str, warmup_s: float = WARMUP_S, window_s: Optional[float
         wire.close()
 
 
+# ------------------------------------------------------------------ dump
+
+
+#: The dialects' transform-tree message types: their edges are the wire's frames.
+TF_TYPES = frozenset({"tf2_msgs/TFMessage", "tf2_msgs/msg/TFMessage"})
+
+#: How long `--dump` listens to the transform topics: a latched `/tf_static` arrives at
+#: once, but `/tf` is assembled from several publishers, each on its own clock.
+FRAME_WINDOW_S = 3.0
+
+TIMEOUT_S = 10.0
+
+
+def _optional(wire: "Wire", service: str, args: Optional[dict], timeout_s: float,
+              what: str) -> Optional[dict]:
+    """A `/rosapi` answer, or None (with a note on stderr) from a rosapi without it."""
+    try:
+        return wire.call(service, args, timeout_s=timeout_s)
+    except (WireError, TimeoutError) as exc:
+        print(f"note: no {what} in the dump: {service} failed: {exc}", file=sys.stderr)
+        return None
+
+
+def _frames(wire: "Wire", topics: Iterable[str], window_s: float) -> set[tuple[str, str]]:
+    """The `(parent, child)` edges the transform topics publish within `window_s`."""
+    topics = sorted(topics)
+    for topic in topics:
+        wire.send({"op": "subscribe", "topic": topic, "queue_length": 100})
+    edges: set[tuple[str, str]] = set()
+    deadline = time.monotonic() + window_s
+    try:
+        while (left := deadline - time.monotonic()) > 0:
+            try:
+                _, raw = wire.recv(keep=None, timeout_s=left)
+            except socket.timeout:
+                break
+            try:
+                message = json.loads(raw)
+            except ValueError:
+                continue
+            if message.get("op") != "publish" or message.get("topic") not in topics:
+                continue
+            for transform in (message.get("msg") or {}).get("transforms") or []:
+                parent = str((transform.get("header") or {}).get("frame_id", "")).lstrip("/")
+                child = str(transform.get("child_frame_id", "")).lstrip("/")
+                edges.add((parent, child))
+    finally:
+        for topic in topics:
+            try:
+                wire.send({"op": "unsubscribe", "topic": topic})
+            except OSError:
+                pass
+    return edges
+
+
+def dump_wire(url: str, timeout_s: float = TIMEOUT_S,
+              frame_window_s: float = FRAME_WINDOW_S) -> list[str]:
+    """Every node, topic, service, action, type, frame and parameter on the wire, one
+    tab-separated line each and sorted, so two wires can be diffed (console spec §2.5).
+
+    Everything comes from the wire's own answers -- `/rosapi` and the transform topics --
+    so it says the same about a simulated wire as about hardware. Raises `WireError` or
+    `OSError` when the wire cannot be reached or does not answer `/rosapi/topics`.
+    """
+    wire = Wire(url, timeout_s)
+    try:
+        topics = _topic_table(wire.call("/rosapi/topics", timeout_s=timeout_s))
+        lines = [f"topic\t{name}\t{kind}" for name, kind in topics.items()]
+        answer = _optional(wire, "/rosapi/nodes", None, timeout_s, "nodes")
+        lines += [f"node\t{n}" for n in (answer or {}).get("nodes") or []]
+        answer = _optional(wire, "/rosapi/services", None, timeout_s, "services")
+        for name in (answer or {}).get("services") or []:
+            kind = (_optional(wire, "/rosapi/service_type", {"service": name}, timeout_s,
+                              f"type of service {name}") or {}).get("type", "")
+            lines.append(f"service\t{name}\t{kind}")
+        answer = _optional(wire, "/rosapi/action_servers", None, timeout_s, "actions")
+        for name in (answer or {}).get("action_servers") or []:
+            kind = (_optional(wire, "/rosapi/action_type", {"action": name}, timeout_s,
+                              f"type of action {name}") or {}).get("type", "")
+            lines.append(f"action\t{name}\t{kind}")
+        answer = _optional(wire, "/rosapi/get_param_names", None, timeout_s, "parameters")
+        for name in (answer or {}).get("names") or []:
+            value = (_optional(wire, "/rosapi/get_param", {"name": name}, timeout_s,
+                               f"value of parameter {name}") or {}).get("value", "")
+            lines.append(f"param\t{name}\t{value}")
+        tf_topics = [t for t, kind in topics.items() if kind in TF_TYPES]
+        for parent, child in _frames(wire, tf_topics, frame_window_s):
+            lines.append(f"frame\t{parent}\t{child}")
+        return sorted(lines)
+    finally:
+        wire.close()
+
+
 # ------------------------------------------------------------------ the command
 
 
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m robot_console.fleet",
-        description="Validate, list or time the fleet on a rosbridge wire.")
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=textwrap.fill(
+            "Inspect a rosbridge wire: validate its members against the console's contract, "
+            "dump its interface, or time its periodic topics.", 78),
+        epilog="--expect accepts:\n" + listing(ROBOT_IDS))
     add_url_argument(parser)
+    parser.add_argument("--expect", type=robot_id, default=None, metavar="ID",
+                        help="check only this robot id, which must present its whole typed "
+                             "contract (listed below)")
     parser.add_argument("--dump", action="store_true",
-                        help="print every topic on the wire with its type, sorted, and exit 0; "
-                             "two engines' dumps must be identical")
+                        help="print every node, topic, service, action, type, frame and "
+                             "parameter, sorted, so two wires can be diffed")
     parser.add_argument("--rates", action="store_true",
-                        help="time every periodic topic and the real-time factor (spec §5)")
+                        help="measure the rate gate of simulator spec §5 against the "
+                             "expected Hz; the report always prints")
     parser.add_argument("--gate", action="store_true",
                         help="with --rates: exit non-zero when anything fails the gate")
-    parser.add_argument("--window", type=float, default=None, metavar="S",
-                        help="with --rates: observe for S seconds instead of the required "
-                             "window; shorter than required fails")
-    parser.add_argument("--warmup", type=float, default=WARMUP_S, help=argparse.SUPPRESS)
-    parser.add_argument("--expect", choices=ROBOT_IDS, default=None, metavar="ID",
-                        help="check only this robot id, which must be on the wire with its "
-                             f"whole typed contract (one of {', '.join(ROBOT_IDS)})")
-    parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args(argv)
     if args.gate and not args.rates:
         parser.error("--gate only applies to --rates")
 
     if args.rates:
         try:
-            report = measure_rates(args.url, args.warmup, args.window, args.timeout)
+            report = measure_rates(args.url, timeout_s=TIMEOUT_S)
         except (OSError, TimeoutError, WireError) as exc:
             print(f"cannot reach rosbridge at {args.url}: {exc}")
             return EXIT_TRANSPORT
         print(format_report(report, args.url))
         return EXIT_RATE if (args.gate and not report.ok) else EXIT_OK
 
+    if args.dump:
+        try:
+            lines = dump_wire(args.url)
+        except (OSError, TimeoutError, WireError) as exc:
+            print(f"cannot reach rosbridge at {args.url}: {exc}")
+            return EXIT_TRANSPORT
+        print("\n".join(lines))
+        return EXIT_OK
+
     try:
-        present = list_topics(args.url, args.timeout)
+        present = list_topics(args.url, TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001 - every transport failure means the same thing
         print(f"cannot reach rosbridge at {args.url}: {exc}")
         return EXIT_TRANSPORT
-
-    if args.dump:
-        for topic in sorted(present):
-            print(f"{topic}\t{present[topic]}")
-        return EXIT_OK
     if args.expect is not None:
         members, problems = check_expected(present, args.expect)
     else:
@@ -986,6 +1078,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     print(f"{args.url}: {len(present)} topics; {len(members)} member(s), each presenting "
           "its whole contract")
     return EXIT_OK
+
+
+def robot_id(value: str) -> str:
+    """`--expect`'s type: a robot id, or a refusal listing the accepted ones."""
+    if value not in ROBOT_IDS:
+        raise argparse.ArgumentTypeError(refusal(value))
+    return value
 
 
 if __name__ == "__main__":

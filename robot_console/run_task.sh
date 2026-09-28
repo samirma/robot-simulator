@@ -13,7 +13,7 @@
 #   --url URL              rosbridge to connect to (default ws://127.0.0.1:9090)
 #   --robot ID             a simulated robot id: the member expected besides the SO-101
 #                          and the rig (default so101: the SO-101 alone). The SO-101 is
-#                          always required; any other id is refused, listing the accepted
+#                          always required; an id not listed below is refused
 #   --namespace NS         the SO-101's namespace (default: discovered; '' is bare)
 #   --instruction TEXT     what the policy is told (default: the task's own text)
 #   --instruction-file F   the same, read from a file
@@ -36,6 +36,11 @@ CONSOLE_ROOT="$(realpath "$CONSOLE_ROOT" 2>/dev/null || echo "${CONSOLE_ROOT%/.}
 die() { echo "error: $*" >&2; exit 1; }
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
 usage() { awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$_self"; }
+
+# The accepted --robot ids, each with its name, come from the console's copy of the
+# simulated entries of robots_specs/robots.yml (the workspace parity tests hold the two
+# equal). Standard library only, so --help and a refused id need no venv.
+robot_ids() { PYTHONPATH="$CONSOLE_ROOT/src" python3 -m robot_console.robot_ids "$@"; }
 
 #: An episode ends when the policy says it is done, or after this many policy steps.
 MAX_POLICY_STEPS=220
@@ -63,13 +68,14 @@ while [ $# -gt 0 ]; do
     --instruction-file) INSTRUCTION_FILE="$2"; shift 2 ;;
     --label)            LABEL="$2"; shift 2 ;;
     --)                 shift; PASSTHRU=("$@"); break ;;
-    -h|--help|help)     usage; exit 0 ;;
+    -h|--help|help)     usage; echo; echo "--robot accepts:"; robot_ids; exit 0 ;;
     *) die "unknown flag '$1' (try: ./run_task.sh --help)" ;;
   esac
 done
 [ -z "$INSTRUCTION" ] || [ -z "$INSTRUCTION_FILE" ] \
   || die "give either --instruction or --instruction-file, not both"
 case "$EPISODES" in ''|*[!0-9]*|0) die "--episodes takes a positive integer" ;; esac
+robot_ids check "$ROBOT" || exit 1
 LOG_DIR="$CONSOLE_ROOT/runs/task/$LABEL"
 
 # ---------------------------------------------------------------- 1. the venv
@@ -114,14 +120,6 @@ say "instruction: $INSTRUCTION"
   "apple-on-plate, not whether the policy did what it was told." >&2
 
 preflight() { "$PY" -m robot_console.arm.preflight "$@" --url "$URL"; }
-
-# --robot takes a robot id from the console's own copy of the simulated ids in
-# robots_specs/robots.yml (the workspace parity tests hold the two equal).
-KNOWN_ROBOTS="$("$PY" -c 'from robot_console.fleet import ROBOT_IDS; print(" ".join(ROBOT_IDS))')"
-case " $KNOWN_ROBOTS " in
-  *" $ROBOT "*) ;;
-  *) die "unknown robot id '$ROBOT' for --robot; accepted ids: ${KNOWN_ROBOTS// /, }" ;;
-esac
 
 # The SO-101 and the rig are checked type for type by the arm preflight. Any other --robot
 # is checked against its whole typed contract by the fleet check.

@@ -63,8 +63,8 @@ re-sends every subscription and advertisement.
 `python -m robot_console.fleet` checks a wire against the console's contract:
 
 ```bash
-.venv/bin/python -m robot_console.fleet               # discover members, validate each
-.venv/bin/python -m robot_console.fleet --dump        # every topic and type, sorted
+.venv/bin/python -m robot_console.fleet               # discover members, validate each (--expect ID: just one)
+.venv/bin/python -m robot_console.fleet --dump        # every node, topic, service, action, type, frame, parameter, sorted
 .venv/bin/python -m robot_console.fleet --rates       # time every periodic topic (~35 s)
 .venv/bin/python -m robot_console.fleet --rates --gate   # ...and exit non-zero on a failure
 ```
@@ -227,9 +227,15 @@ Closing the window with its close button quits as cleanly as `Esc` does.
 The myAGV's turn rate is also capped at 1.0 rad/s, as the vendor teleop caps it; at its
 0.28 m/s top speed the cap is never reached.
 
+Each cap is the robot's hardware limit, and teleop never commands more: `+` stops at it,
+`--max-speed` may only lower it, and a `--speed` or `--max-speed` above it is refused
+with a message naming the limit -- never clamped. Without `--robot`, a request is checked
+again once discovery names the robot, and refused then if that robot's limit is lower.
+The safety supervisor also scales any command above the caps down before publishing it,
+as a last line of defence.
+
 One knob scales the whole envelope, so a drive rehearsed in the simulator behaves the
-same on hardware. `--max-speed` raises the cap and warns when it goes above the
-hardware limit.
+same on hardware.
 
 ## Recording
 
@@ -361,6 +367,7 @@ src/robot_console/
   camera.py                CompressedImage decode + the frame mailbox
   bridge.py                RobotLink, and pure odometry parsing
   robots.py                --robot: one RobotProfile per robot, resolved lazily
+  robot_ids.py             the --robot ids and names every --help lists (stdlib only)
   ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
   wire.py                  --url parsing, shared by every entry point

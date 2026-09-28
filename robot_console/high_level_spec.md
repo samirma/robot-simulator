@@ -26,6 +26,7 @@ defaulting to `ws://127.0.0.1:9090`. The **launchers** are the shell entry point
 | `robot_console/bin/slam.sh` | 2D occupancy-grid mapping (`explore`, `map`) and goal navigation (`navigate`) for a myAGV. |
 | `robot_console/run_task.sh` | Run the SO-101 `apple_on_plate` task (§2.3) with a VLA policy over N episodes, and grade it. |
 | `robot_console/bin/view.sh` | Browser page showing the cameras of whatever is on a wire, with per-robot controls. |
+| `python -m robot_console.fleet` | Inspect a wire: validate its members, dump its interface, time its periodic topics (§2.5). |
 
 ## 2. Components
 
@@ -43,7 +44,10 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
 
   The other keys are: Space stops, Esc quits, `+`/`-` change speed, `H` shows help. For
   the AiNex, the arrow keys turn the head and `0` centres it.
-* **Speeds.** `--speed` is the initial linear speed and `--max-speed` its cap.
+* **Speeds.** `--speed` is the initial linear speed and `--max-speed` its cap. Each
+  robot's default cap below is its hardware limit: teleop never commands more.
+  `--max-speed` may only lower it, and a `--speed` or `--max-speed` above it is refused
+  with a message naming the limit.
   * The myAGV defaults to 0.15 m/s with a 0.28 m/s cap, and `+`/`-` step by 0.05 m/s.
     Rotation runs at `TURN_RATIO` (2.0) rad per metre of the linear speed.
   * The myAGV + myCobot 280 drives with the myAGV's envelope: it is a myAGV underneath.
@@ -68,7 +72,7 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
 * Robot and namespace default to **discovered from `/rosapi`**.
   `--namespace ''` asks for the bare contract on purpose. `--robot` takes a robot id from
   [`../robots_specs/robots.yml`](../robots_specs/robots.yml); teleop drives every robot
-  there whose `kind` is not `arm`. After `--robot` and `--namespace` narrow the discovered
+  there whose `kind` is not `arm`, and `--help` lists exactly those ids. After `--robot` and `--namespace` narrow the discovered
   robots, exactly one must remain. Robots sharing a command topic (`/cmd_vel`) are told
   apart by a topic only one of them has. None, or more than one, is an error that names
   what was found.
@@ -104,14 +108,13 @@ slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…]  # click a 
 * `explore` chases **frontiers**: clusters of free cells bordering unknown space. A goal
   **progresses** when the robot comes 0.45 m closer to it than its closest approach so
   far, or uncovers 0.25 m² of map since the goal's last progress. A goal is blacklisted
-  after 90 s without progress or 300 s total, and when it is reached without uncovering any map. A goal
-  reached without uncovering any map is never chosen again. Each progress either shortens
-  its distance or grows the observed map. When no frontier qualifies, it climbs a **give-up
+  after 90 s without progress or 300 s total. A goal reached without uncovering any map is
+  blacklisted for good. When no frontier qualifies, it climbs a **give-up
   ladder**, trying each rung only if the previous one found nothing:
   1. frontiers of ≥ 6 cells;
   2. frontiers of ≥ 3 cells;
-  3. once per run: clear the blacklisted goals that timed out (reached-but-fruitless goals
-     stay), and frontiers of ≥ 6 cells again;
+  3. once per run: clear the timed-out blacklisted goals (fruitless ones stay), and try
+     frontiers of ≥ 6 cells again;
   4. frontiers of ≥ 1 cell;
   5. unknown holes fully enclosed by observed cells;
   6. once per run: one rotation on the spot, then back to rung 1.
@@ -137,20 +140,19 @@ run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robot <id>]
   least 1.0 s at its end, the camera-verdict scorer measures all of these conditions: the
   apple centre is within 0.08 m of the plate centre horizontally and within 0.015 m of its
   resting height; its speed is at most 0.01 m/s; and every gripper finger is at least
-  0.05 m from the apple centre. The last condition establishes release for this observable
-  acceptance criterion rather than accepting an apple held at the expected pose. An episode ends when the policy reports the task
-  done to `inspect-robot`, or after 220 policy steps.
+  0.05 m from the apple centre, so an apple still held at the target pose fails. An episode
+  ends when the policy reports the task done to `inspect-robot`, or after 220 policy steps.
 * Runs against a simulator someone else started; it launches no engine. It requires the
   simulation-only `/reset` service and the rig.
   It refuses, with a message, a wire lacking either, so the arm task does not run on
   hardware.
 * Flags:
-  * `--episodes` defaults to 1. A one-episode run is a smoke run, not a result.
+  * `--episodes` defaults to 1.
   * `--robot` names, by the id of a `simulated` robot in `robots_specs/robots.yml`, the
     member expected besides the SO-101 and the rig (default `so101`, which expects the
     SO-101 alone). The SO-101 is always required, since `/reset` and the `so101_ros`
-    embodiment exist only with it. Any other id is refused with a message listing the
-    accepted ones.
+    embodiment exist only with it. `--help` lists the accepted ids, and any other id is
+    refused with a message listing them.
   * `--namespace` is the SO-101's, defaulting to discovered.
   * `--label` names the engine in the report, and the log subdirectory
     `runs/task/<label>/`, one run directory per episode holding the framework's log and
@@ -158,7 +160,6 @@ run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robot <id>]
   * `--instruction` is the natural-language instruction the policy is given, and
     `--instruction-file` reads it from a file. The default is "Move the arm towards the red
     apple, grasp it, lift it up, and place it on the white plate."
-  * A one-episode run prints that episode's verdict, labelled a smoke run.
   * Arguments after `--` go to `inspect-robot` unchanged.
 * In order:
   1. pick the venv the policy needs (§3);
@@ -187,13 +188,13 @@ run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robot <id>]
     calibrated views. It derives speed from timestamped consecutive poses rather than
     image stillness alone.
   * **Release.** Forward kinematics from `/joint_states` places both fingers in the same
-    rig frame. The scorer requires the finger clearance above throughout the 1.0 s hold,
-    so an apple held stationary over the plate fails.
+    rig frame, and the finger clearance above must hold throughout the 1.0 s hold.
   * **Decision.** Missing synchronization, calibration, segmentation, joint state or any
     part of the full hold interval fails closed. Thresholds and synchronization tolerance
     are named constants in `robot_console/arm/vision_success.py` and are duplicated in
     scorer tests, not inferred from simulator-private state.
-* Results are pass counts over N episodes; a single episode is never reported as a result.
+* Results are pass counts over N episodes. A one-episode run prints its verdict labelled a
+  smoke run, never a result.
 
 ### 2.4 Camera and control page — `bin/view.sh`
 
@@ -213,6 +214,22 @@ view.sh [--url ws://…]
 * On unload, the page cancels every unfinished action goal it sent. After a reconnect, it
   re-sends every subscription and advertisement. A goal whose client disconnected without
   cancelling it runs on.
+
+### 2.5 Wire inspection — `python -m robot_console.fleet`
+
+```sh
+python -m robot_console.fleet [--url ws://…] [--expect <id>] [--dump] [--rates [--gate]]
+```
+
+* Default: discover the members through typed signatures and check each against the
+  console's contract constants: every topic its ROS file declares, with its type, and
+  nothing else under its namespace. `--expect` narrows this to one robot id, which must
+  present its whole typed contract (`run_task.sh` uses it for `--robot`).
+* `--dump` prints every node, topic, service, action, type, frame and parameter, sorted, so
+  two wires can be diffed (simulator spec §5, engine indistinguishability).
+* `--rates` measures the rate gate of simulator spec §5 against the expected Hz in the
+  console's contract constants. The report always prints; only `--gate` turns a failure
+  into a non-zero exit.
 
 ## 3. Constraints
 
@@ -244,6 +261,10 @@ their behaviour align with this specification.
   with the normative simulator contract modules, which transcribe the ROS files in
   `robots_specs/`. These comparisons may read a sibling
   checkout by path, but the installed console and its ordinary tests do not require one.
+* **Help** — tests compare the ids `teleop.sh --help` and `run_task.sh --help` list with
+  `robots.yml`.
+* **Speed limits** — for each robot, a `--speed` or `--max-speed` above its hardware cap
+  is refused, and no key sequence makes teleop publish a speed above the cap.
 * **Discovery** — fake-bridge tests cover a lone bare robot, a namespaced robot, a mixed
   fleet (every `/cmd_vel` base on one wire among them), missing distinguishing topics,
   wrong types, duplicate candidates and an unreachable `/rosapi`. Every ambiguous case must fail with the candidates found.

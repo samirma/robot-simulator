@@ -64,6 +64,16 @@ def help_flags(text: str) -> set[str]:
     return flags
 
 
+def listed_robots(text: str) -> dict[str, tuple[str, str]]:
+    """The robots a --help lists as `id  name (placement)` lines: {id: (name, placement)}."""
+    found = {}
+    for line in text.splitlines():
+        m = re.fullmatch(r"\s+([a-z0-9_]+)\s{2,}(.+) \((floor|worktop)\)", line)
+        if m:
+            found[m.group(1)] = (m.group(2), m.group(3))
+    return found
+
+
 def engine_parser(name: str):
     """The engine's spawn-tool parser, loaded by path so both fit in one process."""
     spec = importlib.util.spec_from_file_location(f"_spawn_{name}",
@@ -103,6 +113,38 @@ def test_help() -> None:
                 "--distance", "--azimuth", "--elevation"}
         check(f"{name}: no dead flag is left on the spawn tool", not (dead & known),
               str(sorted(dead & known)))
+
+
+def test_help_ids() -> None:
+    """Spec §5 Help: the ids `serve --help` lists are the `simulated` ids in robots.yml,
+    each with its name and placement, and no example uses an id the list lacks."""
+    print("--help ids:")
+    text = help_text()
+    want = {r.id: (r.name, r.placement) for r in robots_spec.robots() if r.simulated}
+    got = listed_robots(text)
+    check("serve --help lists exactly the simulated ids, with name and placement",
+          got == want, f"help {got} vs robots.yml {want}")
+    check("...in robots.yml order", list(got) == list(want), str(list(got)))
+    examples = text.split("Examples:", 1)[-1]
+    used = set()
+    for line in examples.splitlines():
+        for value in re.findall(r"--robots\s+(\S+)", line):
+            used |= set(value.split(","))
+    check("no example names an id the list lacks", used <= set(got), str(used - set(got)))
+    code, out, _ = serve("--robots", "forklift")
+    check("an unknown id is refused with the same list",
+          code != 0 and listed_robots(out) == want, out[-300:])
+    check("the spawn tool's --help lists the same ids",
+          all(listed_robots(spawn.build_parser(engine).format_help()) == want
+              for engine in (importlib_engine("molmospaces"), importlib_engine("robocasa"))))
+
+
+def importlib_engine(name: str):
+    spec = importlib.util.spec_from_file_location(f"_spawn_{name}",
+                                                  SIM / name / "tools" / "spawn_robot.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.ENGINE
 
 
 def test_refusals() -> None:
@@ -193,6 +235,7 @@ def test_staging() -> None:
 
 def main() -> int:
     test_help()
+    test_help_ids()
     test_refusals()
     test_namespaces()
     test_staging()

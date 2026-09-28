@@ -49,7 +49,10 @@ specifications refer to them rather than restating them:
 * [`robots_specs/robots.yml`](robots_specs/robots.yml) — one entry per robot: its **id**,
   identity, placement, whether the simulator hosts it (`simulated`), official URL, pinned sources, documentation URLs, and the paths of
   its URDF, MJCF and ROS interface files. Every `--robot`/`--robots` flag in either project takes
-  these ids, and a robot's id is its default ROS namespace on a simulator wire.
+  these ids, and a robot's id is its default ROS namespace on a simulator wire. Every such
+  flag's `--help` lists the ids it accepts, each with its name, read from `robots.yml` at
+  run time rather than typed into the code, and the same list appears in the message that
+  refuses an unknown id.
 * `robots_specs/<id>/` — the robot's URDF, its official MJCF where one exists, their
   meshes, and its official ROS interface as
   `ros.yml` (ROS 1) or `ros2.yml` (ROS 2): every topic, service, action and parameter the

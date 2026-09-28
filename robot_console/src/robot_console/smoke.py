@@ -25,6 +25,7 @@ from typing import List, Optional
 
 from robot_console.bridge import Odom, wrap_angle
 from robot_console.camera import LatestFrame, decode_image
+from robot_console.robot_ids import listing, refusal
 from robot_console.robots import WHEELED_ROBOTS
 from robot_console.supervisor import SupervisedLink, SupervisorError
 from robot_console.teleop import SPEED_DEFAULT, Command
@@ -217,15 +218,24 @@ def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False,
     return runner.checks, (1 if failed else 0)
 
 
+def wheeled_robot(value: str) -> str:
+    """`--robot`'s type: a /cmd_vel base, or a refusal listing the accepted ids."""
+    if value not in WHEELED_ROBOTS:
+        raise argparse.ArgumentTypeError(refusal(value, WHEELED_ROBOTS))
+    return value
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m robot_console.smoke",
         description="Scripted live check against a /cmd_vel base over rosbridge. DRIVES the "
                     "robot.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="--robot accepts:\n" + listing(WHEELED_ROBOTS),
     )
     add_url_argument(parser)
-    parser.add_argument("--robot", choices=WHEELED_ROBOTS, default=None,
-                        help="robot id (default: discovered from /rosapi)")
+    parser.add_argument("--robot", type=wheeled_robot, default=None, metavar="ID",
+                        help="a /cmd_vel base, listed below (default: discovered from /rosapi)")
     parser.add_argument("--namespace", default=None, metavar="NS",
                         help="the robot's namespace (default: discovered from /rosapi)")
     parser.add_argument("--json", action="store_true", help="one JSON object instead of a table")

@@ -4,9 +4,11 @@ Run as a subprocess by `test_motion_safety.py` (and usable by hand for a scripte
 session):
 
     python teleop_driver.py --url ws://127.0.0.1:PORT --robot myagv --namespace myagv \
-        --event freeze --marker /tmp/marker [--latch] [--drive-s 1.0] [--key w]
+        --event freeze --marker /tmp/marker [--latch] [--drive-s 1.0] [--key w] \
+        [--pre-keys ++++]
 
-It holds a motion key (auto-repeating every 90 ms like a held key, or pressed once with
+It first presses each of `--pre-keys` once (say `+` over and over, to push the speed),
+then holds a motion key (auto-repeating every 90 ms like a held key, or pressed once with
 `--latch`) for `--drive-s`, then writes `time.time()` to `--marker` and does `--event`:
 
     freeze     the UI loop stops dead (sleeps) -- the heartbeat stops with it
@@ -34,8 +36,9 @@ KEY_ESC = 27
 
 class ScriptedFrontend(Frontend):
     def __init__(self, *, key: str, latch: bool, drive_s: float, event: str, marker: Path,
-                 link: SupervisedLink) -> None:
+                 link: SupervisedLink, pre_keys: str = "") -> None:
         self.key = ord(key)
+        self.pre_keys = [ord(k) for k in pre_keys]
         self.latch = latch
         self.drive_s = drive_s
         self.event = event
@@ -65,6 +68,8 @@ class ScriptedFrontend(Frontend):
 
     def poll_key(self, timeout_ms: int) -> int:
         time.sleep(timeout_ms / 1000.0)
+        if self.pre_keys:
+            return self.pre_keys.pop(0)
         now = time.monotonic()
         if now - self.opened_at >= self.drive_s and not self.fired:
             self.fired = True
@@ -99,13 +104,15 @@ def main(argv=None) -> int:
     parser.add_argument("--latch", action="store_true")
     parser.add_argument("--drive-s", type=float, default=1.0)
     parser.add_argument("--key", default="w")
+    parser.add_argument("--pre-keys", default="")
     args = parser.parse_args(argv)
 
     options = Options(url=args.url, robot=args.robot, namespace=args.namespace,
                       latch=args.latch).in_envelope()
     link = SupervisedLink(args.url, robot=args.robot, namespace=args.namespace)
     frontend = ScriptedFrontend(key=args.key, latch=args.latch, drive_s=args.drive_s,
-                                event=args.event, marker=Path(args.marker), link=link)
+                                event=args.event, marker=Path(args.marker), link=link,
+                                pre_keys=args.pre_keys)
     return run(options, frontend, link)
 
 

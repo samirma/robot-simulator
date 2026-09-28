@@ -25,7 +25,7 @@ import time
 from typing import Optional
 
 from robot_console.camera import decode_image, header_seq
-from robot_console.cli import Options
+from robot_console.cli import Options, SpeedLimitError
 from robot_console.hud import draw_overlay, placeholder
 from robot_console.recorder import Recorder
 from robot_console.robots import PROFILES, RobotProfile
@@ -151,8 +151,14 @@ def run(options: Options, frontend: Optional[Frontend] = None,
     except SupervisorError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    options = options.resolved(ready["robot"], ready["namespace"],
-                               camera_topic=ready.get("camera_topic"))
+    try:
+        options = options.resolved(ready["robot"], ready["namespace"],
+                                   camera_topic=ready.get("camera_topic"))
+    except SpeedLimitError as exc:
+        # Refused before motion is enabled: nothing has been commanded.
+        print(f"error: {exc}", file=sys.stderr)
+        link.close()
+        return 2
     print(f"discovered {ready['robot']} on "
           f"{'/' + ready['namespace'] + '/*' if ready['namespace'] else 'the bare contract'}; "
           f"stop command: {ready.get('stop_command')}")

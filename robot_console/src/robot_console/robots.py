@@ -20,13 +20,14 @@ import dataclasses
 from typing import Any, Callable, Mapping, Sequence, Tuple
 
 from robot_console import hud, teleop
+from robot_console.robot_ids import TELEOP_IDS, refusal
 
 #: `robots_specs/robots.yml` ids of the robots teleop drives (console spec §2.1).
 MYAGV = "myagv"
 AINEX = "ainex"
 MYAGV_MYCOBOT280 = "myagv_mycobot280"
 ROSMASTER_X3_PLUS = "rosmaster_x3_plus"
-TELEOP_ROBOTS: Tuple[str, ...] = (MYAGV, AINEX, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
+TELEOP_ROBOTS: Tuple[str, ...] = TELEOP_IDS
 
 #: The `/cmd_vel` bases, which report `/odom` and a `/scan`: what `smoke` drives.
 WHEELED_ROBOTS: Tuple[str, ...] = (MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
@@ -79,7 +80,7 @@ class RobotProfile:
     # False -> the arrow keys do nothing and no link needs `publish_head`.
     has_head: bool
     hints: Sequence[Tuple[str, str]]
-    # For the --max-speed warning: what the cap is, in the robot's own terms.
+    # For the refusal of a speed above the cap: what the cap is, in the robot's own terms.
     speed_limit_label: str
     stop_command: str
 
@@ -160,7 +161,7 @@ def _myagv_profile() -> RobotProfile:
         has_odom=True,
         has_head=False,
         hints=hud.HINTS,
-        speed_limit_label="the real myAGV limit",
+        speed_limit_label="the myAGV's hardware limit",
         stop_command=STOP_COMMANDS[MYAGV],
     )
 
@@ -180,7 +181,7 @@ def _ainex_profile() -> RobotProfile:
         has_odom=False,
         has_head=True,
         hints=AINEX_HINTS,
-        speed_limit_label="the AiNex gait envelope",
+        speed_limit_label="the AiNex's gait limit",
         stop_command=STOP_COMMANDS[AINEX],
     )
 
@@ -189,7 +190,8 @@ def _composite_profile() -> RobotProfile:
     """The myAGV + myCobot 280 drives as the myAGV it stands on, with its own stop."""
     return dataclasses.replace(
         _myagv_profile(), name=MYAGV_MYCOBOT280, make_link=_make_composite_link,
-        speed_limit_label="the real myAGV limit", stop_command=STOP_COMMANDS[MYAGV_MYCOBOT280])
+        speed_limit_label="the myAGV + myCobot 280's hardware limit (its myAGV base)",
+        stop_command=STOP_COMMANDS[MYAGV_MYCOBOT280])
 
 
 def _x3_profile() -> RobotProfile:
@@ -207,7 +209,7 @@ def _x3_profile() -> RobotProfile:
         has_odom=True,
         has_head=False,
         hints=hud.HINTS,
-        speed_limit_label="the X3 PLUS board's 0.7 m/s input range",
+        speed_limit_label="the ROSMASTER X3 PLUS's hardware limit (its board's input range)",
         stop_command=STOP_COMMANDS[ROSMASTER_X3_PLUS],
     )
 
@@ -221,7 +223,7 @@ def profile(name: str) -> RobotProfile:
     try:
         factory = _FACTORIES[name]
     except KeyError:
-        raise KeyError(f"unknown robot {name!r}; known: {', '.join(TELEOP_ROBOTS)}") from None
+        raise KeyError(refusal(name, TELEOP_ROBOTS)) from None
     return factory()
 
 

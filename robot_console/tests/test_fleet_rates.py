@@ -300,9 +300,13 @@ def test_measure_rates_times_a_live_wire(odom_wire, bridge) -> None:
     assert not bridge.subscriptions
 
 
-def test_the_gate_decides_the_exit_code(odom_wire, capsys) -> None:
+def test_the_gate_decides_the_exit_code(odom_wire, capsys, monkeypatch) -> None:
     # One second against the required thirty: a report, and a failure in it.
-    args = ["--url", odom_wire, "--rates", "--window", "1", "--warmup", "0.2"]
+    real_observe = fleet.observe
+    monkeypatch.setattr(fleet, "WARMUP_S", 0.2)
+    monkeypatch.setattr(fleet, "observe", lambda wire, expected, warmup_s, window_s:
+                        real_observe(wire, expected, warmup_s, 1.0))
+    args = ["--url", odom_wire, "--rates"]
     assert fleet.main(args) == fleet.EXIT_OK
     out = capsys.readouterr().out
     assert "/myagv/odom" in out and "insufficient observation window" in out

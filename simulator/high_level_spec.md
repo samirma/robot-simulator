@@ -90,7 +90,9 @@ kitchen.sh serve [--engine molmospaces|robocasa] [--robots <id>[,<id>…]]
 ```
 
 `--robots` takes a non-empty set of ids of `simulated` robots in
-`robots_specs/robots.yml` (default `so101`), and `--port` defaults to `9090`. `--scene`
+`robots_specs/robots.yml` (default `so101`), and `--port` defaults to `9090`. `serve
+--help` lists every accepted id with its name and `placement` (workspace spec §2), and
+gives no example id that list lacks. `--scene`
 takes `ithor:<n>` or `procthor:<n>`. An engine refuses the other engine's scene flags by
 name, and `serve` refuses any flag its `--help` does not list. Each engine's **default
 scene** is MolmoSpaces `ithor:1` or RoboCasa layout 1 style 1.
@@ -104,11 +106,9 @@ scene** is MolmoSpaces `ithor:1` or RoboCasa layout 1 style 1.
 * When a worktop robot is in `--robots`, the fixed `apple_on_plate` scene is staged on a
   kitchen table or counter in front of it. The scene contains a red apple, a white plate,
   a bowl, a mug, a banana and a lemon, together with fixed overhead and side cameras that
-  frame the entire task scene. The robot is placed within reach of the apple and plate.
-  These objects and cameras are required scene content and are not controlled by
-  command-line options. A fleet with no worktop robot gets the room, its robots and their
-  cameras, with no task and no rig. A worktop robot in a scene with no worktop is a
-  start-up error.
+  frame the entire task scene. These objects and cameras are required scene content, not controlled by command-line
+  options. A fleet with no worktop robot gets the room, its robots and their cameras, with
+  no task and no rig. A worktop robot in a scene with no worktop is a start-up error.
 * The rig is presented exactly as the shared SO-101 and rig contract constants define it,
   under the rig's own namespace rather than a robot's.
 * `/reset` is served whenever the SO-101 is. A fleet with the task but
@@ -247,9 +247,11 @@ their behaviour align with this specification.
   and providers on a multi-member fleet, and checks every published message against its
   declared type field for field. Workspace parity tests compare every contract fact the
   console duplicates, including namespace composition, task geometry and rig calibration.
-* **Engine indistinguishability (needs both halves)** — `python -m robot_console.fleet
-  --dump` against the same `kitchen.sh serve --robots …` on both engines yields identical
+* **Engine indistinguishability (needs both halves)** — the console's `python -m
+  robot_console.fleet --dump` (console spec §2.5) against the same `kitchen.sh serve --robots …` on both engines yields identical
   output.
+* **Help** — a test compares the ids `serve --help` lists with the `simulated` ids in
+  `robots.yml`.
 * **Robot models** — these checks:
   * `shared/tests/tf_frames_check.py`: every published robot tree against MuJoCo forward
     kinematics of the compiled model (myAGV,
@@ -267,7 +269,8 @@ their behaviour align with this specification.
     floor or the worktop, without interpenetration;
   * a physical-figures check: the compiled model reproduces every physical figure in the
     contract constants within its tolerance.
-* **Rate (needs both halves)** — `python -m robot_console.fleet --rates --gate` measures every
+* **Rate (needs both halves)** — the console's `python -m robot_console.fleet --rates
+  --gate` (console spec §2.5) measures every
   periodic topic and the real-time factor on the reference host over the swept set (§4).
   After a 5 s warm-up it observes each run for the greater of 30 s or five periods of its
   slowest declared topic. For each topic, the expected Hz comes from its robot's ROS file

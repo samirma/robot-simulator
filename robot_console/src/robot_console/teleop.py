@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import math
 import time
 from typing import Optional
 
@@ -210,6 +211,14 @@ class Command:
             "linear": {"x": float(self.vx), "y": float(self.vy), "z": 0.0},
             "angular": {"x": 0.0, "y": 0.0, "z": float(self.wz)},
         }
+
+
+def within_caps(command: Command, speed_max: float, turn_max: float) -> Command:
+    """`command` with its translation scaled into `speed_max` (direction kept) and its
+    rotation clipped to `turn_max`: the supervisor's last line of defence for the caps."""
+    magnitude = math.hypot(command.vx, command.vy)
+    k = speed_max / magnitude if magnitude > speed_max else 1.0
+    return Command(command.vx * k, command.vy * k, max(-turn_max, min(turn_max, command.wz)))
 
 
 @dataclasses.dataclass

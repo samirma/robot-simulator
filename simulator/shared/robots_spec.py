@@ -12,10 +12,15 @@ simplifications -- never a copy of them (`model_dir`, `model_xml`).
 Deliberately a plain module, not a package named `robots`: each engine already puts its
 own `robots/` adapter package on `PYTHONPATH`, and a second importable `robots` package
 here would shadow it.
+
+Shell scripts ask it too, through its command line:
+
+    python robots_spec.py list      # the simulated ids: `id  name (placement)`, one per line
 """
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -109,6 +114,14 @@ def simulated_ids() -> tuple[str, ...]:
     return tuple(r.id for r in robots() if r.simulated)
 
 
+def describe_simulated(indent: str = "") -> str:
+    """Every simulated id with its name and placement, one per line, read from `robots.yml`
+    each time: the list every `--robot`/`--robots` help and unknown-id refusal shows."""
+    rows = [(r.id, r.name, r.placement) for r in robots() if r.simulated]
+    width = max((len(i) for i, _, _ in rows), default=0)
+    return "\n".join(f"{indent}{i:<{width}}  {n} ({p})" for i, n, p in rows)
+
+
 def placement(robot_id: str) -> str:
     """`floor` or `worktop`."""
     return robot(robot_id).placement
@@ -195,6 +208,18 @@ def check_simulated(names) -> list[str]:
         why = ", ".join(
             f"{n!r} ({'not simulated' if n in known else 'not in robots_specs/robots.yml'})"
             for n in bad)
-        raise ValueError(f"unknown robot(s) {why}; simulated robots: {', '.join(sim)}")
+        raise ValueError(f"unknown robot(s) {why}; the simulated robots are:\n"
+                         f"{describe_simulated('  ')}")
     return names
 
+
+def main(argv: list[str]) -> int:
+    if argv == ["list"]:
+        print(describe_simulated())
+        return 0
+    print("usage: robots_spec.py list", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

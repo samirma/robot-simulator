@@ -47,6 +47,9 @@ class FakeBridge:
         # False makes `/rosapi/topics` fail the way rosbridge answers a service nobody
         # provides: `result: false`. That is an unreachable `/rosapi` to a client.
         self.rosapi = True
+        # What other services answer with: `{service: values}`, or a callable taking the
+        # request's `args`. A service not listed here answers empty values.
+        self.answers: Dict[str, object] = {}
         # Wall-clock arrival of every publish and service call, parallel to `received`
         # and `service_calls`, for the motion-safety timing tests.
         self._received_at: List[float] = []
@@ -138,6 +141,9 @@ class FakeBridge:
                 values = {"topics": list(topics), "types": [topics[t] for t in topics]}
             else:
                 values, result = "Service /rosapi/topics does not exist", False
+        elif name in self.answers:
+            answer = self.answers[name]
+            values = answer(message.get("args") or {}) if callable(answer) else answer
         response = {"op": "service_response", "service": name, "values": values, "result": result}
         if message.get("id") is not None:
             response["id"] = message["id"]

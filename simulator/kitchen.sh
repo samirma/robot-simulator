@@ -20,8 +20,12 @@
 #
 #   --engine molmospaces  molmospaces | robocasa. One per run; only that one need be set up.
 #   --robots so101        comma-separated ids of the robots robots_specs/robots.yml marks
-#                         `simulated`. They share one scene, one port and one ROS graph,
-#                         each under its own id: /so101/*, /myagv/*, /ainex/*. A robot
+#                         `simulated`, each listed here as `id  name (placement)`:
+#
+#                         @SIMULATED_IDS@
+#
+#                         They share one scene, one port and one ROS graph, each under
+#                         its own id: /so101/*, /myagv/*, /ainex/*. A robot
 #                         whose `placement` is `worktop` stands on the worktop, the others
 #                         on the floor. With any worktop robot, apple_on_plate is staged
 #                         on the worktop in front of it and the camera rig is served on
@@ -87,11 +91,28 @@ die() { echo "error: $*" >&2; exit 1; }
 
 # The header comment is the help, cut into sections by `#:` markers so one block serves
 # `help` and `serve --help` and cannot drift from the flags it documents.
+# The ids `--robots` takes are not in that comment: `@SIMULATED_IDS@` is replaced by the
+# `simulated` robots of robots_specs/robots.yml, id, name and placement, read by
+# shared/robots_spec.py (the one reader of that file, which needs PyYAML, so whichever
+# engine's venv is set up) every time, never typed here.
+simulated_ids() {
+  local py
+  for py in "$MOLMO/.venv/bin/python" "$ROBOCASA/.venv/bin/python"; do
+    [ -x "$py" ] && { "$py" "$ROOT/shared/robots_spec.py" list; return; }
+  done
+  echo "(no engine is set up, so robots_specs/robots.yml cannot be read: run ./run.sh setup)"
+}
+
 usage() {
-  awk -v want="${1:-all}" '
+  IDS="$(simulated_ids)" awk -v want="${1:-all}" '
     NR == 1        { next }
     !/^#/          { exit }
                    { sub(/^# ?/, "") }
+    /^ *@SIMULATED_IDS@$/ {
+      n = split(ENVIRON["IDS"], row, "\n")
+      for (i = 1; i <= n; i++) if (sect == "" || want == "all" || want == sect) print "                        " row[i]
+      next
+    }
     /^: /          { sect = substr($0, 3); next }
     sect == "" || want == "all" || want == sect { print }
   ' "$0"

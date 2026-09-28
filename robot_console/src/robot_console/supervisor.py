@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import signal
@@ -47,7 +48,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional
 
-from robot_console.teleop import Command
+from robot_console.robot_ids import TELEOP_IDS, accepted, refusal
+from robot_console.teleop import Command, within_caps
 from robot_console.wire import DEFAULT_URL, parse_url, url_arg
 
 #: The safety timeout, seconds (console spec §2.1): a fixed constant, not a flag.
@@ -73,7 +75,8 @@ EXIT_ERROR = 2
 def _parse_args(argv):
     parser = argparse.ArgumentParser(prog="python -m robot_console.supervisor")
     parser.add_argument("--url", type=url_arg, default=DEFAULT_URL)
-    parser.add_argument("--robot", default=None)
+    parser.add_argument("--robot", default=None,
+                        help="a robot id teleop drives; " + accepted(TELEOP_IDS).replace("\n", "; "))
     # `--namespace=` (empty) is the bare contract; absent means "discover".
     parser.add_argument("--namespace", default=None)
     # Ask /rosapi even when both are given, so they only narrow what is on the wire (slam).
@@ -129,8 +132,13 @@ class Supervisor:
     """The watchdog loop. `link` is a connected RobotLink or AiNexLink."""
 
     def __init__(self, link, *, out: _Out, inp, parent_pid: int,
-                 has_head: bool = False) -> None:
+                 has_head: bool = False, speed_max: float = math.inf,
+                 turn_max: float = math.inf) -> None:
         self.link = link
+        # The robot's hardware caps (console spec §2.1). The UI never asks for more; this
+        # is the last line of defence should it ever do so.
+        self.speed_max = float(speed_max)
+        self.turn_max = float(turn_max)
         self.safety_timeout = SAFETY_TIMEOUT
         self.out = out
         self.inp = inp
@@ -172,11 +180,11 @@ class Supervisor:
             if op in ("hb", "cmd", "head", "enable"):
                 self._last_hb = now
             if op == "cmd":
-                self._desired = Command(
+                self._desired = within_caps(Command(
                     vx=float(message.get("vx", 0.0)),
                     vy=float(message.get("vy", 0.0)),
                     wz=float(message.get("wz", 0.0)),
-                )
+                ), self.speed_max, self.turn_max)
             elif op == "head":
                 self._head = (float(message.get("pan", 0.0)), float(message.get("tilt", 0.0)))
             elif op == "enable":
@@ -275,7 +283,7 @@ def _connect_and_resolve(args, out: _Out):
         raise discovery.DiscoveryError(f"could not connect to {args.url}")
 
     if args.robot is not None and args.robot not in TELEOP_ROBOTS:
-        raise discovery.DiscoveryError(f"unknown robot {args.robot!r}")
+        raise discovery.DiscoveryError(refusal(args.robot, TELEOP_ROBOTS))
     if args.robot is not None and args.namespace is not None and not args.discover:
         robot, namespace = args.robot, args.namespace
         camera = None
@@ -336,6 +344,7 @@ def main(argv=None) -> int:
     supervisor = Supervisor(
         link, out=out, inp=sys.stdin.buffer,
         parent_pid=parent, has_head=prof.has_head,
+        speed_max=prof.speed_max, turn_max=prof.turn_max,
     )
     signal.signal(signal.SIGTERM, supervisor.on_sigterm)
     out.send(ready)
