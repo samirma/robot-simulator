@@ -23,6 +23,7 @@ if str(SHARED) not in sys.path:
     sys.path.insert(0, str(SHARED))
 
 import placement  # noqa: E402
+import robots_spec  # noqa: E402
 import serve_args  # noqa: E402
 import spawn  # noqa: E402
 
@@ -124,7 +125,11 @@ def test_refusals() -> None:
     refused("a layout out of 1-60", ["--engine", "robocasa", "--layout", "61"], r"--layout")
     refused("a port out of range", ["--port", "70000"], r"--port")
     refused("a flag missing its value", ["--robots"], r"needs a value")
-    refused("a robot that is not simulated", ["--robots", "rosmaster_x3_plus"], r"not simulated")
+    physical = [r for r in robots_spec.ids() if r not in robots_spec.simulated_ids()]
+    if physical:  # every robot robots.yml has is simulated today
+        refused("a robot that is not simulated", ["--robots", physical[0]], r"not simulated")
+    refused("a robot robots.yml does not have", ["--robots", "forklift"],
+            r"not in robots_specs/robots.yml")
     refused("a robot named twice", ["--robots", "so101,so101"], r"more than once")
 
 
