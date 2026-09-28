@@ -19,7 +19,7 @@ The simulator contains no control policy; that belongs to `robot_console/`
 
 | Entry point | Responsibility |
 | --- | --- |
-| `simulator/<engine>/run.sh` | Per-engine setup, asset fetching, repair, and viewing a single robot in a scene without serving a wire (`setup`, `assets`, `view`, `repair`). |
+| `simulator/<engine>/run.sh` | Per-engine setup, asset fetching and repair (`setup`, `assets`, `repair`). |
 | `simulator/kitchen.sh serve` | Load one engine's scene, stage `apple_on_plate` when a worktop robot is present, spawn a fleet and serve it on one port. The only entry point that serves a wire. |
 
 ## 2. Components
@@ -29,7 +29,6 @@ The simulator contains no control policy; that belongs to `robot_console/`
 ```sh
 run.sh setup                                         # venv, upstream checkout, default assets
 run.sh assets [<source>]                             # optional bulk pre-fetch for offline use
-run.sh view --robot <id>   [<engine's scene flags>]  # a viewer window; serves no wire
 run.sh repair                                        # re-point venv and assets after a move
 ```
 
@@ -88,25 +87,28 @@ kitchen.sh serve [--engine molmospaces|robocasa] [--robots <id>[,<id>…]]
                  [--ros-namespace <ns>] [--mujoco] [--port <p>]
                  [--scene <s>]                  # MolmoSpaces scene flag
                  [--layout N --style N]         # RoboCasa scene flags
-                 [<staging flags>]
 ```
 
-`--robots` takes a non-empty set of ids of `simulated` robots in `robots_specs/robots.yml` (default `so101`);
-`--port` defaults to `9090`. `--scene` takes `ithor:<n>` or `procthor:<n>`. An engine
-refuses the other engine's scene flags by name, and `serve` refuses any flag its `--help`
-does not list. Each
-engine's **default scene** is MolmoSpaces `ithor:1` or RoboCasa layout 1 style 1.
+`--robots` takes a non-empty set of ids of `simulated` robots in
+`robots_specs/robots.yml` (default `so101`), and `--port` defaults to `9090`. `--scene`
+takes `ithor:<n>` or `procthor:<n>`. An engine refuses the other engine's scene flags by
+name, and `serve` refuses any flag its `--help` does not list. Each engine's **default
+scene** is MolmoSpaces `ithor:1` or RoboCasa layout 1 style 1.
 
 * One engine per run (default `molmospaces`). Every robot in `--robots` shares **one scene,
   one port and one ROS graph**, each under its own ROS namespace.
 * The **worktop** is the counter or table surface the task is staged on: the one the
   engine's scene marks as the task surface. The **worktop robots** are those whose
-  `placement` in `robots.yml` is `worktop`, placed so the staged objects are within their
-  reach; the others stand on the floor.
-* When a worktop robot is in `--robots`, `apple_on_plate` (an apple and a plate) is staged
-  on the worktop in front of them, and the rig is served. A fleet with no worktop robot
-  gets the room, its robots and their cameras, with no task and no rig. A worktop robot in a scene
-  with no worktop is a start-up error.
+  `placement` in `robots.yml` is `worktop`; each is placed so the apple and plate are
+  within reach. The other robots stand on the floor.
+* When a worktop robot is in `--robots`, the fixed `apple_on_plate` scene is staged on a
+  kitchen table or counter in front of it. The scene contains a red apple, a white plate,
+  a bowl, a mug, a banana and a lemon, together with fixed overhead and side cameras that
+  frame the entire task scene. The robot is placed within reach of the apple and plate.
+  These objects and cameras are required scene content and are not controlled by
+  command-line options. A fleet with no worktop robot gets the room, its robots and their
+  cameras, with no task and no rig. A worktop robot in a scene with no worktop is a
+  start-up error.
 * The rig is presented exactly as the shared SO-101 and rig contract constants define it,
   under the rig's own namespace rather than a robot's.
 * `/reset` is served whenever the SO-101 is. A fleet with the task but
@@ -120,17 +122,6 @@ engine's **default scene** is MolmoSpaces `ithor:1` or RoboCasa layout 1 style 1
   count.
 * Headless by default. `--mujoco` opens a MuJoCo window **in the serving process**, since
   only the process holding the physics can draw it; closing the window ends the run.
-* Every flag `serve --help` lists that the synopsis above does not name is a **staging
-  flag**, e.g.
-  `--reference-table`, `--no-dressing`, `--reference-lighting`, `--extra-lights`,
-  `--swap-objects`. Each has a default, which `--help` shows, and changes
-  only the staged world, never the wire. No staging flag changes the task objects' sizes
-  or colours: every engine stages the apple and plate the shared task constants describe.
-  `--swap-objects` exchanges the two objects' staging poses, and the
-  constants record the poses for both of its settings.
-* At start-up, when the SO-101 is served, `serve` reports whether each staged object is inside the SO-101's reach: a
-  top grasp at its position has an inverse-kinematics solution within the joint ranges of
-  the compiled model.
 
 ## 3. Wire interfaces
 
@@ -226,17 +217,17 @@ only the facts it consumes and may not redefine them.
 The simulator has these constraints:
 
 * Each engine has one venv, built on Homebrew's framework Python 3.11, so that MuJoCo's
-  `mjpython` launcher, which the viewer needs on macOS, works.
+  `mjpython` launcher, which the `--mujoco` viewer needs on macOS, works.
 * **Real time** — the **swept set** is every `kitchen.sh serve` run that:
   * combines one engine with a non-empty set of `simulated` robot ids;
   * uses that engine's default scene;
-  * runs headless, with default namespaces and every staging flag at its default.
+  * runs headless, with default namespaces and the fixed task staging described in §2.3.
 
   Each of those runs in real time on the **reference host**, a
   MacBook Pro with an Apple M4 Max and 36 GB. Anything else is best-effort: another host,
-  another scene, a changed flag, `--mujoco`. `serve` warns when its real-time factor over
-  a 10 s window falls below 0.90.
-* On macOS the MuJoCo viewer must own the main thread.
+  another scene, a non-default option or `--mujoco`. `serve` warns when its real-time
+  factor over a 10 s window falls below 0.90.
+* On macOS the `--mujoco` viewer must own the main thread.
 * Vendored upstreams (`molmospaces/upstream/`, the robosuite and robocasa checkouts) are
   never modified; out-of-tree robots and scenes are added from outside them. `assets/` is
   generated and never holds curated files.
@@ -245,6 +236,9 @@ The simulator has these constraints:
   the worktop. Two copies are two chances to drift.
 
 ## 5. Verification
+
+The project must have comprehensive unit tests ensuring that all required components and
+their behaviour align with this specification.
 
 * **Contracts** — `simulator/shared/contracts/test_fleet.py` checks every contract module
   against its robot's ROS file in `robots_specs/` (names, types, frames and every periodic

@@ -34,7 +34,6 @@ defaulting to `ws://127.0.0.1:9090`. The **launchers** are the shell entry point
 ```sh
 teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
           [--speed <m/s>] [--max-speed <m/s>] [--latch]
-          [--safety-timeout <s>] [--no-preflight] [--reinstall]
 ```
 
 * **Keys.** The **motion keys** are:
@@ -59,15 +58,13 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
   has arrived for 0.6 s (the OS's auto-repeat keeps a held key's events coming).
 * **Safety supervisor.** A separate supervisor process owns the rosbridge connection and
   every motion publication. The UI sends desired commands plus a heartbeat
-  over local IPC. If the heartbeat, parent process or IPC disappears for
-  `--safety-timeout` (default 0.25 s), the supervisor sends the robot's stop command three
+  over local IPC. If the heartbeat, parent process or IPC disappears for the **safety
+  timeout** of 0.25 s, the supervisor sends the robot's stop command three
   times, 50 ms apart, before closing. This applies with and without `--latch`; a frozen UI
   therefore cannot leave the last command running. Before enabling a non-zero command,
   teleop requires the operator to confirm that an independent physical emergency stop or
   motor-power dead-man is armed. This independent device is the required protection for
   host failure or network loss, which software on the failed path cannot stop.
-* `--no-preflight` skips the check that the wire is reachable. `--reinstall` rebuilds the
-  venv. Neither skips the safety supervisor or emergency-stop confirmation.
 * Robot and namespace default to **discovered from `/rosapi`**.
   `--namespace ''` asks for the bare contract on purpose. `--robot` takes a robot id from
   [`../robots_specs/robots.yml`](../robots_specs/robots.yml); teleop drives every robot
@@ -93,7 +90,7 @@ slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…]  # click a 
 ```
 
 `explore` additionally accepts `--max-duration <s>` (default 3600) and `--max-goals <n>`
-(default 500). Every mode accepts `--safety-timeout <s>` with the teleop default.
+(default 500).
 
 * Occupancy-grid SLAM on `/scan` and `/odom` of a myAGV. After `--namespace` narrows the
   myAGVs discovered through `/rosapi`, exactly one must remain. Other robots on the wire are
@@ -131,7 +128,7 @@ slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…]  # click a 
 ### 2.3 The arm task — `run_task.sh`
 
 ```sh
-run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robots <id>[,<id>…]]
+run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robot <id>]
             [--namespace <ns>] [--instruction <text> | --instruction-file <f>] [-- <inspect-robot args>]
 ```
 
@@ -149,7 +146,11 @@ run_task.sh [--episodes N] [--label <engine>] [--url ws://…] [--robots <id>[,<
   hardware.
 * Flags:
   * `--episodes` defaults to 1. A one-episode run is a smoke run, not a result.
-  * `--robots` names, by robot id, the members expected besides the rig (default `so101`).
+  * `--robot` names, by the id of a `simulated` robot in `robots_specs/robots.yml`, the
+    member expected besides the SO-101 and the rig (default `so101`, which expects the
+    SO-101 alone). The SO-101 is always required, since `/reset` and the `so101_ros`
+    embodiment exist only with it. Any other id is refused with a message listing the
+    accepted ones.
   * `--namespace` is the SO-101's, defaulting to discovered.
   * `--label` names the engine in the report, and the log subdirectory
     `runs/task/<label>/`, one run directory per episode holding the framework's log and
@@ -235,6 +236,9 @@ The console has these constraints:
 
 ## 4. Verification
 
+The project must have comprehensive unit tests ensuring that all required components and
+their behaviour align with this specification.
+
 * **Contract parity** — workspace tests compare every console-owned topic, service, action,
   type, namespace composition rule, joint definition, camera calibration and task constant
   with the normative simulator contract modules, which transcribe the ROS files in
@@ -245,7 +249,7 @@ The console has these constraints:
   wrong types, duplicate candidates and an unreachable `/rosapi`. Every ambiguous case must fail with the candidates found.
 * **Motion safety** — subprocess tests freeze the UI, close its IPC, terminate it normally,
   raise an exception and send `SIGINT` and `SIGTERM`. A fake bridge must receive the first
-  stop no later than `--safety-timeout` plus 100 ms and three stops in total. An opt-in live
+  stop no later than the safety timeout plus 100 ms and three stops in total. An opt-in live
   drill verifies that the independent emergency stop halts motion after network loss.
 * **SLAM** — deterministic scan/odometry fixtures verify map persistence, planning modes,
   each give-up rung and goal blacklisting. Separate tests hold a goal in continuous
