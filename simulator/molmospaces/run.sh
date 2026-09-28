@@ -74,6 +74,9 @@ do_setup() {
   "$PY" -m molmo_spaces.molmo_spaces_constants
   do_repair
 
+  echo ">> converting the robot meshes MuJoCo cannot read (shared/robot_models.py)"
+  "$PY" "$SHARED_ROOT/robot_models.py" --assets
+
   echo ">> setup complete"
 }
 

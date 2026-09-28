@@ -53,6 +53,10 @@ ADAPTERS = {
     "so101": ("robots.so101", "SO101RobotConfig", "SO101Robot"),
     "myagv": ("robots.myagv", "MyAGVRobotConfig", "MyAGVRobot"),
     "ainex": ("robots.ainex", "AiNexRobotConfig", "AiNexRobot"),
+    "myagv_mycobot280": ("robots.myagv_mycobot280", "MyAGVMyCobot280RobotConfig",
+                         "MyAGVMyCobot280Robot"),
+    "rosmaster_x3_plus": ("robots.rosmaster_x3_plus", "RosmasterX3PlusRobotConfig",
+                          "RosmasterX3PlusRobot"),
 }
 
 #: The object categories that rank the house's surfaces when the worktop is chosen: the
@@ -68,6 +72,10 @@ MOUNT_REACH = {"so101": placement.ARM_REACH, "ainex": (0.11, 0.25)}
 SPAWN_OBJECT_HALF = 0.025
 #: The base footprint the mount search keeps on the worktop.
 MOUNT_FOOTPRINT = 0.14
+#: What the free-floor map is eroded by beyond a floor robot's own radius: the map is
+#: read below the worktops, and their tops overhang the cabinets under them by up to
+#: 0.08 m (iTHOR's island), which a base's deck or an arm reaches into.
+FLOOR_WALL_MARGIN = 0.10
 
 
 def load_robot(name: str):
@@ -352,10 +360,40 @@ class MolmoSpacesEngine:
     def floor_spot(scene, inst, keep_out):
         from tools.scene_placement import describe, find_robot_placement
 
-        found = find_robot_placement(scene.path, model=scene.model, data=scene.data,
-                                     prefer="floor", exclude=tuple(keep_out))
-        print(describe(found), file=sys.stderr)
-        return np.asarray(found.pos[:2], dtype=float), float(found.yaw)
+        # Each keep-out is what another robot claims; this robot's own footprint has to
+        # clear it too, so its centre stays out by its own radius more (RoboCasa's
+        # `find_open_floor` gets the same by measuring clearance at the robot's radius).
+        # When iTHOR's small floor has no free cell outside those (three bases and a
+        # counter's keep-out), the margin between floor robots is given up before the
+        # footprints are: the search would otherwise fall back to ignoring every
+        # keep-out and stand the robot beside another.
+        strict = tuple((np.asarray(xy, dtype=float), r + inst.radius) for xy, r in keep_out)
+        tight = tuple((xy, max(r - placement.FLOOR_MARGIN + placement.GAP, inst.radius))
+                      for xy, r in strict)
+        for exclude in (strict, tight):
+            found = find_robot_placement(scene.path, model=scene.model, data=scene.data,
+                                         prefer="floor", exclude=exclude,
+                                         agent_radius=inst.radius + FLOOR_WALL_MARGIN)
+            spot = np.asarray(found.pos[:2], dtype=float)
+            if all(np.linalg.norm(spot - xy) > r for xy, r in exclude):
+                print(describe(found), file=sys.stderr)
+                return spot, float(found.yaw)
+        # Nowhere on the map clears every footprint: the free cell furthest outside them.
+        from tools.scene_placement import load_scene_map
+
+        free = load_scene_map(scene.path, agent_radius=inst.radius + FLOOR_WALL_MARGIN)
+        pts = free.get_free_points()[:, :2] if free is not None else np.zeros((0, 2))
+        if not len(pts):
+            print(describe(found), file=sys.stderr)
+            return spot, float(found.yaw)
+        margin = np.min([np.linalg.norm(pts - xy, axis=1) - r for xy, r in tight], axis=0)
+        spot = pts[int(np.argmax(margin))]
+        to_centre = pts.mean(axis=0) - spot
+        yaw = float(np.arctan2(to_centre[1], to_centre[0]))
+        print(f"placing robot at ({spot[0]:.2f}, {spot[1]:.2f}) yaw {np.degrees(yaw):.0f} deg "
+              f"[furthest from the robots already placed: {float(margin.max()):+.2f} m]",
+              file=sys.stderr)
+        return spot, yaw
 
     @staticmethod
     def attach(scene, inst) -> None:

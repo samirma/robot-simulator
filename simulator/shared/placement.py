@@ -24,23 +24,31 @@ from typing import Callable
 import mujoco
 import numpy as np
 
-#: Robots driven on three world-aligned virtual joints (x, y, yaw): grafted over the
-#: origin and teleported to their stand. The AiNex's torso rides the same three joints;
-#: its gait is animated over them (see `ros_surfaces/ainex/gait.py`).
-HOLONOMIC_BASE_ROBOTS = frozenset({"myagv", "ainex"})
+#: Every mobile robot (`robots_spec.mobile`: any kind but a fixed arm) is driven on three
+#: world-aligned virtual joints (x, y, yaw): grafted over the origin and teleported to its
+#: stand. The AiNex's torso rides the same three joints; its gait is animated over them
+#: (see `ros_surfaces/ainex/gait.py`).
 
 #: Footprint radius each robot needs kept clear around its base, metres. The myAGV's
 #: chassis is 311 x 230 mm (half-diagonal 0.193 m). The SO-101's is the arm's own sweep
 #: at rest over its base. The AiNex's is a margin over the 0.1711 m footprint measured off
-#: the compiled model at its init pose (`shared/ainex_model.py`).
-ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.19}
+#: the compiled model at its init pose (`shared/ainex_model.py`). The myAGV + myCobot 280
+#: stands on the myAGV's chassis with its arm held upright over the deck, so its footprint
+#: is the myAGV's; the ROSMASTER X3 PLUS's is its arm's reach at the pose its driver
+#: powers up in, 0.262 m forward of its base, measured off the compiled model (its
+#: 300 x 245.6 mm chassis alone would be 0.195 m).
+ROBOT_RADIUS = {"myagv": 0.193, "so101": 0.20, "ainex": 0.19, "myagv_mycobot280": 0.193,
+                "rosmaster_x3_plus": 0.265}
 #: The radius of what a robot stands on -- its base plate, its feet, its wheels -- which
 #: has to have its surface under all of it. Measured off the compiled models: the SO-101's
 #: base body's half-diagonal, the AiNex's two soles at its init pose, the myAGV's chassis.
-SUPPORT_RADIUS = {"so101": 0.10, "ainex": 0.115, "myagv": 0.193}
+SUPPORT_RADIUS = {"so101": 0.10, "ainex": 0.115, "myagv": 0.193,
+                  "myagv_mycobot280": 0.193, "rosmaster_x3_plus": 0.15}
 #: How tall each robot stands over what it stands on: the headroom a worktop spot needs.
-#: The AiNex's is its measured 0.4027 m, sole to crown, and a margin.
-ROBOT_HEIGHT = {"myagv": 0.30, "so101": 0.45, "ainex": 0.41}
+#: The AiNex's is its measured 0.4027 m, sole to crown, and a margin. The composite's is
+#: its upright arm's top over the floor; the X3 PLUS's its published 515 mm.
+ROBOT_HEIGHT = {"myagv": 0.30, "so101": 0.45, "ainex": 0.41, "myagv_mycobot280": 0.72,
+                "rosmaster_x3_plus": 0.52}
 #: How far above its surface a fixed robot's base body is grafted. The SO-101's base
 #: plate meshes hang 2.4 mm below its body origin (the `pos` on base_motor_holder_so101_v1
 #: in the shared MJCF), so an origin exactly on the surface buries the plate in it.
@@ -88,7 +96,10 @@ class Instance:
 
     @property
     def holonomic(self) -> bool:
-        return self.name in HOLONOMIC_BASE_ROBOTS
+        """Driven on the planar joints: every mobile robot in robots.yml."""
+        import robots_spec
+
+        return robots_spec.mobile(self.name)
 
     @property
     def radius(self) -> float:

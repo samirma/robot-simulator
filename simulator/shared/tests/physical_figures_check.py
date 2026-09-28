@@ -40,17 +40,24 @@ import placement_check as pc  # noqa: E402  (puts shared/ on the path)
 import robots_spec  # noqa: E402
 from mujoco_bridge import PlanarSetpoint  # noqa: E402
 from ros_surfaces import myagv as myagv_contract  # noqa: E402
+from ros_surfaces import myagv_mycobot280 as composite_contract  # noqa: E402
+from ros_surfaces import rosmaster_x3_plus as x3_contract  # noqa: E402
 from ros_surfaces import so101 as so101_contract  # noqa: E402
 from ros_surfaces.ainex import gait, servos  # noqa: E402
 from ros_surfaces.ainex import topics as ainex_contract  # noqa: E402
 
 check = pc.check
 
-CONTRACTS = {"myagv": myagv_contract, "so101": so101_contract, "ainex": ainex_contract}
+CONTRACTS = {"myagv": myagv_contract, "so101": so101_contract, "ainex": ainex_contract,
+             "myagv_mycobot280": composite_contract, "rosmaster_x3_plus": x3_contract}
 
 #: The root link of each robot's URDF, and the compiled body that is its frame.
 ROOTS = {"so101": ("base_link", "base"), "myagv": ("base_footprint", "base"),
-         "ainex": ("body_link", "body_link")}
+         "ainex": ("body_link", "body_link"),
+         # The composite's URDF is the arm's (robots.yml `urdf`), rooted at its base plate
+         # on the myAGV's deck; the myAGV's own is checked as the myAGV.
+         "myagv_mycobot280": ("g_base", "g_base"),
+         "rosmaster_x3_plus": ("base_footprint", "base")}
 
 #: URDF link -> compiled body, where the names differ (the official SO-101 files' own
 #: pairing; the AiNex's MJCF is imported from its URDF and keeps the link names).
@@ -61,7 +68,25 @@ LINK_BODIES = {
               "moving_jaw_so101_v1_link": "moving_jaw_so101_v1"},
     # The chassis and its top deck are one body; see RIGID_URDF_JOINTS.
     "myagv": {"base_footprint": "base", "base_up": "base"},
+    # base_footprint is the body the planar joints move.
+    "rosmaster_x3_plus": {"base_footprint": "base"},
 }
+
+#: Robots whose compiled mass is not their URDF's, and why.
+MASS_NOT_URDF = {
+    "myagv": "the myAGV's URDF declares no inertials at all",
+    "myagv_mycobot280": "the arm URDF declares no inertials; the moving links carry the "
+                        "official MJCF's",
+    "rosmaster_x3_plus": "the published 4.35 kg outranks the URDF's 1.37 kg (spec §3); the "
+                         "chassis link carries the difference -- checked as a figure",
+}
+
+#: An official MJCF that is not the simulated robot's own model, and what is taken from
+#: it. The composite's is Elephant's myCobot 280 **JetsonNano** file (robots.yml): the only
+#: official MJCF of a 280, while the robot is a 280 Pi, whose URDF sets its kinematics and
+#: limits (its joint2 stands 18 mm lower on the Pi's shorter base, and four limits differ).
+#: The moving links' inertials -- which the URDF lacks -- are the MJCF's, body for body.
+MJCF_INERTIALS_ONLY = {"myagv_mycobot280": "the 280 JetsonNano's MJCF; the robot is a 280 Pi"}
 
 #: URDF joints the compiled model holds rigid, and why that is the robot. Anything else
 #: missing from the compiled model fails.
@@ -263,6 +288,9 @@ def check_urdf(label: str, robot: str, model, data, pre: str, expected_limits) -
         want_lo, want_hi = expected_limits.get(name, (urdf_lo, urdf_hi))
         within = urdf_lo - 1e-9 <= want_lo and want_hi <= urdf_hi + 1e-9
         same = abs(lower - want_lo) <= 5e-5 and abs(upper - want_hi) <= 5e-5
+        if j["limit"] is None and name not in expected_limits:
+            # A `continuous` joint: unlimited in the compiled model, whatever its range reads.
+            same = not model.jnt_limited[jid]
         narrowed = abs(want_lo - urdf_lo) > 1e-9 or abs(want_hi - urdf_hi) > 1e-9
         why = "" if not narrowed else \
             f" (narrowed from the URDF's [{urdf_lo:g}, {urdf_hi:g}] by the vendor's servo " \
@@ -296,13 +324,34 @@ def check_urdf(label: str, robot: str, model, data, pre: str, expected_limits) -
     bodies = [body_of[link] for link in urdf.links if link in body_of]
     compiled = float(model.body_subtreemass[root])
     declared = sum(urdf.masses.values())
-    if robot != "myagv":  # the myAGV's URDF declares no inertials at all
+    if robot not in MASS_NOT_URDF:
         check(f"{label}: mass is the URDF's", abs(compiled - declared) <= 1e-9 or
               len(bodies) == 0, f"{compiled:.6f} vs {declared:.6f} kg")
 
 
+def check_mjcf_inertials(label: str, robot: str, model, pre: str) -> None:
+    """Every body of an official MJCF that is another model's: its inertial, exactly."""
+    ref = mujoco.MjModel.from_xml_path(str(robots_spec.mjcf_path(robot)))
+    worst, bodies = 0.0, 0
+    for i in range(1, ref.nbody):
+        name = ref.body(i).name
+        k = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, pre + name)
+        check(f"{label}: official body {name} present", k >= 0)
+        if k < 0:
+            continue
+        bodies += 1
+        for field in ("body_mass", "body_inertia", "body_ipos", "body_iquat"):
+            worst = max(worst, float(np.abs(getattr(model, field)[k] - getattr(ref, field)[i]).max()))
+    check(f"{label}: {bodies} bodies carry the official MJCF's inertials ("
+          f"{MJCF_INERTIALS_ONLY[robot]}; kinematics are the URDF's)", worst <= 1e-6,
+          f"worst difference {worst:.1e}")
+
+
 def check_mjcf(label: str, robot: str, model, pre: str) -> None:
     """Every body, inertial and joint of the official MJCF, exactly."""
+    if robot in MJCF_INERTIALS_ONLY:
+        check_mjcf_inertials(label, robot, model, pre)
+        return
     ref = mujoco.MjModel.from_xml_path(str(robots_spec.mjcf_path(robot)))
     worst = 0.0
     bodies = 0
@@ -343,7 +392,7 @@ def measure(robot: str, world, inst) -> dict[str, float]:
     pre = inst.mjcf
     ours = {b for b in range(model.nbody) if model.body(b).name.startswith(pre)}
     out: dict[str, float] = {}
-    if robot == "myagv":
+    if robot in ("myagv", "myagv_mycobot280"):
         base = model.body(f"{pre}base").id
         mujoco.mj_forward(model, data)
         out["length_m"], out["width_m"], out["height_m"] = _visual_extent(
@@ -356,6 +405,34 @@ def measure(robot: str, world, inst) -> dict[str, float]:
         speeds = [_drive(world, inst, *myagv_contract.limit_speed(vx, vy))
                   for vx, vy in ((limit, 0.0), (limit, limit))]
         out["max_speed_mps"] = max(speeds)
+        if robot == "myagv_mycobot280":
+            arm = [model.joint(pre + j).id for j in composite_contract.ARM_JOINTS]
+            out["arm_dof"] = float(sum(
+                1 for j in arm if model.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE
+                and any(model.actuator_trnid[a, 0] == j for a in range(model.nu))))
+    elif robot == "rosmaster_x3_plus":
+        base = model.body(f"{pre}base").id
+        mujoco.mj_forward(model, data)
+        chassis = {model.body(f"{pre}base_link").id}
+        out["width_m"] = float(_visual_extent(model, data, chassis, base)[1])
+        camera = model.body(f"{pre}camera_link").id
+        rot, origin = data.xmat[base].reshape(3, 3), data.xpos[base]
+        top = -np.inf
+        for g in range(model.ngeom):
+            if model.geom_bodyid[g] == camera and model.geom_group[g] == 2:
+                mesh = model.geom_dataid[g]
+                adr, num = model.mesh_vertadr[mesh], model.mesh_vertnum[mesh]
+                verts = model.mesh_vert[adr:adr + num] @ data.geom_xmat[g].reshape(3, 3).T \
+                    + data.geom_xpos[g]
+                top = max(top, float(((verts - origin) @ rot)[:, 2].max()))
+        out["height_m"] = top
+        out["mass_kg"] = float(model.body_subtreemass[base])
+        cam = model.camera(f"{pre}rgb_camera").id
+        width, height = x3_contract.CAMERA_SIZE
+        half = math.tan(math.radians(float(model.cam_fovy[cam])) / 2.0) * width / height
+        out["rgb_hfov_deg"] = math.degrees(2.0 * math.atan(half))
+        lx, ly, _ = x3_contract.CMD_VEL_LIMITS
+        out["max_speed_mps"] = _drive(world, inst, lx, 0.0)
     elif robot == "so101":
         joints = [j for j in range(model.njnt) if model.joint(j).name.startswith(pre)
                   and model.jnt_type[j] == mujoco.mjtJoint.mjJNT_HINGE]

@@ -6,8 +6,9 @@ runs it for its own:
     molmospaces/.venv/bin/python shared/tests/placement_check.py --engine molmospaces
     robocasa/.venv/bin/python    shared/tests/placement_check.py --engine robocasa
 
-For each robot alone, and for the full fleet, it builds the world `kitchen.sh serve`
-builds -- the engine's default scene, every staging flag at its default -- through the
+For each robot alone, the full fleet and the floor robots together, it builds the world
+`kitchen.sh serve` builds -- the engine's default scene, every staging flag at its default --
+through the
 shared spawn tool, without serving it, and checks:
 
 * each robot stands on what its `placement` in robots.yml says: a floor robot on the
@@ -157,7 +158,11 @@ def run(engine_name: str) -> int:
     engine = load_engine(engine_name)
     flags = scene_flags(engine_name)
     ids = list(robots_spec.simulated_ids())
-    for robots in [*ids, ",".join(ids)]:
+    # ...and the floor robots on their own: with no worktop keep-out they have the whole
+    # floor, and three bases on a small kitchen floor is its own search.
+    floor = [i for i in ids if robots_spec.placement(i) == "floor"]
+    fleets = [*ids, ",".join(ids)] + ([",".join(floor)] if len(floor) > 1 else [])
+    for robots in fleets:
         world, log = build(engine, flags, robots)
         examine(f"{engine_name} {robots}", world, log)
     print("all checks passed" if not failures else f"FAILED: {len(failures)} check(s)")

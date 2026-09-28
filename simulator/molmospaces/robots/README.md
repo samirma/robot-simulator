@@ -14,6 +14,11 @@ Reference: `molmospaces/docs/tutorials/add_robot.md`, worked example in
 | `so101` | spawn, view, joint control (local and over the bridge) |
 | `myagv` | spawn, view, holonomic drive, camera stream, keyboard teleop |
 | `ainex` | spawn, view, animated-gait locomotion, two arms + claws, head, action groups |
+| `myagv_mycobot280` | spawn, view, holonomic drive (the myAGV's adapter, `planar_base.py`), arm and gripper held by servos, camera, navigation topics |
+| `rosmaster_x3_plus` | spawn, view, holonomic drive (`planar_base.py`), servo arm + gripper on `/TargetAngle`, lidar, Astra colour/depth/IR and point clouds |
+
+The last two models are written by `shared/robot_models.py` from their URDFs (see its
+docstring); their converted meshes are generated at setup, not committed.
 
 ## What each robot needs
 

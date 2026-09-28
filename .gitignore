@@ -36,6 +36,11 @@ simulator/molmospaces/data/
 # files live in shared/robots/<name>/ precisely so they are not in here.
 simulator/molmospaces/assets/
 
+# Meshes shared/robot_models.py converts for MuJoCo (COLLADA, and STLs over its face
+# limit): derived from robots_specs/ at setup (`run.sh setup`), or on first spawn.
+simulator/shared/robots/myagv_mycobot280/assets/
+simulator/shared/robots/rosmaster_x3_plus/assets/
+
 # RoboCasa / robosuite downloaded assets and macros.
 simulator/robocasa/assets/
 simulator/robocasa/data/

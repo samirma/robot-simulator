@@ -38,6 +38,9 @@ MODELS_DIR = Path(__file__).resolve().parent / "robots"
 
 PACKAGE_PREFIX = "package://"
 
+#: The one `kind` that stays where it is placed; every other kind moves (robots.yml).
+FIXED_KIND = "arm"
+
 
 @dataclass(frozen=True)
 class Robot:
@@ -53,6 +56,11 @@ class Robot:
     mjcf: Path | None
     meshes: tuple[Path, ...]
     ros: Path | None
+
+    @property
+    def mobile(self) -> bool:
+        """Whether it moves about the scene: every kind but a fixed `arm` (robots.yml)."""
+        return self.kind != FIXED_KIND
 
     @property
     def folder(self) -> Path:
@@ -110,6 +118,11 @@ def simulated_ids() -> tuple[str, ...]:
 def placement(robot_id: str) -> str:
     """`floor` or `worktop`."""
     return robot(robot_id).placement
+
+
+def mobile(robot_id: str) -> bool:
+    """Whether the robot moves about the scene, on a planar base or a gait (robots.yml)."""
+    return robot(robot_id).mobile
 
 
 def worktop_ids() -> tuple[str, ...]:

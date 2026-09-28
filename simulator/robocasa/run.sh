@@ -87,6 +87,9 @@ do_setup() {
   # minute of kitchen compile.
   VIRTUAL_ENV="$VENV_DIR" uv pip install websockets
 
+  echo ">> converting the robot meshes MuJoCo cannot read (shared/robot_models.py)"
+  "$PY" "$SHARED_ROOT/robot_models.py" --assets
+
   echo ">> setup complete; run './run.sh assets' to fetch the kitchen assets"
 }
 

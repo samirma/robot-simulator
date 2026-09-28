@@ -11,6 +11,8 @@ the engine's own adapter (`Engine.attach`), compiled, bound and stepped:
 
 * the SO-101's arm tracks a joint target and its jaw closes and opens;
 * the myAGV's planar base drives to a commanded pose;
+* the myAGV + myCobot 280 and the ROSMASTER X3 PLUS drive their planar base the same way,
+  hold their arm at its rest pose while doing so, and an arm servo tracks a target;
 * the AiNex stands on its surface and its head servo tracks a target;
 
 and nothing goes NaN.
@@ -58,7 +60,7 @@ def so101(world, inst) -> None:
           f"closed {closed:.3f}, open {opened:.3f} rad")
 
 
-def myagv(world, inst) -> None:
+def myagv(world, inst, label: str = "myagv") -> None:
     model, data = world.model, world.data
     x, y, yaw = inst.base.xytheta
     # Towards the most open side, read off the bare scene: a house's open floor is often
@@ -71,8 +73,31 @@ def myagv(world, inst) -> None:
     inst.base.ctrl = goal
     settle(model, data, 3.0)
     err = np.abs(inst.base.xytheta - np.array(goal))
-    check(f"{world_label}: myagv base drives to a commanded pose",
+    check(f"{world_label}: {label} base drives to a commanded pose",
           err[:2].max() < 0.02 and err[2] < 0.05, f"err {np.round(err, 4)}")
+
+
+def mobile_arm(world, inst) -> None:
+    """A planar base carrying an arm: the base drives, the arm holds its rest pose while
+    it does, then one arm servo tracks a target."""
+    import spawn
+
+    model, data = world.model, world.data
+    rest = spawn.rest_positions(inst.name)
+    myagv(world, inst, label=inst.name)
+    pos = {j: float(data.qpos[model.jnt_qposadr[model.joint(inst.mjcf + j).id]]) for j in rest}
+    drift = max(abs(pos[j] - q) for j, q in rest.items())
+    check(f"{world_label}: {inst.name} arm holds its rest pose while the base drives",
+          drift < 0.05, f"max drift {drift:.4f} rad")
+    joint = next(iter(rest))
+    act = model.actuator(inst.mjcf + joint).id
+    lo, hi = model.actuator_ctrlrange[act]
+    target = float(np.clip(rest[joint] + 0.4, lo, hi))
+    data.ctrl[act] = target
+    settle(model, data, 2.0)
+    q = float(data.qpos[model.jnt_qposadr[model.joint(inst.mjcf + joint).id]])
+    check(f"{world_label}: {inst.name} servo {joint} tracks a target", abs(q - target) < 0.05,
+          f"{q:.3f} vs {target:.3f} rad")
 
 
 def ainex(world, inst) -> None:
@@ -107,7 +132,8 @@ def main() -> int:
         check(f"{world_label}: attaches and compiles",
               world.model.nu > 0 and not world.problems, "; ".join(world.problems))
         inst = world.instances[0]
-        {"so101": so101, "myagv": myagv, "ainex": ainex}[robot](world, inst)
+        {"so101": so101, "myagv": myagv, "ainex": ainex, "myagv_mycobot280": mobile_arm,
+         "rosmaster_x3_plus": mobile_arm}[robot](world, inst)
         check(f"{world_label}: the state stays finite",
               bool(np.isfinite(world.data.qpos).all() and np.isfinite(world.data.qvel).all()))
     print("all checks passed" if not pc.failures else f"FAILED: {len(pc.failures)} check(s)")
