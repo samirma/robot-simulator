@@ -35,6 +35,7 @@ SOURCES=(
   "myagv|source|myagv/urdf|myagv_urdf/urdf"
   "ainex|source|ainex/meshes|src/ainex_simulations/ainex_description/meshes"
   "myagv_mycobot280|source.arm_description|myagv_mycobot280/urdf/mycobot_280_pi|mycobot_description/urdf/mycobot_280_pi"
+  "myagv_mycobot280|source.arm_description|myagv_mycobot280/urdf/adaptive_gripper|mycobot_description/urdf/adaptive_gripper"
   "myagv_mycobot280|source.arm_mjcf|myagv_mycobot280/meshes_mujoco|meshes_mujoco"
   "rosmaster_x3_plus|source.code_download|rosmaster_x3_plus/meshes|yahboomcar_ws/src/yahboomcar_description/meshes"
 )

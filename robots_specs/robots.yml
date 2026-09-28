@@ -9,7 +9,8 @@
 # id in `base`; its ROS file then `extends` the base's and lists only what it adds.
 # `meshes` is the folder holding the official meshes the URDF/MJCF reference, laid out as
 # upstream, or a list of such folders when the URDF and the MJCF use different ones; a
-# `package://<pkg>/` mesh path resolves to the robot's own folder.
+# `package://<pkg>/` mesh path resolves to the robot's own folder. `gripper` names the
+# vendor accessory gripper a robot is fitted with, when it is not part of the robot itself.
 
 robots:
   - id: myagv
@@ -78,20 +79,25 @@ robots:
     simulated: false
     official_url: https://www.elephantrobotics.com/en/myagv-2023-pi-en/
     base: myagv                  # the base's URDF; no official composite URDF exists
-    urdf: myagv_mycobot280/mycobot_280_pi.urdf   # arm only; the arm is driven over a pymycobot socket, not ROS
-    mjcf: myagv_mycobot280/xml/mycobot_280jn_mujoco.xml   # official myCobot 280 JetsonNano model; Elephant publishes none for the 280 Pi
+    urdf: myagv_mycobot280/mycobot_280_pi_adaptive_gripper.urdf   # arm + gripper; the arm is driven over a pymycobot socket, not ROS
+    mjcf: myagv_mycobot280/xml/mycobot_280jn_mujoco.xml   # official myCobot 280 JetsonNano model, arm only; Elephant publishes none for the 280 Pi
     meshes:
-      - myagv_mycobot280/urdf/mycobot_280_pi   # the URDF's
-      - myagv_mycobot280/meshes_mujoco          # the MJCF's
+      - myagv_mycobot280/urdf/mycobot_280_pi     # the URDF's arm
+      - myagv_mycobot280/urdf/adaptive_gripper   # the URDF's gripper
+      - myagv_mycobot280/meshes_mujoco            # the MJCF's
+    gripper:
+      id: adaptive_gripper
+      name: myCobot Adaptive Gripper
+      official_url: https://shop.elephantrobotics.com/collections/mycobot/products/adaptive-gripper
     ros: myagv_mycobot280/ros.yml
     source:
       repository: https://github.com/elephantrobotics/myagv_ros
       branch: myagv_ros_2023Pi
       revision: c71f3cc574e5ed1973a925238eabe88662cfa701
       arm_description:
-        repository: https://github.com/elephantrobotics/mycobot_ros
-        branch: noetic
-        revision: c0d6fbe8f7d9b18b46a9fcb0b041e5bc2d66196b
+        repository: https://github.com/elephantrobotics/mycobot_ros2   # the only official 280 Pi + gripper URDF; mycobot_ros (ROS 1) has none
+        branch: humble
+        revision: d42ff61a78122c79246623391540d75738b03b23
       arm_mjcf:
         repository: https://github.com/elephantrobotics/mycobot_mujoco
         branch: main
@@ -99,6 +105,8 @@ robots:
     documentation:
       - https://docs.elephantrobotics.com/docs/myagv_pi23_en/7-ExamplesRobotsUsing/7.1-myagvAnd280Pi/7.1.1-SocketCommunication.html
       - https://www.elephantrobotics.com/en/mycobot-280-pi-2023-en/
+      - https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/4-SupportAndService/Accessories/AdaptiveGripper.html
+      - https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/6_gripper.html
 
   - id: rosmaster_x3_plus
     name: ROSMASTER X3 PLUS

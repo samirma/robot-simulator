@@ -4,6 +4,10 @@
 # mount). The two machines have separate computers linked over Wi-Fi. Only the myAGV side runs ROS. The arm is
 # driven over a TCP socket with pymycobot (MyCobotSocket / Server.py on the arm), not through ROS, so the arm
 # adds no topics, services or parameters here.
+# End effector: Elephant's myCobot Adaptive Gripper (robots.yml `gripper`) on the arm's flange. The composite manual
+# itself only shows the integrated suction pump; the gripper is the standard myCobot 280 accessory and has the only
+# official 280 Pi + tool URDF with moving joints. It is opened and closed over the same pymycobot socket as the arm
+# (gripper_commands below); the ROS 2 path in gripper_ros2 is mycobot_ros2's standalone arm stack, not the composite.
 # Boot sequence on the myAGV (manual 7.1.2 section 6.1-6.2):
 #   ./start_ydlidar.sh ; roslaunch myagv_odometry myagv_active.launch ; roslaunch myagv_navigation composite_robot_navigation_active.launch
 # The second launch starts map_server, amcl, move_base (global_planner/GlobalPlanner + base_local_planner/TrajectoryPlannerROS)
@@ -20,12 +24,19 @@ sources:               # every URL a fact below cites, pinned where possible
   - https://github.com/elephantrobotics/myAGV-docs/blob/2510f8a3bd399823dd82088a92b1b2ee62d6d130/MYAGV_PI_2023_EN/7-ExamplesRobotsUsing/7.1-myagvAnd280Pi/7.1.1-SocketCommunication.md
   - https://github.com/elephantrobotics/myAGV-docs/blob/2510f8a3bd399823dd82088a92b1b2ee62d6d130/MYAGV_PI_2023_EN/7-ExamplesRobotsUsing/7.1-myagvAnd280Pi/7.1.2-ArucoCodeVisualCase.md
   - https://docs.elephantrobotics.com/docs/myagv_pi23_en/7-ExamplesRobotsUsing/7.1-myagvAnd280Pi/7.1.2-ArucoCodeVisualCase.html
-  - https://github.com/elephantrobotics/mycobot_ros/tree/c0d6fbe8f7d9b18b46a9fcb0b041e5bc2d66196b         # branch noetic (arm URDF only; arm has no ROS role in the composite)
+  - https://github.com/elephantrobotics/mycobot_ros2/tree/d42ff61a78122c79246623391540d75738b03b23        # branch humble (arm + adaptive gripper URDF, gripper_ros2; the arm has no ROS role in the composite)
+  - https://github.com/elephantrobotics/pymycobot/tree/44d7fb1c34e1d6c3924ec86617e8f9637f449074          # main (MyCobotSocket, MyCobot280Socket, demo/Server_280.py)
+  - https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/6_gripper.html
   - https://github.com/ros/robot_state_publisher/tree/85ed2140a0966f492a038d47f222f593047760c3        # noetic-devel, 1.15.3
   - https://github.com/ros/joint_state_publisher/tree/ccb4446b9092e7f6d7956d7058d17745df7f8475        # noetic-devel
   - https://github.com/ros/geometry/tree/f23e0aa39053a57263615ebb7d603fc97f09707c                     # noetic-devel, tf
 boot_launch: myagv_odometry/launch/myagv_active.launch + myagv_navigation/launch/composite_robot_navigation_active.launch   # both no args; lidar powered first by myagv_odometry/scripts/start_ydlidar.sh
-joints: [base_up]      # only movable joint in /robot_description (myAGV.urdf, continuous). Arm joints joint2_to_joint1 ... joint6output_to_joint6 exist only in mycobot_280_pi.urdf and are not on ROS.
+joints: [base_up]      # only movable joint in /robot_description (myAGV.urdf, continuous). Arm joints joint2_to_joint1 ... joint6output_to_joint6 and the gripper joints exist only in mycobot_280_pi_adaptive_gripper.urdf and are not on ROS.
+gripper_joint: gripper_controller   # driver joint of the gripper in mycobot_280_pi_adaptive_gripper.urdf: revolute about gripper_base z, limits -0.74 .. 0.15 rad
+gripper_mimic_joints: [gripper_base_to_gripper_left2, gripper_left3_to_gripper_left1, gripper_base_to_gripper_right3, gripper_base_to_gripper_right2, gripper_right3_to_gripper_right1]   # <mimic joint="gripper_controller">, multipliers +1, -1, -1, -1, +1, offset 0
+gripper_open: 0.15     # rad on gripper_controller (upper limit) = gripper value 100 = fully open (opening range 20-45 mm per the accessory page)
+gripper_closed: -0.74  # rad on gripper_controller (lower limit) = gripper value 0 = fully closed
+gripper_value_map: value = round((q + 0.74) / 0.89 * 100)   # joint q (rad) -> pymycobot gripper value 0..100, as mycobot_ros2's slider_control_adaptive_gripper.py#L59-L62 maps it
 
 topics:
   # --- map_server_for_test (map_server, map composite_robot_map.yaml) ---
@@ -413,6 +424,53 @@ parameters:
   - name: /move_base/TrajectoryPlannerROS/xy_goal_tolerance
     description: 0.25 m (yaw_goal_tolerance 0.25 rad)
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L26
+
+gripper_commands:
+  # --- pymycobot over the arm's socket: the composite's official arm path, not ROS. The arm (280 Pi) runs pymycobot's
+  # demo/Server_280.py (TCP 9000 -> /dev/ttyAMA0 @ 1000000); the myAGV connects with MyCobotSocket("<arm ip>", 9000)
+  # as in manual 7.1.1. Gripper type 1 = adaptive gripper (the default when omitted). ---
+  - name: set_gripper_state(flag, speed, _type_1=None)
+    client: MyCobotSocket
+    description: "Open or close: flag 0 = open, 1 = close (254 = release, the value pymycobot's check accepts; the docstring says 10); speed 1..100; _type_1 1 = adaptive. Open is arm.set_gripper_state(0, 80, 1), close is arm.set_gripper_state(1, 80, 1), exactly as mycobot_ros2's /set_gripper service does."
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/generate.py#L526
+  - name: set_gripper_value(gripper_value, speed, gripper_type=None)
+    client: MyCobotSocket
+    description: Move to an opening, gripper_value 0 (closed) .. 100 (open), speed 1..100, gripper_type 1 = adaptive; replies when done.
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/generate.py#L545
+  - name: set_gripper_calibration()
+    client: MyCobotSocket
+    description: Take the gripper's current position as its zero (servo value 2048).
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/generate.py#L563
+  - name: get_gripper_value(gripper_type=None)
+    client: MyCobot280Socket
+    description: Current opening, 0..100. MyCobotSocket (the manual's class) decodes the reply but defines no such method at this commit, so reading needs MyCobot280Socket, the same wire protocol to the same Server_280.py.
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/mycobot280socket.py#L483
+  - name: is_gripper_moving()
+    client: MyCobot280Socket
+    description: 1 while the gripper moves, 0 when still, -1 on error.
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/mycobot280socket.py#L501
+  - name: init_gripper()
+    client: MyCobot280Socket
+    description: Initialise the gripper; 1 on success. MyCobot280Socket's set_gripper_state / set_gripper_value (L783, L807) also take is_torque (firmware >= 6.5).
+    source: https://github.com/elephantrobotics/pymycobot/blob/44d7fb1c34e1d6c3924ec86617e8f9637f449074/pymycobot/mycobot280socket.py#L454
+
+gripper_ros2:
+  # --- mycobot_ros2 (humble), the arm's own ROS 2 stack run on the 280 Pi with a serial MyCobot280 (/dev/ttyAMA0 @ 1000000).
+  # NOT started by the composite bringup, which is ROS 1 on the myAGV and reaches the arm only over the socket above. ---
+  - name: /set_gripper
+    type: mycobot_interfaces/srv/GripperStatus
+    node: listen_real_service
+    description: "Request bool status: true opens (set_gripper_state(0, 80, 1)), false closes (set_gripper_state(1, 80, 1)); response bool flag. mycobot_280pi teleop_keyboard.launch.py starts it; the teleop_keyboard node (run on its own) calls it on keys g (open) / h (close)."
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/mycobot_280pi/listen_real_service.py#L186
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    direction: in
+    node: slider_control_adaptive_gripper
+    description: slider_control_adaptive_gripper.launch.py (model mycobot_280_pi_adaptive_gripper.urdf) feeds joint_state_publisher_gui sliders to this node, which sends the six arm angles and maps the gripper position with gripper_value_map to set_gripper_value(value, 80, gripper_type=1). It takes every position after the sixth as the gripper and keeps the last; the URDF's last mimic joint has multiplier +1, so that equals gripper_controller.
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/mycobot_280pi/slider_control_adaptive_gripper.py#L50
+  # KNOWN DEFECT at the pinned commit: mycobot_280pi/setup.py#L61 and #L63 point listen_real_service and
+  # slider_control_adaptive_gripper at the mycobot_280 (M5) package's modules, whose defaults are /dev/ttyUSB0 @ 115200.
+  # The slider launch passes port/baud, so it still reaches /dev/ttyAMA0; teleop_keyboard.launch.py passes none (commented out).
 
 stop_command: >-
   Base: publish a zero geometry_msgs/Twist on /cmd_vel. myagv_odometry_node keeps re-sending the last /cmd_vel every
