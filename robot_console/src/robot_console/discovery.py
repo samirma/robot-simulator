@@ -126,6 +126,10 @@ CAMERA_TYPES: frozenset = frozenset(
     {"sensor_msgs/CompressedImage", "sensor_msgs/msg/CompressedImage"}
 )
 
+#: A raw image stream, in both dialects: a camera of its own on the view page where no
+#: compressed republish sits beside it (the ROSMASTER X3 PLUS's only colour stream).
+RAW_CAMERA_TYPES: frozenset = frozenset({"sensor_msgs/Image", "sensor_msgs/msg/Image"})
+
 
 class DiscoveryError(RuntimeError):
     """No single robot could be picked. The message is what the user is shown."""

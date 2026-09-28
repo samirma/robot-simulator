@@ -2,7 +2,6 @@
 
     teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
               [--speed <m/s>] [--max-speed <m/s>] [--latch]
-              [--safety-timeout <s>] [--no-preflight] [--reinstall]
 
 That synopsis is console spec §2.1, and the parser takes exactly those flags.
 """
@@ -17,7 +16,6 @@ from typing import Optional, Sequence, TextIO
 
 from robot_console import __version__
 from robot_console.robots import MYAGV, PROFILES, TELEOP_ROBOTS
-from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT
 from robot_console.teleop import HOLD_TIMEOUT
 from robot_console.topics import TOPIC_CAMERA, namespaced
 from robot_console.wire import DEFAULT_HOST, DEFAULT_PORT, DEFAULT_URL, add_url_argument, parse_url
@@ -39,10 +37,7 @@ class Options:
     robot: Optional[str] = None
     namespace: Optional[str] = None
     record: Optional[Path] = None
-    preflight: bool = True
-    preflight_timeout: float = 1.5
     latch: bool = False
-    safety_timeout: float = DEFAULT_SAFETY_TIMEOUT
     loop_hz: float = 60.0
     speed: float = 0.0
     max_speed: float = 0.0
@@ -152,16 +147,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--latch", action="store_true",
                         help="a motion key keeps the robot moving until another motion key, "
                              "Space or Esc")
-    parser.add_argument("--safety-timeout", type=positive_seconds,
-                        default=DEFAULT_SAFETY_TIMEOUT, metavar="S",
-                        help="the supervisor stops the robot after this long without a UI "
-                             "heartbeat (default %(default)s)")
-    parser.add_argument("--no-preflight", dest="preflight", action="store_false",
-                        help="skip the check that the wire is reachable")
-    # Handled by bin/teleop.sh before Python starts; accepted here so the same command
-    # line works either way.
-    parser.add_argument("--reinstall", action="store_true",
-                        help="rebuild the venv first (bin/teleop.sh)")
     parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
     return parser
 
@@ -173,9 +158,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> Options:
         robot=args.robot,
         namespace=args.namespace,
         record=Path(args.record) if args.record else None,
-        preflight=args.preflight,
         latch=bool(args.latch),
-        safety_timeout=float(args.safety_timeout),
         speed_request=None if args.speed is None else float(args.speed),
         max_speed_request=None if args.max_speed is None else float(args.max_speed),
     )

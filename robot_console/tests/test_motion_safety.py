@@ -4,7 +4,7 @@ Each test runs the real teleop UI loop in a subprocess (`teleop_driver.py`), wit
 safety supervisor as *its* subprocess, against the in-process fake bridge. The UI drives
 the robot, then something happens to it: it freezes, closes its IPC, quits normally,
 raises, or is sent SIGINT, SIGTERM or SIGKILL. The fake bridge must then receive the
-robot's stop command no later than `--safety-timeout` + 100 ms after the event, three
+robot's stop command no later than the safety timeout + 100 ms after the event, three
 times in total, and nothing after it.
 """
 
@@ -24,7 +24,7 @@ import robot_console
 HERE = Path(__file__).resolve().parent
 SRC = Path(robot_console.__file__).resolve().parents[1]
 DRIVER = HERE / "teleop_driver.py"
-SAFETY_TIMEOUT = 0.25
+SAFETY_TIMEOUT = 0.25   # console spec §2.1, duplicated rather than imported
 SLACK = 0.10
 
 MYAGV_TOPICS = {
@@ -62,8 +62,7 @@ def _env() -> dict:
 def _drive(bridge, tmp_path, event, *, robot="myagv", latch=False, extra=()):
     marker = tmp_path / "marker"
     cmd = [sys.executable, str(DRIVER), "--url", f"ws://127.0.0.1:{bridge.port}",
-           "--event", event, "--marker", str(marker),
-           "--safety-timeout", str(SAFETY_TIMEOUT), *extra]
+           "--event", event, "--marker", str(marker), *extra]
     if latch:
         cmd.append("--latch")
     proc = subprocess.Popen(cmd, env=_env(), stdin=subprocess.DEVNULL,
@@ -272,3 +271,24 @@ def test_the_supervisor_refuses_motion_until_enabled(myagv_bridge):
     finally:
         link.close()
     assert link.stopped_reason == "quit"
+
+
+def test_slam_discovers_even_with_a_namespace_and_names_what_it_found(myagv_bridge):
+    """slam.sh's --namespace narrows the myAGVs /rosapi reports (console spec §2.2): a
+    namespace with no myAGV under it is refused, naming the one that is there."""
+    from robot_console.supervisor import SupervisedLink, SupervisorError
+
+    link = SupervisedLink(f"ws://127.0.0.1:{myagv_bridge.port}", robot="myagv",
+                          namespace="elsewhere", python=sys.executable, discover=True)
+    old = os.environ.get("PYTHONPATH")
+    os.environ["PYTHONPATH"] = _env()["PYTHONPATH"]
+    try:
+        with pytest.raises(SupervisorError, match=r"myagv on /myagv/\*"):
+            link.start()
+    finally:
+        link.close()
+        if old is None:
+            os.environ.pop("PYTHONPATH")
+        else:
+            os.environ["PYTHONPATH"] = old
+    assert myagv_bridge.received_on("/myagv/cmd_vel") == []

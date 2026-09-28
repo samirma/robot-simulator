@@ -1,9 +1,9 @@
 """Command line for the three SLAM modes (console spec §2.2).
 
     slam.sh explore  --out <map-dir> [--namespace <ns>] [--url ws://…]
-                     [--max-duration <s>] [--max-goals <n>] [--safety-timeout <s>]
-    slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
-    slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
+                     [--max-duration <s>] [--max-goals <n>]
+    slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…]
+    slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…]
 
 The parser takes exactly those flags. Everything else in `SlamOptions` is a fixed
 constant of the console (the 0.05 m grid among them), kept as a field so tests can build
@@ -24,7 +24,6 @@ from robot_console.slam.explorer import DEFAULT_MAX_GOALS
 from robot_console.slam.frontier import DISTANCE_BIAS_M
 from robot_console.slam.grid import DEFAULT_RESOLUTION
 from robot_console.slam.planner import ROBOT_RADIUS_M
-from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT
 from robot_console.teleop import HOLD_TIMEOUT, SPEED_DEFAULT, SPEED_MAX
 from robot_console.wire import DEFAULT_URL, add_url_argument, parse_url
 
@@ -40,13 +39,10 @@ class SlamOptions:
     namespace: Optional[str] = None
     out: Optional[Path] = None           # explore, map: where the map is saved/continued
     load: Optional[Path] = None          # navigate: the map to drive on
-    safety_timeout: float = DEFAULT_SAFETY_TIMEOUT
     max_duration: float = DEFAULT_MAX_DURATION
     max_goals: int = DEFAULT_MAX_GOALS
 
     # Fixed by the console, not flags.
-    preflight: bool = True
-    preflight_timeout: float = 1.5
     resolution: float = DEFAULT_RESOLUTION
     max_range: float = 8.0
     robot_radius: float = ROBOT_RADIUS_M
@@ -113,10 +109,6 @@ def _add_mode_arguments(parser: argparse.ArgumentParser, mode: str) -> None:
                             help="hard run limit in seconds (default %(default)s)")
         parser.add_argument("--max-goals", type=_positive_int, default=DEFAULT_MAX_GOALS,
                             metavar="N", help="hard limit on goals attempted (default %(default)s)")
-    parser.add_argument("--safety-timeout", type=positive_seconds,
-                        default=DEFAULT_SAFETY_TIMEOUT, metavar="S",
-                        help="the safety supervisor stops the robot after this long without "
-                             "a UI heartbeat (default %(default)s)")
     parser.add_argument("--version", action="version", version=f"robot_console {__version__}")
 
 
@@ -148,7 +140,6 @@ def parse_args(argv: Optional[Sequence[str]] = None, mode: Optional[str] = None)
         namespace=args.namespace,
         out=Path(args.out) if getattr(args, "out", None) else None,
         load=Path(args.load) if getattr(args, "load", None) else None,
-        safety_timeout=float(args.safety_timeout),
         max_duration=float(getattr(args, "max_duration", DEFAULT_MAX_DURATION)),
         max_goals=int(getattr(args, "max_goals", DEFAULT_MAX_GOALS)),
     )

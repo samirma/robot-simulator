@@ -104,9 +104,6 @@ class GoalBlacklist:
     def count(self, kind: str) -> int:
         return sum(1 for _, k in self.entries if k == kind)
 
-    def expire(self, _now: float) -> None:
-        """Nothing expires: entries leave only through rung 3."""
-
     def __len__(self) -> int:
         return len(self.entries)
 
@@ -117,7 +114,6 @@ class GoalRecord:
 
     point: np.ndarray
     centroid: np.ndarray
-    rung: int
     active_s: float = 0.0
     since_progress_s: float = 0.0
     anchor_distance: float = math.inf
@@ -146,10 +142,6 @@ class Decision:
     spin: float = 0.0
     finished: Optional[str] = None
     rung: Optional[int] = None
-
-    @property
-    def driving(self) -> bool:
-        return self.path is not None
 
 
 class Explorer:
@@ -180,7 +172,6 @@ class Explorer:
         self.records: List[GoalRecord] = []
         self.current: Optional[GoalRecord] = None
         self.attempted = 0
-        self.rung_log: List[int] = []   # the rung each accepted goal came from
         self.flushed = False
         self.swept = False
         self._sweep_until: Optional[float] = None
@@ -330,8 +321,6 @@ class Explorer:
         self.frontiers = choice.frontiers or self.frontiers
         if not choice.found:
             return None
-        if self.blacklist.blocks(choice.frontier.target):
-            return None
         note = "exploring" if rung is Rung.LARGE else f"looking harder (rung {int(rung)})"
         return self._accept(choice.frontier, choice.path, now, rung, area, note)
 
@@ -346,7 +335,7 @@ class Explorer:
             if rec is None:
                 if self.attempted >= self.max_goals:
                     return self._stop(LIMIT, f"{self.attempted} goals attempted")
-                rec = GoalRecord(point=point.copy(), centroid=centroid.copy(), rung=int(rung))
+                rec = GoalRecord(point=point.copy(), centroid=centroid.copy())
                 self.records.append(rec)
                 self.attempted += 1
             if self.current is not None:
@@ -357,7 +346,6 @@ class Explorer:
             rec.area_at_selection = area
             rec.last_seen = now
             self.current = rec
-            self.rung_log.append(int(rung))
         rec.point = point.copy()
         self.goal = point
         self.path = path

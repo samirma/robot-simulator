@@ -187,23 +187,6 @@ def test_ik_lands_where_it_says_it_does(model_and_data) -> None:
         np.testing.assert_allclose(tcp_position(solve.joints), actual, atol=TOLERANCE)
 
 
-def test_both_layouts_pass_the_preflight_reach_gate() -> None:
-    """The grasp and release poses solve from both places the objects may be staged.
-
-    The scripted plan used to prove this on every preflight by solving all 37 of its
-    waypoints; with the plan gone the preflight solves the two that decide a
-    pick-and-place, and this pins that both layouts in ``task.LAYOUTS`` pass it. A
-    layout that failed here would refuse every episode at preflight, which is the
-    right failure -- but it should be found by this test, not by a run.
-    """
-    from robot_console.arm.preflight import _within_reach
-    from robot_console.arm.task import LAYOUTS
-
-    for name, (apple, plate) in LAYOUTS.items():
-        ok, detail = _within_reach(np.asarray(apple), np.asarray(plate))
-        assert ok, f"layout {name!r}: {detail}"
-
-
 def test_level_jaw_roll_actually_levels_the_jaws(model_and_data) -> None:
     model, data = model_and_data
     for angles in sample_poses(seed=17, count=6):

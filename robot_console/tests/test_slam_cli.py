@@ -17,14 +17,15 @@ def _flags(mode):
 
 
 def test_each_mode_takes_exactly_the_spec_flags():
-    common = {"--namespace", "--url", "--safety-timeout"}
+    common = {"--namespace", "--url"}
     assert _flags("explore") == common | {"--out", "--max-duration", "--max-goals"}
     assert _flags("map") == common | {"--out"}
     assert _flags("navigate") == common | {"--map"}
 
 
 @pytest.mark.parametrize("gone", ["--host", "--port", "--timeout", "--stall-timeout",
-                                  "--resolution", "--speed", "--cmd-topic", "--record"])
+                                  "--resolution", "--speed", "--cmd-topic", "--record",
+                                  "--safety-timeout", "--no-preflight", "--reinstall"])
 def test_flags_outside_the_spec_are_rejected(gone):
     with pytest.raises(SystemExit):
         parse_args(["--out", "x", gone, "1"], mode="explore")
@@ -36,7 +37,6 @@ def test_defaults():
     assert options.namespace is None
     assert options.max_duration == DEFAULT_MAX_DURATION == 3600.0
     assert options.max_goals == DEFAULT_MAX_GOALS == 500
-    assert options.safety_timeout == pytest.approx(0.25)
     assert options.resolution == 0.05, "the grid is 0.05 m per cell"
 
 
@@ -56,7 +56,7 @@ def test_the_mode_can_come_from_the_command_line():
 def test_limits_parse_and_must_be_positive():
     options = parse_args(["--out", "x", "--max-duration", "60", "--max-goals", "7"], mode="explore")
     assert (options.max_duration, options.max_goals) == (60.0, 7)
-    for bad in (["--max-duration", "0"], ["--max-goals", "0"], ["--safety-timeout", "-1"]):
+    for bad in (["--max-duration", "0"], ["--max-goals", "0"]):
         with pytest.raises(SystemExit):
             parse_args(["--out", "x", *bad], mode="explore")
 
@@ -105,7 +105,7 @@ def _session(mode="explore", **kw):
 
     options = SlamOptions(mode=mode, out=Path("/tmp/_unused"), **kw)
     return _Session(options, OccupancyGrid(0.05), PoseTracker(), PathFollower(speed=0.2),
-                    MapView(), None, TeleopState(), None)
+                    MapView(), None, TeleopState())
 
 
 def test_rerouting_to_the_same_goal_keeps_the_stuck_watchdog_running():
@@ -129,6 +129,45 @@ def test_explore_does_not_finish_before_any_scan_has_arrived():
     session.tracker.update_odom((0.0, 0.0, 0.0))
     session.decide(now=1.0)
     assert session.finished is None
+
+
+def test_max_duration_bounds_a_run_that_never_gets_a_scan():
+    """The hard limit counts from the first tick, not from the first integrated scan."""
+    session = _session(max_duration=5.0)
+    session.decide(now=1.0)
+    session.decide(now=6.5)
+    assert session.finished == "limit"
+
+
+def test_a_continued_map_keeps_its_stored_pose_until_the_robot_is_placed(tmp_path):
+    from robot_console.slam import mapio
+    from robot_console.slam.app import _Session
+    from robot_console.slam.controller import PathFollower
+    from robot_console.slam.grid import OccupancyGrid
+    from robot_console.slam.mapview import MapView
+    from robot_console.slam.pose import PoseTracker
+    from robot_console.teleop import TeleopState
+
+    grid = OccupancyGrid(0.05)
+    mapio.save_map(grid, tmp_path, pose=(1.0, 2.0, 0.5))
+    options = SlamOptions(mode="map", out=tmp_path)
+    session = _Session(options, grid, PoseTracker(), PathFollower(speed=0.2), MapView(),
+                       None, TeleopState(), seed_pose=(1.0, 2.0, 0.5))
+    session.tracker.update_odom((7.0, 7.0, 0.0))    # odometry, but no scan yet
+    session.save("quit", quiet=True)
+    assert tuple(mapio.load_pose(tmp_path)) == pytest.approx((1.0, 2.0, 0.5))
+
+
+def test_a_map_at_another_resolution_is_refused(tmp_path):
+    from robot_console.slam import mapio
+    from robot_console.slam.app import _initial_grid
+    from robot_console.slam.grid import OccupancyGrid
+
+    mapio.save_map(OccupancyGrid(0.10), tmp_path)
+    for options in (SlamOptions(mode="navigate", load=tmp_path),
+                    SlamOptions(mode="explore", out=tmp_path)):
+        with pytest.raises(SystemExit, match="0.1 m/cell"):
+            _initial_grid(options)
 
 
 def test_the_run_reports_elapsed_time_and_goals():

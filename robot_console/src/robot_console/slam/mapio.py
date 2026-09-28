@@ -27,9 +27,6 @@ from robot_console.slam.grid import (
 )
 
 MAP_NAME = "map"
-PGM_NAME = f"{MAP_NAME}.pgm"
-YAML_NAME = f"{MAP_NAME}.yaml"
-NPZ_NAME = f"{MAP_NAME}.npz"
 
 # map_server's palette: 0 occupied, 254 free, 205 unknown ("negate: 0" semantics).
 PGM_OCCUPIED = 0

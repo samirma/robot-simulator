@@ -99,13 +99,11 @@ def main(argv=None) -> int:
     parser.add_argument("--latch", action="store_true")
     parser.add_argument("--drive-s", type=float, default=1.0)
     parser.add_argument("--key", default="w")
-    parser.add_argument("--safety-timeout", type=float, default=0.25)
     args = parser.parse_args(argv)
 
     options = Options(url=args.url, robot=args.robot, namespace=args.namespace,
-                      latch=args.latch, safety_timeout=args.safety_timeout).in_envelope()
-    link = SupervisedLink(args.url, robot=args.robot, namespace=args.namespace,
-                          safety_timeout=args.safety_timeout)
+                      latch=args.latch).in_envelope()
+    link = SupervisedLink(args.url, robot=args.robot, namespace=args.namespace)
     frontend = ScriptedFrontend(key=args.key, latch=args.latch, drive_s=args.drive_s,
                                 event=args.event, marker=Path(args.marker), link=link)
     return run(options, frontend, link)

@@ -210,8 +210,11 @@ def test_three_cmd_vel_bases_on_one_wire_are_told_apart() -> None:
     assert rejected == []
     for robot in ("myagv", "myagv_mycobot280", "rosmaster_x3_plus"):
         assert choose(found, robot).namespace == robot
-    with pytest.raises(DiscoveryError, match="3 robots match"):
+    with pytest.raises(DiscoveryError, match="3 robots match") as err:
         choose(found)
+    for candidate in ("myagv on /myagv/*", "myagv_mycobot280 on /myagv_mycobot280/*",
+                      "rosmaster_x3_plus on /rosmaster_x3_plus/*"):
+        assert candidate in str(err.value)
     assert choose(found, "rosmaster_x3_plus").camera_topic == \
         "/rosmaster_x3_plus/camera/rgb/image_raw"
 
@@ -392,8 +395,13 @@ def test_the_supervisor_discovers_the_robot(bridge, topics, kwargs, expected) ->
         (lambda: {"/myagv/cmd_vel": "std_msgs/String", "/myagv/odom": "nav_msgs/Odometry"},
          ["std_msgs/String"]),
         (lambda: {"/myagv/cmd_vel": "geometry_msgs/Twist"}, ["missing /myagv/odom"]),
+        (lambda: {**_myagv("myagv"), **_composite("myagv_mycobot280"),
+                  **_x3("rosmaster_x3_plus")},
+         ["myagv on /myagv/*", "myagv_mycobot280 on /myagv_mycobot280/*",
+          "rosmaster_x3_plus on /rosmaster_x3_plus/*"]),
     ],
-    ids=["duplicates", "mixed-fleet", "nothing-drivable", "wrong-type", "missing-topic"],
+    ids=["duplicates", "mixed-fleet", "nothing-drivable", "wrong-type", "missing-topic",
+         "every-cmd_vel-base"],
 )
 def test_the_supervisor_refuses_an_ambiguous_wire_naming_the_candidates(
     bridge, topics, fragments

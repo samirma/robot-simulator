@@ -2,9 +2,9 @@
 # Mapping and navigation for a myAGV, simulated or real.
 #
 #   slam.sh explore  --out <map-dir> [--namespace <ns>] [--url ws://…]
-#                    [--max-duration <s>] [--max-goals <n>] [--safety-timeout <s>]
-#   slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
-#   slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…] [--safety-timeout <s>]
+#                    [--max-duration <s>] [--max-goals <n>]
+#   slam.sh map      --out <map-dir> [--namespace <ns>] [--url ws://…]
+#   slam.sh navigate --map <map-dir> [--namespace <ns>] [--url ws://…]
 #
 #   explore   frontier exploration; ends `explored` or `limit` (3600 s / 500 goals by
 #             default), saves the map either way and reports elapsed time and goals
@@ -14,8 +14,8 @@
 # A map already in --out is continued, from the robot pose saved with it. The namespace is
 # read off the wire (/rosapi) unless --namespace is given; `--namespace ''` asks for the
 # bare contract. Motion goes through the safety supervisor, which stops the robot if this
-# UI stops heartbeating for --safety-timeout, and you are asked first to confirm that an
-# independent physical emergency stop is armed.
+# UI stops heartbeating for the safety timeout (0.25 s), and you are asked first to
+# confirm that an independent physical emergency stop is armed.
 #
 # Keys (the map window must have focus):
 #   W/S forward-back   A/D strafe   Q/E rotate   Space stop/pause
@@ -52,14 +52,15 @@ bootstrap() {
   command -v uv >/dev/null || die "uv not found; install it with
     curl -LsSf https://astral.sh/uv/install.sh | sh
   or set the venv up by hand:
-    python3 -m venv '$VENV_DIR' && '$VENV_DIR/bin/pip' install -e '$CONSOLE_ROOT'"
+    python3 -m venv '$VENV_DIR' && '$VENV_DIR/bin/pip' install -e '$CONSOLE_ROOT[dev,arm]'"
 
   if [ ! -x "$PY" ]; then
     echo ">> creating venv ($VENV_DIR)"
     uv venv --python 3.12 "$VENV_DIR" || uv venv "$VENV_DIR"
   fi
-  echo ">> installing robot_console"
-  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$CONSOLE_ROOT"
+  # .venv is the base plus the dev and arm extras (console spec §3): everything but the VLA.
+  echo ">> installing robot_console[dev,arm]"
+  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$CONSOLE_ROOT[dev,arm]"
   touch "$STAMP"
 }
 
@@ -75,13 +76,6 @@ bootstrap() {
 if [ ! -x "$PY" ] || [ ! -f "$STAMP" ] || [ "$CONSOLE_ROOT/pyproject.toml" -nt "$STAMP" ]; then
   bootstrap
 fi
-
-for arg in "$@"; do
-  if [ "$arg" = "--reinstall" ]; then
-    bootstrap
-    exit 0
-  fi
-done
 
 [ $# -ge 1 ] || { usage; exit 2; }
 

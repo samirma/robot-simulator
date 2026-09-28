@@ -31,32 +31,6 @@ SCORER = "apple_on_plate"
 START_ARM_QPOS: tuple[float, float, float, float, float] = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 
 
-def resolve_instruction(text: str | None = None, path: str | None = None) -> str:
-    """Pick the instruction from a literal, a file, or the task's default."""
-    if text is not None and path is not None:
-        raise ValueError("give either an instruction or a file holding one, not both")
-    if path is not None:
-        from pathlib import Path as _Path
-
-        return _Path(path).read_text(encoding="utf-8").strip()
-    return INSTRUCTION if text is None else text
-
-
-def instruction_warning(instruction: str) -> str | None:
-    """The caveat owed to a run given a non-default instruction, or None.
-
-    Changing the instruction changes what the policy is *told*, not what is *measured*:
-    the scorer grades apple-on-plate whatever the text says.
-    """
-    if instruction == INSTRUCTION:
-        return None
-    return (
-        f"custom instruction: {instruction!r}. The {SCORER} scorer still measures "
-        "apple-on-plate, so a 0 means the apple did not end up released on the plate -- "
-        "not whether the policy did what it was told."
-    )
-
-
 def apple_on_plate_scene(instruction: str = INSTRUCTION) -> Scene:
     return Scene(
         id="apple-on-plate",

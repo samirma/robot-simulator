@@ -22,13 +22,15 @@ from .rig_fixtures import AWAY, PLATE_XY, RESTING, episode, holding, sample
 
 # The pass criterion, duplicated from the spec (§2.3) -- not imported.
 GATE_M, RESTING_Z, Z_TOL, MAX_SPEED, HOLD_S, CLEARANCE_M = 0.08, 0.040, 0.015, 0.01, 1.0, 0.05
+# The synchronization tolerance and the longest gap in the hold, likewise duplicated.
+SYNC_TOL_S, MAX_GAP_S = 0.05, 0.25
 
 
 def test_the_thresholds_are_the_specs() -> None:
     assert (vs.MAX_HORIZONTAL_DIST_M, vs.RESTING_Z_M, vs.Z_TOLERANCE_M, vs.MAX_SPEED_MPS,
             vs.HOLD_SECONDS, vs.FINGER_CLEARANCE_M) == (GATE_M, RESTING_Z, Z_TOL, MAX_SPEED,
                                                        HOLD_S, CLEARANCE_M)
-    assert 0 < vs.SYNC_TOLERANCE_S <= 0.05
+    assert (vs.SYNC_TOLERANCE_S, vs.MAX_SAMPLE_GAP_S) == (SYNC_TOL_S, MAX_GAP_S)
 
 
 def test_the_apple_is_triangulated_from_the_two_views() -> None:

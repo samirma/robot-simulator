@@ -7,6 +7,7 @@ it -- one `/rosapi/topics` call, compared against **the console's own contract
 constants**, namespaced.
 
     python -m robot_console.fleet [--url ws://127.0.0.1:9090]   # validate what is there
+    python -m robot_console.fleet --expect myagv                # ...only this robot id
     python -m robot_console.fleet --dump                        # print every topic, sorted
     python -m robot_console.fleet --rates [--gate]              # time every periodic topic
 
@@ -14,8 +15,8 @@ constants**, namespaced.
 `/cmd_vel` that is not a `geometry_msgs/Twist` is reported rather than counted) and
 checks each against its contract below: every topic its ROS file declares that the
 console expects on the wire, with the declared type, and nothing under its namespace the
-contract does not declare. The legacy `--arm/--base/--humanoid NS` flags still check
-named expectations instead, which is what `run_task.sh` uses.
+contract does not declare. `--expect` narrows that to one robot id, which must be on the
+wire presenting its whole typed contract: `run_task.sh` checks its `--robot` with it.
 
 **Rates** is simulator spec §5's gate. It subscribes, unthrottled, to every periodic
 topic of every member, discards a 5 s warm-up, then observes for the greater of 30 s and
@@ -53,8 +54,8 @@ import time
 from typing import Iterable, Mapping, Optional
 from urllib.parse import urlsplit
 
-from robot_console.ainex_topics import CONTRACT_TOPICS as AINEX_CONTRACT_TOPICS
-from robot_console.topics import CONTRACT_TOPICS, namespaced
+from robot_console.discovery import MEMBER_SIGNATURES
+from robot_console.topics import namespaced
 from robot_console.wire import add_url_argument, parse_url
 
 #: Exit codes, so a shell can tell "nothing there" from "the wrong thing is there".
@@ -64,30 +65,10 @@ EXIT_TRANSPORT = 2
 #: `--rates --gate` measured something outside the gate (or could not measure it).
 EXIT_RATE = 3
 
-
-#: What a mobile base must present, from `topics.py` -- the myAGV contract
-#: (`robots_specs/myagv/ros.yml`): every topic it lists.
-BASE_TOPICS: tuple[str, ...] = tuple(CONTRACT_TOPICS)
-
-#: What a humanoid must present, from `ainex_topics.py` -- the Hiwonder AiNex contract.
-#: A kind of its own rather than a flavour of base: the AiNex is commanded as a walking
-#: state machine and has no `/cmd_vel` or `/odom`.
-HUMANOID_TOPICS: tuple[str, ...] = AINEX_CONTRACT_TOPICS
-
-
-def arm_topics() -> tuple[str, ...]:
-    """What an arm must present, from `arm/ros_settings.py` (imported lazily: the arm's
-    kinematics come with it, and a console without them can still check a base)."""
-    from robot_console.arm import ros_settings as rs
-
-    return (rs.ARM_COMMAND_TOPIC, rs.JOINT_STATES_TOPIC, rs.TF_TOPIC, rs.TF_STATIC_TOPIC)
-
-
-def scene_topics() -> tuple[str, ...]:
-    """What the worktop's fixed camera rig presents, under its own namespace."""
-    from robot_console.arm import ros_settings as rs
-
-    return (rs.OVERHEAD_CAMERA_TOPIC, rs.SIDE_CAMERA_TOPIC)
+#: The `robots_specs/robots.yml` ids of every robot the console holds a contract for:
+#: every `simulated` one, which the workspace parity tests hold to that file. `--expect`
+#: takes one of these, and so does `run_task.sh --robot`.
+ROBOT_IDS: tuple[str, ...] = tuple(kind for kind, _, _ in MEMBER_SIGNATURES)
 
 
 # ------------------------------------------------------------------ the contract, timed
@@ -360,12 +341,6 @@ def required_window_s(expected: Mapping[str, Periodic]) -> float:
 # ------------------------------------------------------------------ validation
 
 
-def missing_for(present: dict[str, str], namespace: str,
-                expected: tuple[str, ...]) -> list[str]:
-    """Which of `expected`, under `namespace`, the wire is not offering."""
-    return [t for t in (namespaced(e, namespace) for e in expected) if t not in present]
-
-
 def contract_of(kind: str) -> dict[str, str]:
     """Every topic the kind's contract requires on the wire, bare, with its type."""
     topics = {name: p.type for name, p in PERIODIC.get(kind, {}).items()}
@@ -387,6 +362,29 @@ def _owned_by(topic: str, namespace: str, others: Iterable[str]) -> bool:
                    and topic.startswith(f"/{o}/") for o in others)
 
 
+def _member_problems(member, present: Mapping[str, str], namespaces: list[str]) -> list[str]:
+    """Every way `member` departs from its kind's contract, one line per wire name."""
+    problems = []
+    if member.kind not in PERIODIC:
+        problems.append(f"{member.describe()}: the console has no rate declaration "
+                        f"for a {member.kind}")
+    for bare, kind_type in sorted(contract_of(member.kind).items()):
+        wire = namespaced(bare, member.namespace)
+        if wire not in present:
+            problems.append(f"{member.describe()}: {wire} is missing")
+        elif present[wire] != kind_type:
+            problems.append(f"{member.describe()}: {wire} is {present[wire] or 'untyped'}, "
+                            f"not {kind_type}")
+    declared = {namespaced(b, member.namespace) for b in _declared(member.kind)}
+    for topic in sorted(present):
+        if "/_action/" in topic or not _owned_by(topic, member.namespace, namespaces):
+            continue
+        if topic not in declared:
+            problems.append(f"{member.describe()}: {topic} is not in its contract, so "
+                            "it has no rate declaration")
+    return problems
+
+
 def validate(present: Mapping[str, str]) -> tuple[list, list[str]]:
     """The discovered members and every way the wire departs from their contracts.
 
@@ -401,24 +399,29 @@ def validate(present: Mapping[str, str]) -> tuple[list, list[str]]:
         problems.append("no fleet member is on the wire (no typed signature topic found)")
     namespaces = [m.namespace for m in members]
     for member in members:
-        if member.kind not in PERIODIC:
-            problems.append(f"{member.describe()}: the console has no rate declaration "
-                            f"for a {member.kind}")
-        for bare, kind_type in sorted(contract_of(member.kind).items()):
-            wire = namespaced(bare, member.namespace)
-            if wire not in present:
-                problems.append(f"{member.describe()}: {wire} is missing")
-            elif present[wire] != kind_type:
-                problems.append(f"{member.describe()}: {wire} is {present[wire] or 'untyped'}, "
-                                f"not {kind_type}")
-        declared = {namespaced(b, member.namespace) for b in _declared(member.kind)}
-        for topic in sorted(present):
-            if "/_action/" in topic or not _owned_by(topic, member.namespace, namespaces):
-                continue
-            if topic not in declared:
-                problems.append(f"{member.describe()}: {topic} is not in its contract, so "
-                                "it has no rate declaration")
+        problems += _member_problems(member, present, namespaces)
     return members, problems
+
+
+def check_expected(present: Mapping[str, str], kind: str) -> tuple[list, list[str]]:
+    """The members of the expected robot id, and every way they depart from their
+    contracts. An id with no typed member on the wire is a problem naming what was found;
+    members of other kinds are not checked."""
+    from robot_console.discovery import find_members
+
+    members, wrong = find_members(present)
+    namespaces = [m.namespace for m in members]
+    found = ", ".join(m.describe() for m in members) or "no fleet member"
+    chosen: list = []
+    problems: list[str] = []
+    matches = [m for m in members if m.kind == kind]
+    if not matches:
+        problems.append(f"no {kind} is on the wire (found: {found})")
+        problems += wrong
+    for member in matches:
+        chosen.append(member)
+        problems += _member_problems(member, present, namespaces)
+    return chosen, list(dict.fromkeys(problems))
 
 
 def expected_rates(members, present: Mapping[str, str]) -> dict[str, Periodic]:
@@ -926,32 +929,6 @@ def measure_rates(url: str, warmup_s: float = WARMUP_S, window_s: Optional[float
 # ------------------------------------------------------------------ the command
 
 
-def _legacy_check(args, present: dict[str, str]) -> int:
-    missing: list[str] = []
-    for namespace in args.base:
-        missing += missing_for(present, namespace, BASE_TOPICS)
-    for namespace in args.humanoid:
-        missing += missing_for(present, namespace, HUMANOID_TOPICS)
-    for namespace in args.arm:
-        missing += missing_for(present, namespace, arm_topics())
-    # The rig is the worktop's, staged for every robot that stands at one.
-    if args.arm or args.humanoid:
-        from robot_console.arm import ros_settings as rs
-
-        missing += missing_for(present, rs.SCENE_NAMESPACE, scene_topics())
-    if missing:
-        print(f"{args.url} is missing {len(missing)} expected topic(s):")
-        for topic in missing:
-            print(f"  {topic}")
-        print(f"it offers {len(present)}: {', '.join(sorted(present))}")
-        return EXIT_MISSING
-    robots = [f"arm {ns or '<bare>'}" for ns in args.arm]
-    robots += [f"base {ns or '<bare>'}" for ns in args.base]
-    robots += [f"humanoid {ns or '<bare>'}" for ns in args.humanoid]
-    print(f"{args.url}: {len(present)} topics, all expected ones present ({'; '.join(robots)})")
-    return EXIT_OK
-
-
 def main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m robot_console.fleet",
@@ -968,12 +945,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="with --rates: observe for S seconds instead of the required "
                              "window; shorter than required fails")
     parser.add_argument("--warmup", type=float, default=WARMUP_S, help=argparse.SUPPRESS)
-    parser.add_argument("--arm", action="append", default=[], metavar="NS",
-                        help="legacy: an SO-101 is expected under NS (and the rig); repeatable")
-    parser.add_argument("--base", action="append", default=[], metavar="NS",
-                        help="legacy: a myAGV is expected under NS; repeatable")
-    parser.add_argument("--humanoid", action="append", default=[], metavar="NS",
-                        help="legacy: an AiNex is expected under NS (and the rig); repeatable")
+    parser.add_argument("--expect", choices=ROBOT_IDS, default=None, metavar="ID",
+                        help="check only this robot id, which must be on the wire with its "
+                             f"whole typed contract (one of {', '.join(ROBOT_IDS)})")
     parser.add_argument("--timeout", type=float, default=10.0)
     args = parser.parse_args(argv)
     if args.gate and not args.rates:
@@ -998,10 +972,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         for topic in sorted(present):
             print(f"{topic}\t{present[topic]}")
         return EXIT_OK
-    if args.arm or args.base or args.humanoid:
-        return _legacy_check(args, present)
-
-    members, problems = validate(present)
+    if args.expect is not None:
+        members, problems = check_expected(present, args.expect)
+    else:
+        members, problems = validate(present)
     for member in members:
         print(f"  {member.describe()}")
     if problems:

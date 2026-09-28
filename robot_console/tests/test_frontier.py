@@ -65,7 +65,6 @@ def test_a_map_with_no_unknown_space_has_no_frontiers():
     grid.data[:, 0] = 5.0
     grid.data[:, -1] = 5.0
     assert frontier.find_frontiers(grid) == []
-    assert frontier.is_complete(grid)
 
 
 def test_speckle_is_not_a_frontier():
@@ -229,49 +228,20 @@ def test_the_incumbent_goal_wins_a_tie():
     assert max(held, key=lambda f: f.centroid[0]).utility > far.utility
 
 
-# ------------------------------------------------------------------ blacklist
-
-
-def test_a_blacklisted_goal_comes_back_after_its_ttl():
-    """Append-only suppression is why whole rooms went unmapped."""
-    bl = frontier.Blacklist(ttl=10.0, strikes=3)
-    bl.strike((1.0, 1.0), now=0.0)
-    assert bl.blocks((1.0, 1.0), now=5.0)
-    assert not bl.blocks((1.0, 1.0), now=20.0)
-
-
-def test_repeated_failures_make_suppression_permanent():
-    bl = frontier.Blacklist(ttl=10.0, strikes=2)
-    bl.strike((1.0, 1.0), now=0.0)
-    bl.strike((1.0, 1.0), now=1.0)
-    assert bl.blocks((1.0, 1.0), now=10_000.0)
-
-
-def test_suppression_does_not_span_a_doorway():
-    """A doorway is ~0.8 m; the old 0.5 m radius sealed one from a single strike."""
-    bl = frontier.Blacklist()
-    bl.strike((0.0, 0.0), now=0.0)
-    assert not bl.blocks((0.0, 0.45), now=1.0)
-
-
-def test_expire_drops_stale_entries_but_keeps_struck_out_ones():
-    bl = frontier.Blacklist(ttl=10.0, strikes=2)
-    bl.strike((0.0, 0.0), now=0.0)
-    bl.strike((5.0, 5.0), now=0.0)
-    bl.strike((5.0, 5.0), now=0.0)
-    bl.expire(now=100.0)
-    assert len(bl) == 1
-    assert bl.blocks((5.0, 5.0), now=100.0)
-
-
-def test_clearing_the_blacklist_frees_everything():
-    bl = frontier.Blacklist()
-    bl.strike((1.0, 1.0), now=0.0)
-    bl.clear()
-    assert not bl.blocks((1.0, 1.0), now=0.0)
-
-
 # ------------------------------------------------------------------ outcomes
+
+
+def test_a_blacklisted_goal_leaves_the_rungs_other_frontiers_in_play():
+    """A rung is tried in full: the best cluster's goal being blacklisted must not hide
+    the others and send the explorer up the ladder early."""
+    grid = half_seen_room()
+    cost = CostMap(grid, allow_unknown=True)
+    best = frontier.survey(grid, cost, (1.0, 1.0, 0.0), min_cells=1)
+    assert best.found
+    again = frontier.survey(grid, cost, (1.0, 1.0, 0.0), min_cells=1,
+                            blacklist=[best.frontier.goal])
+    assert again.found
+    assert np.hypot(*(again.frontier.goal - best.frontier.goal)) >= frontier.BLACKLIST_RADIUS_M
 
 
 def test_a_finished_map_is_reported_as_finished():
@@ -286,10 +256,7 @@ def test_a_suppressed_map_is_not_reported_as_finished():
     grid = half_seen_room()
     cost = CostMap(grid, allow_unknown=True)
     ranked = frontier.rank_frontiers(grid, distance_field(cost, (1.0, 1.0)))
-    bl = frontier.Blacklist(radius=50.0)
-    bl.strike(ranked[0].centroid, now=0.0)
-    for f in ranked:
-        bl.strike(f.centroid, now=0.0)
+    bl = [f.centroid for f in ranked]
     choice = frontier.survey(grid, cost, (1.0, 1.0, 0.0), blacklist=bl, now=1.0)
     assert choice.reason == "blacklisted"
 
@@ -331,19 +298,6 @@ def test_a_large_enclosed_region_is_a_room_not_a_hole():
     assert frontier.unknown_pockets(grid, max_cells=400) == []
 
 
-# ------------------------------------------------------------------ compatibility
-
-
-def test_choose_goal_accepts_its_optional_kwargs():
-    """`snap_to_frontier_cell` and `max_candidates` used to be a TypeError."""
-    grid = half_seen_room()
-    target, path = frontier.choose_goal(
-        grid, CostMap(grid, allow_unknown=True), (1.0, 1.0, 0.0),
-        snap_to_frontier_cell=True, max_candidates=12,
-    )
-    assert target is not None and path is not None
-
-
 def test_explored_area_counts_only_known_cells():
     grid = OccupancyGrid(0.1, width=10, height=10, origin=(0.0, 0.0))
     assert frontier.explored_area(grid) == 0.0
@@ -353,13 +307,3 @@ def test_explored_area_counts_only_known_cells():
 
 def test_explored_area_grows_as_the_room_is_seen():
     assert frontier.explored_area(mapped_room()) > frontier.explored_area(half_seen_room())
-
-
-def test_approach_point_stops_short_of_the_frontier():
-    p = frontier.approach_point((5.0, 0.0), (0.0, 0.0, 0.0), standoff=1.0)
-    assert p == pytest.approx([4.0, 0.0])
-
-
-def test_approach_point_does_not_overshoot_backwards():
-    p = frontier.approach_point((0.5, 0.0), (0.0, 0.0, 0.0), standoff=2.0)
-    assert p == pytest.approx([0.5, 0.0])

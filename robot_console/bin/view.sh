@@ -3,7 +3,6 @@
 #
 #   ./bin/view.sh                          the fleet on ws://127.0.0.1:9090
 #   ./bin/view.sh --url ws://10.0.0.7:9090 ...on another wire
-#   ./bin/view.sh --http-port 8791         serve the page on a fixed port (default: any free one)
 #   ./bin/view.sh --no-open                print the page's address instead of opening it
 #
 # One static page, `live_cameras.html`, which speaks rosbridge from the browser. It is told
@@ -23,18 +22,16 @@ CONSOLE_ROOT="$(dirname "$BIN_DIR")"
 PAGE="$CONSOLE_ROOT/live_cameras.html"
 
 URL="ws://127.0.0.1:9090"
-HTTP_PORT=0
+HTTP_PORT=0   # any free port
 OPEN=1
 
 die() { echo "error: $*" >&2; exit 2; }
-usage() { sed -n '2,15p' "$_self" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,14p' "$_self" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --url) [ $# -ge 2 ] || die "--url needs a value"; URL="$2"; shift 2 ;;
     --url=*) URL="${1#--url=}"; shift ;;
-    --http-port) [ $# -ge 2 ] || die "--http-port needs a value"; HTTP_PORT="$2"; shift 2 ;;
-    --http-port=*) HTTP_PORT="${1#--http-port=}"; shift ;;
     --no-open) OPEN=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
@@ -45,7 +42,6 @@ case "$URL" in
   ws://?*|wss://?*) ;;
   *) die "--url must be ws://<host>:<port> or wss://..., got '$URL'" ;;
 esac
-case "$HTTP_PORT" in ''|*[!0-9]*) die "--http-port must be a number" ;; esac
 [ -f "$PAGE" ] || die "missing $PAGE"
 command -v python3 >/dev/null || die "python3 not found"
 

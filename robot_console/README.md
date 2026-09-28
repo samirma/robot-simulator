@@ -1,7 +1,8 @@
 # robot_console
 
 Keyboard teleoperation, mapping and navigation for a [myAGV], over rosbridge. Teleop
-also drives a Hiwonder AiNex — see [`--robot`](#--robot).
+drives every mobile robot in `robots_specs/robots.yml` (every `kind` but `arm`): the myAGV,
+the myAGV + myCobot 280, the ROSMASTER X3 PLUS and the Hiwonder AiNex.
 
 The console is an independent project. Its base dependencies are `numpy`,
 `opencv-python`, and `roslibpy`, so it installs and runs on a machine that has never
@@ -30,12 +31,12 @@ cd robot_console
 ./bin/teleop.sh --robot ainex          # a different robot; see below
 ```
 
-The first run creates `.venv` and installs the package; after that `bin/teleop.sh` is
-just a launcher. It re-installs by itself when `pyproject.toml` changes, and
-`--reinstall` forces it.
+The first run creates `.venv` and installs the package with its `dev` and `arm` extras
+(everything but the VLA); after that `bin/teleop.sh` is just a launcher. It re-installs
+by itself when `pyproject.toml` changes.
 
-Before connecting it checks that something is listening, and prints how to start each
-kind of robot when nothing is. `--no-preflight` skips the check.
+The robot and its namespace are read off the wire's `/rosapi`; a wire that cannot be
+reached, or that holds no single drivable robot, is an error naming what was found.
 
 ## Entry points
 
@@ -43,15 +44,16 @@ Every one takes `--url ws://<host>:<port>` (default `ws://127.0.0.1:9090`).
 
 | Command | What it does |
 |---|---|
-| `bin/teleop.sh` | Keyboard teleoperation of a myAGV or an AiNex, with live camera |
+| `bin/teleop.sh` | Keyboard teleoperation of a mobile robot (every kind but `arm`), with live camera |
 | `bin/slam.sh` | Mapping (`explore`, `map`) and goal navigation (`navigate`) for a myAGV |
 | `run_task.sh` | The SO-101 `apple_on_plate` task over N episodes, graded |
 | `bin/view.sh` | Browser page with every camera on the wire and per-robot controls |
 
 `bin/view.sh` serves one static page, `live_cameras.html`, on `127.0.0.1` and opens it
-(`--no-open` prints the address instead; `--http-port` fixes the port). The page speaks
+on a free port (`--no-open` prints the address instead). The page speaks
 rosbridge itself and is told only the URL: members and cameras come from `/rosapi`,
-matched by name and type in both ROS dialects. A robot's panel sends nothing until its
+matched by name and type in both ROS dialects (a raw `Image` stream with no compressed
+republish beside it, like the ROSMASTER X3 PLUS's, is drawn throttled). A robot's panel sends nothing until its
 **Enable control** box is ticked, and then only bounded commands on the robot's official
 interface: SO-101 trajectory and gripper goals, the AiNex's head and action groups. There
 is no myAGV drive and no AiNex walk — use `bin/teleop.sh`, which guarantees the stop a
@@ -110,7 +112,7 @@ cd ../simulator && ./kitchen.sh serve --robots so101       # one terminal
 
 In order it installs `.venv-vla` (below), waits for the members' topics, checks each
 member's typed interface (the SO-101 and the rig with `python -m robot_console.arm.preflight
-check`, the other `--robots` with `python -m robot_console.fleet`), then per episode calls
+check`, any other `--robot` with `python -m robot_console.fleet --expect`), then per episode calls
 the SO-101's `/reset` (a `success: false` aborts the run), runs `inspect-robot` and grades
 the episode's log with the scorer. It refuses a wire without `/reset` or the rig, so the
 task never runs on hardware. `run_task.sh --help` lists the flags.
@@ -152,8 +154,9 @@ torch-free `.venv`.
 ```
 
 - **explore** picks the boundary between mapped and unmapped space, plans to it, drives
-  there, and repeats. It terminates because a map with no frontiers left is finished by
-  definition. `Space` pauses; any drive key takes over.
+  there, and repeats. It ends `explored` once the give-up ladder (spec §2.2) finds nothing
+  left, or `limit` at `--max-duration` (3600 s) or `--max-goals` (500), saving the map
+  either way. `Space` pauses; any drive key takes over.
 - **map** is `teleop.sh` with a map window beside the camera. `M` saves without quitting.
 - **navigate** loads a saved map and localizes into it by scan matching, so the robot
   does not have to be put back where the mapping run started. Left click sets a goal,
@@ -208,18 +211,21 @@ the default speed. The vendor's own teleop makes the same trade at 0.52 s. If yo
 keyboard repeat is disabled or unusually slow, pass `--latch`, where a direction
 persists until `Space`, `Esc` or another motion key.
 
-`+`/`-` step the speed by 0.05 m/s between 0.05 and 0.28; `=` and `_` work too, since
+`+`/`-` step the speed within the robot's envelope (below); `=` and `_` work too, since
 `+` and `_` need shift on most layouts.
 
 Closing the window with its close button quits as cleanly as `Esc` does.
 
 ## Speeds
 
-| | Value | Source |
-|---|---|---|
-| Default | 0.15 m/s | conservative indoor pace |
-| Range | 0.05 – 0.28 m/s | 0.28 is the real myAGV's top speed |
-| Turn rate | `speed x 2`, capped at 1.0 rad/s | the vendor teleop pairs 0.25 m/s with 0.5 rad/s and caps turn at 1.0 |
+| Robot | Default | Cap | Step | Turn rate |
+|---|---|---|---|---|
+| myAGV, myAGV + myCobot 280 | 0.15 m/s | 0.28 m/s (the real myAGV's top speed) | 0.05 | `speed x 2.0` rad/s |
+| ROSMASTER X3 PLUS | 0.20 m/s | 0.70 m/s (its board's input range) | 0.05 | `speed x 5.0`, capped at 3.2 rad/s |
+| AiNex | 0.10 m/s | 0.20 m/s (mapped onto the gait's step amplitude) | 0.02 | `speed x 4.0`, capped at 1.0 rad/s |
+
+The myAGV's turn rate is also capped at 1.0 rad/s, as the vendor teleop caps it; at its
+0.28 m/s top speed the cap is never reached.
 
 One knob scales the whole envelope, so a drive rehearsed in the simulator behaves the
 same on hardware. `--max-speed` raises the cap and warns when it goes above the
@@ -303,8 +309,8 @@ it received in a global and writes it to the motors at 100 Hz forever, and a wal
 AiNex walks until told `stop`. So the UI never publishes motion itself: a separate
 **safety supervisor** process (`robot_console/supervisor.py`) owns the rosbridge
 connection and every motion publication, and the UI sends it desired commands and a
-heartbeat over a pipe. If the heartbeat, the UI process or the pipe goes away for
-`--safety-timeout` (0.25 s), the supervisor sends the robot's `stop_command` from its ROS
+heartbeat over a pipe. If the heartbeat, the UI process or the pipe goes away for the
+safety timeout (a fixed 0.25 s), the supervisor sends the robot's `stop_command` from its ROS
 file three times, 50 ms apart, and exits -- as it does on `Esc`, window close, an
 exception, and `SIGINT`/`SIGTERM`. Before any motion, teleop and every `slam.sh` mode ask
 you to confirm that an independent physical emergency stop or motor-power dead-man is
@@ -313,7 +319,7 @@ armed: that device, not software, is the protection against host failure or netw
 ## Checks
 
 ```bash
-uv pip install -e '.[dev]'
+uv pip install -e '.[dev,arm]'          # what bin/teleop.sh installs on its first run
 .venv/bin/python -m pytest              # offline; no robot, no display
 
 .venv/bin/python -m robot_console.smoke # live; drives the robot ~0.3 m each way
@@ -321,7 +327,7 @@ uv pip install -e '.[dev]'
 
 The offline suite covers the keymap and latch semantics, the speed model, JPEG decode
 and its corruption cases, the frame mailbox under concurrency, odometry quaternion
-maths, the recorder schema and video output, preflight, and CLI parsing. It also
+maths, the recorder schema and video output, discovery, and CLI parsing. It also
 round-trips `RobotLink` against `tests/fake_bridge.py`, a small independent rosbridge
 implementation, which proves the bytes `roslibpy` emits are the bytes the server
 accepts -- without needing the simulator checkout.
@@ -357,7 +363,6 @@ src/robot_console/
   robots.py                --robot: one RobotProfile per robot, resolved lazily
   ainex_link.py            the AiNex's gait, behind a RobotLink-shaped API
   recorder.py              feed.mp4 + commands.jsonl
-  preflight.py             reachability probe + startup instructions
   wire.py                  --url parsing, shared by every entry point
   supervisor.py            the safety supervisor process: the only motion publisher
   discovery.py             which members are on the wire, by typed signature

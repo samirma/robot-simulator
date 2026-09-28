@@ -109,6 +109,16 @@ def test_the_path_starts_and_ends_where_it_was_asked_to(corridor):
     assert path[-1] == pytest.approx([5.0, 3.0])
 
 
+def test_a_goal_snapped_out_of_a_wall_ends_at_the_open_cell_not_in_the_wall(corridor):
+    """The last leg of a snapped goal must not run into what the plan treats as blocked."""
+    cost = CostMap(corridor)
+    goal = (2.0, 0.12)
+    assert cost.is_blocked(cost.world_to_cell(goal))
+    path = plan(cost, (1.0, 2.0), goal)
+    assert path is not None
+    assert not cost.is_blocked(cost.world_to_cell(path[-1]))
+
+
 def test_a_straight_run_collapses_to_two_points(corridor):
     path = plan(CostMap(corridor), (1.0, 2.0), (2.5, 2.0))
     assert len(path) == 2, "a staircase of waypoints makes the base weave"

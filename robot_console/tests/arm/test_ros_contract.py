@@ -110,9 +110,10 @@ def test_only_the_robots_that_boot_with_a_tree_are_required_to_have_one() -> Non
     """
     from robot_console.ainex_topics import CONTRACT_TOPICS
     from robot_console.arm.ros_settings import TF_STATIC_TOPIC, TF_TOPIC
-    from robot_console.fleet import BASE_TOPICS, arm_topics
+    from robot_console.fleet import contract_of
     from robot_console.topics import TOPIC_TF, TOPIC_TF_STATIC
 
     assert TOPIC_TF not in CONTRACT_TOPICS and TOPIC_TF_STATIC not in CONTRACT_TOPICS
-    assert TOPIC_TF in BASE_TOPICS and TOPIC_TF_STATIC in BASE_TOPICS
-    assert {TF_TOPIC, TF_STATIC_TOPIC} <= set(arm_topics())
+    assert TOPIC_TF not in contract_of("ainex") and TOPIC_TF_STATIC not in contract_of("ainex")
+    assert TOPIC_TF in contract_of("myagv") and TOPIC_TF_STATIC in contract_of("myagv")
+    assert {TF_TOPIC, TF_STATIC_TOPIC} <= set(contract_of("so101"))

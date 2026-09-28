@@ -27,7 +27,6 @@ import numpy as np
 
 from robot_console.camera import LatestFrame, decode_image
 from robot_console.hud import draw_overlay, placeholder as camera_placeholder
-from robot_console.preflight import preflight
 from robot_console.robots import SLAM_ROBOT
 from robot_console.slam import frontier as frontier_mod
 from robot_console.slam import mapio
@@ -39,7 +38,7 @@ from robot_console.slam.mapview import MapView, placeholder as map_placeholder
 from robot_console.slam.planner import CLEARANCE_M, CostMap, costmap_for, plan
 from robot_console.slam.pose import PoseTracker
 from robot_console.slam.scan import LaserScan, parse_scan, scan_points, transform_points
-from robot_console.supervisor import SupervisedLink, SupervisorError
+from robot_console.supervisor import SAFETY_TIMEOUT, SupervisedLink, SupervisorError
 from robot_console.teleop import Action, Command, TeleopState, action_for_key
 
 MAP_WINDOW = "robot_console - map"
@@ -98,17 +97,13 @@ class _Budget:
                 print(
                     f"\nwarning: SLAM ticks are taking up to {self.worst * 1000:.0f} ms, "
                     f"close to the safety timeout; the supervisor stops the robot on a "
-                    f"missed heartbeat. Raise --safety-timeout if this is expected.",
+                    f"missed heartbeat.",
                     file=stream,
                 )
 
 
 def run(options: SlamOptions) -> int:
     from robot_console.app import ESTOP_PROMPT, CvFrontend
-
-    if options.preflight and not preflight(options.host, options.port,
-                                           timeout=options.preflight_timeout):
-        return 2
 
     try:
         grid, seed_pose = _initial_grid(options)
@@ -121,8 +116,9 @@ def run(options: SlamOptions) -> int:
               file=sys.stderr)
         return 2
 
+    # Always discovered: --namespace narrows the myAGVs /rosapi reports (console spec §2.2).
     link = SupervisedLink(options.url, robot=SLAM_ROBOT, namespace=options.namespace,
-                          safety_timeout=options.safety_timeout)
+                          discover=True)
     try:
         ready = link.start()
     except SupervisorError as exc:
@@ -174,9 +170,9 @@ def _run(options: SlamOptions, grid: OccupancyGrid, seed_pose, link: SupervisedL
         except (ValueError, OSError):
             pass
 
-    session = _Session(options, grid, tracker, follower, view, link, state, None,
+    session = _Session(options, grid, tracker, follower, view, link, state,
                        seed_pose=seed_pose)
-    budget = _Budget(options.safety_timeout / 2.0)
+    budget = _Budget(SAFETY_TIMEOUT / 2.0)
     tick_ms = max(1, int(1000.0 / options.loop_hz))
     last_status = 0.0
     last_autosave = time.monotonic()
@@ -303,7 +299,7 @@ class _Session:
     """Per-mode behaviour, kept out of the loop above so the loop stays readable and so a
     whole run can be driven offline (`tests/simworld.py`)."""
 
-    def __init__(self, options, grid, tracker, follower, view, link, state, recorder,
+    def __init__(self, options, grid, tracker, follower, view, link, state,
                  *, seed_pose=None):
         self.options = options
         self.grid: OccupancyGrid = grid
@@ -312,7 +308,6 @@ class _Session:
         self.view: MapView = view
         self.link = link
         self.state: TeleopState = state
-        self.recorder = recorder
 
         self.scan: Optional[LaserScan] = None
         self.points = np.empty((0, 2))
@@ -398,7 +393,10 @@ class _Session:
         return self._area_cache[1]
 
     def decide(self, now: float) -> Command:
-        if self.options.mode == "explore" and self.finished is None and self.started is not None:
+        if self.options.mode == "explore" and self.started is None:
+            # From the first tick, so a run that never gets data still ends at the limit.
+            self.started = now
+        if self.options.mode == "explore" and self.finished is None:
             if now - self.started >= self.options.max_duration:
                 self._apply(self.explorer.stop_for_limit(
                     f"--max-duration {self.options.max_duration:g} s reached"))
@@ -426,8 +424,6 @@ class _Session:
         if not self.tracker.has_odom or self.integrated == 0:
             # Nothing mapped yet: "no frontiers" would mean "no data", not "finished".
             return Command()
-        if self.started is None:
-            self.started = now
         pose = self.tracker.pose
         self.activity = "explore"
 
@@ -554,9 +550,13 @@ class _Session:
         if self.options.mode == "navigate" and reason != "manual":
             # The navigated map is the user's artefact; only M overwrites it.
             return None
+        if not self._localized:
+            # Not yet placed in the continued map: the pose stored with it still holds.
+            pose = self._seed_pose
+        else:
+            pose = self.tracker.pose if self.tracker.has_odom else None
         try:
-            path = mapio.save_map(self.grid, target,
-                                  pose=self.tracker.pose if self.tracker.has_odom else None)
+            path = mapio.save_map(self.grid, target, pose=pose)
         except OSError as exc:
             print(f"\nwarning: could not save map: {exc}", file=sys.stderr)
             return None
@@ -620,6 +620,10 @@ def _initial_grid(options: SlamOptions):
                 )
             print(f"warning: could not load {source} ({exc}); starting a new map", file=sys.stderr)
         else:
+            if not math.isclose(grid.resolution, options.resolution):
+                raise SystemExit(
+                    f"error: {source} is a {grid.resolution:g} m/cell map; the console maps "
+                    f"at {options.resolution:g} m/cell")
             pose = mapio.load_pose(source)
             print(f"loaded map from {source}: {mapio.describe(source)}"
                   + ("" if pose is None else

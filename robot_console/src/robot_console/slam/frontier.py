@@ -61,17 +61,6 @@ FRONTIER_STANDOFF_M = 0.35
 # behind it for the rest of the run.
 BLACKLIST_RADIUS_M = 0.25
 
-# Suppression decays. A frontier abandoned because someone walked past, or because the pose
-# estimate was briefly bad, has to become available again or the map ends up with holes
-# that no amount of driving can fill.
-BLACKLIST_SECONDS = 45.0
-BLACKLIST_STRIKES = 2
-
-# How many TTLs a single-strike entry is remembered for. Suppression lapses after one TTL;
-# the *tally* has to outlive that, or a frontier revisited every couple of minutes never
-# accumulates a second strike and never becomes permanent.
-FORGET_MULTIPLE = 10.0
-
 # A goal nearer than this is one the robot has effectively already reached: the follower
 # calls anything inside `controller.ARRIVAL_M` arrived, so issuing one just burns a tick.
 # Comfortably above that threshold, so a goal is always worth the drive.
@@ -132,93 +121,11 @@ class GoalChoice:
         return self.frontier is not None and self.path is not None
 
 
-class Blacklist:
-    """Goals that failed, forgotten again after a while.
-
-    Append-only suppression is why exploration used to leave whole rooms unmapped: a goal
-    abandoned once stayed abandoned for the session, and the radius was wide enough that a
-    single entry could cover a doorway. Here an entry has to earn permanence -- it expires
-    on a timer unless it has failed `strikes` times.
-    """
-
-    def __init__(
-        self,
-        *,
-        radius: float = BLACKLIST_RADIUS_M,
-        ttl: float = BLACKLIST_SECONDS,
-        strikes: int = BLACKLIST_STRIKES,
-    ) -> None:
-        self.radius = float(radius)
-        self.ttl = float(ttl)
-        self.strikes = int(strikes)
-        self._entries: List[dict] = []
-
-    def strike(self, point: Sequence[float], now: float) -> int:
-        """Record a failure at `point`; returns how many it has now."""
-        target = np.asarray(point, dtype=np.float64)[:2]
-        for entry in self._entries:
-            if float(np.hypot(*(entry["point"] - target))) < self.radius:
-                entry["strikes"] += 1
-                entry["at"] = now
-                return int(entry["strikes"])
-        self._entries.append({"point": target.copy(), "strikes": 1, "at": now})
-        return 1
-
-    def suppress(self, point: Sequence[float], now: float) -> None:
-        """Retire `point` outright, rather than adding one strike.
-
-        For failures that repetition cannot fix. Standing at a frontier's standoff point
-        and finding the frontier still there is the case: the lidar has seen everything it
-        will ever see from there, so coming back is guaranteed to achieve nothing. The
-        radius is small enough that this retires an approach point, not a cluster -- the
-        rest of a long frontier still gets its own goal cell next time round.
-        """
-        target = np.asarray(point, dtype=np.float64)[:2]
-        for entry in self._entries:
-            if float(np.hypot(*(entry["point"] - target))) < self.radius:
-                entry["strikes"] = max(entry["strikes"], self.strikes)
-                entry["at"] = now
-                return
-        self._entries.append(
-            {"point": target.copy(), "strikes": self.strikes, "at": now}
-        )
-
-    def blocks(self, point: Sequence[float], now: float) -> bool:
-        target = np.asarray(point, dtype=np.float64)[:2]
-        for entry in self._entries:
-            if float(np.hypot(*(entry["point"] - target))) >= self.radius:
-                continue
-            if entry["strikes"] >= self.strikes or now - entry["at"] < self.ttl:
-                return True
-        return False
-
-    def expire(self, now: float) -> None:
-        """Drop entries that have gone quiet, *keeping* their strike counts.
-
-        Suppression lapsing and the tally being forgotten are different things, and
-        conflating them makes the tally useless: a frontier against an outer wall is
-        revisited every couple of minutes, so if the count reset each time the TTL lapsed
-        it would sit at one for the whole run and never earn permanence. Entries are only
-        really discarded once they have gone a long time without ever failing twice.
-        """
-        cutoff = self.ttl * FORGET_MULTIPLE
-        self._entries = [
-            e for e in self._entries
-            if e["strikes"] >= self.strikes or now - e["at"] < cutoff
-        ]
-
-    def clear(self) -> None:
-        self._entries.clear()
-
-    def __len__(self) -> int:
-        return len(self._entries)
-
-
 class _HardBlacklist:
-    """Adapter for a bare sequence of points: suppression with no expiry.
+    """Adapter for a bare sequence of points: suppressed within `radius` for the call.
 
-    A caller that keeps its own expiry hands over a plain list, and so do the older
-    tests. Treating that as permanent within the call is exactly the old behaviour.
+    The explorer hands over its own blacklist (anything with `blocks`); tests may hand
+    over a plain list of points.
     """
 
     def __init__(self, points: Sequence[Sequence[float]], radius: float) -> None:
@@ -487,6 +394,9 @@ def rank_frontiers(
         wy, wx = np.unravel_index(flat, candidates.shape)
         iy, ix = wy + y0, wx + x0
         goal = grid.origin + (np.array([ix, iy], dtype=np.float64) + 0.5) * grid.resolution
+        if suppress is not None and suppress.blocks(goal, now):
+            # Its goal is blacklisted: leave the cluster out so the next one is tried.
+            continue
         # The field is in cell-steps scaled by the soft cost; metres is what the utility's
         # distance bias is expressed in.
         metres = best * field.resolution
@@ -595,16 +505,8 @@ def choose_goal(
     incumbent: Optional[Sequence[float]] = None,
     field: Optional[DistanceField] = None,
     now: float = 0.0,
-    snap_to_frontier_cell: bool = True,
-    max_candidates: Optional[int] = None,
 ):
-    """`(frontier, path)`, or `(None, None)`. See `survey` for why there is none.
-
-    `snap_to_frontier_cell` is accepted for callers that asked for it explicitly; goals are
-    always a real cell near the cluster now, so it has nothing left to switch off.
-    `max_candidates` is accepted and ignored -- capping the shortlist is what made a
-    finished map and an unlucky one indistinguishable.
-    """
+    """`(frontier, path)`, or `(None, None)`. See `survey` for why there is none."""
     choice = survey(
         grid, cost, pose,
         blacklist=blacklist, min_cells=min_cells, distance_bias=distance_bias,
@@ -619,25 +521,3 @@ def choose_goal(
 def explored_area(grid: OccupancyGrid) -> float:
     """Square metres of the map that are no longer unknown."""
     return float((grid.classify() != UNKNOWN).sum()) * grid.resolution ** 2
-
-
-def is_complete(grid: OccupancyGrid, *, min_cells: int = MIN_FRONTIER_CELLS) -> bool:
-    return not find_frontiers(grid, min_cells=min_cells)
-
-
-def approach_point(
-    frontier: Sequence[float], pose: Sequence[float], standoff: float = 0.0
-) -> np.ndarray:
-    """A point `standoff` metres short of the frontier, along the line from `pose`.
-
-    The geometric fallback for when a cluster has no reachable collar cell to aim at:
-    driving onto a frontier cell means driving into the boundary of what is known, and a
-    little standoff lets the lidar see past it without the base having to get there.
-    """
-    target = np.asarray(frontier, dtype=np.float64)[:2]
-    origin = np.asarray(pose, dtype=np.float64)[:2]
-    delta = target - origin
-    d = float(np.hypot(*delta))
-    if d <= standoff or d < 1e-6:
-        return target
-    return target - delta / d * standoff

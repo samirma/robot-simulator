@@ -49,6 +49,9 @@ WIRE = {
     "/ainex/camera/image_raw/compressed": ROS1_IMAGE,
     "/myagv/cmd_vel": "geometry_msgs/Twist",
     "/myagv/camera/image_raw/compressed": ROS1_IMAGE,
+    "/rosmaster_x3_plus/TargetAngle": "yahboomcar_msgs/ArmJoint",
+    "/rosmaster_x3_plus/cmd_vel": "geometry_msgs/Twist",
+    "/rosmaster_x3_plus/camera/rgb/image_raw": "sensor_msgs/Image",
     "/scene/overhead/color/compressed": ROS2_IMAGE,
     "/scene/side/color/compressed": ROS2_IMAGE,
     "/decoy/cmd_vel": "std_msgs/String",
@@ -61,6 +64,7 @@ ACTIONS = {
 }
 EXPECTED_CAMERAS = sorted([
     "/ainex/camera/image_raw/compressed", "/myagv/camera/image_raw/compressed",
+    "/rosmaster_x3_plus/camera/rgb/image_raw",   # raw, with no compressed stream beside it
     "/scene/overhead/color/compressed", "/scene/side/color/compressed",
     "/so101/wrist/image_raw/compressed",
 ])
@@ -196,8 +200,8 @@ def page(browser):
     bridge = ViewBridge(WIRE, ACTIONS)
     server = _PageServer()
     browser.navigate(server.url(bridge.url))
-    browser.wait_for("window.viewPage && viewPage.members().length === 4 "
-                     "&& viewPage.cameras().length === 5")
+    browser.wait_for("window.viewPage && viewPage.members().length === 5 "
+                     f"&& viewPage.cameras().length === {len(EXPECTED_CAMERAS)}")
     browser.wait_for("document.querySelector('.control[data-kind=so101] .note')"
                      ".textContent.includes('trajectory goals')")
     try:
@@ -233,8 +237,10 @@ def test_members_and_cameras_are_discovered_by_type(page) -> None:
     browser, bridge = page
     members = browser.evaluate("viewPage.members()")
     assert sorted((m["ns"], m["kind"]) for m in members) == [
-        ("ainex", "ainex"), ("myagv", "myagv"), ("scene", "scene"), ("so101", "so101")]
-    # Both dialects' streams, and nothing that is not an image_transport `compressed` one.
+        ("ainex", "ainex"), ("myagv", "myagv"), ("rosmaster_x3_plus", "rosmaster_x3_plus"),
+        ("scene", "scene"), ("so101", "so101")]
+    # Both dialects' compressed streams, and a raw one only where it has no compressed
+    # republish (the SO-101's raw wrist stream is not a second camera).
     assert sorted(browser.evaluate("viewPage.cameras()")) == EXPECTED_CAMERAS
     subscribed = {m["topic"]: m["type"] for m in bridge.ops(op="subscribe")}
     for topic in EXPECTED_CAMERAS:
@@ -263,6 +269,15 @@ def test_classify_is_typed_and_namespace_exact(browser) -> None:
         # dialect is not the rig, but is still a camera.
         assert result["members"] == [{"kind": "ainex", "ns": ""}]
         assert [c["topic"] for c in result["cameras"]] == ["/scene/overhead/color/compressed"]
+        # A raw frame is drawn channel for channel (bgr8 swapped to RGB); depth is not drawn.
+        pixels = browser.evaluate("""(() => {
+            const c = document.createElement('canvas');
+            const ok = viewPage.drawRaw(c, {encoding: 'bgr8', width: 2, height: 1, step: 6,
+                                            data: btoa(String.fromCharCode(1, 2, 3, 4, 5, 6))});
+            const depth = viewPage.drawRaw(c, {encoding: '16UC1', width: 1, height: 1, data: 'AAA='});
+            return [ok, depth, Array.from(c.getContext('2d').getImageData(0, 0, 2, 1).data)];
+        })()""")
+        assert pixels == [True, False, [3, 2, 1, 255, 6, 5, 4, 255]]
     finally:
         browser.navigate("about:blank")
         bridge.stop()
@@ -282,9 +297,10 @@ def test_nothing_is_sent_until_a_robot_is_enabled(page) -> None:
     time.sleep(0.5)
     assert _commands(bridge.all_ops()) == []
     assert not bridge.ops(op="advertise")
-    # The myAGV cannot be enabled at all.
-    assert browser.evaluate(
-        "document.querySelector('.control[data-kind=myagv] .enable').disabled") is True
+    # Neither /cmd_vel base can be enabled at all: the page offers no drive.
+    for kind in ("myagv", "rosmaster_x3_plus"):
+        assert browser.evaluate(
+            f"document.querySelector('.control[data-kind={kind}] .enable').disabled") is True
 
     _enable(browser, "ainex")
     bridge.wait(lambda: len(bridge.ops(op="advertise")) == 3)
@@ -419,6 +435,7 @@ def test_the_pages_signatures_are_discoverys() -> None:
     assert contract["rig"] == {"kind": discovery.RIG_KIND, "namespace": discovery.RIG_NAMESPACE,
                                "signature": list(discovery.RIG_SIGNATURE)}
     assert set(contract["camera_types"]) == set(discovery.CAMERA_TYPES)
+    assert set(contract["raw_camera_types"]) == set(discovery.RAW_CAMERA_TYPES)
 
 
 def test_the_pages_ainex_names_are_the_consoles() -> None:

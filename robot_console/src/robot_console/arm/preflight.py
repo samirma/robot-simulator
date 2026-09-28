@@ -133,6 +133,7 @@ def wait_topics(client: RosbridgeClient, namespace: str, timeout_s: float) -> No
     settings = rs.RosSettings(namespace=namespace)
     wanted = {
         settings.topic(rs.JOINT_STATES_TOPIC): rs.JOINT_STATES_TYPE,
+        settings.topic(rs.WRIST_CAMERA_TOPIC): rs.WRIST_CAMERA_TYPE,
         **{rs.rig_topic(rs.CAMERA_SPECS[v][0]): rs.OVERHEAD_CAMERA_TYPE
            for v in (rs.OVERHEAD_CAMERA_NAME, rs.SIDE_CAMERA_NAME)},
         **{t: rs.CAMERA_INFO_TYPE for t in settings.camera_info_topics().values()},

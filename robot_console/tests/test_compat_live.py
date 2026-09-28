@@ -169,7 +169,17 @@ def test_every_member_observes(wire, present, members) -> None:
             frame = decode_compressed(_observe(wire, cam, rs.WRIST_CAMERA_TYPE))
             assert frame is not None and frame.shape[:2] == (rs.WRIST_CAMERA_HEIGHT,
                                                              rs.WRIST_CAMERA_WIDTH)
-        else:  # the rig
+        elif m.kind in ("myagv_mycobot280", "rosmaster_x3_plus"):
+            from robot_console.camera import decode_image
+            from robot_console.discovery import discover_from
+
+            found = discover_from(present, m.kind, ns)
+            odom_topic = namespaced(t.TOPIC_ODOM, ns)
+            odom = _observe(wire, odom_topic, present[odom_topic])
+            assert "pose" in odom and "twist" in odom
+            frame = decode_image(_observe(wire, found.camera_topic, present[found.camera_topic]))
+        elif m.kind == "scene":
+            # The rig.
             for name, (topic, width, height) in rs.CAMERA_SPECS.items():
                 if name not in rs.SCENE_CAMERA_NAMES:
                     continue
@@ -180,6 +190,8 @@ def test_every_member_observes(wire, present, members) -> None:
                                 rs.CAMERA_INFO_TYPE)
                 assert (info["width"], info["height"]) == (width, height)
                 assert info["k"][0] > 0, "an uncalibrated rig cannot be triangulated through"
+        else:
+            pytest.fail(f"{m.describe()}: no observation check for a {m.kind}")
         assert frame is not None, f"{m.describe()}: camera frame did not decode"
         seen.append(m.kind)
     assert seen
@@ -192,14 +204,26 @@ def _twist(vx: float = 0.0) -> dict:
     return {"linear": {"x": vx, "y": 0.0, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.0}}
 
 
-def test_the_myagv_moves_on_command_and_stops_on_its_stop_command(wire, members) -> None:
-    """ros.yml: no watchdog; a zero Twist on /cmd_vel is the stop."""
+@pytest.mark.parametrize("kind", ["myagv", "myagv_mycobot280", "rosmaster_x3_plus"])
+def test_a_cmd_vel_base_moves_on_command_and_stops_on_its_stop_command(wire, members,
+                                                                       kind) -> None:
+    """ros.yml: no watchdog; a zero Twist on /cmd_vel is the stop -- after an empty
+    `/move_base/cancel` for the myAGV + myCobot 280."""
+    from robot_console import composite_topics as ct
     from robot_console import topics as t
     from robot_console.topics import namespaced
 
-    ns = _member(members, "myagv").namespace
+    ns = _member(members, kind).namespace
     cmd, odom = namespaced(t.TOPIC_CMD_VEL, ns), namespaced(t.TOPIC_ODOM, ns)
+    cancel = namespaced(ct.TOPIC_CANCEL, ns) if kind == "myagv_mycobot280" else None
     wire.advertise(cmd, message_type=t.TYPE_TWIST)
+    if cancel:
+        wire.advertise(cancel, message_type=ct.TYPE_GOAL_ID)
+
+    def stop() -> None:
+        if cancel:
+            wire.publish(cancel, dict(ct.CANCEL_ALL))
+        wire.publish(cmd, _twist())
     sub = "compat:odom"
     wire.subscribe(odom, subscription_id=sub, message_type=t.TYPE_ODOM, throttle_rate=0)
     try:
@@ -210,7 +234,7 @@ def test_the_myagv_moves_on_command_and_stops_on_its_stop_command(wire, members)
             time.sleep(0.05)
         moving = wire.latest(odom).msg
         for _ in range(3):   # the supervisor's stop: three times, 50 ms apart
-            wire.publish(cmd, _twist())
+            stop()
             time.sleep(0.05)
         time.sleep(1.0)
         stopped = wire.latest(odom).msg["pose"]["pose"]["position"]
@@ -218,9 +242,11 @@ def test_the_myagv_moves_on_command_and_stops_on_its_stop_command(wire, members)
         still = wire.latest(odom).msg["pose"]["pose"]["position"]
     finally:
         for _ in range(3):
-            wire.publish(cmd, _twist())
+            stop()
         wire.unsubscribe(odom, subscription_id=sub)
         wire.unadvertise(cmd)
+        if cancel:
+            wire.unadvertise(cancel)
     moved = math.dist((start["x"], start["y"]), (stopped["x"], stopped["y"]))
     assert moved > 0.05, f"0.10 m/s for 1.5 s moved the base {moved:.3f} m"
     assert moving["twist"]["twist"]["linear"]["x"] > 0.03

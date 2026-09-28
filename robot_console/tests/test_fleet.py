@@ -1,81 +1,76 @@
-"""What the fleet check expects of a wire, pinned.
+"""What the fleet check expects of the member `run_task.sh --robot` names, pinned.
 
-`fleet.py` is the answer to "are the robots I asked for actually on this rosbridge", and
-it answers it from the console's *own* contract constants rather than a list typed into a
-shell script. That is the right design and it had no test at all, so nothing held the
-expectation to the wire: a topic quietly leaving `arm_topics()` would show up only as a
-live run that passed when it should have failed.
+`fleet.py --expect` is the answer to "is the robot I asked for actually on this
+rosbridge": the id must be a typed member on the wire presenting its whole contract, from
+the console's *own* contract constants rather than a list typed into a shell script.
 
-Offline by construction -- `missing_for` is pure, and the topic list it is given here is
-a dict a live `/rosapi/topics` would have returned.
+Offline by construction -- `check_expected` is pure, and the topic list it is given here
+is a dict a live `/rosapi/topics` would have returned.
 """
 
 from __future__ import annotations
 
-from robot_console.fleet import BASE_TOPICS, arm_topics, missing_for, scene_topics
-from robot_console.topics import TOPIC_JOINT_STATES, TOPIC_TF, TOPIC_TF_STATIC, namespaced
+import pytest
+
+from robot_console import fleet
+from robot_console.discovery import MEMBER_SIGNATURES
+from robot_console.fleet import ROBOT_IDS, check_expected, main
+from robot_console.topics import namespaced
 
 
-def _wire(*namespaced_topics: str) -> dict[str, str]:
-    """A topic list shaped like `list_topics`', types elided -- nothing reads them."""
-    return {topic: "" for topic in namespaced_topics}
+def _full_wire(*members: tuple[str, str]) -> dict[str, str]:
+    wire: dict[str, str] = {}
+    for kind, namespace in members:
+        for bare, kind_type in fleet.contract_of(kind).items():
+            wire[namespaced(bare, namespace)] = kind_type
+    return wire
 
 
-def _arm_wire(namespace: str = "so101") -> dict[str, str]:
-    return _wire(
-        *(namespaced(t, namespace) for t in arm_topics()),
-        *(namespaced(t, "scene") for t in scene_topics()),
-    )
+def test_the_ids_are_the_members_the_console_has_a_contract_for() -> None:
+    assert set(ROBOT_IDS) == {kind for kind, _, _ in MEMBER_SIGNATURES}
+    assert "scene" not in ROBOT_IDS
 
 
-def test_a_complete_arm_is_missing_nothing() -> None:
-    present = _arm_wire()
-    assert missing_for(present, "so101", arm_topics()) == []
-    assert missing_for(present, "scene", scene_topics()) == []
+@pytest.mark.parametrize("kind", [k for k in ROBOT_IDS if k != "so101"])
+def test_every_mobile_member_passes_on_its_own_contract(kind: str) -> None:
+    """The X3 PLUS and the composite are checked as themselves, not as a myAGV."""
+    members, problems = check_expected(_full_wire((kind, kind)), kind)
+    assert problems == []
+    assert [(m.kind, m.namespace) for m in members] == [(kind, kind)]
 
 
-def test_the_scene_rig_is_not_checked_under_the_arms_namespace() -> None:
-    """The rig watches the worktop, so it is not in the robot's namespace and must not be
-    looked for there. Checked from both sides: the rig's real names satisfy the scene
-    expectation, and the arm expectation does not contain them at all."""
-    assert not any("overhead" in t or "side" in t for t in arm_topics())
-    present = _arm_wire()
-    assert "/scene/overhead/color/compressed" in present
-    assert "/so101/overhead/color/compressed" not in present
+def test_an_absent_member_is_named_with_what_was_found() -> None:
+    _, problems = check_expected(_full_wire(("myagv", "myagv")), "ainex")
+    assert problems == ["no ainex is on the wire (found: myagv on /myagv/*)"]
 
 
-def test_a_missing_topic_is_reported_by_its_wire_name() -> None:
-    """The report has to name the topic as it would appear on the wire, because that is
-    what the reader will grep the simulator's output for."""
-    present = _arm_wire()
-    del present["/so101/joint_states"]
-    assert missing_for(present, "so101", arm_topics()) == ["/so101/joint_states"]
+def test_a_missing_or_mistyped_topic_is_reported_by_its_wire_name() -> None:
+    wire = _full_wire(("rosmaster_x3_plus", "rosmaster_x3_plus"))
+    del wire["/rosmaster_x3_plus/scan"]
+    wire["/rosmaster_x3_plus/odom"] = "std_msgs/String"
+    _, problems = check_expected(wire, "rosmaster_x3_plus")
+    assert any("/rosmaster_x3_plus/scan is missing" in p for p in problems)
+    assert any("/rosmaster_x3_plus/odom is std_msgs/String" in p for p in problems)
 
 
-def test_an_arm_under_another_namespace_is_a_different_arm() -> None:
-    present = _arm_wire("so101")
-    missing = missing_for(present, "robot_2", arm_topics())
-    assert missing == [namespaced(t, "robot_2") for t in arm_topics()]
+def test_a_mistyped_signature_is_not_the_member() -> None:
+    wire = _full_wire(("myagv", "myagv"))
+    wire["/myagv/cmd_vel"] = "std_msgs/String"
+    members, problems = check_expected(wire, "myagv")
+    assert members == []
+    assert any("/myagv/cmd_vel is std_msgs/String, not geometry_msgs/Twist" in p
+               for p in problems)
 
 
-def test_the_bare_contract_is_expressible() -> None:
-    """`--arm ''` is the single-robot vendor wire, which the simulator can still serve
-    with `--ros-namespace ''`. An empty namespace has to change nothing."""
-    present = _wire(
-        *arm_topics(), *(namespaced(t, "scene") for t in scene_topics())
-    )
-    assert missing_for(present, "", arm_topics()) == []
+def test_members_not_expected_are_not_checked() -> None:
+    wire = _full_wire(("myagv", "myagv"), ("ainex", "ainex"))
+    del wire["/ainex/imu"]
+    assert check_expected(wire, "myagv")[1] == []
 
 
-def test_a_base_is_checked_against_the_myagv_contract() -> None:
-    present = _wire(*(namespaced(t, "myagv") for t in BASE_TOPICS))
-    assert missing_for(present, "myagv", BASE_TOPICS) == []
-    # A base is not an arm: every topic that makes an arm an arm is missing from it. The
-    # exceptions are the names both real bringups share -- a transform tree (`/tf`, and
-    # `robot_state_publisher`'s `/tf_static`) and `/joint_states` -- so a base's wire
-    # satisfies exactly those of the arm's names and none of its commands.
-    shared = {TOPIC_TF, TOPIC_TF_STATIC, TOPIC_JOINT_STATES}
-    assert shared <= set(BASE_TOPICS)
-    assert missing_for(present, "myagv", arm_topics()) == [
-        namespaced(t, "myagv") for t in arm_topics() if t not in shared
-    ]
+@pytest.mark.parametrize("value", ["scene", "myagv,ainex"])
+def test_the_expect_flag_takes_one_known_id_and_lists_them_otherwise(value, capsys) -> None:
+    with pytest.raises(SystemExit):
+        main(["--expect", value, "--url", "ws://127.0.0.1:1"])
+    err = capsys.readouterr().err
+    assert all(rid in err for rid in ROBOT_IDS)

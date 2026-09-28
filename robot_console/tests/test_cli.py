@@ -9,7 +9,6 @@ from robot_console.wire import DEFAULT_URL, parse_url
 
 SPEC_FLAGS = {
     "--robot", "--namespace", "--url", "--record", "--speed", "--max-speed", "--latch",
-    "--safety-timeout", "--no-preflight", "--reinstall",
 }
 
 
@@ -21,7 +20,8 @@ def test_the_flags_are_exactly_the_spec_synopsis():
 
 @pytest.mark.parametrize("gone", ["--host", "--port", "--hold-timeout", "--publish-hz",
                                   "--cmd-topic", "--odom-topic", "--camera-topic",
-                                  "--connect-timeout", "--record-fps"])
+                                  "--connect-timeout", "--record-fps", "--safety-timeout",
+                                  "--no-preflight", "--reinstall"])
 def test_flags_outside_the_spec_are_rejected(gone):
     with pytest.raises(SystemExit):
         parse_args([gone, "1"])
@@ -33,8 +33,7 @@ def test_defaults():
     assert (options.host, options.port) == ("127.0.0.1", 9090)
     assert options.robot is None and options.namespace is None
     assert options.needs_discovery
-    assert options.safety_timeout == pytest.approx(0.25)
-    assert options.preflight and not options.latch
+    assert not options.latch
     assert options.record is None
 
 
@@ -80,11 +79,6 @@ def test_record_becomes_a_path():
     assert parse_args(["--record", "runs/drive1"]).record == Path("runs/drive1")
 
 
-def test_no_preflight_and_reinstall_are_accepted():
-    options = parse_args(["--no-preflight", "--reinstall"])
-    assert options.preflight is False
-
-
 def test_speed_is_clamped_into_range():
     assert parse_args(["--speed", "99"]).speed == pytest.approx(SPEED_MAX)
     assert parse_args(["--speed", "0"]).speed == pytest.approx(SPEED_MIN)
@@ -112,10 +106,11 @@ def test_release_after_0_6_s_unless_latched():
     assert parse_args(["--latch"]).hold_timeout is None
 
 
-def test_safety_timeout_must_be_positive():
-    assert parse_args(["--safety-timeout", "0.5"]).safety_timeout == pytest.approx(0.5)
-    with pytest.raises(SystemExit):
-        parse_args(["--safety-timeout", "0"])
+def test_the_safety_timeout_is_a_fixed_constant():
+    """Console spec §2.1: 0.25 s, not a flag."""
+    from robot_console.supervisor import SAFETY_TIMEOUT
+
+    assert SAFETY_TIMEOUT == 0.25
 
 
 def test_help_mentions_the_keys():

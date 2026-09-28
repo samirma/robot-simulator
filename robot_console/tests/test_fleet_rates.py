@@ -58,7 +58,10 @@ def test_the_consoles_older_constants_are_inside_the_contract() -> None:
     assert MYAGV == {t: kind for t, kind in fleet.contract_of("myagv").items() if t in MYAGV}
     assert set(MYAGV) == set(fleet.contract_of("myagv"))
     assert set(AINEX) <= set(fleet.contract_of("ainex"))
-    assert set(fleet.arm_topics()) <= set(fleet.contract_of("so101"))
+    from robot_console.arm import ros_settings as rs
+
+    assert {rs.ARM_COMMAND_TOPIC, rs.JOINT_STATES_TOPIC, rs.TF_TOPIC,
+            rs.TF_STATIC_TOPIC} <= set(fleet.contract_of("so101"))
 
 
 # ------------------------------------------------------------------ validation

@@ -53,6 +53,10 @@ class Browser:
             [executable, "--headless=new", "--remote-debugging-port=0",
              f"--user-data-dir={self._profile}", "--no-first-run", "--no-default-browser-check",
              "--disable-extensions", "--disable-background-networking",
+             "--disable-component-update",
+             # The offline suite uses no network: everything but loopback (which Chrome
+             # never proxies) goes to a closed local port and fails at once.
+             "--proxy-server=127.0.0.1:9",
              "--window-size=1200,1600", "about:blank"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         port_file = Path(self._profile, "DevToolsActivePort")
@@ -106,13 +110,6 @@ class Browser:
             if time.monotonic() > deadline:
                 raise AssertionError(f"timed out waiting for {expression}")
             time.sleep(0.05)
-
-    def screenshot(self, path: str) -> None:
-        import base64
-
-        data = self.call("Page.captureScreenshot", {"format": "png",
-                                                    "captureBeyondViewport": True})["data"]
-        Path(path).write_bytes(base64.b64decode(data))
 
     def close(self) -> None:
         try:

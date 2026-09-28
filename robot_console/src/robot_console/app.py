@@ -7,7 +7,7 @@ command goes over a pipe to `robot_console.supervisor`, which owns the rosbridge
 connection and is the only thing that talks to the robot.
 
 The loop sends a heartbeat every tick, from the loop itself. If it freezes, the heartbeat
-stops and the supervisor stops the robot within `--safety-timeout`; if it dies, the pipe
+stops and the supervisor stops the robot within the safety timeout; if it dies, the pipe
 closes and the same happens. Neither robot has a command watchdog, so that -- and the
 explicit quit on every exit path here (Esc, window close, exception, SIGINT/SIGTERM) -- is
 what stops it.
@@ -27,10 +27,9 @@ from typing import Optional
 from robot_console.camera import decode_image, header_seq
 from robot_console.cli import Options
 from robot_console.hud import draw_overlay, placeholder
-from robot_console.preflight import probe_tcp, startup_instructions_any
 from robot_console.recorder import Recorder
 from robot_console.robots import PROFILES, RobotProfile
-from robot_console.supervisor import SupervisedLink, SupervisorError
+from robot_console.supervisor import SAFETY_TIMEOUT, SupervisedLink, SupervisorError
 from robot_console.teleop import (
     HEAD_ACTIONS,
     Action,
@@ -139,32 +138,18 @@ def run(options: Options, frontend: Optional[Frontend] = None,
         link: Optional[SupervisedLink] = None) -> int:
     frontend = frontend or CvFrontend()
 
-    if options.preflight:
-        probe = probe_tcp(options.host, options.port, options.preflight_timeout)
-        if not probe.ok:
-            print(f"error: no rosbridge on {options.url} ({probe.detail})\n", file=sys.stderr)
-            instructions = (PROFILES[options.robot].startup_instructions
-                            if options.robot else startup_instructions_any)
-            print(instructions(options.host, options.port), file=sys.stderr)
-            return 2
-
     # Asked before the supervisor exists, so a person thinking about it does not count
-    # against the heartbeat. `--no-preflight` and `--reinstall` do not skip it.
+    # against the heartbeat.
     if not frontend.confirm_estop(ESTOP_PROMPT):
         print("error: motion needs a confirmed independent emergency stop; not starting.",
               file=sys.stderr)
         return 2
 
-    link = link or SupervisedLink(
-        options.url, robot=options.robot, namespace=options.namespace,
-        safety_timeout=options.safety_timeout,
-    )
+    link = link or SupervisedLink(options.url, robot=options.robot, namespace=options.namespace)
     try:
         ready = link.start()
     except SupervisorError as exc:
         print(f"error: {exc}", file=sys.stderr)
-        if not options.preflight:
-            print("(--no-preflight was given, so the reachability check was skipped)", file=sys.stderr)
         return 2
     options = options.resolved(ready["robot"], ready["namespace"],
                                camera_topic=ready.get("camera_topic"))
@@ -230,7 +215,7 @@ def _loop(options: Options, profile: RobotProfile, frontend: Frontend, link: Sup
             "speed": options.speed,
             "speed_max": options.max_speed,
             "hold_timeout": options.hold_timeout,
-            "safety_timeout": options.safety_timeout,
+            "safety_timeout": SAFETY_TIMEOUT,
             "robot_console_version": __import__("robot_console").__version__,
         })
 

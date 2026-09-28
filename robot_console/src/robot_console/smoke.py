@@ -25,9 +25,8 @@ from typing import List, Optional
 
 from robot_console.bridge import Odom, wrap_angle
 from robot_console.camera import LatestFrame, decode_image
-from robot_console.preflight import probe_tcp, startup_instructions
 from robot_console.robots import WHEELED_ROBOTS
-from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT, SupervisedLink, SupervisorError
+from robot_console.supervisor import SupervisedLink, SupervisorError
 from robot_console.teleop import SPEED_DEFAULT, Command
 from robot_console.wire import DEFAULT_URL, add_url_argument, parse_url
 
@@ -117,15 +116,8 @@ def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False,
         print(f"robot_console smoke  {url}")
         print("  (this drives the robot about 0.3 m in each direction)\n")
 
-    probe = probe_tcp(host, port)
-    if not probe.ok:
-        print(f"  [FAIL] preflight      {probe.detail}\n", file=sys.stderr)
-        print(startup_instructions(host, port), file=sys.stderr)
-        return [Check("preflight").failed(probe.detail)], 2
-
     started = time.monotonic()
-    link = SupervisedLink(url, robot=robot, namespace=namespace,
-                          safety_timeout=DEFAULT_SAFETY_TIMEOUT)
+    link = SupervisedLink(url, robot=robot, namespace=namespace)
     try:
         ready = link.start()
     except SupervisorError as exc:

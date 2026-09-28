@@ -115,10 +115,6 @@ SCENE_CAMERAS: dict[str, tuple[tuple[float, float, float], tuple[float, ...], fl
 SCENE_CAMERA_POSES: dict[str, tuple[float, float, float]] = {
     name: spec[0] for name, spec in SCENE_CAMERAS.items()
 }
-SCENE_CAMERA_XYAXES: dict[str, tuple[float, ...]] = {
-    name: spec[1] for name, spec in SCENE_CAMERAS.items()
-}
-SCENE_CAMERA_FOVY_DEG: dict[str, float] = {name: spec[2] for name, spec in SCENE_CAMERAS.items()}
 #: Down-tilt of each scene camera, degrees below horizontal, for the policy's docs.
 SCENE_CAMERA_TILT_DEG: dict[str, float] = {"overhead": 62.0, "side": 5.6}
 #: The rig's frame rate, the simulator task's ``SCENE_CAMERA_HZ``.

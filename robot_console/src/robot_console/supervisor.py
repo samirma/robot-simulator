@@ -19,9 +19,9 @@ connection and every motion publication, and speaks to it over its stdin/stdout 
         {"op": "msg", "stream":, "msg":}
         {"op": "stopped", "reason":}
 
-The watchdog arms on the first heartbeat. From then on, if the heartbeat stops for
-`--safety-timeout` seconds, or the pipe closes (the UI died or closed its end), or the
-parent process changes, or a quit or SIGTERM arrives, the supervisor sends the robot's
+The watchdog arms on the first heartbeat. From then on, if the heartbeat stops for the
+safety timeout (`SAFETY_TIMEOUT`), or the pipe closes (the UI died or closed its end), or
+the parent process changes, or a quit or SIGTERM arrives, the supervisor sends the robot's
 stop command three times, 50 ms apart, and exits. Nothing else is published after the
 first stop. SIGINT and SIGHUP are ignored: a terminal's Ctrl-C reaches the whole process
 group, and it is the UI's job to turn that into a quit -- or, if the UI is wedged, the
@@ -32,7 +32,6 @@ physical emergency stop. That device, not this process, is the protection agains
 failure or network loss: software on the failed path cannot stop anything.
 
     python -m robot_console.supervisor --url ws://127.0.0.1:9090 [--robot R] [--namespace NS]
-                                       [--safety-timeout 0.25]
 """
 
 from __future__ import annotations
@@ -51,8 +50,8 @@ from typing import Any, Callable, Dict, Optional
 from robot_console.teleop import Command
 from robot_console.wire import DEFAULT_URL, parse_url, url_arg
 
-#: Console spec §2.1.
-DEFAULT_SAFETY_TIMEOUT = 0.25
+#: The safety timeout, seconds (console spec §2.1): a fixed constant, not a flag.
+SAFETY_TIMEOUT = 0.25
 STOP_REPEATS = 3
 STOP_SPACING_S = 0.05
 
@@ -77,7 +76,8 @@ def _parse_args(argv):
     parser.add_argument("--robot", default=None)
     # `--namespace=` (empty) is the bare contract; absent means "discover".
     parser.add_argument("--namespace", default=None)
-    parser.add_argument("--safety-timeout", type=float, default=DEFAULT_SAFETY_TIMEOUT)
+    # Ask /rosapi even when both are given, so they only narrow what is on the wire (slam).
+    parser.add_argument("--discover", action="store_true")
     parser.add_argument("--connect-timeout", type=float, default=10.0)
     return parser.parse_args(argv)
 
@@ -128,10 +128,10 @@ class _Out:
 class Supervisor:
     """The watchdog loop. `link` is a connected RobotLink or AiNexLink."""
 
-    def __init__(self, link, *, safety_timeout: float, out: _Out, inp, parent_pid: int,
+    def __init__(self, link, *, out: _Out, inp, parent_pid: int,
                  has_head: bool = False) -> None:
         self.link = link
-        self.safety_timeout = float(safety_timeout)
+        self.safety_timeout = SAFETY_TIMEOUT
         self.out = out
         self.inp = inp
         self.parent_pid = parent_pid
@@ -276,7 +276,7 @@ def _connect_and_resolve(args, out: _Out):
 
     if args.robot is not None and args.robot not in TELEOP_ROBOTS:
         raise discovery.DiscoveryError(f"unknown robot {args.robot!r}")
-    if args.robot is not None and args.namespace is not None:
+    if args.robot is not None and args.namespace is not None and not args.discover:
         robot, namespace = args.robot, args.namespace
         camera = None
     else:
@@ -334,7 +334,7 @@ def main(argv=None) -> int:
         os._exit(EXIT_ERROR)
 
     supervisor = Supervisor(
-        link, safety_timeout=args.safety_timeout, out=out, inp=sys.stdin.buffer,
+        link, out=out, inp=sys.stdin.buffer,
         parent_pid=parent, has_head=prof.has_head,
     )
     signal.signal(signal.SIGTERM, supervisor.on_sigterm)
@@ -383,13 +383,13 @@ class SupervisedLink:
         *,
         robot: Optional[str] = None,
         namespace: Optional[str] = None,
-        safety_timeout: float = DEFAULT_SAFETY_TIMEOUT,
         python: str = sys.executable,
+        discover: bool = False,
     ) -> None:
         self.url = url
         self.robot = robot
         self.namespace = namespace
-        self.safety_timeout = float(safety_timeout)
+        self.discover = discover
         self.python = python
         self.proc: Optional[subprocess.Popen] = None
         self.ready: Optional[dict] = None
@@ -405,12 +405,13 @@ class SupervisedLink:
     # ------------------------------------------------------------------ lifecycle
 
     def command_line(self) -> list:
-        cmd = [self.python, "-m", "robot_console.supervisor", "--url", self.url,
-               "--safety-timeout", repr(self.safety_timeout)]
+        cmd = [self.python, "-m", "robot_console.supervisor", "--url", self.url]
         if self.robot is not None:
             cmd += ["--robot", self.robot]
         if self.namespace is not None:
             cmd.append(f"--namespace={self.namespace}")
+        if self.discover:
+            cmd.append("--discover")
         return cmd
 
     def start(self, timeout: float = 20.0) -> dict:

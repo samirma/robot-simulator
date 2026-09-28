@@ -42,9 +42,6 @@ SQRT2 = math.sqrt(2.0)
 # grows during a run: a fixed stride that suits a room overruns on a house.
 WAVEFRONT_CELL_BUDGET = 20_000
 
-# Fallback stride when a caller does not want the budget consulted.
-WAVEFRONT_DECIMATE = 2
-
 # Each relaxation pass moves information one cell, so a converged field needs about as many
 # passes as the longest route is long. That O(diameter x area) shape is why this is worth
 # measuring rather than assuming: relaxation beats a heap when the region is squat and
@@ -398,7 +395,7 @@ def plan(
     different instructions.
     """
     start_cell = cost.world_to_cell(start)
-    goal_cell = cost.world_to_cell(goal)
+    goal_cell = clicked_cell = cost.world_to_cell(goal)
     if snap:
         snapped_start = cost.nearest_open(start_cell)
         snapped_goal = cost.nearest_open(goal_cell)
@@ -413,9 +410,11 @@ def plan(
         return None
     world = np.array([cost.cell_to_world(c) for c in cells], dtype=np.float64)
     # Pin the true endpoints: A* works in cell centres, and a goal the user clicked
-    # deserves to be driven to rather than to the middle of its cell.
+    # deserves to be driven to rather than to the middle of its cell. A goal snapped out of
+    # a blocked (or, for navigate, unknown) cell ends at the open cell instead.
     if world.shape[0] >= 1:
-        world[-1] = np.asarray(goal, dtype=np.float64)[:2]
+        if goal_cell == clicked_cell:
+            world[-1] = np.asarray(goal, dtype=np.float64)[:2]
         world[0] = np.asarray(start, dtype=np.float64)[:2]
     return simplify(cost, world)
 

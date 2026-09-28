@@ -6,8 +6,8 @@ myAGV + myCobot 280 on the same base, the ROSMASTER X3 PLUS) are a velocity stre
 `/odom` back, the AiNex a walking state machine (`/walking/set_param` + the
 `/walking/command` service, nothing back but the camera). The console keeps one loop, one
 keymap and one `Command` intent type; a `RobotProfile` carries the parts that genuinely
-differ -- the link that encodes `Command` for the wire, the speed envelope, the HUD
-wording and the what-to-start text.
+differ -- the link that encodes `Command` for the wire, the speed envelope and the HUD
+wording.
 
 The robot ids are the console's copy of the ids in `robots_specs/robots.yml` for the
 robots teleop drives. The workspace parity tests (`tests/test_contract_parity.py` at the
@@ -19,7 +19,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any, Callable, Mapping, Sequence, Tuple
 
-from robot_console import hud, preflight, teleop
+from robot_console import hud, teleop
 
 #: `robots_specs/robots.yml` ids of the robots teleop drives (console spec §2.1).
 MYAGV = "myagv"
@@ -79,7 +79,6 @@ class RobotProfile:
     # False -> the arrow keys do nothing and no link needs `publish_head`.
     has_head: bool
     hints: Sequence[Tuple[str, str]]
-    startup_instructions: Callable[[str, int], str]
     # For the --max-speed warning: what the cap is, in the robot's own terms.
     speed_limit_label: str
     stop_command: str
@@ -161,7 +160,6 @@ def _myagv_profile() -> RobotProfile:
         has_odom=True,
         has_head=False,
         hints=hud.HINTS,
-        startup_instructions=preflight.startup_instructions,
         speed_limit_label="the real myAGV limit",
         stop_command=STOP_COMMANDS[MYAGV],
     )
@@ -182,7 +180,6 @@ def _ainex_profile() -> RobotProfile:
         has_odom=False,
         has_head=True,
         hints=AINEX_HINTS,
-        startup_instructions=preflight.startup_instructions_ainex,
         speed_limit_label="the AiNex gait envelope",
         stop_command=STOP_COMMANDS[AINEX],
     )
@@ -192,7 +189,6 @@ def _composite_profile() -> RobotProfile:
     """The myAGV + myCobot 280 drives as the myAGV it stands on, with its own stop."""
     return dataclasses.replace(
         _myagv_profile(), name=MYAGV_MYCOBOT280, make_link=_make_composite_link,
-        startup_instructions=preflight.startup_instructions_composite,
         speed_limit_label="the real myAGV limit", stop_command=STOP_COMMANDS[MYAGV_MYCOBOT280])
 
 
@@ -211,7 +207,6 @@ def _x3_profile() -> RobotProfile:
         has_odom=True,
         has_head=False,
         hints=hud.HINTS,
-        startup_instructions=preflight.startup_instructions_x3,
         speed_limit_label="the X3 PLUS board's 0.7 m/s input range",
         stop_command=STOP_COMMANDS[ROSMASTER_X3_PLUS],
     )

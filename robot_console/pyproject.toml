@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "robot_console"
 version = "0.1.0"
-description = "Keyboard teleoperation with a live camera feed for a myAGV over rosbridge."
+description = "Drive, map, navigate and grade robots over rosbridge, simulated or physical."
 readme = "README.md"
 requires-python = ">=3.9"
 

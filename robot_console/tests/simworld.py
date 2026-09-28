@@ -258,7 +258,7 @@ def offline_session(
     speed: float = 0.25,
     **overrides,
 ):
-    """A `_Session` with no socket, no window and no recorder.
+    """A `_Session` with no socket, no window.
 
     Same construction `tests/test_slam_cli.py` uses; scan matching is off so nothing
     reaches for the wall clock and the run stays deterministic.
@@ -279,7 +279,7 @@ def offline_session(
     grid = OccupancyGrid(resolution)
     return _Session(
         options, grid, PoseTracker(match_enabled=False),
-        PathFollower(speed=speed), MapView(), None, TeleopState(speed=speed), None,
+        PathFollower(speed=speed), MapView(), None, TeleopState(speed=speed),
     )
 
 

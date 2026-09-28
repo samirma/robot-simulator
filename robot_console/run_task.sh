@@ -2,7 +2,7 @@
 # Run the SO-101 apple_on_plate task with the MolmoAct2 VLA against a running simulator,
 # and grade every episode with the camera-verdict scorer.
 #
-#   run_task.sh [--episodes N] [--label <engine>] [--url ws://...] [--robots <id>[,<id>...]]
+#   run_task.sh [--episodes N] [--label <engine>] [--url ws://...] [--robot <id>]
 #               [--namespace <ns>] [--instruction <text> | --instruction-file <f>]
 #               [-- <inspect-robot args>]
 #
@@ -11,7 +11,9 @@
 #   --label L              the engine serving the wire, for the report; logs go to
 #                          runs/task/<label>/, one run directory per episode
 #   --url URL              rosbridge to connect to (default ws://127.0.0.1:9090)
-#   --robots A,B           members expected besides the rig, by robot id (default so101)
+#   --robot ID             a simulated robot id: the member expected besides the SO-101
+#                          and the rig (default so101: the SO-101 alone). The SO-101 is
+#                          always required; any other id is refused, listing the accepted
 #   --namespace NS         the SO-101's namespace (default: discovered; '' is bare)
 #   --instruction TEXT     what the policy is told (default: the task's own text)
 #   --instruction-file F   the same, read from a file
@@ -42,7 +44,7 @@ WAIT_S=180
 
 URL="ws://127.0.0.1:9090"
 EPISODES=1
-ROBOTS="so101"
+ROBOT="so101"
 NS=""
 NS_GIVEN=0
 INSTRUCTION=""
@@ -55,7 +57,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --url)              URL="$2"; shift 2 ;;
     --episodes)         EPISODES="$2"; shift 2 ;;
-    --robots)           ROBOTS="$2"; shift 2 ;;
+    --robot)            ROBOT="$2"; shift 2 ;;
     --namespace)        NS="$2"; NS_GIVEN=1; shift 2 ;;
     --instruction)      INSTRUCTION="$2"; shift 2 ;;
     --instruction-file) INSTRUCTION_FILE="$2"; shift 2 ;;
@@ -68,7 +70,6 @@ done
 [ -z "$INSTRUCTION" ] || [ -z "$INSTRUCTION_FILE" ] \
   || die "give either --instruction or --instruction-file, not both"
 case "$EPISODES" in ''|*[!0-9]*|0) die "--episodes takes a positive integer" ;; esac
-case ",$ROBOTS," in *,so101,*) ;; *) die "--robots must include so101: the task is the SO-101's" ;; esac
 LOG_DIR="$CONSOLE_ROOT/runs/task/$LABEL"
 
 # ---------------------------------------------------------------- 1. the venv
@@ -114,18 +115,18 @@ say "instruction: $INSTRUCTION"
 
 preflight() { "$PY" -m robot_console.arm.preflight "$@" --url "$URL"; }
 
-# The members besides the SO-101, as the fleet check's flags. The SO-101 and the rig are
-# checked type for type by the arm preflight; the others by `robot_console.fleet`.
-declare -a OTHERS=()
-for name in ${ROBOTS//,/ }; do
-  case "$name" in
-    so101) ;;
-    ainex) OTHERS+=(--humanoid ainex) ;;
-    *)     OTHERS+=(--base "$name") ;;
-  esac
-done
+# --robot takes a robot id from the console's own copy of the simulated ids in
+# robots_specs/robots.yml (the workspace parity tests hold the two equal).
+KNOWN_ROBOTS="$("$PY" -c 'from robot_console.fleet import ROBOT_IDS; print(" ".join(ROBOT_IDS))')"
+case " $KNOWN_ROBOTS " in
+  *" $ROBOT "*) ;;
+  *) die "unknown robot id '$ROBOT' for --robot; accepted ids: ${KNOWN_ROBOTS// /, }" ;;
+esac
+
+# The SO-101 and the rig are checked type for type by the arm preflight. Any other --robot
+# is checked against its whole typed contract by the fleet check.
 others_present() {
-  [ ${#OTHERS[@]} -eq 0 ] || "$PY" -m robot_console.fleet --url "$URL" "${OTHERS[@]}"
+  [ "$ROBOT" = so101 ] || "$PY" -m robot_console.fleet --url "$URL" --expect "$ROBOT"
 }
 
 # ---------------------------------------------------------------- 2. the topics
@@ -137,13 +138,24 @@ say "== $LABEL: molmoact2 on $URL"
 printf 'waiting for topics' >&2
 said=0
 ready=0
+last=""
 for ((i = 1; i <= WAIT_S; i += 5)); do
   if ! nc -z "$HOST" "$PORT_NUM" 2>/dev/null; then
     [ "$said" -eq 1 ] || echo " - nothing listening on $URL; from simulator/: ./kitchen.sh serve" >&2
     said=1; sleep 5; continue
   fi
   if [ "$NS_GIVEN" -eq 0 ]; then
-    NS="$(preflight discover 2>/dev/null)" || { printf '.' >&2; sleep 5; continue; }
+    NS="$(preflight discover 2>/dev/null)" || {
+      last="$(preflight discover 2>&1 >/dev/null)"; printf '.' >&2; sleep 5; continue; }
+  fi
+  # A wire without /reset or the rig is refused at once, by name, rather than waited on.
+  set +e
+  last="$(preflight check --namespace "$NS" 2>&1 >/dev/null)"
+  refused=$?
+  set -e
+  if [ "$refused" -eq 5 ]; then
+    echo >&2; echo "$last" >&2
+    die "this wire is not a simulator serving the task"
   fi
   if preflight wait --namespace "$NS" --timeout 5 >/dev/null 2>&1 \
       && others_present >/dev/null 2>&1; then
@@ -152,7 +164,10 @@ for ((i = 1; i <= WAIT_S; i += 5)); do
   printf '.' >&2
 done
 echo >&2
-[ "$ready" -eq 1 ] || die "no simulator published the members' topics on $URL within ${WAIT_S}s"
+if [ "$ready" -ne 1 ]; then
+  [ -z "$last" ] || echo "$last" >&2
+  die "no simulator published the members' topics on $URL within ${WAIT_S}s"
+fi
 if [ -n "$NS" ]; then echo "SO-101 on /$NS/*"; else echo "SO-101 on the bare contract"; fi
 
 # ---------------------------------------------------------------- 3. the interfaces
@@ -165,7 +180,7 @@ case "$check" in
   5) die "this wire is not a simulator serving the task (see above)" ;;
   *) die "the SO-101's interface on $URL is not the one the task needs (exit $check)" ;;
 esac
-others_present || die "the wire does not present every member in --robots $ROBOTS"
+others_present || die "the wire does not present the --robot $ROBOT member"
 
 # ---------------------------------------------------------------- 4. the episodes
 [ "$EPISODES" -ne 1 ] || say "smoke run: one episode checks the pipeline; it is not a result"
@@ -200,6 +215,13 @@ for episode in $(seq 1 "$EPISODES"); do
     --log-dir "$run_dir" ${PASSTHRU[@]+"${PASSTHRU[@]}"} > "$run_dir/episode.log" 2>&1
   status=$?
   set -e
+  # The embodiment calls /reset again as the framework starts the episode; a refusal
+  # there aborts the run as the one above does.
+  if refusal="$(grep -m1 -E '/reset refused' "$run_dir/episode.log")"; then
+    echo "$refusal" >&2
+    say "== $LABEL: aborted in episode $episode; $completed episode(s) completed, $passes passed"
+    exit 1
+  fi
   completed=$((completed + 1))
 
   read -r outcome detail <<<"$("$PY" -m robot_console.arm.verdict "$run_dir")"

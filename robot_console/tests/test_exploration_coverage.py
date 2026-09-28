@@ -142,14 +142,14 @@ def test_a_run_that_starts_facing_a_wall_still_finishes():
 
 
 def test_deciding_stays_inside_the_heartbeat_budget(run):
-    """A tick longer than `--safety-timeout` (0.25 s) is a missed heartbeat, and the
+    """A tick longer than the safety timeout (0.25 s) is a missed heartbeat, and the
     safety supervisor stops the robot for it. `_Budget` warns at half of that, so the bar
     is that a whole house-sized run stays under it. Typical ticks are microseconds; only
     the replans cost anything.
     """
-    from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT
+    from robot_console.supervisor import SAFETY_TIMEOUT
 
-    assert run["worst_decide_ms"] < DEFAULT_SAFETY_TIMEOUT * 1000.0 / 2
+    assert run["worst_decide_ms"] < SAFETY_TIMEOUT * 1000.0 / 2
 
 
 def test_the_whole_run_is_fast_enough_to_be_a_test():

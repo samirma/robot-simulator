@@ -17,7 +17,9 @@
   held equal to `robot_console/discovery.py` by `tests/test_view_page.py`), and a camera
   is an image_transport `compressed` stream of `sensor_msgs/CompressedImage` in either
   dialect: the SO-101 and the rig are ROS 2 (`sensor_msgs/msg/CompressedImage`), the
-  myAGV and the AiNex ROS 1 (`sensor_msgs/CompressedImage`). Actions are checked with
+  myAGV and the AiNex ROS 1 (`sensor_msgs/CompressedImage`). A raw `sensor_msgs/Image`
+  (either dialect) with no compressed republish beside it -- the ROSMASTER X3 PLUS's only
+  colour stream -- is a camera too, drawn throttled. Actions are checked with
   `/rosapi/action_servers` and `/rosapi/action_type` before a control is offered on one.
 
   CONTROLS ARE OPT-IN AND BOUNDED (console spec §2.4). A robot's panel publishes,
@@ -51,7 +53,7 @@ h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
 .views{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin:20px 0}
 .views:has(.view:only-child){grid-template-columns:minmax(260px,640px)}
 .view{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-.view img{width:100%;display:block;background:#000;aspect-ratio:4/3;object-fit:contain}
+.view img,.view canvas{width:100%;display:block;background:#000;aspect-ratio:4/3;object-fit:contain}
 .views .empty{grid-column:1/-1;padding:18px 20px;border:1px dashed var(--line);
  border-radius:12px;color:var(--muted);font-size:13px}
 .cap{padding:8px 12px;font-size:12px;color:var(--muted);border-top:1px solid var(--line);
@@ -104,6 +106,7 @@ button:disabled{opacity:.45;cursor:default}
   "rig": {"kind": "scene", "namespace": "scene",
           "signature": ["/scene/overhead/color/compressed", "sensor_msgs/msg/CompressedImage"]},
   "camera_types": ["sensor_msgs/msg/CompressedImage", "sensor_msgs/CompressedImage"],
+  "raw_camera_types": ["sensor_msgs/msg/Image", "sensor_msgs/Image"],
   "so101": {
     "arm_joints": ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_flex_joint",
                    "wrist_flex_joint", "wrist_roll_joint"],
@@ -155,7 +158,8 @@ button:disabled{opacity:.45;cursor:default}
 
   <footer>Showing <span id="cam-count">no cameras</span>. Members come from
   <code>/rosapi/topics</code>, matched by name <em>and</em> type; cameras are its
-  <code>CompressedImage</code> streams in both dialects. Rechecked every few seconds, so a
+  <code>CompressedImage</code> streams, and raw <code>Image</code> streams with none beside
+  them, in both dialects. Rechecked every few seconds, so a
   member that appears later gets its tiles and panel without a reload.</footer>
 </div>
 
@@ -290,8 +294,12 @@ function classify(table) {
   const [rigTopic, rigType] = CONTRACT.rig.signature;
   if (table[rigTopic] === rigType) members.push({ kind: CONTRACT.rig.kind, ns: CONTRACT.rig.namespace });
   members.sort((a, b) => a.ns.localeCompare(b.ns));
+  const compressed = topic => CONTRACT.camera_types.includes(table[topic]);
   const cameras = Object.entries(table)
-    .filter(([topic, type]) => CONTRACT.camera_types.includes(type) && topic.endsWith('/compressed'))
+    .filter(([topic, type]) => (CONTRACT.camera_types.includes(type) && topic.endsWith('/compressed'))
+      // A raw stream is a camera of its own only where no compressed republish of it is.
+      || (CONTRACT.raw_camera_types.includes(type) && !/\/compressed\w*$/.test(topic)
+          && !compressed(topic + '/compressed')))
     .map(([topic, type]) => ({ topic, type }))
     .sort((a, b) => a.topic.localeCompare(b.topic));
   return { members, cameras };
@@ -315,17 +323,51 @@ function discover() {
 const cameras = new Map();   // topic -> {img, frames, count}
 
 function cameraName(topic) {
-  const m = topic.match(/^\/(.+?)(?:\/color|\/image_raw)?\/compressed$/);
+  const m = topic.match(/^\/(.+?)(?:\/color|\/image_raw)?(?:\/compressed)?$/);
   return m ? m[1] : trim(topic);
+}
+
+// A raw `sensor_msgs/Image` onto a canvas. rosbridge base64-encodes its `uint8[]` data.
+// Returns false for an encoding the page does not draw (depth, Bayer, ...).
+function drawRaw(canvas, msg) {
+  const encoding = String(msg.encoding || '').toLowerCase();
+  const channels = { rgb8: 3, bgr8: 3, mono8: 1 }[encoding];
+  const w = msg.width | 0, h = msg.height | 0;
+  if (!channels || !w || !h) return false;
+  const bytes = typeof msg.data === 'string'
+    ? Uint8Array.from(atob(msg.data), c => c.charCodeAt(0)) : Uint8Array.from(msg.data || []);
+  const step = msg.step || w * channels;
+  if (bytes.length < step * (h - 1) + w * channels) return false;
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  const image = ctx.createImageData(w, h);
+  const [r, b] = encoding === 'bgr8' ? [2, 0] : [0, 2];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const s = y * step + x * channels, d = (y * w + x) * 4;
+      if (channels === 1) {
+        image.data[d] = image.data[d + 1] = image.data[d + 2] = bytes[s];
+      } else {
+        image.data[d] = bytes[s + r];
+        image.data[d + 1] = bytes[s + 1];
+        image.data[d + 2] = bytes[s + b];
+      }
+      image.data[d + 3] = 255;
+    }
+  }
+  ctx.putImageData(image, 0, 0);
+  return true;
 }
 
 function addCamera(topic, type) {
   if (cameras.has(topic)) return;
+  const raw = CONTRACT.raw_camera_types.includes(type);
   const view = document.createElement('div');
   view.className = 'view';
   view.dataset.topic = topic;
-  const img = document.createElement('img');
-  img.alt = cameraName(topic);
+  const img = document.createElement(raw ? 'canvas' : 'img');
+  if (!raw) img.alt = cameraName(topic);
   const cap = document.createElement('div');
   cap.className = 'cap';
   const label = document.createElement('span');
@@ -339,6 +381,14 @@ function addCamera(topic, type) {
   const cam = { img, frames, count: 0 };
   cameras.set(topic, cam);
   // Subscribed with the type it was found under: the two dialects want their own string.
+  if (raw) {
+    // Uncompressed frames are large; five a second is plenty for a view.
+    subscribe(topic, type, msg => {
+      cam.frames.textContent = drawRaw(cam.img, msg)
+        ? ++cam.count + ' frames' : 'encoding ' + (msg.encoding || '?') + ' not shown';
+    }, { throttle_rate: 200 });
+    return;
+  }
   subscribe(topic, type, msg => {
     const fmt = String(msg.format || 'jpeg').toLowerCase();
     cam.img.src = 'data:' + (fmt.includes('png') ? 'image/png' : 'image/jpeg') + ';base64,' + msg.data;
@@ -729,9 +779,8 @@ window.addEventListener('beforeunload', () => cancelGoals());
 
 // For tests and for the curious: read-only views of what the page holds.
 window.viewPage = {
-  classify, namespaceOf, parseLimits,
+  classify, drawRaw,
   goals: () => [...goals.keys()],
-  persistent: () => [...persistent.keys()],
   members: () => [...members].map(([ns, m]) => ({ ns, kind: m.kind })),
   cameras: () => [...cameras.keys()],
 };

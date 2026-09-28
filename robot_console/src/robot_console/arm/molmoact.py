@@ -790,7 +790,7 @@ def molmoact2(**kwargs: Any) -> MolmoAct2Policy:
     """Registry entry point; CLI ``-P key=value`` strings are coerced here."""
     integers = {"chunk_steps", "num_steps", "replan_interval", "ensemble", "seed"}
     floats = {"control_hz"}
-    booleans: set[str] = set()
+    booleans = {"allow_single_view"}
     coerced: dict[str, Any] = {}
     for key, value in kwargs.items():
         if key in integers:

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Keyboard teleoperation of a myAGV or an AiNex, simulated or real.
+# Keyboard teleoperation of a mobile robot (a myAGV, a myAGV + myCobot 280, a ROSMASTER
+# X3 PLUS or an AiNex), simulated or real.
 #
 #   teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
 #             [--speed <m/s>] [--max-speed <m/s>] [--latch]
-#             [--safety-timeout <s>] [--no-preflight] [--reinstall]
 #
 #   ./bin/teleop.sh                               drive whatever robot is on ws://127.0.0.1:9090
 #   ./bin/teleop.sh --robot ainex                 ...an AiNex, which walks rather than rolls
@@ -12,10 +12,10 @@
 #   ./bin/teleop.sh --record runs/drive1          ...writing feed.mp4 + commands.jsonl
 #
 # Motion is published only by a separate safety supervisor process, which stops the robot
-# (its stop_command, three times) if this UI's heartbeat stops for --safety-timeout
+# (its stop_command, three times) if this UI's heartbeat stops for the safety timeout
 # (0.25 s). Before any motion you are asked to confirm that an independent physical
 # emergency stop is armed: that device, not software, covers host failure and network
-# loss. --no-preflight and --reinstall skip neither.
+# loss.
 #
 # With neither --robot nor --namespace given, both are read off the wire: /rosapi/topics
 # says which robots are on that rosbridge and what each one is called. It has to be asked,
@@ -54,7 +54,7 @@ bootstrap() {
   command -v uv >/dev/null || die "uv not found; install it with
     curl -LsSf https://astral.sh/uv/install.sh | sh
   or set the venv up by hand:
-    python3 -m venv '$VENV_DIR' && '$VENV_DIR/bin/pip' install -e '$CONSOLE_ROOT'"
+    python3 -m venv '$VENV_DIR' && '$VENV_DIR/bin/pip' install -e '$CONSOLE_ROOT[dev,arm]'"
 
   if [ ! -x "$PY" ]; then
     echo ">> creating venv ($VENV_DIR)"
@@ -62,8 +62,9 @@ bootstrap() {
     # is happy on uv's standalone CPython.
     uv venv --python 3.12 "$VENV_DIR" || uv venv "$VENV_DIR"
   fi
-  echo ">> installing robot_console"
-  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$CONSOLE_ROOT"
+  # .venv is the base plus the dev and arm extras (console spec §3): everything but the VLA.
+  echo ">> installing robot_console[dev,arm]"
+  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$CONSOLE_ROOT[dev,arm]"
   touch "$STAMP"
 }
 
@@ -79,15 +80,6 @@ bootstrap() {
 if [ ! -x "$PY" ] || [ ! -f "$STAMP" ] || [ "$CONSOLE_ROOT/pyproject.toml" -nt "$STAMP" ]; then
   bootstrap
 fi
-
-for arg in "$@"; do
-  if [ "$arg" = "--reinstall" ]; then
-    # Rebuild, then carry on: the flag is forwarded and ignored by Python, and it skips
-    # neither the safety supervisor nor the emergency-stop confirmation.
-    bootstrap
-    break
-  fi
-done
 
 # exec, so Ctrl-C reaches the UI directly; it asks the safety supervisor to stop the
 # robot, which has no command watchdog of its own.
