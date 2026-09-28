@@ -1,7 +1,9 @@
 """Which robot the console is driving, and everything that differs between them.
 
-Two robots, two contracts with almost nothing in common: the myAGV is a velocity stream
-(`/cmd_vel`, `/odom` back), the AiNex a walking state machine (`/walking/set_param` + the
+Teleop drives every mobile robot in `robots_specs/robots.yml` -- every kind but a fixed
+arm. Two contracts with almost nothing in common: the `/cmd_vel` bases (the myAGV, the
+myAGV + myCobot 280 on the same base, the ROSMASTER X3 PLUS) are a velocity stream with
+`/odom` back, the AiNex a walking state machine (`/walking/set_param` + the
 `/walking/command` service, nothing back but the camera). The console keeps one loop, one
 keymap and one `Command` intent type; a `RobotProfile` carries the parts that genuinely
 differ -- the link that encodes `Command` for the wire, the speed envelope, the HUD
@@ -22,7 +24,12 @@ from robot_console import hud, preflight, teleop
 #: `robots_specs/robots.yml` ids of the robots teleop drives (console spec §2.1).
 MYAGV = "myagv"
 AINEX = "ainex"
-TELEOP_ROBOTS: Tuple[str, ...] = (MYAGV, AINEX)
+MYAGV_MYCOBOT280 = "myagv_mycobot280"
+ROSMASTER_X3_PLUS = "rosmaster_x3_plus"
+TELEOP_ROBOTS: Tuple[str, ...] = (MYAGV, AINEX, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
+
+#: The `/cmd_vel` bases, which report `/odom` and a `/scan`: what `smoke` drives.
+WHEELED_ROBOTS: Tuple[str, ...] = (MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
 
 #: The only robot `slam.sh` maps with: it needs `/scan` and `/odom`.
 SLAM_ROBOT = MYAGV
@@ -46,6 +53,9 @@ AINEX_HINTS: Sequence[Tuple[str, str]] = (
 STOP_COMMANDS: Mapping[str, str] = {
     MYAGV: "publish a zero geometry_msgs/Twist on /cmd_vel",
     AINEX: "call /walking/command with 'enable_control', then with 'stop'",
+    MYAGV_MYCOBOT280: "publish an empty actionlib_msgs/GoalID on /move_base/cancel, then a "
+                      "zero geometry_msgs/Twist on /cmd_vel",
+    ROSMASTER_X3_PLUS: "publish a zero geometry_msgs/Twist on /cmd_vel",
 }
 
 
@@ -87,6 +97,42 @@ def _make_myagv_link(host: str, port: int, namespace: str = "", camera_topic=Non
         odom_topic=namespaced(TOPIC_ODOM, namespace),
         camera_topic=camera_topic or namespaced(TOPIC_CAMERA, namespace),
         scan_topic=namespaced(TOPIC_SCAN, namespace),
+    )
+
+
+def _make_composite_link(host: str, port: int, namespace: str = "", camera_topic=None):
+    from robot_console.bridge import RobotLink
+    from robot_console.composite_topics import CANCEL_ALL, TOPIC_CANCEL, TYPE_GOAL_ID
+    from robot_console.topics import (
+        TOPIC_CAMERA, TOPIC_CMD_VEL, TOPIC_ODOM, TOPIC_SCAN, namespaced,
+    )
+
+    return RobotLink(
+        host, port,
+        cmd_topic=namespaced(TOPIC_CMD_VEL, namespace),
+        odom_topic=namespaced(TOPIC_ODOM, namespace),
+        camera_topic=camera_topic or namespaced(TOPIC_CAMERA, namespace),
+        scan_topic=namespaced(TOPIC_SCAN, namespace),
+        cancel_topic=namespaced(TOPIC_CANCEL, namespace),
+        cancel_type=TYPE_GOAL_ID,
+        cancel_msg=CANCEL_ALL,
+    )
+
+
+def _make_x3_link(host: str, port: int, namespace: str = "", camera_topic=None):
+    from robot_console import x3plus_topics as x3
+    from robot_console.bridge import RobotLink
+    from robot_console.topics import namespaced
+
+    return RobotLink(
+        host, port,
+        cmd_topic=namespaced(x3.TOPIC_CMD_VEL, namespace),
+        odom_topic=namespaced(x3.TOPIC_ODOM, namespace),
+        # Its only colour stream is raw: discovery's fallback to "the namespace's one
+        # CompressedImage" never applies, so the contract name is used as it is.
+        camera_topic=namespaced(x3.TOPIC_CAMERA, namespace),
+        scan_topic=namespaced(x3.TOPIC_SCAN, namespace),
+        camera_type=x3.TYPE_IMAGE,
     )
 
 
@@ -142,7 +188,37 @@ def _ainex_profile() -> RobotProfile:
     )
 
 
-_FACTORIES = {MYAGV: _myagv_profile, AINEX: _ainex_profile}
+def _composite_profile() -> RobotProfile:
+    """The myAGV + myCobot 280 drives as the myAGV it stands on, with its own stop."""
+    return dataclasses.replace(
+        _myagv_profile(), name=MYAGV_MYCOBOT280, make_link=_make_composite_link,
+        startup_instructions=preflight.startup_instructions_composite,
+        speed_limit_label="the real myAGV limit", stop_command=STOP_COMMANDS[MYAGV_MYCOBOT280])
+
+
+def _x3_profile() -> RobotProfile:
+    from robot_console import x3plus_topics as x3
+
+    return RobotProfile(
+        name=ROSMASTER_X3_PLUS,
+        make_link=_make_x3_link,
+        speed_min=x3.SPEED_MIN,
+        speed_max=x3.SPEED_MAX,
+        speed_step=x3.SPEED_STEP,
+        speed_default=x3.SPEED_DEFAULT,
+        turn_ratio=x3.TURN_RATIO,
+        turn_max=x3.TURN_MAX,
+        has_odom=True,
+        has_head=False,
+        hints=hud.HINTS,
+        startup_instructions=preflight.startup_instructions_x3,
+        speed_limit_label="the X3 PLUS board's 0.7 m/s input range",
+        stop_command=STOP_COMMANDS[ROSMASTER_X3_PLUS],
+    )
+
+
+_FACTORIES = {MYAGV: _myagv_profile, AINEX: _ainex_profile,
+              MYAGV_MYCOBOT280: _composite_profile, ROSMASTER_X3_PLUS: _x3_profile}
 
 
 def profile(name: str) -> RobotProfile:

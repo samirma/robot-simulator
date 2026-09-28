@@ -172,3 +172,37 @@ def test_decoding_agrees_with_the_raw_bytes_it_is_built_on():
     msg = {"format": "jpeg", "data": base64.b64encode(buf.tobytes()).decode()}
     assert decode_compressed_image(msg) is not None
     assert compressed_image_bytes(msg) == buf.tobytes()
+
+
+def test_a_raw_rgb8_image_decodes_to_bgr():
+    """The X3 PLUS's Astra has only a raw sensor_msgs/Image colour stream."""
+    import base64
+
+    import numpy as np
+
+    from robot_console.camera import decode_image
+
+    rgb = np.zeros((4, 6, 3), dtype=np.uint8)
+    rgb[..., 0] = 200  # red
+    msg = {"header": {"seq": 1}, "height": 4, "width": 6, "encoding": "rgb8",
+           "is_bigendian": 0, "step": 18, "data": base64.b64encode(rgb.tobytes()).decode()}
+    frame = decode_image(msg)
+    assert frame.shape == (4, 6, 3)
+    assert (frame[..., 2] == 200).all() and (frame[..., 0] == 0).all(), "BGR order"
+
+
+def test_a_raw_16_bit_depth_image_is_scaled_to_its_range_and_bad_input_is_none():
+    import base64
+
+    import numpy as np
+
+    from robot_console.camera import decode_image
+
+    depth = np.array([[0, 1000], [2000, 4000]], dtype="<u2")
+    msg = {"height": 2, "width": 2, "encoding": "16UC1", "is_bigendian": 0, "step": 4,
+           "data": base64.b64encode(depth.tobytes()).decode()}
+    frame = decode_image(msg)
+    assert frame[1, 1, 0] == 255 and frame[0, 0, 0] == 0
+    assert decode_image({**msg, "step": 1}) is None
+    assert decode_image({**msg, "encoding": "yuv422"}) is None
+    assert decode_image({**msg, "data": 7}) is None

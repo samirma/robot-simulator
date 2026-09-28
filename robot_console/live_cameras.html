@@ -97,6 +97,8 @@ button:disabled{opacity:.45;cursor:default}
   "member_signatures": [
     ["so101", "/joint_trajectory_controller/joint_trajectory", "trajectory_msgs/msg/JointTrajectory"],
     ["ainex", "/walking/set_param", "ainex_interfaces/WalkingParam"],
+    ["myagv_mycobot280", "/move_base/goal", "move_base_msgs/MoveBaseActionGoal"],
+    ["rosmaster_x3_plus", "/TargetAngle", "yahboomcar_msgs/ArmJoint"],
     ["myagv", "/cmd_vel", "geometry_msgs/Twist"]
   ],
   "rig": {"kind": "scene", "namespace": "scene",
@@ -677,7 +679,10 @@ function buildMyagv(member) {
 }
 
 // The rig has cameras and nothing to command.
-const PANELS = { so101: buildSo101, ainex: buildAinex, myagv: buildMyagv };
+// The two mobile manipulators drive like the myAGV (a Twist with no watchdog) and get
+// its panel: cameras, and no drive controls.
+const PANELS = { so101: buildSo101, ainex: buildAinex, myagv: buildMyagv,
+                 myagv_mycobot280: buildMyagv, rosmaster_x3_plus: buildMyagv };
 
 // ------------------------------------------------------------------ lifecycle ---
 

@@ -122,7 +122,8 @@ def positive_seconds(value: str) -> float:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="teleop",
-        description="Keyboard teleoperation of a myAGV or an AiNex over rosbridge, with its "
+        description="Keyboard teleoperation of a mobile robot (a myAGV, a myAGV + myCobot "
+                    "280, a ROSMASTER X3 PLUS or an AiNex) over rosbridge, with its "
                     "live camera. A separate safety supervisor process publishes every "
                     "motion command and stops the robot if this UI stops answering.",
         epilog=(
@@ -143,9 +144,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--record", metavar="DIR", default=None,
                         help="write feed.mp4 (every decoded camera frame) and commands.jsonl to DIR")
     parser.add_argument("--speed", type=float, default=None, metavar="M_PER_S",
-                        help="initial linear speed (myAGV 0.15, AiNex 0.10)")
+                        help="initial linear speed (myAGV and myAGV + myCobot 280 0.15, "
+                             "X3 PLUS 0.20, AiNex 0.10)")
     parser.add_argument("--max-speed", type=float, default=None, metavar="M_PER_S",
-                        help="speed cap (myAGV 0.28, AiNex 0.20)")
+                        help="speed cap (myAGV and myAGV + myCobot 280 0.28, X3 PLUS 0.70, "
+                             "AiNex 0.20)")
     parser.add_argument("--latch", action="store_true",
                         help="a motion key keeps the robot moving until another motion key, "
                              "Space or Esc")

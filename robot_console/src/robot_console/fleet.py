@@ -167,6 +167,59 @@ PERIODIC: dict[str, dict[str, Periodic]] = {
         "/joy": Periodic("sensor_msgs/Joy", 20, 20),
         "/sensor/button/get_button_state": Periodic("std_msgs/Bool", 50, 50),
     },
+    "myagv_mycobot280": {
+        "/odom": Periodic("nav_msgs/Odometry", 100, 100),
+        "/imu": Periodic("sensor_msgs/Imu", 100, 100),
+        "/Voltage": Periodic("std_msgs/Float32", 100, 100),
+        "/voltage_backup": Periodic("std_msgs/Float32", 100, 100),
+        "/joint_states": Periodic("sensor_msgs/JointState", 10, 10),
+        "/tf": Periodic("tf2_msgs/TFMessage", 210, 100),
+        "/robot_pose_ekf/odom_combined": Periodic("nav_msgs/Odometry", 30, 30),
+        "/scan": Periodic("sensor_msgs/LaserScan", 30, 30),
+        "/point_cloud": Periodic("sensor_msgs/PointCloud", 30, 30),
+        "/camera/image_raw": Periodic("sensor_msgs/Image", 30, 30),
+        "/camera/camera_info": Periodic("sensor_msgs/CameraInfo", 30, 30),
+        "/camera/image_raw/compressed": Periodic("sensor_msgs/CompressedImage", 30, 30),
+        "/move_base/feedback": Periodic("move_base_msgs/MoveBaseActionFeedback", 5, 5),
+        "/move_base/status": Periodic("actionlib_msgs/GoalStatusArray", 5, 5),
+        "/cmd_vel": Periodic("geometry_msgs/Twist", 5, 5),
+        "/move_base/global_costmap/costmap": Periodic("nav_msgs/OccupancyGrid", 0.3, 0.3),
+        "/move_base/global_costmap/costmap_updates":
+            Periodic("map_msgs/OccupancyGridUpdate", 0.3, 0.3),
+        "/move_base/global_costmap/footprint": Periodic("geometry_msgs/PolygonStamped", 0.3, 0.3),
+        "/move_base/global_costmap/obstacle_layer/clearing_endpoints":
+            Periodic("sensor_msgs/PointCloud", 0.3, 0.3),
+        "/move_base/local_costmap/costmap": Periodic("nav_msgs/OccupancyGrid", 2, 2),
+        "/move_base/local_costmap/costmap_updates": Periodic("map_msgs/OccupancyGridUpdate", 2, 2),
+        "/move_base/local_costmap/footprint": Periodic("geometry_msgs/PolygonStamped", 2, 2),
+        "/move_base/GlobalPlanner/plan": Periodic("nav_msgs/Path", 1, 1),
+        "/move_base/GlobalPlanner/potential": Periodic("nav_msgs/OccupancyGrid", 1, 1),
+        "/move_base/TrajectoryPlannerROS/global_plan": Periodic("nav_msgs/Path", 5, 5),
+        "/move_base/TrajectoryPlannerROS/local_plan": Periodic("nav_msgs/Path", 5, 5),
+        "/move_base/TrajectoryPlannerROS/cost_cloud": Periodic("sensor_msgs/PointCloud2", 5, 5),
+    },
+    "rosmaster_x3_plus": {
+        "/edition": Periodic("std_msgs/Float32", 20, 20),
+        "/voltage": Periodic("std_msgs/Float32", 20, 20),
+        "/joint_states": Periodic("sensor_msgs/JointState", 20, 20),
+        "/vel_raw": Periodic("geometry_msgs/Twist", 20, 20),
+        "/imu/data_raw": Periodic("sensor_msgs/Imu", 20, 20),
+        "/mag/mag_raw": Periodic("sensor_msgs/MagneticField", 20, 20),
+        "/odom_raw": Periodic("nav_msgs/Odometry", 20, 20),
+        "/imu/data": Periodic("sensor_msgs/Imu", 20, 20),
+        "/odom": Periodic("nav_msgs/Odometry", 20, 20),
+        "/tf": Periodic("tf2_msgs/TFMessage", 83.333, 33.333),
+        "/scan": Periodic("sensor_msgs/LaserScan", 10, 10),
+        "/point_cloud": Periodic("sensor_msgs/PointCloud", 10, 10),
+        "/camera/depth/image_raw": Periodic("sensor_msgs/Image", 30, 30),
+        "/camera/depth/camera_info": Periodic("sensor_msgs/CameraInfo", 30, 30),
+        "/camera/rgb/image_raw": Periodic("sensor_msgs/Image", 30, 30),
+        "/camera/rgb/camera_info": Periodic("sensor_msgs/CameraInfo", 30, 30),
+        "/camera/ir/image_raw": Periodic("sensor_msgs/Image", 30, 30),
+        "/camera/ir/camera_info": Periodic("sensor_msgs/CameraInfo", 30, 30),
+        "/camera/depth/points": Periodic("sensor_msgs/PointCloud2", 30, 30),
+        "/camera/depth_registered/points": Periodic("sensor_msgs/PointCloud2", 30, 30),
+    },
     # The rig (simulator spec §3): `SCENE_CAMERA_HZ`, held equal to `ros_settings`'.
     "scene": {
         "/overhead/color/compressed": Periodic("sensor_msgs/msg/CompressedImage", 10, 10),
@@ -222,6 +275,35 @@ APERIODIC: dict[str, dict[str, str]] = {
         "/object/pixel_coords": "ainex_interfaces/ObjectsInfo",
         "/app/image_result": "sensor_msgs/Image",
     },
+    "myagv_mycobot280": {
+        "/tf_static": "tf2_msgs/TFMessage",
+        "/map": "nav_msgs/OccupancyGrid",
+        "/map_metadata": "nav_msgs/MapMetaData",
+        "/initialpose": "geometry_msgs/PoseWithCovarianceStamped",
+        "/amcl_pose": "geometry_msgs/PoseWithCovarianceStamped",
+        "/particlecloud": "geometry_msgs/PoseArray",
+        "/move_base/goal": "move_base_msgs/MoveBaseActionGoal",
+        "/move_base/cancel": "actionlib_msgs/GoalID",
+        "/move_base/result": "move_base_msgs/MoveBaseActionResult",
+        "/move_base_simple/goal": "geometry_msgs/PoseStamped",
+        "/move_base/current_goal": "geometry_msgs/PoseStamped",
+        "/move_base/recovery_status": "move_base_msgs/RecoveryStatus",
+    },
+    "rosmaster_x3_plus": {
+        "/cmd_vel": "geometry_msgs/Twist",
+        "/RGBLight": "std_msgs/Int32",
+        "/Buzzer": "std_msgs/Bool",
+        "/TargetAngle": "yahboomcar_msgs/ArmJoint",
+        "/ArmAngleUpdate": "yahboomcar_msgs/ArmJoint",
+        "/driver_node/parameter_descriptions": "dynamic_reconfigure/ConfigDescription",
+        "/driver_node/parameter_updates": "dynamic_reconfigure/Config",
+        "/diagnostics": "diagnostic_msgs/DiagnosticArray",
+        "/tf_static": "tf2_msgs/TFMessage",
+        "/joy": "sensor_msgs/Joy",
+        "/joy/set_feedback": "sensor_msgs/JoyFeedbackArray",
+        "/JoyState": "std_msgs/Bool",
+        "/move_base/cancel": "actionlib_msgs/GoalID",
+    },
     "scene": {"/tf_static": "tf2_msgs/msg/TFMessage"},
 }
 
@@ -234,6 +316,24 @@ OPTIONAL: dict[str, frozenset[str]] = {
         "/wrist/image_raw/compressedDepth",
         "/wrist/image_raw/theora",
         "/wrist/image_raw/zstd",
+    }),
+}
+
+#: Declared periodic topics whose rate holds only while something is so -- the ROS file's
+#: `active_while` rows: the composite's move_base plans and drives only while a goal is
+#: active, and its costmaps send partial updates never (always_send_full_costmap). They
+#: must be on the wire, with their type, and are not timed.
+CONDITIONAL: dict[str, frozenset[str]] = {
+    "myagv_mycobot280": frozenset({
+        "/cmd_vel",
+        "/move_base/feedback",
+        "/move_base/GlobalPlanner/plan",
+        "/move_base/GlobalPlanner/potential",
+        "/move_base/TrajectoryPlannerROS/cost_cloud",
+        "/move_base/TrajectoryPlannerROS/global_plan",
+        "/move_base/TrajectoryPlannerROS/local_plan",
+        "/move_base/global_costmap/costmap_updates",
+        "/move_base/local_costmap/costmap_updates",
     }),
 }
 
@@ -326,9 +426,10 @@ def expected_rates(members, present: Mapping[str, str]) -> dict[str, Periodic]:
     expected: dict[str, Periodic] = {}
     for member in members:
         optional = OPTIONAL.get(member.kind, frozenset())
+        conditional = CONDITIONAL.get(member.kind, frozenset())
         for bare, periodic in PERIODIC.get(member.kind, {}).items():
             wire = namespaced(bare, member.namespace)
-            if bare in optional and wire not in present:
+            if bare in conditional or (bare in optional and wire not in present):
                 continue
             expected[wire] = periodic
     return expected

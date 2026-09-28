@@ -25,6 +25,8 @@ from _workspace import CONSOLE, SPECS, console, robots_yml, ros_file, simulator
 # ---------------------------------------------------------------------- the modules
 
 C_TOPICS = console("robot_console.topics")
+C_X3 = console("robot_console.x3plus_topics")
+C_COMPOSITE = console("robot_console.composite_topics")
 C_AINEX = console("robot_console.ainex_topics")
 C_ROBOTS = console("robot_console.robots")
 C_DISCOVERY = console("robot_console.discovery")
@@ -36,6 +38,8 @@ C_TASK = console("robot_console.arm.task")
 C_VISION = console("robot_console.arm.vision_success")
 
 S_MYAGV = simulator("ros_surfaces/myagv.py")
+S_X3 = simulator("ros_surfaces/rosmaster_x3_plus.py")
+S_COMPOSITE = simulator("ros_surfaces/myagv_mycobot280.py")
 S_AINEX = simulator("ros_surfaces/ainex/topics.py")
 S_SERVOS = simulator("ros_surfaces/ainex/servos.py")
 S_SO101 = simulator("ros_surfaces/so101.py")
@@ -46,6 +50,11 @@ S_TASK = simulator("tasks/apple_on_plate.py")
 MYAGV_ROS = ros_file(SPECS / "myagv" / "ros.yml")
 SO101_ROS = ros_file(SPECS / "so101" / "ros2.yml")
 AINEX_ROS = ros_file(SPECS / "ainex" / "ros.yml")
+X3_ROS = ros_file(SPECS / "rosmaster_x3_plus" / "ros.yml")
+COMPOSITE_ROS = ros_file(SPECS / "myagv_mycobot280" / "ros.yml")
+#: The composite's whole interface: its ROS file `extends` the myAGV's.
+COMPOSITE_ALL = {"topics": MYAGV_ROS["topics"] + COMPOSITE_ROS["topics"],
+                 "services": MYAGV_ROS["services"] + COMPOSITE_ROS["services"]}
 
 
 def _rows(ros: dict, section: str) -> dict[str, str]:
@@ -138,6 +147,73 @@ class MyAGV(unittest.TestCase):
         self.assertTrue(math.isclose(yaw, C_SCAN["LASER_YAW"]))
         self.assertEqual((S_MYAGV["SCAN_RANGE_MIN"], S_MYAGV["SCAN_RANGE_MAX"]),
                          (C_SCAN["DEFAULT_RANGE_MIN"], C_SCAN["DEFAULT_RANGE_MAX"]))
+
+
+# ---------------------------------------------------------------------- the ROSMASTER X3 PLUS
+
+
+class RosmasterX3Plus(unittest.TestCase):
+    def test_every_name_and_type_the_console_uses(self) -> None:
+        sim = {name: kind for name, kind, *_ in S_X3["TOPICS"]}
+        files = _rows(X3_ROS, "topics")
+        for name, kind in C_X3["CONTRACT_TOPICS"].items():
+            self.assertEqual(sim[name], kind, name)
+            self.assertEqual(files[name], kind, name)
+        for name in ("TOPIC_CMD_VEL", "TOPIC_ODOM", "TOPIC_SCAN", "TOPIC_TARGET_ANGLE",
+                     "TYPE_TWIST", "TYPE_ODOM", "TYPE_LASER_SCAN", "TYPE_ARM_JOINT"):
+            self.assertEqual(C_X3[name], S_X3[name], name)
+        self.assertEqual(C_X3["TOPIC_CAMERA"], S_X3["TOPIC_RGB_IMAGE"])
+        self.assertEqual(C_X3["TYPE_IMAGE"], S_X3["TYPE_IMAGE"])
+
+    def test_what_the_console_sends_the_driver_subscribes_with_that_type(self) -> None:
+        driver = {n: ty for n, ty, d, node, _r in S_X3["TOPICS"] if d == "in"
+                  and node == S_X3["NODE_DRIVER"]}
+        self.assertEqual(driver[C_X3["TOPIC_CMD_VEL"]], C_X3["TYPE_TWIST"])
+        self.assertEqual(_directed(X3_ROS, "in")[C_X3["TOPIC_CMD_VEL"]], C_X3["TYPE_TWIST"])
+
+    def test_the_command_range_the_teleop_cap_and_the_stop_command(self) -> None:
+        self.assertEqual(tuple(C_X3["CMD_VEL_LIMITS"]), tuple(S_X3["CMD_VEL_LIMITS"]))
+        self.assertEqual(C_X3["SPEED_MAX"], S_X3["CMD_VEL_LIMITS"][0])
+        self.assertEqual(C_X3["TURN_MAX"], S_X3["CMD_VEL_LIMITS"][2])
+        self.assertIn("v_x, v_y [-0.7, 0.7] m/s and v_z [-3.2, 3.2] rad/s",
+                      next(r["description"] for r in X3_ROS["topics"]
+                           if r["name"] == "/cmd_vel" and r["direction"] == "in"))
+        stop = S_X3["STOP_COMMAND"]
+        self.assertTrue(all(v == 0.0 for part in stop.values() for v in part.values()))
+        self.assertIn("/cmd_vel geometry_msgs/Twist", X3_ROS["stop_command"])
+        self.assertIn("zero geometry_msgs/Twist on /cmd_vel",
+                      C_ROBOTS["STOP_COMMANDS"][C_ROBOTS["ROSMASTER_X3_PLUS"]])
+
+
+# ---------------------------------------------------------------------- the myAGV + myCobot 280
+
+
+class MyAGVMyCobot280(unittest.TestCase):
+    def test_it_extends_the_myagv_and_the_console_drives_it_with_the_myagvs_names(self) -> None:
+        self.assertEqual(COMPOSITE_ROS["extends"], "myagv/ros.yml")
+        files = _rows(COMPOSITE_ALL, "topics")
+        for name, kind in C_TOPICS["CONTRACT_TOPICS"].items():
+            self.assertEqual(files[name], kind, name)
+
+    def test_the_navigation_names_the_console_uses(self) -> None:
+        sim = {(n, d): ty for n, ty, d, _node, _r in S_COMPOSITE["TOPICS"]}
+        self.assertEqual(C_COMPOSITE["TOPIC_GOAL"], S_COMPOSITE["TOPIC_GOAL"])
+        self.assertEqual(C_COMPOSITE["TOPIC_CANCEL"], S_COMPOSITE["TOPIC_CANCEL"])
+        self.assertEqual(sim[(C_COMPOSITE["TOPIC_GOAL"], "in")], C_COMPOSITE["TYPE_GOAL"])
+        self.assertEqual(sim[(C_COMPOSITE["TOPIC_CANCEL"], "in")], C_COMPOSITE["TYPE_GOAL_ID"])
+        files = _directed(COMPOSITE_ROS, "in")
+        self.assertEqual(files[C_COMPOSITE["TOPIC_GOAL"]], C_COMPOSITE["TYPE_GOAL"])
+        self.assertEqual(files[C_COMPOSITE["TOPIC_CANCEL"]], C_COMPOSITE["TYPE_GOAL_ID"])
+
+    def test_the_stop_command_cancels_navigation_then_sends_a_zero_twist(self) -> None:
+        self.assertEqual(C_COMPOSITE["CANCEL_ALL"], S_COMPOSITE["STOP_CANCEL"])
+        self.assertEqual(S_COMPOSITE["STOP_CANCEL"]["id"], "")
+        text = COMPOSITE_ROS["stop_command"]
+        self.assertIn("zero geometry_msgs/Twist on /cmd_vel", text)
+        self.assertIn("first cancel it", text)
+        self.assertIn("actionlib_msgs/GoalID on /move_base/cancel (empty id cancels all)", text)
+        mine = C_ROBOTS["STOP_COMMANDS"][C_ROBOTS["MYAGV_MYCOBOT280"]]
+        self.assertLess(mine.index("/move_base/cancel"), mine.index("zero geometry_msgs/Twist"))
 
 
 # ---------------------------------------------------------------------- the AiNex
@@ -376,9 +452,15 @@ class DiscoveryAndIds(unittest.TestCase):
     def test_every_signature_is_its_robots_typed_command_topic(self) -> None:
         sim = {"so101": {n: v[0] for n, v in S_SO101["TOPICS"].items()},
                "myagv": {n: k for n, k, *_ in S_MYAGV["TOPICS"]},
-               "ainex": {t.name: t.type for t in S_AINEX["TOPICS"]}}
+               "ainex": {t.name: t.type for t in S_AINEX["TOPICS"]},
+               "myagv_mycobot280": {**{n: k for n, k, *_ in S_MYAGV["TOPICS"]},
+                                    **{n: k for n, k, d, *_ in S_COMPOSITE["TOPICS"]
+                                       if d == "in"}},
+               "rosmaster_x3_plus": {n: k for n, k, *_ in S_X3["TOPICS"]}}
         files = {"so101": _directed(SO101_ROS, "in"), "myagv": _directed(MYAGV_ROS, "in"),
-                 "ainex": _directed(AINEX_ROS, "in")}
+                 "ainex": _directed(AINEX_ROS, "in"),
+                 "myagv_mycobot280": _directed(COMPOSITE_ALL, "in"),
+                 "rosmaster_x3_plus": _directed(X3_ROS, "in")}
         for kind, topic, kind_type in C_DISCOVERY["MEMBER_SIGNATURES"]:
             self.assertEqual(sim[kind][topic], kind_type, kind)
             self.assertEqual(files[kind][topic], kind_type, kind)
@@ -396,8 +478,11 @@ class DiscoveryAndIds(unittest.TestCase):
 
     def test_every_console_robot_id_is_a_simulated_robot_in_robots_yml(self) -> None:
         entries = robots_yml()
-        kinds = {"myagv": "mobile_base", "ainex": "humanoid", "so101": "arm"}
-        ids = {C_ROBOTS["MYAGV"], C_ROBOTS["AINEX"], C_DISCOVERY["SO101"]}
+        kinds = {"myagv": "mobile_base", "ainex": "humanoid", "so101": "arm",
+                 "myagv_mycobot280": "mobile_manipulator",
+                 "rosmaster_x3_plus": "mobile_manipulator"}
+        ids = {C_ROBOTS["MYAGV"], C_ROBOTS["AINEX"], C_DISCOVERY["SO101"],
+               C_ROBOTS["MYAGV_MYCOBOT280"], C_ROBOTS["ROSMASTER_X3_PLUS"]}
         ids |= {k for k, _t, _y in C_DISCOVERY["MEMBER_SIGNATURES"]}
         ids |= {k for k in C_FLEET["PERIODIC"] if k != C_DISCOVERY["RIG_KIND"]}
         self.assertEqual(ids, set(kinds))
@@ -407,7 +492,11 @@ class DiscoveryAndIds(unittest.TestCase):
             self.assertEqual(entries[rid]["kind"], kinds[rid], rid)
         self.assertEqual(entries[C_ROBOTS["MYAGV"]]["name"], "myAGV")
         self.assertEqual(entries[C_ROBOTS["AINEX"]]["name"], "AiNex")
-        self.assertEqual(C_ROBOTS["TELEOP_ROBOTS"], (C_ROBOTS["MYAGV"], C_ROBOTS["AINEX"]))
+        # Teleop drives every mobile robot robots.yml has: every kind but a fixed arm.
+        mobile = {rid for rid, e in entries.items()
+                  if e.get("simulated") is True and e.get("kind") != "arm"}
+        self.assertEqual(set(C_ROBOTS["TELEOP_ROBOTS"]), mobile)
+        self.assertEqual(C_ROBOTS["TELEOP_ROBOTS"][:2], (C_ROBOTS["MYAGV"], C_ROBOTS["AINEX"]))
 
     def test_the_rig_is_not_a_robot_id(self) -> None:
         self.assertNotIn(C_DISCOVERY["RIG_KIND"], robots_yml())
@@ -423,7 +512,8 @@ class DiscoveryAndIds(unittest.TestCase):
 
 
 def _declared_rates(ros: dict) -> tuple[dict, dict, set]:
-    """`(periodic, aperiodic, optional)` as `fleet.py` models them, from one ROS file."""
+    """`(periodic, aperiodic, optional)` as `fleet.py` models them, from one ROS file (a
+    composite's with its base's rows merged in)."""
     periodic: dict[str, tuple[str, float, float]] = {}
     for row in ros["topics"]:
         rate = row.get("rate_hz")
@@ -441,7 +531,8 @@ def _declared_rates(ros: dict) -> tuple[dict, dict, set]:
 
 
 class PeriodicRates(unittest.TestCase):
-    FILES = {"so101": SO101_ROS, "myagv": MYAGV_ROS, "ainex": AINEX_ROS}
+    FILES = {"so101": SO101_ROS, "myagv": MYAGV_ROS, "ainex": AINEX_ROS,
+             "myagv_mycobot280": COMPOSITE_ALL, "rosmaster_x3_plus": X3_ROS}
 
     def _console(self, kind: str) -> dict[str, tuple[str, float, float]]:
         return {n: (p.type, float(p.hz), float(p.fastest_hz))
@@ -453,9 +544,12 @@ class PeriodicRates(unittest.TestCase):
             self.assertEqual(self._console(kind), periodic, kind)
             self.assertEqual(C_FLEET["APERIODIC"][kind], aperiodic, kind)
             self.assertEqual(set(C_FLEET["OPTIONAL"].get(kind, ())), optional, kind)
+            conditional = {r["name"] for r in ros["topics"] if r.get("active_while")}
+            self.assertEqual(set(C_FLEET["CONDITIONAL"].get(kind, ())), conditional, kind)
 
     def test_the_rate_table_is_the_simulators(self) -> None:
-        sim: dict[str, dict[str, float]] = {"so101": {}, "myagv": {}, "ainex": {}}
+        sim: dict[str, dict[str, float]] = {"so101": {}, "myagv": {}, "ainex": {},
+                                            "myagv_mycobot280": {}, "rosmaster_x3_plus": {}}
         for name, (kind, direction, rate, _node) in S_SO101["TOPICS"].items():
             if direction == "out" and isinstance(rate, (int, float)):
                 sim["so101"][name] = float(rate)
@@ -463,10 +557,20 @@ class PeriodicRates(unittest.TestCase):
             if direction == "out" and isinstance(rate, (int, float)):
                 sim["myagv"][name] = sim["myagv"].get(name, 0.0) + float(rate)
         sim["ainex"] = {n: float(hz) for n, hz in S_AINEX["RATES_HZ"].items()}
+        for name, rate in sim["myagv"].items():
+            sim["myagv_mycobot280"][name] = rate
+        for kind, module in (("myagv_mycobot280", S_COMPOSITE), ("rosmaster_x3_plus", S_X3)):
+            for name, _kind, direction, _node, rate in module["TOPICS"]:
+                if direction == "out" and isinstance(rate, (int, float)):
+                    sim[kind][name] = sim[kind].get(name, 0.0) + float(rate)
+        self.assertEqual(set(C_FLEET["CONDITIONAL"]["myagv_mycobot280"]),
+                         set(S_COMPOSITE["CONDITIONAL"]))
         for kind, rates in sim.items():
             served = {n: hz for n, (_t, hz, _f) in self._console(kind).items()
                       if n not in C_FLEET["OPTIONAL"].get(kind, ())}
-            self.assertEqual(served, rates, kind)
+            self.assertEqual(served.keys(), rates.keys(), kind)
+            for name, hz in rates.items():
+                self.assertAlmostEqual(served[name], hz, places=6, msg=f"{kind} {name}")
 
     def test_the_rigs_rate(self) -> None:
         rig = self._console(C_DISCOVERY["RIG_KIND"])
@@ -510,7 +614,9 @@ class ViewPage(unittest.TestCase):
 
     def test_the_pages_signatures_are_the_robots(self) -> None:
         files = {"so101": _rows(SO101_ROS, "topics"), "myagv": _rows(MYAGV_ROS, "topics"),
-                 "ainex": _rows(AINEX_ROS, "topics")}
+                 "ainex": _rows(AINEX_ROS, "topics"),
+                 "myagv_mycobot280": _rows(COMPOSITE_ALL, "topics"),
+                 "rosmaster_x3_plus": _rows(X3_ROS, "topics")}
         for kind, topic, kind_type in self.contract["member_signatures"]:
             self.assertEqual(files[kind][topic], kind_type)
 

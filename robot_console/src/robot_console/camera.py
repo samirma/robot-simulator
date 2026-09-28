@@ -65,6 +65,52 @@ def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
     return frame
 
 
+def decode_raw_image(msg: Mapping) -> Optional[np.ndarray]:
+    """Decode a raw `sensor_msgs/Image` to a BGR ndarray, or None.
+
+    The ROSMASTER X3 PLUS's Astra publishes its colour stream only raw (rgb8), with no
+    compressed companion. `rgb8`, `bgr8` and `mono8` are shown as they are; a 16-bit image
+    (`mono16`, `16UC1`) is scaled to its own range, which is what a person looking at a
+    depth or IR view needs. Malformed input gives None, as `decode_compressed_image` does.
+    """
+    if not isinstance(msg, Mapping):
+        return None
+    data, encoding = msg.get("data"), str(msg.get("encoding", "")).lower()
+    try:
+        width, height = int(msg.get("width", 0)), int(msg.get("height", 0))
+        step = int(msg.get("step", 0))
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, str) or width <= 0 or height <= 0:
+        return None
+    try:
+        raw = np.frombuffer(base64.b64decode(data, validate=False), dtype=np.uint8)
+    except (binascii.Error, ValueError):
+        return None
+    channels = {"rgb8": 3, "bgr8": 3, "mono8": 1, "mono16": 2, "16uc1": 2}.get(encoding)
+    if channels is None or step < width * channels or raw.size < step * height:
+        return None
+    rows = raw[: step * height].reshape(height, step)[:, : width * channels]
+    if encoding in ("rgb8", "bgr8"):
+        frame = rows.reshape(height, width, 3)
+        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if encoding == "rgb8" else frame.copy()
+    if encoding == "mono8":
+        return cv2.cvtColor(rows.copy(), cv2.COLOR_GRAY2BGR)
+    big = bool(msg.get("is_bigendian"))
+    values = rows.copy().view(">u2" if big else "<u2").reshape(height, width).astype(np.float32)
+    top = float(values.max()) or 1.0
+    grey = np.clip(values * (255.0 / top), 0, 255).astype(np.uint8)
+    return cv2.cvtColor(grey, cv2.COLOR_GRAY2BGR)
+
+
+def decode_image(msg: Mapping) -> Optional[np.ndarray]:
+    """A camera message of either kind -- `CompressedImage` (it has `format`) or a raw
+    `Image` (it has `encoding`) -- as a BGR ndarray, or None."""
+    if isinstance(msg, Mapping) and "encoding" in msg and "format" not in msg:
+        return decode_raw_image(msg)
+    return decode_compressed_image(msg)
+
+
 def header_seq(msg: Mapping) -> Optional[int]:
     """The `header.seq` counter, if present. Used to align video with the command log."""
     try:

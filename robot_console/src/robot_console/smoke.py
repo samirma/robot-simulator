@@ -1,4 +1,7 @@
-"""A scripted live check of a myAGV: `python -m robot_console.smoke [--url ws://…]`.
+"""A scripted live check of a `/cmd_vel` base: `python -m robot_console.smoke [--url ws://…]`.
+
+The base is the one on the wire -- a myAGV, a myAGV + myCobot 280 or a ROSMASTER X3 PLUS --
+narrowed by `--robot` and `--namespace` as teleop narrows it.
 
 Headless and non-interactive, but it **drives the robot**: 2 s forward, 2 s back and 2 s
 sideways at teleop's default speed (0.15 m/s), then 2 s turning in place at 0.5 rad/s. It
@@ -21,9 +24,9 @@ import time
 from typing import List, Optional
 
 from robot_console.bridge import Odom, wrap_angle
-from robot_console.camera import LatestFrame, decode_compressed_image
+from robot_console.camera import LatestFrame, decode_image
 from robot_console.preflight import probe_tcp, startup_instructions
-from robot_console.robots import MYAGV
+from robot_console.robots import WHEELED_ROBOTS
 from robot_console.supervisor import DEFAULT_SAFETY_TIMEOUT, SupervisedLink, SupervisorError
 from robot_console.teleop import SPEED_DEFAULT, Command
 from robot_console.wire import DEFAULT_URL, add_url_argument, parse_url
@@ -106,7 +109,8 @@ class Runner:
         return predicate()
 
 
-def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False):
+def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False,
+            robot: Optional[str] = None):
     """Run every check. Returns `(checks, exit_code)`."""
     host, port = parse_url(url)
     if not quiet:
@@ -120,13 +124,18 @@ def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False):
         return [Check("preflight").failed(probe.detail)], 2
 
     started = time.monotonic()
-    link = SupervisedLink(url, robot=MYAGV, namespace=namespace,
+    link = SupervisedLink(url, robot=robot, namespace=namespace,
                           safety_timeout=DEFAULT_SAFETY_TIMEOUT)
     try:
         ready = link.start()
     except SupervisorError as exc:
         print(f"  [FAIL] connect        {exc}", file=sys.stderr)
         return [Check("connect").failed(str(exc))], 1
+    if ready.get("robot") not in WHEELED_ROBOTS:
+        link.close()
+        detail = f"{ready.get('robot')} is not a /cmd_vel base ({', '.join(WHEELED_ROBOTS)})"
+        print(f"  [FAIL] connect        {detail}", file=sys.stderr)
+        return [Check("connect").failed(detail)], 1
 
     runner = Runner(link, quiet)
 
@@ -158,7 +167,7 @@ def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False):
         def decoded() -> bool:
             pending = runner.latest.take()
             if pending is not None:
-                frame = decode_compressed_image(pending[0])
+                frame = decode_image(pending[0])
                 if frame is not None:
                     frame_box["frame"] = frame
             return "frame" in frame_box
@@ -219,15 +228,19 @@ def execute(url: str, *, namespace: Optional[str] = None, quiet: bool = False):
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m robot_console.smoke",
-        description="Scripted live check against a myAGV over rosbridge. DRIVES the robot.",
+        description="Scripted live check against a /cmd_vel base over rosbridge. DRIVES the "
+                    "robot.",
     )
     add_url_argument(parser)
+    parser.add_argument("--robot", choices=WHEELED_ROBOTS, default=None,
+                        help="robot id (default: discovered from /rosapi)")
     parser.add_argument("--namespace", default=None, metavar="NS",
-                        help="the myAGV's namespace (default: discovered from /rosapi)")
+                        help="the robot's namespace (default: discovered from /rosapi)")
     parser.add_argument("--json", action="store_true", help="one JSON object instead of a table")
     args = parser.parse_args(argv)
 
-    checks, code = execute(args.url, namespace=args.namespace, quiet=args.json)
+    checks, code = execute(args.url, namespace=args.namespace, quiet=args.json,
+                           robot=args.robot)
     if args.json:
         print(json.dumps({
             "ok": code == 0, "exit": code, "url": args.url,

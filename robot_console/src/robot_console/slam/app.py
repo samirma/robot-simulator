@@ -25,7 +25,7 @@ from typing import List, Optional
 import cv2
 import numpy as np
 
-from robot_console.camera import LatestFrame, decode_compressed_image
+from robot_console.camera import LatestFrame, decode_image
 from robot_console.hud import draw_overlay, placeholder as camera_placeholder
 from robot_console.preflight import preflight
 from robot_console.robots import SLAM_ROBOT
@@ -243,7 +243,7 @@ def _run(options: SlamOptions, grid: OccupancyGrid, seed_pose, link: SupervisedL
             if options.camera_window:
                 pending_frame = latest_frame.take()
                 if pending_frame is not None:
-                    decoded = decode_compressed_image(pending_frame[0])
+                    decoded = decode_image(pending_frame[0])
                     if decoded is not None:
                         frame = decoded
                 if not _window_alive(CAMERA_WINDOW):

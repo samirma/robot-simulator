@@ -71,7 +71,8 @@ def startup_instructions_any(host: str, port: int) -> str:
     return f"""Start the simulator in another terminal:
 
     cd ../simulator
-    ./kitchen.sh serve --robots myagv --port {port}   # or --robots ainex, or both
+    ./kitchen.sh serve --robots myagv --port {port}
+    # or --robots ainex, myagv_mycobot280, rosmaster_x3_plus, or several
 
 The robot and its namespace are then read off the wire; --robot and --namespace override
 that. On real hardware, point --url ws://<robot-ip>:{port} at the robot instead.
@@ -98,6 +99,43 @@ Or, on a real myAGV over the network:
     roslaunch rosbridge_server rosbridge_websocket.launch
     # then, here
     ./bin/teleop.sh --url ws://<agv-ip>:{port}
+
+Bypass this check with --no-preflight."""
+
+
+def startup_instructions_composite(host: str, port: int) -> str:
+    """What to start when the robot being driven is the myAGV + myCobot 280."""
+    return f"""Start the simulator in another terminal:
+
+    cd ../simulator
+    ./kitchen.sh serve --robots myagv_mycobot280 --port {port}
+
+Or, on a real myAGV + myCobot 280 over the network:
+
+    # on the AGV (manual 7.1.2)
+    roslaunch myagv_odometry myagv_active.launch
+    roslaunch myagv_navigation composite_robot_navigation_active.launch
+    roslaunch rosbridge_server rosbridge_websocket.launch
+    # then, here
+    ./bin/teleop.sh --robot myagv_mycobot280 --url ws://<agv-ip>:{port}
+
+Bypass this check with --no-preflight."""
+
+
+def startup_instructions_x3(host: str, port: int) -> str:
+    """What to start when the robot being driven is the ROSMASTER X3 PLUS."""
+    return f"""Start the simulator in another terminal:
+
+    cd ../simulator
+    ./kitchen.sh serve --robots rosmaster_x3_plus --port {port}
+
+Or, on a real ROSMASTER X3 PLUS over the network:
+
+    # on the robot, with ROBOT_TYPE=X3plus (close Yahboom's APP program first)
+    roslaunch yahboomcar_nav laser_astrapro_bringup.launch
+    roslaunch rosbridge_server rosbridge_websocket.launch
+    # then, here
+    ./bin/teleop.sh --robot rosmaster_x3_plus --url ws://<robot-ip>:{port}
 
 Bypass this check with --no-preflight."""
 

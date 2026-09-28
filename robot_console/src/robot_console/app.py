@@ -24,7 +24,7 @@ import sys
 import time
 from typing import Optional
 
-from robot_console.camera import decode_compressed_image, header_seq
+from robot_console.camera import decode_image, header_seq
 from robot_console.cli import Options
 from robot_console.hud import draw_overlay, placeholder
 from robot_console.preflight import probe_tcp, startup_instructions_any
@@ -321,7 +321,7 @@ def _loop(options: Options, profile: RobotProfile, frontend: Frontend, link: Sup
                     message, arrival = frames.get_nowait()
                 except queue.Empty:
                     break
-                decoded = decode_compressed_image(message)
+                decoded = decode_image(message)
                 if decoded is not None:
                     frame = decoded
                     if recorder:

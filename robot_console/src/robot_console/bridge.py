@@ -100,7 +100,13 @@ def wrap_angle(a: float) -> float:
 
 
 class RobotLink:
-    """A rosbridge connection carrying the three topics of the myAGV contract."""
+    """A rosbridge connection to a `/cmd_vel` base: the myAGV, the myAGV + myCobot 280, the
+    ROSMASTER X3 PLUS.
+
+    What differs between them is passed in: the camera's topic and type (the X3 PLUS has
+    only a raw `sensor_msgs/Image`), and for the composite the navigation goal topic its
+    stop command cancels before the zero Twist (`cancel_topic`, with `cancel_msg`).
+    """
 
     def __init__(
         self,
@@ -111,6 +117,10 @@ class RobotLink:
         odom_topic: str = TOPIC_ODOM,
         camera_topic: str = TOPIC_CAMERA,
         scan_topic: str = TOPIC_SCAN,
+        camera_type: str = TYPE_COMPRESSED_IMAGE,
+        cancel_topic: Optional[str] = None,
+        cancel_type: Optional[str] = None,
+        cancel_msg: Optional[Mapping] = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -118,6 +128,11 @@ class RobotLink:
         self._odom_name = normalise(odom_topic)
         self._camera_name = normalise(camera_topic)
         self._scan_name = normalise(scan_topic)
+        self._camera_type = camera_type
+        self._cancel_name = normalise(cancel_topic) if cancel_topic else None
+        self._cancel_type = cancel_type
+        self._cancel_msg = dict(cancel_msg or {})
+        self._cancel: Optional[roslibpy.Topic] = None
         self._ros: Optional[roslibpy.Ros] = None
         self._cmd: Optional[roslibpy.Topic] = None
         self._odom: Optional[roslibpy.Topic] = None
@@ -141,6 +156,9 @@ class RobotLink:
         # The bridge treats `advertise` as a no-op and never acks, so this is only for
         # the benefit of a real rosbridge_suite, which does want it before a publish.
         self._cmd.advertise()
+        if self._cancel_name:
+            self._cancel = roslibpy.Topic(ros, self._cancel_name, self._cancel_type)
+            self._cancel.advertise()
 
     @property
     def is_connected(self) -> bool:
@@ -171,7 +189,7 @@ class RobotLink:
     def subscribe_camera(self, callback: Callable[[dict], None]) -> None:
         if self._ros is None:
             raise RuntimeError("not connected")
-        self._camera = roslibpy.Topic(self._ros, self._camera_name, TYPE_COMPRESSED_IMAGE)
+        self._camera = roslibpy.Topic(self._ros, self._camera_name, self._camera_type)
         self._camera.subscribe(callback)
 
     def subscribe_scan(self, callback: Callable[[dict], None]) -> None:
@@ -192,11 +210,15 @@ class RobotLink:
         self._cmd.publish(roslibpy.Message(command.to_twist()))
 
     def stop(self) -> None:
-        """Publish an explicit zero Twist.
+        """The robot's stop command: cancel navigation where it has any, then a zero Twist.
 
-        This is the only thing that stops a myAGV: it has no command watchdog, and keeps
-        executing the last Twist until a zero one arrives -- real and simulated alike.
+        This is the only thing that stops these bases: none has a command watchdog, and
+        each keeps executing the last Twist until a zero one arrives -- real and
+        simulated alike. The composite's `move_base` would go on sending its own, so its
+        goals are cancelled first, as its ROS file's stop command says.
         """
+        if self._cancel is not None and self.is_connected:
+            self._cancel.publish(roslibpy.Message(dict(self._cancel_msg)))
         self.publish_cmd_vel(Command())
 
     def close(self, *, hard_exit_after: Optional[float] = 2.0) -> None:
@@ -214,11 +236,12 @@ class RobotLink:
                     topic.unsubscribe()
             except Exception:
                 pass
-        try:
-            if self._cmd is not None:
-                self._cmd.unadvertise()
-        except Exception:
-            pass
+        for topic in (self._cmd, self._cancel):
+            try:
+                if topic is not None:
+                    topic.unadvertise()
+            except Exception:
+                pass
 
         # roslibpy drives a Twisted reactor on a background thread and its shutdown is
         # historically prone to hanging. A hang here means Esc does not quit, which is

@@ -24,8 +24,17 @@ There is one table of signatures, `MEMBER_SIGNATURES`, typed and covering every 
 member the console knows a contract for. Two questions are asked of it:
 
 * `survey` / `discover`: which robot does teleop drive? Only the kinds with
-  `COMPANIONS` (a myAGV, an AiNex) are candidates, and each must also carry its
-  distinguishing companions.
+  `COMPANIONS` (a myAGV, a myAGV + myCobot 280, a ROSMASTER X3 PLUS, an AiNex) are
+  candidates, and each must also carry its distinguishing companions.
+
+Three of those kinds take the same `/cmd_vel` Twist and report the same `/odom`, so that
+pair identifies none of them. Each is identified instead by a command topic only it
+takes -- the composite by `move_base`'s action goal, the X3 PLUS by its driver's arm
+command, the myAGV by `/cmd_vel` when neither is there -- and `MEMBER_SIGNATURES` lists
+the more specific first: a namespace that composes several signatures is the first
+kind's. (A physical myAGV running its own navigation launch presents what the composite
+does over ROS -- the arm is not on ROS -- and is taken for one; `--robot myagv` still
+drives it through the same `/cmd_vel`.)
 * `find_members`: what is on the wire at all? The fleet check and the camera page ask
   this; it counts every kind, including the ones teleop never drives (an SO-101, the
   worktop rig), and reports a signature of the wrong type rather than counting it.
@@ -48,8 +57,8 @@ from __future__ import annotations
 import dataclasses
 from typing import List, Mapping, Optional, Sequence, Tuple
 
-from robot_console import ainex_topics
-from robot_console.robots import AINEX, MYAGV
+from robot_console import ainex_topics, composite_topics, x3plus_topics
+from robot_console.robots import AINEX, MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS
 
 SO101 = "so101"
 from robot_console.topics import (
@@ -70,6 +79,8 @@ MEMBER_SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
     (SO101, "/joint_trajectory_controller/joint_trajectory",
      "trajectory_msgs/msg/JointTrajectory"),
     (AINEX, ainex_topics.TOPIC_SET_WALKING_PARAM, ainex_topics.TYPE_WALKING_PARAM),
+    (MYAGV_MYCOBOT280, composite_topics.TOPIC_GOAL, composite_topics.TYPE_GOAL),
+    (ROSMASTER_X3_PLUS, x3plus_topics.TOPIC_TARGET_ANGLE, x3plus_topics.TYPE_ARM_JOINT),
     (MYAGV, TOPIC_CMD_VEL, TYPE_TWIST),
 )
 
@@ -85,8 +96,16 @@ RIG_SIGNATURE = ("/scene/overhead/color/compressed", "sensor_msgs/msg/Compressed
 #: not a myAGV). An SO-101 has no place in teleop, so it has no entry.
 COMPANIONS: Mapping[str, Mapping[str, str]] = {
     MYAGV: {TOPIC_ODOM: TYPE_ODOM},
+    MYAGV_MYCOBOT280: {TOPIC_CMD_VEL: TYPE_TWIST, TOPIC_ODOM: TYPE_ODOM,
+                       composite_topics.TOPIC_CANCEL: composite_topics.TYPE_GOAL_ID},
+    ROSMASTER_X3_PLUS: {x3plus_topics.TOPIC_CMD_VEL: x3plus_topics.TYPE_TWIST,
+                        x3plus_topics.TOPIC_ODOM: x3plus_topics.TYPE_ODOM},
     AINEX: {ainex_topics.TOPIC_IS_WALKING: ainex_topics.TYPE_BOOL},
 }
+
+#: A kind whose camera is not the myAGV-shaped `/camera/image_raw/compressed`: its own
+#: contract name, used as it is.
+CAMERAS: Mapping[str, str] = {ROSMASTER_X3_PLUS: x3plus_topics.TOPIC_CAMERA}
 
 #: `(robot, signature topic)` of the drivable kinds, in `MEMBER_SIGNATURES` order.
 SIGNATURES: Tuple[Tuple[str, str], ...] = tuple(
@@ -182,9 +201,12 @@ def in_namespace(topic: str, namespace: str) -> bool:
     return not namespace or topic.startswith(f"/{namespace.strip('/')}/")
 
 
-def _camera_for(present: Mapping[str, str], namespace: str) -> str:
+def _camera_for(present: Mapping[str, str], namespace: str, robot: str = "") -> str:
     """The contract camera name if present, else the namespace's one CompressedImage
-    topic, else (ambiguous or none) the contract name."""
+    topic, else (ambiguous or none) the contract name. A kind with a camera of its own
+    (`CAMERAS`) gets that."""
+    if robot in CAMERAS:
+        return namespaced(CAMERAS[robot], namespace)
     contract = namespaced(TOPIC_CAMERA, namespace)
     if contract in present:
         return contract
@@ -237,7 +259,7 @@ def survey(present: Mapping[str, str]) -> Tuple[List[Discovered], List[Rejected]
         if problems:
             rejected.append(Rejected(robot, namespace, "; ".join(problems)))
         else:
-            found.append(Discovered(robot, namespace, _camera_for(present, namespace)))
+            found.append(Discovered(robot, namespace, _camera_for(present, namespace, robot)))
     return found, rejected
 
 

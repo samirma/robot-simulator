@@ -32,6 +32,19 @@ MYAGV_TOPICS = {
     "/myagv/odom": "nav_msgs/Odometry",
     "/myagv/camera/image_raw/compressed": "sensor_msgs/CompressedImage",
 }
+COMPOSITE_TOPICS = {
+    "/myagv_mycobot280/cmd_vel": "geometry_msgs/Twist",
+    "/myagv_mycobot280/odom": "nav_msgs/Odometry",
+    "/myagv_mycobot280/move_base/goal": "move_base_msgs/MoveBaseActionGoal",
+    "/myagv_mycobot280/move_base/cancel": "actionlib_msgs/GoalID",
+    "/myagv_mycobot280/camera/image_raw/compressed": "sensor_msgs/CompressedImage",
+}
+X3_TOPICS = {
+    "/rosmaster_x3_plus/cmd_vel": "geometry_msgs/Twist",
+    "/rosmaster_x3_plus/odom": "nav_msgs/Odometry",
+    "/rosmaster_x3_plus/TargetAngle": "yahboomcar_msgs/ArmJoint",
+    "/rosmaster_x3_plus/camera/rgb/image_raw": "sensor_msgs/Image",
+}
 AINEX_TOPICS = {
     "/ainex/walking/set_param": "ainex_interfaces/WalkingParam",
     "/ainex/walking/is_walking": "std_msgs/Bool",
@@ -72,10 +85,10 @@ def _finish(proc, timeout=15.0) -> str:
         return proc.communicate()[0]
 
 
-def _myagv_stops(bridge):
+def _myagv_stops(bridge, topic="/myagv/cmd_vel"):
     """(time, twist) of every zero Twist after the last non-zero one, and whether any
     non-zero Twist was published at all."""
-    timed = bridge.timed_on("/myagv/cmd_vel")
+    timed = bridge.timed_on(topic)
 
     def moving(msg):
         return any(abs(float(msg.get(part, {}).get(axis, 0.0))) > 1e-9
@@ -170,6 +183,39 @@ def test_the_ainex_gets_its_own_stop_command(ainex_bridge, tmp_path, event):
     time.sleep(SAFETY_TIMEOUT + 1.0)
     try:
         _check(_ainex_stops(ainex_bridge), event_at)
+    finally:
+        proc.kill()
+        _finish(proc)
+
+
+@pytest.mark.parametrize("event", ["freeze", "quit", "exception"])
+def test_the_x3_plus_is_stopped_by_a_zero_twist(bridge, tmp_path, event):
+    """Its ROS file's stop command: a zero Twist on /cmd_vel, three times."""
+    bridge.topics = dict(X3_TOPICS)
+    proc, event_at = _drive(bridge, tmp_path, event)
+    time.sleep(SAFETY_TIMEOUT + 1.0)
+    try:
+        _check(_myagv_stops(bridge, "/rosmaster_x3_plus/cmd_vel"), event_at)
+    finally:
+        proc.kill()
+        _finish(proc)
+
+
+@pytest.mark.parametrize("event", ["freeze", "quit", "exception"])
+def test_the_composite_cancels_navigation_before_each_zero_twist(bridge, tmp_path, event):
+    """Its ROS file's stop command: an empty GoalID on /move_base/cancel -- so move_base
+    stops sending velocities of its own -- then a zero Twist; three times."""
+    bridge.topics = dict(COMPOSITE_TOPICS)
+    proc, event_at = _drive(bridge, tmp_path, event)
+    time.sleep(SAFETY_TIMEOUT + 1.0)
+    try:
+        stops = _myagv_stops(bridge, "/myagv_mycobot280/cmd_vel")
+        _check(stops, event_at)
+        cancels = [(t, m) for t, m in bridge.timed_on("/myagv_mycobot280/move_base/cancel")
+                   if t >= event_at]
+        assert len(cancels) == 3, cancels
+        assert all(m.get("id") == "" for _, m in cancels), cancels
+        assert all(c <= s for (c, _), s in zip(cancels, stops)), "cancel after its Twist"
     finally:
         proc.kill()
         _finish(proc)

@@ -60,6 +60,27 @@ def _so101(namespace: str = "so101") -> dict[str, str]:
     }
 
 
+def _composite(namespace: str = "") -> dict[str, str]:
+    """The myAGV's topics, and move_base's beside them."""
+    return {
+        **_myagv(namespace),
+        namespaced("/move_base/goal", namespace): "move_base_msgs/MoveBaseActionGoal",
+        namespaced("/move_base/cancel", namespace): "actionlib_msgs/GoalID",
+    }
+
+
+def _x3(namespace: str = "") -> dict[str, str]:
+    """A ROSMASTER X3 PLUS: the same Twist and odometry, its driver's arm topic, and a raw
+    camera only."""
+    return {
+        namespaced(TOPIC_CMD_VEL, namespace): "geometry_msgs/Twist",
+        namespaced(TOPIC_ODOM, namespace): "nav_msgs/Odometry",
+        namespaced(TOPIC_SCAN, namespace): "sensor_msgs/LaserScan",
+        namespaced("/TargetAngle", namespace): "yahboomcar_msgs/ArmJoint",
+        namespaced("/camera/rgb/image_raw", namespace): "sensor_msgs/Image",
+    }
+
+
 def _scene() -> dict[str, str]:
     return {
         "/scene/overhead/color/compressed": ROS2_IMAGE,
@@ -176,6 +197,42 @@ def test_two_cameras_in_one_namespace_fall_back_to_the_contract_name() -> None:
 )
 def test_the_namespace_is_whatever_composes_the_signature(topic, signature, expected) -> None:
     assert namespace_of(topic, signature) == expected
+
+def test_three_cmd_vel_bases_on_one_wire_are_told_apart() -> None:
+    """The myAGV, the composite and the X3 PLUS all take /cmd_vel and report /odom; each
+    is still itself, by the command topic only it has."""
+    wire = {**_myagv("myagv"), **_composite("myagv_mycobot280"), **_x3("rosmaster_x3_plus"),
+            **_so101(), **_scene()}
+    found, rejected = survey(wire)
+    assert {(d.robot, d.namespace) for d in found} == {
+        ("myagv", "myagv"), ("myagv_mycobot280", "myagv_mycobot280"),
+        ("rosmaster_x3_plus", "rosmaster_x3_plus")}
+    assert rejected == []
+    for robot in ("myagv", "myagv_mycobot280", "rosmaster_x3_plus"):
+        assert choose(found, robot).namespace == robot
+    with pytest.raises(DiscoveryError, match="3 robots match"):
+        choose(found)
+    assert choose(found, "rosmaster_x3_plus").camera_topic == \
+        "/rosmaster_x3_plus/camera/rgb/image_raw"
+
+
+@pytest.mark.parametrize("make,robot", [(_composite, "myagv_mycobot280"),
+                                        (_x3, "rosmaster_x3_plus")])
+def test_a_lone_bare_mobile_manipulator_is_not_taken_for_a_myagv(make, robot) -> None:
+    found = choose(find_robots(make("")))
+    assert (found.robot, found.namespace) == (robot, "")
+    with pytest.raises(DiscoveryError, match="no myagv"):
+        discover_from(make(""), "myagv")
+
+
+def test_a_composite_missing_its_cancel_topic_is_rejected_by_name() -> None:
+    wire = _composite("c")
+    del wire["/c/move_base/cancel"]
+    found, rejected = survey(wire)
+    assert found == []
+    assert [(r.robot, r.namespace) for r in rejected] == [("myagv_mycobot280", "c")]
+    assert "missing /c/move_base/cancel" in rejected[0].reason
+
 
 def test_a_transport_failure_is_not_a_discovery_error(monkeypatch) -> None:
     """`discover` lets a transport failure through as itself; the supervisor turns it
@@ -304,8 +361,15 @@ def _supervise(bridge, **kwargs):
         (lambda: _ainex("ainex"), {}, ("ainex", "ainex")),
         (lambda: {**_myagv("myagv"), **_ainex("ainex"), **_scene()}, {"robot": "ainex"},
          ("ainex", "ainex")),
+        (lambda: {**_myagv("myagv"), **_composite("myagv_mycobot280"),
+                  **_x3("rosmaster_x3_plus")}, {"robot": "rosmaster_x3_plus"},
+         ("rosmaster_x3_plus", "rosmaster_x3_plus")),
+        (lambda: {**_myagv("myagv"), **_composite("myagv_mycobot280"),
+                  **_x3("rosmaster_x3_plus")}, {"namespace": "myagv_mycobot280"},
+         ("myagv_mycobot280", "myagv_mycobot280")),
     ],
-    ids=["lone-bare", "namespaced", "mixed-fleet-narrowed"],
+    ids=["lone-bare", "namespaced", "mixed-fleet-narrowed", "three-bases-by-robot",
+         "three-bases-by-namespace"],
 )
 def test_the_supervisor_discovers_the_robot(bridge, topics, kwargs, expected) -> None:
     bridge.topics = topics()

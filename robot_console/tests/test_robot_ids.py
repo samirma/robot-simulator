@@ -9,7 +9,10 @@ the copy equals the file is a workspace test (`../tests/test_contract_parity.py`
 from __future__ import annotations
 
 from robot_console.cli import build_parser
-from robot_console.robots import AINEX, MYAGV, SLAM_ROBOT, STOP_COMMANDS, TELEOP_ROBOTS
+from robot_console.robots import (
+    AINEX, MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS, SLAM_ROBOT, STOP_COMMANDS, TELEOP_ROBOTS,
+    WHEELED_ROBOTS,
+)
 
 
 def test_the_robot_flag_takes_exactly_these_ids() -> None:
@@ -17,8 +20,12 @@ def test_the_robot_flag_takes_exactly_these_ids() -> None:
     assert tuple(action.choices) == TELEOP_ROBOTS
 
 
-def test_teleop_drives_the_base_and_the_humanoid_and_slam_the_base() -> None:
-    assert TELEOP_ROBOTS == (MYAGV, AINEX)
+def test_teleop_drives_every_mobile_robot_and_slam_the_base() -> None:
+    """Every robot but the fixed arm moves, so teleop drives all four; slam maps with the
+    myAGV, and smoke drives the three /cmd_vel bases."""
+    assert TELEOP_ROBOTS == (MYAGV, AINEX, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
+    assert WHEELED_ROBOTS == (MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS)
+    assert "so101" not in TELEOP_ROBOTS
     assert SLAM_ROBOT == MYAGV
 
 

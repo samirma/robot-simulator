@@ -130,10 +130,12 @@ def test_help_mentions_the_keys():
 def test_both_profiles_resolve():
     from robot_console.robots import PROFILES
 
-    assert list(PROFILES) == ["myagv", "ainex"]
+    assert list(PROFILES) == ["myagv", "ainex", "myagv_mycobot280", "rosmaster_x3_plus"]
     assert PROFILES["myagv"].has_odom and not PROFILES["myagv"].has_head
     assert PROFILES["ainex"].has_head and not PROFILES["ainex"].has_odom
     assert PROFILES["ainex"].speed_max < PROFILES["myagv"].speed_max
+    for robot in ("myagv_mycobot280", "rosmaster_x3_plus"):
+        assert PROFILES[robot].has_odom and not PROFILES[robot].has_head, robot
 
 
 def test_the_spec_speed_envelopes():
@@ -143,6 +145,14 @@ def test_the_spec_speed_envelopes():
     assert (agv.speed_default, agv.speed_max, agv.speed_step, agv.turn_ratio) == (0.15, 0.28, 0.05, 2.0)
     assert (ainex.speed_default, ainex.speed_max, ainex.speed_step) == (0.10, 0.20, 0.02)
     assert (ainex.turn_ratio, ainex.turn_max) == (4.0, 1.0)
+    # The composite drives as the myAGV it stands on; the X3 PLUS from Yahboom's own
+    # keyboard teleop (0.2 m/s, 1.0 rad/s) up to its board's 0.7 m/s and 3.2 rad/s.
+    comp, x3 = PROFILES["myagv_mycobot280"], PROFILES["rosmaster_x3_plus"]
+    assert (comp.speed_default, comp.speed_max, comp.speed_step, comp.turn_ratio,
+            comp.turn_max) == (agv.speed_default, agv.speed_max, agv.speed_step,
+                               agv.turn_ratio, agv.turn_max)
+    assert (x3.speed_default, x3.speed_max, x3.speed_step) == (0.2, 0.7, 0.05)
+    assert (x3.turn_ratio, x3.turn_max) == (5.0, 3.2)
 
 
 def test_walking_params_invert_the_gait_model():
@@ -163,7 +173,7 @@ def test_an_unknown_robot_is_a_keyerror_naming_the_known_ones():
         PROFILES["forklift"]
 
 
-@pytest.mark.parametrize("robot", ["myagv", "ainex"])
+@pytest.mark.parametrize("robot", ["myagv", "ainex", "myagv_mycobot280", "rosmaster_x3_plus"])
 def test_robot_flag_selects_each_supported_robot(robot):
     assert parse_args(["--robot", robot]).robot == robot
 
