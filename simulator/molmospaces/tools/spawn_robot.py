@@ -1,12 +1,11 @@
 #!/usr/bin/env python
-"""Spawn robots into a MolmoSpaces house and render, view or serve them.
+"""Spawn robots into a MolmoSpaces house and serve them, headless or in a window.
 
     python   tools/spawn_robot.py so101,myagv --scene <house.xml> --headless
-    mjpython tools/spawn_robot.py ainex --scene <house.xml> --ros-port 0
-    python   tools/spawn_robot.py so101 --scene <house.xml> --render out.png
+    mjpython tools/spawn_robot.py ainex --scene <house.xml>      # kitchen.sh serve --mujoco
 
 The tool itself -- command line, placement, task staging, start-up reports, the ROS
-fleet, rendering and the loop -- is `simulator/shared/spawn.py`, the same for both
+fleet, the viewer and the loop -- is `simulator/shared/spawn.py`, the same for both
 engines. What is here is only what MolmoSpaces knows and the other engine does not:
 
 * **the worktop** is the iTHOR/ProcTHOR surface at working height holding the task's

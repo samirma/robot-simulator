@@ -34,7 +34,7 @@ docstring); their converted meshes are generated at setup, not committed.
    `robot_dir` at the robot's directory.
 
 Mark the robot `simulated` in `robots_specs/robots.yml` and register its adapter in
-`tools/spawn_robot.py::ADAPTERS` to make it available to `run.sh view --robot <id>`.
+`tools/spawn_robot.py::ADAPTERS` to make it available to `kitchen.sh serve --robots <id>`.
 
 ## so101
 
@@ -77,8 +77,8 @@ Re-run `python robots/so101/make_model.py` after `robots_specs/so101/` changes.
 * **5 DoF, so arbitrary 6-DoF Cartesian poses are unreachable.** The arm Jacobian has
   rank 5; IK is under-determined in orientation. Joint-space control is exact.
 * **No grasp library** — per-gripper grasp sets exist upstream only for `droid`
-  (Franka) and `rum`. Use `run.sh view --robot so101` plus the external control
-  server instead.
+  (Franka) and `rum`. Use `kitchen.sh serve --robots so101` and a ROS client
+  instead.
 * **The gripper is a single hinged jaw**, not a parallel-jaw. `inter_finger_dist` is
   measured between the jaw tips and varies non-linearly with the joint angle; the
   finger axis is only exactly perpendicular to the approach at one opening
@@ -94,7 +94,7 @@ Elephant Robotics [myAGV Pi 2023](https://shop.elephantrobotics.com/collections/
 a 311 × 230 × 110 mm, 4.16 kg Mecanum-wheeled mobile base. No arm.
 
 ```bash
-./run.sh view --robot myagv                          # spawn it in a house
+../kitchen.sh serve --robots myagv --mujoco         # spawn it in a house, in a window
 python robots/myagv/test_attach.py                   # self-test (empty world)
 python robots/myagv/test_attach.py --scene <house>   # self-test (in a house)
 ```
@@ -213,7 +213,6 @@ arms ending in a single hinged claw, a 2-DoF pan/tilt head carrying the only cam
 9-axis IMU, and **no lidar, no depth sensor and no wheels**.
 
 ```bash
-./run.sh view --robot ainex                          # spawn it in a house
 ../kitchen.sh serve --robots ainex                   # ...on its own vendor ROS topics
 python robots/ainex/test_attach.py                   # self-test (empty world)
 python robots/ainex/test_attach.py --scene <house>   # self-test (in a house)
@@ -278,8 +277,8 @@ Every manipulation it performs is a recorded servo trajectory replayed open-loop
 `MotionManager.run_action`, triggered over ROS by `/app/set_action`. This follows that
 model: `shared/ros_surfaces/ainex/action_groups/` holds a small set of keyframed
 poses, and `actions.py` beside it also
-reads Hiwonder's own `.d6a` (SQLite) format so `--action-dir` can point straight at a real
-robot's `ActionGroups` directory.
+reads Hiwonder's own `.d6a` (SQLite) format, so a real robot's `ActionGroups` files
+copied into that directory replace the stand-ins by name.
 
 **The hands reach between roughly 0.25 m and 0.43 m above the floor, and never lower.**
 The arms are short relative to the robot's 0.46 m height, and because the torso is bolted

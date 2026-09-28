@@ -1,10 +1,11 @@
 """Whether the SO-101 can take a staged object: a top grasp, solved on the compiled model.
 
-Spec §2.3: at start-up, with the SO-101 served, `serve` reports for each staged object
-whether a top grasp at its position has an inverse-kinematics solution within the joint
-ranges of the compiled model. A distance from the base against a reach annulus answered a
-different question -- an object 0.32 m out dead ahead and one 0.32 m out at -45 degrees
-are the same distance and not the same grasp -- so this solves the grasp itself.
+Spec §2.3: the SO-101 is placed within reach of the apple and the plate. Reach here is
+whether a top grasp at an object's position has an inverse-kinematics solution within the
+joint ranges of the compiled model; the start-up report and the placement and staging
+checks ask it. A distance from the base against a reach annulus answered a different
+question -- an object 0.32 m out dead ahead and one 0.32 m out at -45 degrees are the
+same distance and not the same grasp -- so this solves the grasp itself.
 
 **A top grasp** is the jaws pointing straight down at the object: the `gripperframe`
 site's `+x` (the direction the jaws extend along, as the console's `approach_pitch`

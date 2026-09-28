@@ -7,8 +7,7 @@ an external control bridge.
 ## Quick start
 
 ```bash
-./run.sh view                      # open a house in the viewer, no robot
-./run.sh view --robot myagv        # ...with an out-of-tree robot spawned in it
+../kitchen.sh serve --robots myagv --mujoco   # a simulated robot in a house, in a window
 ./run.sh help                      # all commands and flags
 ```
 
@@ -27,7 +26,6 @@ an external control bridge.
 | `../shared/tasks/` | what a task stages into a scene, and its success predicate |
 | `tools/resolve_scene.py` | scene reference → loadable MJCF path |
 | `robots/` | this engine's adapter for each simulated robot in `robots_specs/robots.yml` |
-| `tools/render_robots.py` | render every simulated robot; doubles as a load test |
 | `tools/test_placement.py` | self-test: the worktop mount rule, and every robot standing at its placement, alone and in the fleet |
 
 ## Commands
@@ -35,10 +33,7 @@ an external control bridge.
 ```
 ./run.sh setup                     venv + install + default assets (idempotent)
 ./run.sh assets [ithor|list|<src>] bulk pre-fetch for offline use
-./run.sh view --robot <id> [--scene ithor:1]
-                                   one robot in a house in the MuJoCo viewer; serves no
-                                   wire. --render out.png writes a frame, headless
-./run.sh shell                     interactive shell in the venv
+./run.sh repair                    re-point the venv and assets/ after a move
 ```
 
 ## Driving a robot
@@ -55,7 +50,7 @@ drives the simulated arm and a real one:
 cd ../../robot_console
 .venv-vla/bin/inspect-robot run --task apple_on_plate --policy molmoact2 \
     --embodiment so101_ros -E url=ws://127.0.0.1:9090 -T max_steps=400 \
-    -T layout=standard --max-action-delta 0.65
+    --max-action-delta 0.65
 ```
 
 `../../robot_console/run_task.sh` does both of those, plus the readiness gate and the
@@ -80,7 +75,7 @@ see `../shared/tasks/`.
 - **`mjpython -m mujoco.viewer` does not work** — it re-executes the module and
   drops the handle mjpython stamps onto `mujoco.viewer` at startup, failing with
   `RuntimeError: Caught an unknown exception!`. The viewer must be launched from
-  a *script*, which is what `run.sh view` runs (`tools/spawn_robot.py`).
+  a *script*, which is what `kitchen.sh serve --mujoco` runs (`tools/spawn_robot.py`).
 - `MUJOCO_GL=glfw` drives both the viewer and offscreen rendering. There is no
   EGL/OSMesa on macOS; use `MUJOCO_GL=cgl` for pure headless rendering.
 - The `mujoco-filament` extra is a Linux-x86_64-only wheel and cannot be used here.
@@ -116,13 +111,12 @@ adapter in `robots/<id>/`; their descriptions and meshes are read from
 `robots_specs/<id>/`.
 
 ```bash
-./run.sh view --robot so101                      # spawn it in a house, interactive
-./run.sh view --robot myagv                      # ...or any other simulated robot
-python tools/render_robots.py --outdir /tmp/robots     # render them all
+../kitchen.sh serve --robots so101 --mujoco      # spawn it in a house, in a window
 ../kitchen.sh serve --robots so101                # ...on its ROS topics (see above)
 python robots/so101/test_attach.py               # self-test in an empty world
 python tools/test_placement.py                   # every robot stands at its placement
 python ../shared/tests/physical_figures_check.py --engine molmospaces  # descriptions and published figures
+python ../shared/tests/staging_check.py --engine molmospaces  # the six task objects, and nothing else
 ```
 
 See [robots/README.md](robots/README.md) for how each was added and what its

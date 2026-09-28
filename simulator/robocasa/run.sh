@@ -2,21 +2,11 @@
 # RoboCasa simulator launcher (engine #2: MuJoCo + robosuite + RoboCasa kitchens).
 #
 #   ./run.sh setup                       clone upstream + venv + editable install
-#   ./run.sh assets                      download the kitchen assets (~10 GB)
-#   ./run.sh view --robot <id> [--layout 1] [--style 1]
-#                                        one robot in a kitchen, in the MuJoCo viewer;
-#                                        serves no wire (kitchen.sh serve is what serves).
-#                                        <id> is a robot robots_specs/robots.yml marks
-#                                        simulated; a worktop robot gets the task staged
-#                                        in front of it. Layout and style 1-60
-#                 [--render out.png]     ...or write one frame to a PNG, headless, and exit
-#                 [--timeout N]          ...closing the window after N seconds
-#   ./run.sh --robot so101 --layout 1    shorthand for `view --robot so101 --layout 1`
-#   ./run.sh shell                       interactive shell inside the venv
+#   ./run.sh assets [<source>]           download every kitchen asset source (~10 GB), or
+#                                        one: tex, tex_generative, objs_objaverse,
+#                                        objs_aigen or lightwheel
 #   ./run.sh repair                      re-point the venv at this checkout after it has
 #                                        been moved; every command does this anyway
-#
-# Any flags after the subcommand are forwarded to the underlying entry point.
 set -euo pipefail
 
 # Resolved without cd; see the note in env.sh about title-escape capture.
@@ -28,10 +18,6 @@ SIM_ROOT="$(realpath "$SIM_ROOT" 2>/dev/null || echo "${SIM_ROOT%/.}")"
 source "$SIM_ROOT/env.sh"
 
 PY="$VENV_DIR/bin/python"
-# The MuJoCo passive viewer must own the main thread on macOS, which is what
-# mjpython provides. Everything else runs under plain python.
-MJPY="$VENV_DIR/bin/mjpython"
-[ "$(uname -s)" = "Darwin" ] || MJPY="$PY"
 
 # robocasa v1.0 targets robosuite's master branch (its Kitchen env passes
 # lite_physics/load_model_on_init, which no v1.5.x tag accepts).
@@ -110,48 +96,33 @@ ensure_setup() {
 
 # ---------------------------------------------------------------- assets
 
+# The asset sources this engine knows (spec §2.1: `assets` fetches every one, or only the
+# one named): robocasa's own registry types, and `lightwheel`. The v1.0 registry's
+# lightwheel zips 404 (nvidia renamed the repo) and it skips the base fixtures.zip, so
+# `lightwheel` is tools/download_lightwheel_assets.py, which covers both, in place of the
+# registry's `fixtures_lw` and `objs_lw`.
+REGISTRY_SOURCES=(tex tex_generative objs_objaverse objs_aigen)
+
 do_assets() {
   ensure_setup
-  echo ">> downloading kitchen assets (~10 GB) into $ROBOCASA_DIR/robocasa/models/assets"
-  # The v1.0 script 404s on the lightwheel zips (nvidia renamed the repo) and
-  # skips the base fixtures.zip; tools/download_lightwheel_assets.py covers both.
-  "$PY" -m robocasa.scripts.download_kitchen_assets "$@" || true
-  "$PY" "$SIM_ROOT/tools/download_lightwheel_assets.py"
-}
-
-# ---------------------------------------------------------------- view
-
-do_view() {
-  ensure_setup
-  local robot="" py="$MJPY"
-  local -a rest=()
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --robot) [ $# -ge 2 ] || die "--robot needs an id"; robot="$2"; shift 2 ;;
-      --layout|--style) [ $# -ge 2 ] || die "$1 needs a value"; rest+=("$1" "$2"); shift 2 ;;
-      # Windowless, so not through mjpython: it exists for the passive viewer's
-      # main-thread constraint and nothing else.
-      --render) [ $# -ge 2 ] || die "--render needs a path"; py="$PY"
-                rest+=(--render "$2"); shift 2 ;;
-      --timeout) [ $# -ge 2 ] || die "--timeout needs seconds"; rest+=(--timeout "$2"); shift 2 ;;
-      --scene) die "--scene is a MolmoSpaces scene flag; this engine takes --layout N --style N" ;;
-      *) die "unknown view flag '$1' (try: ./run.sh help)" ;;
+  local what="${1:-}" known
+  known="${REGISTRY_SOURCES[*]} lightwheel"
+  [ $# -le 1 ] || die "assets takes at most one source (one of: $known)"
+  if [ -n "$what" ]; then
+    case " $known " in
+      *" $what "*) ;;
+      *) die "unknown asset source '$what' (one of: $known)" ;;
     esac
-  done
-  # RoboCasa is a scene provider only: the robot is always one of robots_specs/.
-  [ -n "$robot" ] || die "view needs --robot <id> (try: ./run.sh help)"
-  case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
-  "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
-  # --ros-port 0: a view serves no wire.
-  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --ros-port 0 "${rest[@]+"${rest[@]}"}"
-}
-
-# ---------------------------------------------------------------- shell
-
-do_shell() {
-  ensure_setup
-  echo ">> venv: $VENV_DIR   upstream: $SIM_ROOT/upstream   MUJOCO_GL=$MUJOCO_GL"
-  exec "${SHELL:-/bin/bash}" -i
+  fi
+  echo ">> downloading ${what:-every} kitchen asset source into $ROBOCASA_DIR/robocasa/models/assets"
+  if [ -z "$what" ]; then
+    "$PY" -m robocasa.scripts.download_kitchen_assets --type "${REGISTRY_SOURCES[@]}"
+  elif [ "$what" != lightwheel ]; then
+    "$PY" -m robocasa.scripts.download_kitchen_assets --type "$what"
+  fi
+  if [ -z "$what" ] || [ "$what" = lightwheel ]; then
+    "$PY" "$SIM_ROOT/tools/download_lightwheel_assets.py"
+  fi
 }
 
 # ---------------------------------------------------------------- dispatch
@@ -162,17 +133,11 @@ cmd="${1:-help}"
 case "$cmd" in
   setup)  do_setup "$@" ;;
   assets) do_assets "$@" ;;
-  view)   do_view "$@" ;;
-  shell)  do_shell "$@" ;;
   repair) do_repair ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the
     # first non-comment line, with the leading "# " stripped.
     awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
-    ;;
-  -*)
-    # `./run.sh --robot so101 --layout 1` == `./run.sh view --robot so101 --layout 1`
-    do_view "$cmd" "$@"
     ;;
   *) die "unknown command '$cmd' (try: ./run.sh help)" ;;
 esac

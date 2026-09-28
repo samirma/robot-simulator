@@ -90,7 +90,7 @@ class RobotFleet:
         # Rates are per member. A surface whose contract fixes its own rate says so on the
         # step it returns (`step.rate_hz`: the SO-101's controller manager `update_rate`,
         # the myAGV's fastest topic, the rig's cameras); the others are stepped at
-        # `default_hz`, the engine's `--control-hz`. `None` steps such a member on every
+        # `default_hz`, the spawn tool's `CONTROL_HZ`. `None` steps such a member on every
         # call, which is what a single-robot caller wants.
         self._default_hz = default_hz
         # Per member index: the wall-clock time its next step is due. Absent means "now".

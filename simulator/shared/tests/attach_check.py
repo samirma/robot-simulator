@@ -117,16 +117,14 @@ def ainex(world, inst) -> None:
 world_label = ""
 
 
-def main() -> int:
+def run(engine_name: str, robot: str | None = None) -> int:
+    """`robot` alone, or every simulated robot, on `engine_name`; 0 when every check
+    passes. Each engine's `robots/<id>/test_attach.py` calls it for one robot."""
     global world_label
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", required=True, choices=("molmospaces", "robocasa"))
-    ap.add_argument("--robot", default=None, help="one id (default: every simulated robot)")
-    args = ap.parse_args()
-    engine = pc.load_engine(args.engine)
-    flags = pc.scene_flags(args.engine)
-    for robot in [args.robot] if args.robot else robots_spec.simulated_ids():
-        world_label = f"{args.engine} {robot}"
+    engine = pc.load_engine(engine_name)
+    flags = pc.scene_flags(engine_name)
+    for robot in [robot] if robot else robots_spec.simulated_ids():
+        world_label = f"{engine_name} {robot}"
         world, _log = pc.build(engine, flags, robot)
         print(f"{world_label}:")
         check(f"{world_label}: attaches and compiles",
@@ -138,6 +136,14 @@ def main() -> int:
               bool(np.isfinite(world.data.qpos).all() and np.isfinite(world.data.qvel).all()))
     print("all checks passed" if not pc.failures else f"FAILED: {len(pc.failures)} check(s)")
     return 0 if not pc.failures else 1
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--engine", required=True, choices=("molmospaces", "robocasa"))
+    ap.add_argument("--robot", default=None, help="one id (default: every simulated robot)")
+    args = ap.parse_args()
+    return run(args.engine, args.robot)
 
 
 if __name__ == "__main__":

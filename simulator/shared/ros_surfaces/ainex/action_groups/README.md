@@ -6,9 +6,9 @@ recorded servo trajectory replayed by `MotionManager.run_action`, triggered over
 
 **None of Hiwonder's own action groups are here.** They are vendor pose data with no
 stated licence, and the set that circulates publicly is a mirror of an SD-card image.
-`actions.py` reads their `.d6a` format anyway, so pointing `--action-dir` at a real
-robot's `/home/ubuntu/software/ainex_controller/ActionGroups` plays the genuine motions
-and a file there shadows the one here by name.
+`actions.py` reads their `.d6a` format anyway, so an owner who copies a real robot's
+`/home/ubuntu/software/ainex_controller/ActionGroups` files into this directory plays
+the genuine motions: a `.d6a` shadows the `.yaml` here of the same name.
 
 Format: a list of frames, each a `duration` in seconds and a sparse `servos` map of
 **joint name -> radians**. Radians rather than servo counts, following the vendor's own

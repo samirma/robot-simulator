@@ -32,7 +32,7 @@ description is used directly rather than one of them.
 
 Consequence for anything derived from vendor data: no Hiwonder action group is
 redistributed here. `shared/ros_surfaces/ainex/actions.py` reads their `.d6a` format so that an owner
-points `--action-dir` at their own robot and supplies the licensed data themselves.
+copies their own robot's action groups in and supplies the licensed data themselves.
 
 ## Loading one of these in MuJoCo
 

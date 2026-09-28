@@ -12,16 +12,10 @@ simplifications -- never a copy of them (`model_dir`, `model_xml`).
 Deliberately a plain module, not a package named `robots`: each engine already puts its
 own `robots/` adapter package on `PYTHONPATH`, and a second importable `robots` package
 here would shadow it.
-
-Shell scripts ask it too, through its command line:
-
-    python robots_spec.py simulated              # the simulated ids, one per line
-    python robots_spec.py check so101,myagv      # exit 1 naming any id that is not one
 """
 
 from __future__ import annotations
 
-import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -204,22 +198,3 @@ def check_simulated(names) -> list[str]:
         raise ValueError(f"unknown robot(s) {why}; simulated robots: {', '.join(sim)}")
     return names
 
-
-def main(argv: list[str]) -> int:
-    usage = "usage: robots_spec.py simulated | check <id>[,<id>...]"
-    if argv[:1] == ["simulated"] and len(argv) == 1:
-        print("\n".join(simulated_ids()))
-        return 0
-    if argv[:1] == ["check"] and len(argv) == 2:
-        try:
-            check_simulated(argv[1])
-        except ValueError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    print(usage, file=sys.stderr)
-    return 2
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv[1:]))

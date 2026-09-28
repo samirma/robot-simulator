@@ -79,21 +79,16 @@ def test_help() -> None:
     listed = help_flags(text)
     synopsis = {"--engine", "--robots", "--ros-namespace", "--mujoco", "--port", "--scene",
                 "--layout", "--style"}
-    staging = {flag for flag, *_ in spawn.STAGING_FLAGS}
+    staging = {"--reference-table", "--no-dressing", "--reference-lighting",
+               "--extra-lights", "--swap-objects"}
     check("lists every synopsis flag", synopsis <= listed, str(synopsis - listed))
-    check("its staging flags are exactly the spawn tool's", listed - synopsis == staging,
-          f"help {sorted(listed - synopsis)} vs spawn {sorted(staging)}")
-    for flag, dest, default, _ in spawn.STAGING_FLAGS:
-        line = re.search(rf"^\s{{2}}{re.escape(flag)}\b.*?(?=^\s{{2}}--|\Z)", text, re.M | re.S)
-        shown = bool(line) and "(default:" in line.group(0)
-        check(f"{flag} shows its default", shown)
+    check("only the specified options are advertised", listed == synopsis,
+          str(listed - synopsis))
     for name in ("molmospaces", "robocasa"):
         ap = engine_parser(name)
-        defaults = {dest: ap.get_default(dest) for _, dest, _, _ in spawn.STAGING_FLAGS}
-        check(f"{name}: each staging flag's default is fixed and the same",
-              defaults == {dest: d for _, dest, d, _ in spawn.STAGING_FLAGS}, str(defaults))
         known = {o for a in ap._actions for o in a.option_strings}  # noqa: SLF001
-        passed = {"--headless", "--ros-port", "--ros-namespace", *staging}
+        check(f"{name}: staging has no command-line options", not (staging & known))
+        passed = {"--headless", "--ros-port", "--ros-namespace"}
         passed |= {"--scene"} if name == "molmospaces" else {"--layout", "--style"}
         check(f"{name}: the spawn tool takes every flag kitchen.sh passes it", passed <= known,
               str(passed - known))
@@ -102,7 +97,10 @@ def test_help() -> None:
                 "--depth-hz", "--depth-size", "--depth-range", "--no-depth",
                 "--no-scene-cameras", "--wrist-camera", "--task", "--task-objects",
                 "--side-camera-mirror", "--objects", "--target", "--gripper",
-                "--spawn-objects", "--mount-centre", "--reach", "--pos", "--yaw"}
+                "--spawn-objects", "--mount-centre", "--reach", "--pos", "--yaw",
+                "--host", "--control-hz", "--jpeg-quality", "--action-dir", "--timeout",
+                "--render", "--render-camera", "--render-framing", "--width", "--height",
+                "--distance", "--azimuth", "--elevation"}
         check(f"{name}: no dead flag is left on the spawn tool", not (dead & known),
               str(sorted(dead & known)))
 
@@ -117,7 +115,9 @@ def test_refusals() -> None:
             ["--style", "2"], r"--style is a RoboCasa scene flag")
     for flag in ("--bogus", "--no-scene-cameras", "--camera-hz", "--scan-hz", "--depth-hz",
                  "--task-objects", "--side-camera-mirror", "--no-swap-objects",
-                 "--no-reference-table", "--wrist-camera", "--control-hz"):
+                 "--no-reference-table", "--wrist-camera", "--control-hz",
+                 "--reference-table", "--no-dressing", "--reference-lighting",
+                 "--extra-lights", "--swap-objects"):
         refused(f"a flag --help does not list ({flag})", [flag], rf"unknown flag '{flag}'")
     refused("an unknown engine", ["--engine", "gazebo"], r"--engine: expected")
     refused("a scene that is not ithor:<n> or procthor:<n>", ["--scene", "kitchen:1"],

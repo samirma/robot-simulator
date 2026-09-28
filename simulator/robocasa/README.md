@@ -7,25 +7,23 @@ the shared architecture (engines feed the one wire bridge in
 
 ```bash
 ./run.sh setup                    # clone upstream robosuite/robocasa + editable install
-./run.sh assets                   # kitchen assets (~10 GB) into upstream/robocasa/.../assets
-./run.sh shell
+./run.sh assets [<source>]        # kitchen assets (~10 GB) into upstream/robocasa/.../assets
+./run.sh repair                   # re-point the venv after the checkout moved
 
 # A simulated robot (robots_specs/robots.yml) in a kitchen, on the real hardware's interface:
-./run.sh view --robot so101 --layout 2 --style 7     # that kitchen in the MuJoCo viewer
-./run.sh view --robot myagv --render /tmp/kitchen.png    # just a PNG, headless
+../kitchen.sh serve --engine robocasa --robots so101 --layout 2 --style 7 --mujoco  # in a window
 ../kitchen.sh serve --engine robocasa --robots myagv     # on the wire: that is serve's job
 python tools/test_placement.py                       # every robot stands at its placement
 python ../shared/tests/attach_check.py --engine robocasa  # every robot attaches and moves
 python ../shared/tests/physical_figures_check.py --engine robocasa  # descriptions and published figures
+python ../shared/tests/staging_check.py --engine robocasa  # the six task objects, and nothing else
 ```
 
 - `--layout` 1-60, `--style` 1-60 (1-10 are the "test" set; see
   `upstream/robocasa/robocasa/models/scenes/scene_registry.py`). Both default
   to 1.
-- `./run.sh <flags>` without a subcommand is shorthand for `view <flags>`.
-- `view` always takes `--robot <id>`, an id `robots_specs/robots.yml` marks `simulated`,
-  and serves no wire. RoboCasa is a scene provider only: no robosuite robot is ever loaded.
-- On macOS the viewer runs under `mjpython` (main-thread constraint, same as
+- RoboCasa is a scene provider only: no robosuite robot is ever loaded.
+- On macOS the `--mujoco` viewer runs under `mjpython` (main-thread constraint, same as
   the molmospaces engine); everything else runs under plain `python`.
 
 ## Layout

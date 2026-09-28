@@ -5,7 +5,7 @@ polls at `freq` 100, `imu_calib` and the complementary filter follow it, `sensor
 50, joy_node repeats at 20 and usb_cam delivers 30 frames a second. None of them is tied
 to anyone's control loop, and here none of them is either: one thread per robot runs every
 periodic topic on its own clock at the rate `topics.RATES_HZ` declares, whatever
-`--control-hz` the engine steps its surfaces at.
+tick the engine steps its surfaces at.
 
 What that thread publishes is a snapshot. The simulation thread owns MjData and is the
 only thing that reads it (`surface.step`); it leaves the body's attitude and the latest

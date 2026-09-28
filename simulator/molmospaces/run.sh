@@ -3,19 +3,8 @@
 #
 #   ./run.sh setup                     install venv + package, fetch default assets
 #   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
-#   ./run.sh view --robot <id> [--scene ithor:1]
-#                                      one robot in a house, in the MuJoCo viewer; serves
-#                                      no wire (kitchen.sh serve is what serves). <id> is
-#                                      a robot robots_specs/robots.yml marks simulated; a
-#                                      worktop robot gets the task staged in front of it.
-#                                      --scene takes ithor:<n> or procthor:<n>
-#                 [--render out.png]   ...or write one frame to a PNG, headless, and exit
-#                 [--timeout N]        ...closing the window after N seconds
-#   ./run.sh shell                     interactive shell inside the venv
 #   ./run.sh repair                    re-point the venv and assets/ at this checkout after
 #                                      it has been moved; every command does this anyway
-#
-# Any flags after the subcommand are forwarded to the underlying entry point.
 set -euo pipefail
 
 # Resolved without cd; see the note in env.sh about title-escape capture.
@@ -27,10 +16,6 @@ SIM_ROOT="$(realpath "$SIM_ROOT" 2>/dev/null || echo "${SIM_ROOT%/.}")"
 source "$SIM_ROOT/env.sh"
 
 PY="$VENV_DIR/bin/python"
-# The MuJoCo passive viewer must own the main thread on macOS, which is what
-# mjpython provides. Everything else runs under plain python.
-MJPY="$VENV_DIR/bin/mjpython"
-[ "$(uname -s)" = "Darwin" ] || MJPY="$PY"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -140,52 +125,6 @@ do_assets() {
   esac
 }
 
-# ---------------------------------------------------------------- view
-
-do_view() {
-  ensure_setup
-  local scene="ithor:1" robot="" py="$MJPY"
-  local -a rest=()
-  while [ $# -gt 0 ]; do
-    case "$1" in
-      --robot) [ $# -ge 2 ] || die "--robot needs an id"; robot="$2"; shift 2 ;;
-      --scene) [ $# -ge 2 ] || die "--scene needs a value"; scene="$2"; shift 2 ;;
-      # Windowless, so not through mjpython: it exists for the passive viewer's
-      # main-thread constraint and nothing else.
-      --render) [ $# -ge 2 ] || die "--render needs a path"; py="$PY"
-                rest+=(--render "$2"); shift 2 ;;
-      --timeout) [ $# -ge 2 ] || die "--timeout needs seconds"; rest+=(--timeout "$2"); shift 2 ;;
-      --layout|--style) die "$1 is a RoboCasa scene flag; this engine takes --scene ithor:<n> or procthor:<n>" ;;
-      *) die "unknown view flag '$1' (try: ./run.sh help)" ;;
-    esac
-  done
-  [ -n "$robot" ] || die "view needs --robot <id> (try: ./run.sh help)"
-  case "$robot" in *,*) die "view shows a single robot; --robot takes one id" ;; esac
-  "$PY" "$SHARED_ROOT/robots_spec.py" check "$robot" || die "--robot: see ./run.sh help"
-
-  local dataset="${scene%%:*}" index="${scene##*:}"
-  case "$scene" in
-    ithor:*|procthor:*) ;;
-    *) die "--scene: expected ithor:<n> or procthor:<n>, got '$scene'" ;;
-  esac
-  [ "$dataset" = procthor ] && dataset=procthor-10k
-  echo ">> resolving $scene (downloading if needed)"
-  local xml
-  xml="$("$PY" "$SIM_ROOT/tools/resolve_scene.py" "$dataset" "$index")" \
-    || die "could not resolve scene $scene"
-  # --ros-port 0: a view serves no wire.
-  exec "$py" "$SIM_ROOT/tools/spawn_robot.py" "$robot" --scene "$xml" --ros-port 0 \
-    "${rest[@]+"${rest[@]}"}"
-}
-
-# ---------------------------------------------------------------- shell
-
-do_shell() {
-  ensure_setup
-  echo ">> venv: $VENV_DIR   assets: $MLSPACES_ASSETS_DIR   MUJOCO_GL=$MUJOCO_GL"
-  exec "${SHELL:-/bin/bash}" -i
-}
-
 # ---------------------------------------------------------------- dispatch
 
 cmd="${1:-help}"
@@ -194,8 +133,6 @@ cmd="${1:-help}"
 case "$cmd" in
   setup)  do_setup "$@" ;;
   assets) do_assets "$@" ;;
-  view)   do_view "$@" ;;
-  shell)  do_shell "$@" ;;
   repair) do_repair ;;
   help|-h|--help)
     # Print the header comment block: everything after the shebang up to the

@@ -7,9 +7,8 @@ runs it for its own:
     robocasa/.venv/bin/python    shared/tests/placement_check.py --engine robocasa
 
 For each robot alone, the full fleet and the floor robots together, it builds the world
-`kitchen.sh serve` builds -- the engine's default scene, every staging flag at its default --
-through the
-shared spawn tool, without serving it, and checks:
+`kitchen.sh serve` builds -- the engine's default scene, with the task staged -- through
+the shared spawn tool, without serving it, and checks:
 
 * each robot stands on what its `placement` in robots.yml says: a floor robot on the
   floor, a worktop robot on the worktop, with that surface under its whole footprint;

@@ -6,7 +6,7 @@ A standalone check in the style of `test_attach.py`, runnable under either engin
     robocasa/.venv/bin/python shared/tests/ainex_grasp_check.py
 
 It builds the smallest scene that can answer the question -- a floor as the worktop, the
-task's own apple and plate staged by `apple_on_plate.stage`, and the AiNex grafted at
+task's six objects staged by `apple_on_plate.stage`, and the AiNex grafted at
 its ride height -- teleports the base so the apple sits where the group's claw is solved
 to land, replays the group through `ActionPlayer` with `GroundFollow` running each tick
 exactly as the ROS surface does, and asserts two things the wire cannot show: that a
@@ -67,9 +67,9 @@ def build():
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     spec.worldbody.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE,
                             size=[5, 5, 0.1], pos=[0, 0, 0])
-    # The task's objects at their contract positions in a base frame at the origin.
-    apple_on_plate.stage(spec, [0.0, 0.0, 0.0], 0.0, reference_table=False,
-                         dressing=False)
+    # The task's six objects at their contract positions in a base frame at the origin,
+    # exactly as every serve stages them.
+    apple_on_plate.stage(spec, [0.0, 0.0, 0.0], 0.0)
     robot = ainex_model.build_spec()
     ride = ainex_model.ride_height(ainex_model.build_spec())
     spec.worldbody.add_frame(pos=[0, 0, ride]).attach_body(robot.body("body_link"), NS, "")

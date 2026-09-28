@@ -482,9 +482,9 @@ def dynamic_clutter(
 _WORKSPACE_BEARINGS = 9
 _WORKSPACE_RADII = 4
 #: How far past the working annulus the worktop still has to reach. What gets staged in
-#: the arm's base frame is not only what the arm can reach: the reference table's bowl
-#: sits at r = 0.42 m, outside the 0.35 m annulus on purpose, and an object staged over
-#: thin air does not land on a worse surface, it falls to the floor.
+#: the arm's base frame has a footprint as well as a centre: the bowl's centre is inside
+#: the 0.35 m annulus and its rim is 0.08 m further out, and an object staged over thin
+#: air does not land on a worse surface, it falls to the floor.
 WORKSPACE_MARGIN = 0.10
 #: Headings tried at every candidate cell, 15 degrees apart.
 _YAW_STEPS = 24
@@ -496,9 +496,10 @@ _COVERAGE_QUANTUM = 0.01
 def _workspace_offsets(reach_range: tuple[float, float], radius: float) -> np.ndarray:
     """Sample points of the arm's forward workspace in its base frame (heading = +x).
 
-    A half-disc rather than a wedge: the reference table's mug sits at +79.5 degrees and
-    its bowl at -70.7, so "in front of the arm" for staging purposes is the whole forward
-    semicircle, not the narrow cone the pick-and-place sweeps.
+    A half-disc rather than a wedge: the task's distractors stand out to either side of
+    the path, as far round as +/-90 degrees (`apple_on_plate.DISTRACTORS`), so "in front
+    of the arm" for staging purposes is the whole forward semicircle, not the narrow cone
+    the pick-and-place sweeps.
     """
     radii = np.linspace(reach_range[0], radius, _WORKSPACE_RADII)
     bearings = np.linspace(-np.pi / 2, np.pi / 2, _WORKSPACE_BEARINGS)
@@ -928,20 +929,6 @@ def find_robot_placement(
     return Placement(spot, yaw, None, "open-floor" if len(free_xy) else "no-map-fallback", 0.0)
 
 
-def apply_init_qpos(view, config) -> None:
-    """Write a robot's rest pose into both joint state and actuator targets.
-
-    Both, because these are position actuators: leaving ctrl at its default of 0 makes
-    the robot immediately drive out of the pose it was just placed in.
-    """
-    for group_id, qpos in (config.init_qpos or {}).items():
-        if qpos is None or len(qpos) == 0 or group_id not in view.move_group_ids():
-            continue
-        group = view.get_move_group(group_id)
-        group.joint_pos = qpos
-        group.ctrl = qpos
-
-
 def describe(placement: Placement | TabletopMount) -> str:
     """One line for a log: where, why, and what it is looking at."""
     if isinstance(placement, TabletopMount):
@@ -968,22 +955,3 @@ def describe(placement: Placement | TabletopMount) -> str:
         f"on {t.support_category or t.support_name.split('_')[0]} "
         f"(top {t.support_top_z:.2f} m, {t.n_objects_on_support} objects)"
     )
-
-
-if __name__ == "__main__":
-    import argparse
-
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("scene")
-    ap.add_argument("--agent-radius", type=float, default=0.35)
-    ap.add_argument("--reach", type=float, nargs=2, default=[0.40, 0.80])
-    ap.add_argument("--targets", action="store_true", help="list every target, not just the choice")
-    args = ap.parse_args()
-
-    if args.targets:
-        for t in find_grasp_targets(args.scene)[:20]:
-            print(f"{t.reach_slack:5.2f}  {t.n_objects_on_support:2d}  "
-                  f"{t.support_category or '?':28.28} {t.object_category or '?':20.20} "
-                  f"z={t.object_xyz[2]:.2f}")
-    p = find_robot_placement(args.scene, agent_radius=args.agent_radius, reach_range=tuple(args.reach))
-    print(describe(p))

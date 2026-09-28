@@ -62,7 +62,7 @@ GAP = 0.02
 #: scraping it.
 FLOOR_MARGIN = 0.12
 #: What a worktop robot claims of the floor beside its counter: its footprint and its
-#: reach. The task stages its slab there; anything that drives must stay out of both.
+#: reach. Anything that drives must stay out of both.
 def floor_keep_out_radius(name: str) -> float:
     return ROBOT_RADIUS[name] + ARM_REACH[1]
 
@@ -219,9 +219,12 @@ def walkable(surface: SurfaceMap, start, goal, stop_short: float) -> bool:
     return bool(surface.underfoot(points).all())
 
 
-#: The staged objects a worktop robot must be able to get at, as (world xy, footprint
-#: radius), and how close a walking robot's base has to get to one to act on it.
+#: The six staged task objects, as (world xy, footprint radius): every worktop robot
+#: stands clear of all of them, so none is ever left out of the task (spec §2.3).
 TaskObjects = dict[str, tuple[np.ndarray, float]]
+#: The ones a worktop robot must be able to get at (spec §2.3: "the apple and plate are
+#: within reach"), and how close a walking robot's base has to get to one to act on it.
+REACHED = ("apple", "plate")
 WALK_STOP_SHORT = 0.12
 #: How far ahead a second worktop robot's heading is judged by the walk it leaves.
 WALK_LOOKAHEAD = 1.0
@@ -245,16 +248,18 @@ def _beside(inst: Instance, surface: SurfaceMap, placed: list[Instance],
             objects: TaskObjects, sightlines=()) -> tuple[np.ndarray, float]:
     """A spot on the worktop for a second worktop robot, near the task and in nobody's way.
 
-    Clear of every robot already placed and of the staged objects' footprints, the
-    worktop under its whole footprint with headroom over it, and a walk over the worktop
-    to each staged object. Of those, one out of the rig cameras' lines of sight to the
-    objects if there is one -- a robot standing there puts its back in the task's frame --
-    and then the one closest to the farther object. It faces towards the apple, which is
-    what it would be sent for, along the longest walk the worktop leaves it.
+    Clear of every robot already placed and of all six staged objects' footprints -- the
+    task is staged whole, so the robot gives way, never a distractor -- the worktop under
+    its whole footprint with headroom over it, and a walk over the worktop to the apple and
+    the plate. Of those, one out of the rig cameras' lines of sight to them if there is
+    one -- a robot standing there puts its back in the task's frame -- and then the one
+    closest to the farther of the two. It faces towards the apple, which is what it would
+    be sent for, along the longest walk the worktop leaves it.
     """
     r = inst.radius
     height = ROBOT_HEIGHT[inst.name]
     others = [(p.xy, p.radius) for p in placed]
+    reached = [objects[name] for name in REACHED if name in objects]
     best, best_score = None, None
     for x in surface.xs[::2]:
         for y in surface.ys[::2]:
@@ -266,21 +271,22 @@ def _beside(inst: Instance, surface: SurfaceMap, placed: list[Instance],
                 continue
             if not surface.footprint_fits(xy, r, height):
                 continue
-            far = max(float(np.linalg.norm(xy - oxy)) for oxy, _ in objects.values())
+            far = max(float(np.linalg.norm(xy - oxy)) for oxy, _ in reached)
             if best_score is not None and (False, far) >= best_score:
                 continue  # cannot beat the best even out of every sightline
             blocks = blocks_sightline(xy, r, surface.z, height, sightlines)
             if best_score is not None and (blocks, far) >= best_score:
                 continue
             if not all(walkable(surface, xy, oxy, orad + WALK_STOP_SHORT)
-                       for oxy, orad in objects.values()):
+                       for oxy, orad in reached):
                 continue
             best, best_score = xy, (blocks, far)
     if best is None:
         raise SystemExit(
             f"no room on the worktop for {inst.name} beside "
-            f"{', '.join(p.name for p in placed)}: nowhere clear of them and of the staged "
-            "objects has the worktop under its whole footprint and a walk to both objects")
+            f"{', '.join(p.name for p in placed)}: nowhere clear of them and of the six task "
+            "objects has the worktop under its whole footprint and a walk to the apple and "
+            "the plate")
     if best_score[0]:
         print(f"warning: {inst.name} stands in a rig camera's line of sight to the task: "
               "nowhere else on this worktop has room for it", file=sys.stderr)

@@ -585,7 +585,7 @@ def attach_ros(bus, view, model, task=None, *, cameras=None, jpeg_quality: int =
     """Present the SO-101's interface on `bus`; return the step the fleet drives.
 
     The step carries `rate_hz` = the controller manager's `update_rate`, so the fleet
-    calls it at 50 Hz whatever `--control-hz` is; everything slower (tf, camera,
+    calls it at 50 Hz whatever the fleet's default tick is; everything slower (tf, camera,
     diagnostics) is throttled inside it on simulated time. `view` is the engine's move
     groups (`arm` and `gripper`, each with `joint_pos`/`joint_vel`/writable `ctrl`).
     `cameras` is accepted for the engines' call shape and ignored: the wrist camera is

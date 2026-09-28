@@ -1,11 +1,11 @@
-"""The spawn tool both engines run: parse, place, stage, compile, then render, view or serve.
+"""The spawn tool both engines run: parse, place, stage, compile, then serve.
 
 Each engine's `tools/spawn_robot.py` is an `Engine` -- how its scene is loaded, where
 its worktop and its open floor are, how a robot is grafted into it -- handed to `main`
 here. Everything else is one implementation (spec §4, "shared logic exists once"): the
 command line, which namespaces and what staging a fleet gets (`serve_args`), where each
 robot stands (`placement.stand_fleet`), the task (`tasks/apple_on_plate`), binding each
-robot's joints after the compile, the start-up reports, the ROS fleet, the render and the
+robot's joints after the compile, the start-up reports, the ROS fleet, the viewer and the
 loop. Two copies of any of those were two chances for the engines to drift apart in a
 way a client could see.
 
@@ -18,7 +18,6 @@ import argparse
 import importlib
 import math
 import sys
-import time
 from dataclasses import dataclass
 from types import SimpleNamespace
 
@@ -36,6 +35,13 @@ from placement import Instance, SurfaceMap, Worktop
 #: Where the wire is, when nobody says otherwise: `contracts.rosbridge_server.DEFAULT_PORT`,
 #: named here so `--help` works before the contracts package is imported.
 DEFAULT_ROS_PORT = 9090
+#: The interface the rosbridge server binds: all of them, as the real robots' bridges do.
+ROS_HOST = "0.0.0.0"
+#: The loop's tick for a member with no periodic rate of its own (the AiNex controller);
+#: every published rate is its robot's own, from its ROS file.
+CONTROL_HZ = 10.0
+#: JPEG quality of every compressed camera image the fleet publishes.
+JPEG_QUALITY = 70
 
 #: The task every worktop fleet is staged with (spec §2.3).
 TASK = "apple_on_plate"
@@ -57,38 +63,11 @@ SO101_GRIPPER_JOINTS = ("gripper",)
 SO101_REST_QPOS = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
 SO101_REST_GRIPPER = (1.2,)
 
-#: The staging flags (spec §2.3): (flag, dest, default, help). Each changes only the
-#: staged world, never the wire, and none changes the task objects' sizes or colours.
-STAGING_FLAGS = (
-    ("--reference-table", "reference_table", False,
-     "stage the reference rig's 0.92 m wooden slab under the task objects, on the "
-     "kitchen's own worktop"),
-    ("--no-dressing", "dressing", True,
-     "stage the apple and the plate only, without the bowl, mug, banana and lemon the "
-     "reference keeps on its table"),
-    ("--reference-lighting", "reference_lighting", False,
-     "impose the reference rig's exposure on the kitchen"),
-    ("--extra-lights", "extra_lights", False,
-     "add the reference's two directional lamps (for a scene that renders too dark)"),
-    ("--swap-objects", "swap_objects", False,
-     "stage the plate at the apple's spawn and the apple where the plate was "
-     "(apple_on_plate.OBJECT_POSES records both layouts)"),
-)
-
-
-def add_staging_args(ap: argparse.ArgumentParser) -> None:
-    group = ap.add_argument_group("staging flags (each changes only the staged world)")
-    for flag, dest, default, text in STAGING_FLAGS:
-        action = "store_false" if default else "store_true"
-        state = "on" if default else "off"
-        group.add_argument(flag, action=action, dest=dest,
-                           help=f"{text} (default: {'dressing ' if dest == 'dressing' else ''}{state})")
-
 
 def build_parser(engine) -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog=f"{engine.name}/tools/spawn_robot.py",
-        description=f"Spawn robots into a {engine.name} scene and render, view or serve them.")
+        description=f"Spawn robots into a {engine.name} scene and serve them.")
     ap.add_argument(
         "robot",
         help=f"comma-separated ids of simulated robots in robots_specs/robots.yml "
@@ -99,38 +78,11 @@ def build_parser(engine) -> argparse.ArgumentParser:
         help="put a lone robot under NS instead of its id; '' serves the bare vendor "
              "interface")
     engine.add_scene_args(ap)
-    add_staging_args(ap)
     ap.add_argument("--ros-port", type=int, default=DEFAULT_ROS_PORT, dest="ros_port",
                     metavar="PORT", help="serve the fleet on rosbridge at PORT (default "
                                          "%(default)s; 0 serves nothing)")
-    ap.add_argument("--host", default="0.0.0.0", dest="control_host",
-                    help="interface the rosbridge server binds (default: all)")
-    ap.add_argument("--control-hz", type=float, default=10.0, dest="control_hz",
-                    help="the AiNex controller's tick; every published rate is its "
-                         "robot's own (default %(default)s)")
-    ap.add_argument("--jpeg-quality", type=int, default=70, dest="jpeg_quality")
-    ap.add_argument("--action-dir", default=None, dest="action_dir", metavar="DIR",
-                    help="AiNex: directory of action groups for /app/set_action (Hiwonder "
-                         ".d6a or this tree's .yaml); defaults to "
-                         "shared/ros_surfaces/ainex/action_groups")
     ap.add_argument("--headless", action="store_true",
                     help="run the loop without a window")
-    ap.add_argument("--timeout", type=float, default=None,
-                    help="stop after N seconds of wall clock")
-    render = ap.add_argument_group("rendering a still instead of running")
-    render.add_argument("--render", default=None, metavar="PNG",
-                        help="write one frame to PNG and exit; serves nothing")
-    render.add_argument("--render-camera", default=None, dest="render_camera",
-                        metavar="NAME", help="look through this MJCF camera at its own "
-                                             "resolution, instead of the free camera")
-    render.add_argument("--render-framing", action="store_true", dest="render_framing",
-                        help="report where the slab's corners land and how much of the "
-                             "frame is clipped to white")
-    render.add_argument("--width", type=int, default=1600)
-    render.add_argument("--height", type=int, default=1000)
-    render.add_argument("--distance", type=float, default=None)
-    render.add_argument("--azimuth", type=float, default=None)
-    render.add_argument("--elevation", type=float, default=-20.0)
     return ap
 
 
@@ -362,21 +314,19 @@ def build_world(engine, args) -> World:
     task_mod = importlib.import_module(f"tasks.{TASK}") if plan.task else None
 
     def task_objects(lead: Instance):
+        """All six task objects' footprints in the world: what every other worktop robot
+        stands clear of, so the task is always staged whole (spec §2.3)."""
         transform = task_mod.base_frame([lead.xy[0], lead.xy[1], lead.mount_z], lead.yaw)
-        poses = task_mod.object_poses(args.swap_objects)
-        return {
-            "apple": (np.asarray(task_mod._apply(transform, poses["apple"])[:2]),
-                      task_mod.APPLE_RADIUS),
-            "plate": (np.asarray(task_mod._apply(transform, poses["plate"])[:2]),
-                      task_mod.PLATE_RADIUS),
-        }
+        return {name: (np.asarray(task_mod._apply(transform, task_mod.OBJECT_POSES[name])[:2]),
+                       task_mod.FOOTPRINT_RADIUS[name])
+                for name in task_mod.TASK_OBJECTS}
 
     def sightlines(lead: Instance):
-        """Each rig camera to each staged object: what a second worktop robot must not
-        stand in, or the rig films its back instead of the task."""
+        """Each rig camera to the apple and the plate: what a second worktop robot must
+        not stand in, or the rig films its back instead of the task."""
         transform = task_mod.base_frame([lead.xy[0], lead.xy[1], lead.mount_z], lead.yaw)
-        poses = task_mod.object_poses(args.swap_objects)
-        return [(task_mod._apply(transform, cam[1]), task_mod._apply(transform, poses[obj]))
+        return [(task_mod._apply(transform, cam[1]),
+                 task_mod._apply(transform, task_mod.OBJECT_POSES[obj]))
                 for cam in task_mod.SCENE_CAMERAS for obj in ("apple", "plate")]
 
     worktop = placement.stand_fleet(
@@ -404,11 +354,10 @@ def build_world(engine, args) -> World:
     lead = by_name.get(plan.task_robot) if plan.task else None
     if lead is not None:
         # The task's frame is the task robot's base body, with the worktop at z = 0.
+        # The other worktop robots already stand clear of all six task objects; loose
+        # scene objects around them are cleared as they are in the working area.
         cleared = task_mod.stage(
             scene.spec, [float(lead.xy[0]), float(lead.xy[1]), lead.mount_z], lead.yaw,
-            reference_table=args.reference_table, dressing=args.dressing,
-            lighting=args.reference_lighting, extra_lights=args.extra_lights,
-            swap=args.swap_objects,
             keep_clear=[(i.xy, i.radius) for i in instances
                         if i.on == "worktop" and i is not lead],
         )
@@ -437,9 +386,6 @@ def build_world(engine, args) -> World:
               f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
         print(f"task {TASK}: {arbiter.layout_report(data)}", file=sys.stderr)
         check_task_contacts(model, lead.mjcf, arbiter, hand_bodies=gripper_bodies(lead.name))
-        from mujoco_bridge import report_slab_fit
-
-        report_slab_fit(model, data)
         report_reach(model, data, instances, arbiter, scene, worktop)
     problems += report_sole_contact(model, data, instances)
     for problem in problems:
@@ -451,10 +397,10 @@ def build_world(engine, args) -> World:
 
 
 def report_reach(model, data, instances, arbiter, scene, worktop) -> None:
-    """Whether each worktop robot can get at the staged objects (spec §2.3).
+    """Whether each worktop robot can get at the apple and the plate (spec §2.3).
 
-    The SO-101 by solving a top grasp at each object on the compiled model. A robot that
-    walks (the AiNex) by whether it can walk over the worktop to each object.
+    The SO-101 by solving a top grasp at each on the compiled model. A robot that walks
+    (the AiNex) by whether it can walk over the worktop to each.
     """
     objects = arbiter.object_positions(data)
     task_mod = importlib.import_module(f"tasks.{TASK}")
@@ -477,7 +423,7 @@ def report_reach(model, data, instances, arbiter, scene, worktop) -> None:
                   file=sys.stderr)
 
 
-# ---------------------------------------------------------------- serving, viewing, rendering
+# ---------------------------------------------------------------- serving and viewing
 
 
 def pick_camera(model, prefix: str) -> str | None:
@@ -488,12 +434,12 @@ def pick_camera(model, prefix: str) -> str | None:
     return None
 
 
-def surface_kwargs(args, inst, world) -> dict:
+def surface_kwargs(inst, world) -> dict:
     """Everything one robot's surface needs, by which interface it presents."""
     model, prefix = world.model, inst.mjcf
     if inst.name == "so101":
         return {"view": inst.view, "model": model, "task": world.task, "wrist": True,
-                "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
+                "jpeg_quality": JPEG_QUALITY, "control_hz": CONTROL_HZ,
                 "scene_option": world.scene_option, "prefix": prefix}
     camera = pick_camera(model, prefix)
     if inst.holonomic and inst.name != "ainex":
@@ -501,7 +447,7 @@ def surface_kwargs(args, inst, world) -> dict:
         # the same base. Each surface resolves its own cameras against `prefix`.
         return {
             "base": inst.base, "model": model, "camera": camera,
-            "jpeg_quality": args.jpeg_quality, "scene_option": world.scene_option,
+            "jpeg_quality": JPEG_QUALITY, "scene_option": world.scene_option,
             "lidar": {
                 # Rays start at the robot's own root and range nothing of its own; a
                 # neighbour is something to see.
@@ -515,8 +461,7 @@ def surface_kwargs(args, inst, world) -> dict:
         }
     if inst.name == "ainex":
         return {"base": inst.base, "model": model, "camera": camera,
-                "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
-                "extra": {"action_dir": args.action_dir},
+                "jpeg_quality": JPEG_QUALITY, "control_hz": CONTROL_HZ,
                 "scene_option": world.scene_option, "prefix": prefix}
     raise SystemExit(f"no ROS surface arguments for {inst.name!r}")
 
@@ -528,11 +473,11 @@ def build_fleet(args, world):
         SCENE_CAMERA_TOPICS, SCENE_NAMESPACE, attach_scene_rig, probe_scene_cameras,
     )
 
-    fleet = RobotFleet(port=args.ros_port, host=args.control_host, default_hz=args.control_hz)
+    fleet = RobotFleet(port=args.ros_port, host=ROS_HOST, default_hz=CONTROL_HZ)
     for inst in world.instances:
         module_name, func_name = ROS_SURFACES[inst.name]
         attach = getattr(importlib.import_module(module_name), func_name)
-        fleet.attach(inst.ns, attach, **surface_kwargs(args, inst, world))
+        fleet.attach(inst.ns, attach, **surface_kwargs(inst, world))
     if world.staging.rig:
         # The worktop's rig, under its own namespace and after the robots so they step
         # first: it watches the task, not any robot.
@@ -548,7 +493,7 @@ def build_fleet(args, world):
         if truth is not None:
             fleet.world_reset.on_observed(truth.reset)
         fleet.attach(SCENE_NAMESPACE, attach_scene_rig, model=world.model, cameras=rig,
-                     jpeg_quality=args.jpeg_quality, scene_option=world.scene_option,
+                     jpeg_quality=JPEG_QUALITY, scene_option=world.scene_option,
                      truth=truth)
     fleet.start()
     return fleet
@@ -571,71 +516,15 @@ def framing(world):
     return lookat, radius * 4.0, math.degrees(first.yaw) + 180.0
 
 
-def render(args, world) -> int:
-    model, data = world.model, world.data
-    lookat, distance, azimuth = framing(world)
-    width, height = args.width, args.height
-    for gid in range(model.ngeom):
-        if "ceiling" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, gid) or "").lower():
-            model.geom_rgba[gid, 3] = 0.0
-    if args.render_camera:
-        cam_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, args.render_camera)
-        if cam_id < 0:
-            declared = [model.camera(i).name for i in range(model.ncam)]
-            raise SystemExit(f"--render-camera {args.render_camera!r}: not in model; "
-                             f"declared cameras: {declared}")
-        w, h = (int(v) for v in model.cam_resolution[cam_id])
-        if w > 1 and h > 1:
-            width, height = w, h
-        camera = args.render_camera
-    else:
-        camera = mujoco.MjvCamera()
-        mujoco.mjv_defaultFreeCamera(model, camera)
-        camera.lookat[:] = lookat
-        camera.distance = args.distance if args.distance is not None else distance
-        camera.azimuth = args.azimuth if args.azimuth is not None else azimuth
-        camera.elevation = args.elevation
-    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
-    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
-    with mujoco.Renderer(model, height, width) as renderer:
-        if world.scene_option is not None:
-            renderer.update_scene(data, camera=camera, scene_option=world.scene_option)
-        else:
-            renderer.update_scene(data, camera=camera)
-        pixels = renderer.render()
-    if args.render_framing:
-        from mujoco_bridge import (
-            _slab_corners_world, camera_framing, clipped_fraction, report_slab_fit,
-        )
-
-        report_slab_fit(model, data)
-        slab = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "task_table")
-        if args.render_camera and slab >= 0:
-            uv = camera_framing(model, data, args.render_camera,
-                                _slab_corners_world(model, data, slab))
-            worst = max(max(abs(u), abs(v)) for u, v in uv)
-            inside = sum(1 for u, v in uv if abs(u) <= 1.0 and abs(v) <= 1.0)
-            print(f"framing {args.render_camera}: {inside}/4 table corners in frame, "
-                  f"worst |normalised| {worst:.3f} (reference 0.930)", file=sys.stderr)
-        print(f"exposure: {clipped_fraction(pixels) * 100:.1f}% of pixels clipped to white "
-              "(reference 3.0%)", file=sys.stderr)
-    from PIL import Image
-
-    Image.fromarray(pixels).save(args.render)
-    print(f"wrote {args.render}", file=sys.stderr)
-    return 0
-
-
 def run(args, world) -> int:
     from mujoco_bridge import run_sim_loop
 
     controller = build_fleet(args, world) if args.ros_port else None
-    loop_hz = (controller.rate_hz if controller is not None else None) or args.control_hz
-    deadline = None if args.timeout is None else time.monotonic() + args.timeout
+    loop_hz = (controller.rate_hz if controller is not None else None) or CONTROL_HZ
     try:
         if args.headless:
             run_sim_loop(world.model, world.data, controller, control_hz=loop_hz,
-                         deadline=deadline, label="headless loop")
+                         label="headless loop")
         else:
             # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
             # function-local and shadow the module import.
@@ -650,7 +539,7 @@ def run(args, world) -> int:
                 viewer.cam.azimuth = azimuth
                 viewer.cam.elevation = -20.0
                 run_sim_loop(world.model, world.data, controller, control_hz=loop_hz,
-                             deadline=deadline, viewer=viewer, label="viewer loop")
+                             viewer=viewer, label="viewer loop")
     finally:
         if controller is not None:
             controller(None)
@@ -659,10 +548,7 @@ def run(args, world) -> int:
 
 def main(engine, argv=None) -> int:
     args = build_parser(engine).parse_args(argv)
-    world = build_world(engine, args)
-    if args.render:
-        return render(args, world)
-    return run(args, world)
+    return run(args, build_world(engine, args))
 
 
 def scene(spec, model, data, **extra) -> SimpleNamespace:

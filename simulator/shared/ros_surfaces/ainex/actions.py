@@ -14,9 +14,9 @@ table whose rows are `(index, duration_ms, servo1 ... servo24)`.
 
 **No `.d6a` files are shipped here.** They are vendor pose data with no stated licence,
 and the ~50-file set that circulates publicly is a mirror of an SD-card image rather than
-anything Hiwonder published. Reading the format anyway is the point: point `--action-dir`
-at a real robot's `/home/ubuntu/software/ainex_controller/ActionGroups` and the genuine
-motions play, so the licensed data stays an input the user supplies and never something
+anything Hiwonder published. Reading the format anyway is the point: copy a real robot's
+`/home/ubuntu/software/ainex_controller/ActionGroups` files into `ACTION_DIR` and the
+genuine motions play, so the licensed data stays an input the user supplies and never something
 this repository redistributes.
 
 The in-tree set is our own, deliberately small, and written as YAML because a SQLite blob

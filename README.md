@@ -2,7 +2,7 @@
 
 A robot simulation workspace with two independent projects that talk over network protocols (rosbridge), never Python imports:
 
-- **`simulator/`** — simulates robots (myAGV mobile base, SO-101 arm, AiNex humanoid) with a choice of two interchangeable MuJoCo engines: MolmoSpaces (iTHOR houses) and RoboCasa (kitchens). Both engines expose each robot's real vendor ROS interface over one rosbridge websocket.
+- **`simulator/`** — simulates every robot `robots_specs/robots.yml` marks `simulated` (mobile bases, mobile manipulators, a humanoid and an arm) with a choice of two interchangeable MuJoCo engines: MolmoSpaces (iTHOR houses) and RoboCasa (kitchens). Both engines expose each robot's real vendor ROS interface over one rosbridge websocket.
 - **`robot_console/`** — drives, maps and navigates the simulated (or physical) robots: teleop, SLAM exploration, and the SO-101 arm task. It connects identically regardless of which engine hosts the robot.
 
 ## Setup
@@ -58,12 +58,12 @@ cd simulator/robocasa
 ### 5. Console
 
 Nothing to do up front: `bin/teleop.sh`, `bin/slam.sh` and `run_task.sh` create their venv
-on first run (`.venv`, and `.venv-vla` for the MolmoAct2 policy, which pulls torch). To
-install eagerly and run the offline tests:
+on first run (`.venv`, and `.venv-vla` for the MolmoAct2 policy, which pulls torch), and
+again whenever `pyproject.toml` changes. To install eagerly and run the offline tests:
 
 ```bash
 cd robot_console
-./bin/teleop.sh --reinstall
+./bin/teleop.sh --help      # creates .venv on the way
 .venv/bin/python -m pytest
 ```
 

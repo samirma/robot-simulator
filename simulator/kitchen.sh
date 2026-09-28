@@ -17,7 +17,6 @@
 #                           [--ros-namespace <ns>] [--mujoco] [--port <p>]
 #                           [--scene <s>]              # MolmoSpaces scene flag
 #                           [--layout N --style N]     # RoboCasa scene flags
-#                           [<staging flags>]
 #
 #   --engine molmospaces  molmospaces | robocasa. One per run; only that one need be set up.
 #   --robots so101        comma-separated ids of the robots robots_specs/robots.yml marks
@@ -39,16 +38,10 @@
 #   --scene ithor:1       MolmoSpaces scene: ithor:<n> or procthor:<n>
 #   --layout 1 --style 1  RoboCasa kitchen, both 1-60
 #
-#   staging flags -- each changes only the staged world, never the wire, and none changes
-#   the apple's or the plate's size or colour:
-#   --reference-table     the reference rig's 0.92 m wooden slab under the task
-#                         objects (default: off)
-#   --no-dressing         the apple and the plate only, without the bowl, mug, banana and
-#                         lemon (default: dressing on)
-#   --reference-lighting  the reference rig's exposure (default: off)
-#   --extra-lights        the reference's two lamps (default: off)
-#   --swap-objects        the plate at the apple's spawn and the apple where the plate
-#                         was (default: off)
+#   The task is fixed scene content, not an option: a red apple, a white plate, a bowl, a
+#   mug, a banana and a lemon at their contract poses on the worktop, the apple and the
+#   plate within the robot's reach, and the overhead and side cameras that frame them.
+#   Nothing else is added to the scene, and its lighting is its own.
 #
 # The serve warns when its real-time factor over a 10 s window falls below 0.90.
 #
@@ -88,7 +81,7 @@ NAMESPACE=""
 SCENE="ithor:1"
 LAYOUT=1
 STYLE=1
-declare -a MOLMO_FLAGS_SEEN=() ROBOCASA_FLAGS_SEEN=() STAGE_FLAGS=()
+declare -a MOLMO_FLAGS_SEEN=() ROBOCASA_FLAGS_SEEN=()
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -133,8 +126,6 @@ while [ $# -gt 0 ]; do
                 ROBOCASA_FLAGS_SEEN+=(--layout); shift 2 ;;
     --style)    value "$1" $#; int_in --style "$2" 1 60; STYLE="$2"
                 ROBOCASA_FLAGS_SEEN+=(--style); shift 2 ;;
-    --reference-table|--no-dressing|--reference-lighting|--extra-lights|--swap-objects)
-                STAGE_FLAGS+=("$1"); shift ;;
     *) die "unknown flag '$1' (see ./kitchen.sh $cmd --help)" ;;
   esac
 done
@@ -248,7 +239,7 @@ fi
 echo ">> $ENGINE $ROBOTS$window on ws://127.0.0.1:$PORT"
 "$ENGINE" "$(engine_python "$([ "$MUJOCO" -eq 1 ] && echo viewer || echo headless)")" \
   ${HEADLESS[@]+"${HEADLESS[@]}"} --ros-port "$PORT" \
-  ${NS_FLAGS[@]+"${NS_FLAGS[@]}"} ${STAGE_FLAGS[@]+"${STAGE_FLAGS[@]}"} &
+  ${NS_FLAGS[@]+"${NS_FLAGS[@]}"} &
 sim_pid=$!
 echo
 echo "run the task against it from robot_console/:"
