@@ -22,6 +22,7 @@ from .rig_fixtures import AWAY, PLATE_XY, RESTING, episode, holding
 
 STARTED = "2026-09-27T10:00:00+00:00"
 STARTED_WALL = 1790503200.0   # STARTED as unix seconds
+COMPLETED = "2026-09-27T10:00:10+00:00"
 
 
 def _eval_log(samples: list[dict]) -> dict:
@@ -29,7 +30,7 @@ def _eval_log(samples: list[dict]) -> dict:
     verdict = vs.assess(samples)
     return {
         "status": "success",
-        "stats": {"started_at": STARTED},
+        "stats": {"started_at": STARTED, "completed_at": COMPLETED},
         "samples": [{
             "epochs": [{"apple_on_plate": 1.0 if verdict.passed else 0.0}],
             "trial_metadata": [{"apple_on_plate": verdict.as_dict()}],
@@ -116,11 +117,51 @@ def test_moving_apple_fails_on_truth_too(tmp_path) -> None:
     assert (result.camera, result.truth, result.agree) == ("FAIL", "FAIL", True)
 
 
+def _append(path: Path, reset_wall: float, stamp: float) -> None:
+    """Another segment after `path`'s last: a reset, then an apple off the plate."""
+    lines = [{"kind": "reset", "wall": reset_wall, "stamp": stamp}]
+    lines += [{"kind": "state", "stamp": stamp + 0.5 + i / 10, "apple": [0.5, 0.5, 0.3],
+               "plate": [*PLATE_XY, 0.0], "fingers": _fingers(AWAY)} for i in range(31)]
+    with path.open("a") as f:
+        f.write("\n".join(json.dumps(line) for line in lines) + "\n")
+
+
 def test_the_episode_is_matched_to_the_last_reset_before_it(tmp_path) -> None:
-    """The stale segment's apple is off the plate; matching it would disagree."""
+    """An embodiment that resets before the run starts: no reset inside the episode, so
+    the last one before it. The stale segment's apple is off the plate; matching it would
+    disagree."""
     run = _run(tmp_path, "pass", episode(lambda t: RESTING))
     result = _audit(tmp_path, run, _truth(tmp_path, lambda t: RESTING, stale_before=True))
     assert result.agree is True
+
+
+def test_a_reset_inside_the_episode_is_the_one_matched(tmp_path) -> None:
+    """The `so101_ros` ordering: `run_task.sh` resets before the episode, the embodiment
+    resets again 0.1-0.6 s after `started_at`, and the evidence follows the second. The
+    runner's segment (just before the start) holds an apple off the plate."""
+    run = _run(tmp_path, "pass", episode(lambda t: RESTING))
+    truth = _truth(tmp_path, lambda t: RESTING, reset_wall=STARTED_WALL + 0.4)
+    lines = truth.read_text().splitlines()
+    runner = [{"kind": "reset", "wall": STARTED_WALL - 0.5, "stamp": 99.0}]
+    runner += [{"kind": "state", "stamp": 99.0 + i / 100, "apple": [0.5, 0.5, 0.3],
+                "plate": [*PLATE_XY, 0.0], "fingers": _fingers(AWAY)} for i in range(40)]
+    at = next(i for i, line in enumerate(lines) if '"wall": %s' % (STARTED_WALL + 0.4) in line)
+    truth.write_text("\n".join(lines[:at] + [json.dumps(r) for r in runner] + lines[at:])
+                     + "\n")
+    result = _audit(tmp_path, run, truth)
+    assert (result.camera, result.truth, result.agree) == ("PASS", "PASS", True)
+
+
+def test_the_next_episodes_reset_is_not_matched(tmp_path) -> None:
+    """A reset after the episode completed (the next episode's) is not this one's, and
+    neither is one inside the episode after its first graded frame."""
+    run = _run(tmp_path, "pass", episode(lambda t: RESTING))
+    truth = _truth(tmp_path, lambda t: RESTING, reset_wall=STARTED_WALL + 0.4)
+    _append(truth, STARTED_WALL + 12.0, 110.0)
+    assert _audit(tmp_path, run, truth).agree is True
+    truth = _truth(tmp_path, lambda t: RESTING, reset_wall=STARTED_WALL + 0.4, name="t2.jsonl")
+    _append(truth, STARTED_WALL + 5.0, 104.0)   # inside the run, after the graded window
+    assert _audit(tmp_path, run, truth).agree is True
 
 
 def test_truth_that_misses_the_hold_is_unknown_not_a_verdict(tmp_path) -> None:

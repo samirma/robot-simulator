@@ -54,6 +54,28 @@ def test_a_red_bowl_touching_the_apple_in_the_side_view_does_not_hide_it() -> No
     assert vs.assess(episode(lambda t: RESTING, bowl=True)).passed
 
 
+def test_a_bowl_of_the_apples_own_hue_does_not_hide_it() -> None:
+    """Also measured there: resting turned the other way, the apple's side-view red has
+    the bowl's hue, and only its brightness sets it apart."""
+    m = vs.measure(sample(1.0, RESTING, bowl=True, shaded=True))
+    assert m.problem == "" and math.dist(m.apple, RESTING) < 0.004, (m.problem, m.apple)
+
+
+def test_the_plate_is_found_on_a_white_worktop() -> None:
+    """Measured on the RoboCasa kitchen: the worktop is as white as the plate, its veins as
+    bright, and the well's shaded edge splits the plate's brightest pixels."""
+    s = sample(1.0, RESTING, white_worktop=True)
+    over = vs.decode(s["overhead"]["data"])
+    found = vs.find_plate(over)
+    assert found is not None
+    cam = vs.CameraModel.from_camera_info(vs.OVERHEAD_CAMERA_NAME,
+                                          s["camera_info"][vs.OVERHEAD_CAMERA_NAME])
+    xy = cam.to_plane(*found, vs.PLATE_TOP_Z_M)
+    assert math.dist(xy, PLATE_XY) < 0.01, xy
+    verdict = vs.assess(episode(lambda t: RESTING, white_worktop=True))
+    assert verdict.passed, verdict.reason
+
+
 def test_a_placement_that_arrives_and_then_rests_passes() -> None:
     def apple(t: float):
         if t < 1.0:   # carried in from the spawn, then resting for the last 2 s

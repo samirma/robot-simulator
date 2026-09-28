@@ -103,19 +103,43 @@ PLATE_TOP_Z_M = 0.0204
 APPLE_HUE = 8          # red wraps zero: hue <= 8 or >= 172
 APPLE_MIN_SAT = 110
 APPLE_MIN_VAL = 60
+#: A second, stricter value floor the masks are also cut at. The hue split below does not
+#: always part the apple from the dark red bowl behind it in the side view: depending on
+#: how the apple came to rest, its shaded side reads hue 177-179 like the bowl, and the
+#: two merge into one 77x35 blob. By value they differ -- apple V 84-124, bowl 73-88 --
+#: and at this floor the apple is a blob of its own (~150 px, within 1 px of its
+#: projected centre) while the bowl drops out.
+APPLE_SPLIT_VAL = 90
 APPLE_AREA_PX = (25, 2500)
 APPLE_MIN_EXTENT = 0.55
 APPLE_ASPECT = (0.5, 2.0)
 
 #: The plate is white: low saturation, high value, circular. Measured: the plate runs
-#: sat 0-5 against a marble worktop's 15-243; circularity rejects white cabinets.
+#: sat 0-5 against the MolmoSpaces marble's 15-243; circularity rejects white cabinets.
+#: RoboCasa's white marble reads sat ~3 like the plate, so there the flat mask is the
+#: whole worktop and the fallback below finds the plate.
 PLATE_MIN_AREA_PX = 1500
 PLATE_MIN_CIRCULARITY = 0.55
 PLATE_MAX_SAT = 10
 PLATE_MIN_VAL = 150
 #: Fallback when the flat mask merges plate and worktop: the brightest slice of the
-#: white field (the plate is the brightest white thing on both engines).
+#: white field (the plate is the brightest white thing on both engines), taken over a
+#: local mean of `PLATE_BRIGHT_BLUR_PX` so it is the brightest *area*. On RoboCasa's
+#: white marble the pixel-wise slice was the plate's well, a highlight its rim catches
+#: from the scene's light (a crescent touching the well, upper left) and the marble's
+#: bright veins: a disc-plus-crescent too ragged for the circularity bound, and when
+#: opened apart, the well's lit upper part, 0.017 m off the plate centre. The veins are
+#: thin and the plate is not, so after the local mean the slice is the whole plate --
+#: rim, well and highlight -- and its outline's centre is the plate's (within 0.007 m
+#: bare and 0.011 m with the apple on it, audited against the simulator's truth, where
+#: the pixel-wise slice read 0.017 m or found nothing).
 PLATE_BRIGHT_PERCENTILE = 95
+PLATE_BRIGHT_BLUR_PX = 9
+#: Opening kernels (px, elliptical) that bright slice is cut with; the roundest blob any
+#: of them leaves is the plate, so a highlight or vein still touching it is cut off
+#: rather than bending its outline. The widest stays well under the plate's own
+#: diameter at the rig's range (~110 px).
+PLATE_BRIGHT_OPEN_PX = (5, 9, 13, 17, 21)
 
 REQUIRED_JOINTS: tuple[str, ...] = (*ARM_JOINTS, GRIPPER_JOINT)
 
@@ -234,14 +258,18 @@ def apple_candidates(bgr: np.ndarray) -> list[Blob]:
     while the red bowl it touches in that projection reads 172-179, so one "red" mask
     merges them into a single 77x35 blob that is neither, while the split masks separate
     them. The union still matters -- the overhead view shows the lit apple straddling the
-    wrap. Triangulation picks the pair that is one object; see `locate_apple`.
+    wrap. All three are cut again at `APPLE_SPLIT_VAL`, for when the hues do not part
+    them. Triangulation picks the pair that is one object; see `locate_apple`.
     """
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     h, s, v = hsv[..., 0], hsv[..., 1], hsv[..., 2]
-    vivid = (s > APPLE_MIN_SAT) & (v > APPLE_MIN_VAL)
-    low, high = (h <= APPLE_HUE) & vivid, (h >= 180 - APPLE_HUE) & vivid
+    masks = []
+    for floor in (APPLE_MIN_VAL, APPLE_SPLIT_VAL):
+        vivid = (s > APPLE_MIN_SAT) & (v > floor)
+        low, high = (h <= APPLE_HUE) & vivid, (h >= 180 - APPLE_HUE) & vivid
+        masks += [low | high, low, high]
     out: list[Blob] = []
-    for red in (low | high, low, high):
+    for red in masks:
         mask = cv2.morphologyEx(red.astype(np.uint8) * 255, cv2.MORPH_OPEN,
                                 np.ones((3, 3), np.uint8))
         n, _, stats, cent = cv2.connectedComponentsWithStats(mask, 8)
@@ -260,7 +288,8 @@ def apple_candidates(bgr: np.ndarray) -> list[Blob]:
     return sorted(out, key=lambda b: -b.area)
 
 
-def _plate_from_mask(mask: np.ndarray) -> tuple[float, float] | None:
+def _plate_from_mask(mask: np.ndarray) -> tuple[tuple[float, float] | None, float]:
+    """The roundest plate-sized blob's centre and circularity; (None, bound) for none."""
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best, best_circ = None, PLATE_MIN_CIRCULARITY
     for c in contours:
@@ -273,7 +302,7 @@ def _plate_from_mask(mask: np.ndarray) -> tuple[float, float] | None:
             continue
         (cx, cy), _, _ = cv2.fitEllipse(c)
         best, best_circ = (float(cx), float(cy)), circ
-    return best
+    return best, best_circ
 
 
 def find_plate(bgr: np.ndarray) -> tuple[float, float] | None:
@@ -286,11 +315,20 @@ def find_plate(bgr: np.ndarray) -> tuple[float, float] | None:
         m = cv2.morphologyEx(m.astype(np.uint8) * 255, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
         return cv2.morphologyEx(m, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
 
-    found = _plate_from_mask(clean(white))
+    found, _ = _plate_from_mask(clean(white))
     if found is not None or int(white.sum()) < PLATE_MIN_AREA_PX:
         return found
-    threshold = np.percentile(v[white], PLATE_BRIGHT_PERCENTILE)
-    return _plate_from_mask(clean((v >= threshold) & white))
+    local = cv2.blur(np.where(white, v, 0).astype(np.float32),
+                     (PLATE_BRIGHT_BLUR_PX, PLATE_BRIGHT_BLUR_PX))
+    threshold = np.percentile(local[white], PLATE_BRIGHT_PERCENTILE)
+    bright = ((local >= threshold) & white).astype(np.uint8) * 255
+    best, best_circ = None, 0.0
+    for size in PLATE_BRIGHT_OPEN_PX:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size))
+        found, circ = _plate_from_mask(cv2.morphologyEx(bright, cv2.MORPH_OPEN, kernel))
+        if found is not None and circ > best_circ:
+            best, best_circ = found, circ
+    return best
 
 
 # ------------------------------------------------------------------ triangulation

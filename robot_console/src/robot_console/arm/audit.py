@@ -25,8 +25,14 @@ and 2 when none could be audited.
 **Truth log.** JSON lines, one object each, in the order written:
 
 * `{"kind": "reset", "wall": <unix s>, "stamp": <sim s>}` -- `/reset` has completed and
-  its observations are out. Starts a segment; an episode is matched to the last reset
-  before it started (`stats.started_at` in its eval log).
+  its observations are out. Starts a segment. An episode is matched to the reset that
+  began its evidence: the last reset inside its own run (between `stats.started_at` and
+  `stats.completed_at` in its eval log) at or before its first graded frame. The
+  `so101_ros` embodiment calls `/reset` itself just after the episode starts, so a
+  `run_task.sh` episode has one reset before it (the runner's) and one inside it (the
+  embodiment's), and its evidence follows the second. An episode with no reset inside it
+  (an embodiment that resets before the run starts) is matched to the last reset before
+  it started.
 * `{"kind": "state", "stamp": <sim s>, "apple": [x, y, z], "plate": [x, y, z],
   "fingers": [[[x, y, z], [x, y, z]], ...]}` -- one per rig frame, `stamp` on the same
   clock as the rig's `header.stamp`; positions in the rig's root frame (`scene/worktop`,
@@ -89,6 +95,7 @@ class Segment:
     """Everything the simulator recorded between one `/reset` and the next."""
 
     wall: float
+    stamp: float | None = None
     states: list[State] = field(default_factory=list)
     source: str = ""
 
@@ -113,7 +120,10 @@ def read_truth(paths: Iterable[Path]) -> list[Segment]:
                 raise ValueError(f"{path}:{n}: not JSON ({exc})") from None
             kind = row.get("kind")
             if kind == "reset":
-                current = Segment(float(row["wall"]), source=f"{path.name}:{n}")
+                stamp = row.get("stamp")
+                current = Segment(float(row["wall"]),
+                                  None if stamp is None else float(stamp),
+                                  source=f"{path.name}:{n}")
                 segments.append(current)
             elif kind == "state" and current is not None:
                 current.states.append(State(
@@ -222,9 +232,24 @@ def _detail(log: Mapping[str, Any]) -> Mapping[str, Any]:
     return (meta[0] or {}).get(verdict_mod.PASS_KEY) or {}
 
 
-def _segment_for(segments: Sequence[Segment], started: float | None) -> Segment | None:
+def _segment_for(segments: Sequence[Segment], started: float | None,
+                 completed: float | None = None,
+                 first_graded: float | None = None) -> Segment | None:
+    """The segment this episode's evidence was recorded in (see "Truth log" above).
+
+    `started` and `completed` bound the run on the wall clock; `first_graded` is the sim
+    stamp of its first graded frame, when the log records its window.
+    """
     if started is None:
         return None
+    inside = [s for s in segments
+              if s.wall >= started and (completed is None or s.wall <= completed)]
+    if first_graded is not None:
+        # A reset after the first graded frame did not start this evidence (reset and
+        # frame stamps share the rig's clock).
+        inside = [s for s in inside if s.stamp is None or s.stamp <= first_graded + 1e-9]
+    if inside:
+        return inside[-1]
     before = [s for s in segments if s.wall <= started]
     return before[-1] if before else None
 
@@ -239,11 +264,12 @@ def audit_run(run_dir: Path, segments: Sequence[Segment]) -> Audit:
     log = json.loads(Path(camera.log).read_text(encoding="utf-8"))
     stats, detail = log.get("stats") or {}, _detail(log)
     started = _wall(stats.get("started_at")) or _wall((log.get("eval") or {}).get("created"))
-    segment = _segment_for(segments, started)
-    if segment is None:
-        audit.truth_reason = "no /reset in the truth log before this episode started"
-        return audit
     window = detail.get(WINDOW_KEY)
+    segment = _segment_for(segments, started, _wall(stats.get("completed_at")),
+                           float(window[0]) if window else None)
+    if segment is None:
+        audit.truth_reason = "no /reset in the truth log before or during this episode"
+        return audit
     if window:
         end = float(window[1])
     else:
