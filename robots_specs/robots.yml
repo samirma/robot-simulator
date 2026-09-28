@@ -11,6 +11,9 @@
 # upstream, or a list of such folders when the URDF and the MJCF use different ones; a
 # `package://<pkg>/` mesh path resolves to the robot's own folder. `gripper` names the
 # vendor accessory gripper a robot is fitted with, when it is not part of the robot itself.
+# `kind` also says whether a robot moves about the scene: every kind but `arm` does (a
+# mobile base, a mobile manipulator, a walking humanoid), so every robot but an `arm` is
+# driven by teleop; an `arm` is fixed where it is placed.
 
 robots:
   - id: myagv
@@ -76,7 +79,7 @@ robots:
     manufacturer: Elephant Robotics
     kind: mobile_manipulator
     placement: floor
-    simulated: false
+    simulated: true
     official_url: https://www.elephantrobotics.com/en/myagv-2023-pi-en/
     base: myagv                  # the base's URDF; no official composite URDF exists
     urdf: myagv_mycobot280/mycobot_280_pi_adaptive_gripper.urdf   # arm + gripper; the arm is driven over a pymycobot socket, not ROS
@@ -113,7 +116,7 @@ robots:
     manufacturer: Yahboom
     kind: mobile_manipulator
     placement: floor
-    simulated: false
+    simulated: true
     official_url: https://category.yahboom.net/products/rosmaster-x3-plus
     urdf: rosmaster_x3_plus/yahboomcar_X3plus.urdf
     meshes: rosmaster_x3_plus/meshes

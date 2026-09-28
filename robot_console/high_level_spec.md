@@ -7,7 +7,8 @@ contradict this document or the workspace specification.
 
 ## 1. Goal
 
-Drive, map and navigate compatible robots (a myAGV, an SO-101, an AiNex) over rosbridge,
+Drive, map and navigate the compatible robots `robots_specs/robots.yml` records over
+rosbridge,
 identically whether they are simulated or physical and whichever engine hosts them. Grade
 the SO-101 task in simulation (§2.3). **All control policy lives here.**
 
@@ -21,7 +22,7 @@ defaulting to `ws://127.0.0.1:9090`. The **launchers** are the shell entry point
 
 | Entry point | Responsibility |
 | --- | --- |
-| `robot_console/bin/teleop.sh` | Keyboard teleoperation of a myAGV or an AiNex, with live camera and optional recording. |
+| `robot_console/bin/teleop.sh` | Keyboard teleoperation of a mobile robot (every `kind` but `arm` in `robots.yml`), with live camera and optional recording. |
 | `robot_console/bin/slam.sh` | 2D occupancy-grid mapping (`explore`, `map`) and goal navigation (`navigate`) for a myAGV. |
 | `robot_console/run_task.sh` | Run the SO-101 `apple_on_plate` task (§2.3) with a VLA policy over N episodes, and grade it. |
 | `robot_console/bin/view.sh` | Browser page showing the cameras of whatever is on a wire, with per-robot controls. |
@@ -38,7 +39,7 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
 
 * **Keys.** The **motion keys** are:
   * `W`/`S`: forward and back;
-  * `A`/`D`: strafe left and right (the myAGV is omnidirectional);
+  * `A`/`D`: strafe left and right (the wheeled bases are omnidirectional);
   * `Q`/`E`: rotate.
 
   The other keys are: Space stops, Esc quits, `+`/`-` change speed, `H` shows help. For
@@ -46,6 +47,10 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
 * **Speeds.** `--speed` is the initial linear speed and `--max-speed` its cap.
   * The myAGV defaults to 0.15 m/s with a 0.28 m/s cap, and `+`/`-` step by 0.05 m/s.
     Rotation runs at `TURN_RATIO` (2.0) rad per metre of the linear speed.
+  * The myAGV + myCobot 280 drives with the myAGV's envelope: it is a myAGV underneath.
+  * The ROSMASTER X3 PLUS defaults to 0.20 m/s with a 0.70 m/s cap (its board's input
+    range), in steps of 0.05 m/s. Rotation runs at a `TURN_RATIO` of 5.0, capped at
+    3.2 rad/s.
   * The AiNex defaults to 0.10 m/s with a 0.20 m/s cap, in steps of 0.02 m/s. The speed
     maps linearly onto the step amplitude in `/walking/set_param`. Rotation runs at a
     `TURN_RATIO` of 4.0, capped at 1.0 rad/s.
@@ -53,7 +58,7 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
   key, Space or Esc. Without it, teleop sends the stop command once no motion-key event
   has arrived for 0.6 s (the OS's auto-repeat keeps a held key's events coming).
 * **Safety supervisor.** A separate supervisor process owns the rosbridge connection and
-  every myAGV or AiNex motion publication. The UI sends desired commands plus a heartbeat
+  every motion publication. The UI sends desired commands plus a heartbeat
   over local IPC. If the heartbeat, parent process or IPC disappears for
   `--safety-timeout` (default 0.25 s), the supervisor sends the robot's stop command three
   times, 50 ms apart, before closing. This applies with and without `--latch`; a frozen UI
@@ -65,14 +70,16 @@ teleop.sh [--robot <id>] [--namespace <ns>] [--url ws://…] [--record <dir>]
   venv. Neither skips the safety supervisor or emergency-stop confirmation.
 * Robot and namespace default to **discovered from `/rosapi`**.
   `--namespace ''` asks for the bare contract on purpose. `--robot` takes a robot id from
-  [`../robots_specs/robots.yml`](../robots_specs/robots.yml); teleop drives a myAGV or an
-  AiNex. After `--robot` and `--namespace` narrow the discovered myAGVs and AiNexes, exactly
-  one must remain. None, or more than one, is an error that names what was found.
+  [`../robots_specs/robots.yml`](../robots_specs/robots.yml); teleop drives every robot
+  there whose `kind` is not `arm`. After `--robot` and `--namespace` narrow the discovered
+  robots, exactly one must remain. Robots sharing a command topic (`/cmd_vel`) are told
+  apart by a topic only one of them has. None, or more than one, is an error that names
+  what was found.
 * Each robot is driven, and the AiNex's head moved, only through the official interface
   in its ROS file (`robots_specs/<id>/ros.yml` or `ros2.yml`).
 * A robot's **stop command** is the `stop_command` in its ROS file. Teleop sends it on
-  **every** exit path (Esc, window close, exception, `SIGINT`/`SIGTERM`), because neither
-  robot has a watchdog.
+  **every** exit path (Esc, window close, exception, `SIGINT`/`SIGTERM`), because none of
+  these robots has a watchdog.
 * `--record` writes every decoded camera frame as received (`feed.mp4`) and every command
   (`commands.jsonl`).
 * Self-installs its venv on first run and when `pyproject.toml` changes.
@@ -234,8 +241,8 @@ The console has these constraints:
   `robots_specs/`. These comparisons may read a sibling
   checkout by path, but the installed console and its ordinary tests do not require one.
 * **Discovery** — fake-bridge tests cover a lone bare robot, a namespaced robot, a mixed
-  fleet, missing distinguishing topics, wrong types, duplicate candidates and an
-  unreachable `/rosapi`. Every ambiguous case must fail with the candidates found.
+  fleet (every `/cmd_vel` base on one wire among them), missing distinguishing topics,
+  wrong types, duplicate candidates and an unreachable `/rosapi`. Every ambiguous case must fail with the candidates found.
 * **Motion safety** — subprocess tests freeze the UI, close its IPC, terminate it normally,
   raise an exception and send `SIGINT` and `SIGTERM`. A fake bridge must receive the first
   stop no later than `--safety-timeout` plus 100 ms and three stops in total. An opt-in live

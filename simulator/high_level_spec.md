@@ -66,8 +66,11 @@ Everything that is not specific to one engine exists exactly once:
   engine-neutral. Grading belongs to the console.
 * **Robot models** (`robots/`) — the engine-loadable model of each robot, built from the
   URDF, MJCF and meshes in its `robots_specs/<id>/` folder. What the simulator adds (an
-  MJCF where no official one exists, actuators, collision simplifications) derives from
-  those files and never changes their geometry, joints or limits.
+  MJCF where no official one exists, actuators, collision simplifications, meshes converted
+  to a format MuJoCo reads and, where a camera's rate needs it, visual meshes welded to
+  within 1 mm of their surface) derives from those files and never changes their joints or
+  limits. Every robot whose `kind` is not `arm` moves on the planar base the myAGV's model
+  defines.
 * **Transform trees** — `/tf`, `/tf_static` and `/robot_description` exactly where a
   member's interface has them, each produced as its source's node produces it:
   `robot_state_publisher` over the published description and `/joint_states`, the myAGV's
@@ -136,8 +139,8 @@ only the facts it consumes and may not redefine them.
 
 * **Authority and precedence** — a robot's interface record is its ROS file in
   `robots_specs/<id>/`, and its sources and revisions are its entry in `robots.yml`. The
-  contract modules (`ros_surfaces/myagv.py`, `ros_surfaces/so101.py` for the SO-101 and
-  rig, and `ros_surfaces/ainex/topics.py` under `simulator/shared/`) transcribe the names,
+  contract modules (one per simulated robot under `simulator/shared/ros_surfaces/`; the
+  SO-101's, `so101.py`, also holds the rig's) transcribe the names,
   types, frames and periodic rates the simulator serves from those files, as bare vendor
   names composed only where a name reaches the wire; they do not restate source metadata.
   Authority is resolved in this order:
@@ -275,7 +278,9 @@ The simulator has these constraints:
   After a 5 s warm-up it observes each run for the greater of 30 s or five periods of its
   slowest declared topic. For each topic, the expected Hz comes from its robot's ROS file
   (§3); measured Hz must be within ±10% and no inter-message gap may exceed
-  three expected periods. The mean real-time factor must be in `[0.90, 1.10]` and no
+  three expected periods. A topic whose row carries `active_while` keeps its rate only while
+  that holds (a navigation goal is active, say): it must be on the wire, and is not timed.
+  The mean real-time factor must be in `[0.90, 1.10]` and no
   rolling 10 s window may fall below `0.90`. A missing rate declaration, missing periodic
   topic or insufficient observation window fails rather than being skipped.
 * **Scene changes (needs both halves)** — any change to the scene, the staging, the

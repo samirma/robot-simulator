@@ -23,7 +23,7 @@ topics:
     direction: in
     rate_hz: event
     node: /driver_node
-    description: "Chassis velocity command (linear.x, linear.y, angular.z) forwarded to the STM32 board via set_car_motion; no timeout watchdog"
+    description: "Chassis velocity command (linear.x, linear.y, angular.z) forwarded to the STM32 board via set_car_motion, whose X3PLUS input range is v_x, v_y [-0.7, 0.7] m/s and v_z [-3.2, 3.2] rad/s (Rosmaster_Lib, py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L558); no timeout watchdog"
     source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L37"
   - name: /RGBLight
     type: std_msgs/Int32
@@ -143,18 +143,65 @@ topics:
     type: tf2_msgs/TFMessage
     direction: out
     rate_hz: 20
-    node: "/ekf_localization, /robot_state_publisher, /laser_link_to_laser"
-    description: "odom->base_footprint (EKF), arm joints (robot_state_publisher from /joint_states), laser_link->laser (tf static_transform_publisher, 30 ms period)"
+    node: /ekf_localization
+    description: "odom->base_footprint from the EKF estimate (publish_tf default true), at its frequency 20"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L4"
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 20
+    node: /robot_state_publisher
+    description: "Movable URDF joints (arm_joint1-5, grip_joint and its mimic joints), one message per /joint_states message"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L10"
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 33.333
+    node: /laser_link_to_laser
+    description: "tf static_transform_publisher laser_link->laser (0 0 0, yaw 6.28), period 30 ms"
     source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10"
-    unverified: true
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: 10
+    node: /camera/camera
+    description: "camera_link->camera_depth_frame / camera_color_frame / camera_ir_frame and each to its optical frame, re-sent at tf_publish_rate 10 (a rate above 0 sends them on /tf, not /tf_static)"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L750"
   - name: /tf_static
     type: tf2_msgs/TFMessage
     direction: out
     rate_hz: latched
-    node: "/robot_state_publisher, /camera/camera, /camera/camera_base_link*"
-    description: "Fixed URDF joints (base_footprint->base_link, imu_link, camera_link, laser_link, mono_link) and Astra camera frames"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L11"
-    unverified: true
+    node: /robot_state_publisher
+    description: "Fixed URDF joints: base_footprint->base_link, base_link->imu_link, camera_link, laser_link, arm_link4->mono_link"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L10"
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: latched
+    node: /camera/camera_base_link
+    description: "tf2_ros static_transform_publisher camera_link->camera_depth_frame (identity)"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L12"
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: latched
+    node: /camera/camera_base_link1
+    description: "tf2_ros static_transform_publisher camera_link->camera_rgb_frame (identity)"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L14"
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: latched
+    node: /camera/camera_base_link2
+    description: "tf2_ros static_transform_publisher camera_depth_frame->camera_depth_optical_frame (rpy -pi/2, 0, -pi/2)"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L16"
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: latched
+    node: /camera/camera_base_link3
+    description: "tf2_ros static_transform_publisher camera_rgb_frame->camera_rgb_optical_frame (rpy -pi/2, 0, -pi/2)"
+    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L18"
   - name: /joy
     type: sensor_msgs/Joy
     direction: out
@@ -242,9 +289,9 @@ topics:
   - name: /camera/depth/camera_info
     type: sensor_msgs/CameraInfo
     direction: out
-    rate_hz: latched
+    rate_hz: 30
     node: /camera/camera
-    description: Depth intrinsics
+    description: "Depth intrinsics; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
     source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224"
   - name: /camera/rgb/image_raw
     type: sensor_msgs/Image
@@ -256,9 +303,9 @@ topics:
   - name: /camera/rgb/camera_info
     type: sensor_msgs/CameraInfo
     direction: out
-    rate_hz: latched
+    rate_hz: 30
     node: /camera/camera
-    description: Color intrinsics; color/camera_info remapped
+    description: "Color intrinsics; color/camera_info remapped; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
     source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L91"
   - name: /camera/ir/image_raw
     type: sensor_msgs/Image
@@ -270,9 +317,9 @@ topics:
   - name: /camera/ir/camera_info
     type: sensor_msgs/CameraInfo
     direction: out
-    rate_hz: latched
+    rate_hz: 30
     node: /camera/camera
-    description: IR intrinsics
+    description: "IR intrinsics; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
     source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224"
   - name: /camera/depth/points
     type: sensor_msgs/PointCloud2

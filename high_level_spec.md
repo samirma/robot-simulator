@@ -2,8 +2,9 @@
 
 ## 1. Goal
 
-Simulate real robots — a myAGV mobile base, an SO-101 arm and a Hiwonder AiNex humanoid —
-inside realistic household scenes, and present each one to clients through **the same
+Simulate real robots — the ones `robots_specs/robots.yml` records (§2): mobile bases,
+mobile manipulators, a humanoid and an arm — inside realistic household scenes, and present
+each one to clients through **the same
 network interface the real hardware presents**: a simulated robot presents exactly the
 interface its authoritative source defines.
 One console can then teleoperate, map and navigate a simulated robot or a physical one

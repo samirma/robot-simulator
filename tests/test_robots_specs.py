@@ -74,9 +74,10 @@ class RobotsYml(unittest.TestCase):
         cls.entries = robots_yml()
         cls.manifest = _manifest()
 
-    def test_there_are_robots_and_the_three_simulated_ones(self) -> None:
+    def test_there_are_robots_and_every_one_is_simulated(self) -> None:
         simulated = {rid for rid, e in self.entries.items() if e.get("simulated") is True}
-        self.assertEqual(simulated, {"myagv", "so101", "ainex"})
+        self.assertEqual(simulated, {"myagv", "so101", "ainex", "myagv_mycobot280",
+                                     "rosmaster_x3_plus"})
         for rid, entry in self.entries.items():
             self.assertIn(entry.get("simulated"), (True, False), rid)
             self.assertIn(entry.get("placement"), ("floor", "worktop"), rid)
@@ -142,3 +143,23 @@ class RobotsYml(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VendoredNavigation(unittest.TestCase):
+    """The composite's navigation launch files, copied byte for byte from the pinned
+    myagv_ros revision, are the files its PROVENANCE.md lists."""
+
+    def test_every_file_matches_its_recorded_hash(self) -> None:
+        import hashlib
+
+        folder = SPECS / "myagv_mycobot280" / "myagv_navigation"
+        rows = re.findall(r"^\| (\S+) \| ([0-9a-f]{64}) \|$",
+                          (folder / "PROVENANCE.md").read_text(encoding="utf-8"), re.M)
+        self.assertTrue(rows)
+        listed = {name for name, _ in rows}
+        on_disk = {p.relative_to(folder).as_posix() for p in folder.rglob("*")
+                   if p.is_file() and p.name != "PROVENANCE.md"}
+        self.assertEqual(on_disk, listed)
+        for name, digest in rows:
+            self.assertEqual(hashlib.sha256((folder / name).read_bytes()).hexdigest(), digest,
+                             name)

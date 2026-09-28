@@ -15,6 +15,11 @@
 # KNOWN DEFECT at the pinned commit: composite_robot_navigation_active.launch#L14 loads
 # $(find myagv_navigation)/param/amcl.yaml, which does not exist (the only amcl.yaml is param/base_local_planner_param/amcl.yaml).
 # roslaunch would stop on that missing rosparam file, so the amcl entries below assume a user-fixed path (unverified).
+# The launch's map and parameter files, at the pinned revision, are in robots_specs/myagv_mycobot280/myagv_navigation/,
+# laid out as upstream (PROVENANCE.md there lists each file's hash): the /map below is that map, and every parameter
+# row is what those files and the launch set.
+# Rows with `active_while` carry their rate only while that holds (move_base's planning and control topics while a
+# navigation goal is active); outside it the node publishes nothing on them.
 # ROS runtime names (/rosout, /rosout_agg, logger services) are excluded. Each dynamic_reconfigure server listed under
 # services also latches <ns>/parameter_descriptions and <ns>/parameter_updates (dynamic_reconfigure/ConfigDescription, /Config).
 dialect: ros1          # ROS Noetic
@@ -80,9 +85,9 @@ topics:
   - name: /tf
     type: tf2_msgs/TFMessage
     direction: out
-    rate_hz: event
+    rate_hz: 30
     node: amcl
-    description: map -> odom correction, sent on each laser update (tf_broadcast default true).
+    description: map -> odom correction (tf_broadcast default true), sent on every laser scan -- recomputed after a filter update, republished otherwise -- so at the /scan rate (30), future-dated by transform_tolerance.
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/amcl/src/amcl_node.cpp#L1493
 
   # --- move_base (actionlib server "move_base", move_base_msgs/MoveBaseAction) ---
@@ -104,6 +109,7 @@ topics:
     type: move_base_msgs/MoveBaseActionFeedback
     direction: out
     rate_hz: 5
+    active_while: a navigation goal is active
     node: move_base
     description: Current base pose while a goal is active (once per controller cycle, controller_frequency 5 Hz).
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/move_base/src/move_base.cpp#L61
@@ -133,6 +139,7 @@ topics:
     type: geometry_msgs/Twist
     direction: out
     rate_hz: 5
+    active_while: a navigation goal is active
     node: move_base
     description: Velocity command from TrajectoryPlannerROS (controller_frequency 5 Hz) to myagv_odometry_node; zero Twist on stop/recovery.
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/move_base/src/move_base.cpp#L96
@@ -161,6 +168,7 @@ topics:
     type: map_msgs/OccupancyGridUpdate
     direction: out
     rate_hz: 0.3
+    active_while: a partial costmap update is sent (never, with always_send_full_costmap true)
     unverified: true   # always_send_full_costmap true, so full maps go on .../costmap instead
     node: move_base
     description: Incremental global costmap updates.
@@ -198,6 +206,7 @@ topics:
     type: map_msgs/OccupancyGridUpdate
     direction: out
     rate_hz: 2
+    active_while: a partial costmap update is sent (never, with always_send_full_costmap true)
     unverified: true   # always_send_full_costmap true
     node: move_base
     description: Incremental local costmap updates.
@@ -220,6 +229,7 @@ topics:
     type: nav_msgs/Path
     direction: out
     rate_hz: 1
+    active_while: a navigation goal is active
     node: move_base
     description: Global path from global_planner/GlobalPlanner (planner_frequency 1.0).
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/global_planner/src/planner_core.cpp#L138
@@ -227,6 +237,7 @@ topics:
     type: nav_msgs/OccupancyGrid
     direction: out
     rate_hz: 1
+    active_while: a navigation goal is active
     node: move_base
     description: Navigation potential field of the last plan.
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/global_planner/src/planner_core.cpp#L139
@@ -234,6 +245,7 @@ topics:
     type: nav_msgs/Path
     direction: out
     rate_hz: 5
+    active_while: a navigation goal is active
     node: move_base
     description: Portion of the global plan the local planner follows.
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/base_local_planner/src/trajectory_planner_ros.cpp#L95
@@ -241,6 +253,7 @@ topics:
     type: nav_msgs/Path
     direction: out
     rate_hz: 5
+    active_while: a navigation goal is active
     node: move_base
     description: Selected local trajectory.
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/navigation/base_local_planner/src/trajectory_planner_ros.cpp#L96
@@ -248,6 +261,7 @@ topics:
     type: sensor_msgs/PointCloud2
     direction: out
     rate_hz: 5
+    active_while: a navigation goal is active
     unverified: true   # namespace follows MapGridVisualizer("~/" + name); publish_cost_grid_pc true in base_local_planner_params.yaml
     node: move_base
     description: Local planner cost grid as a point cloud.
@@ -424,6 +438,18 @@ parameters:
   - name: /move_base/TrajectoryPlannerROS/xy_goal_tolerance
     description: 0.25 m (yaw_goal_tolerance 0.25 rad)
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L26
+  - name: /move_base/TrajectoryPlannerROS/*
+    description: every other TrajectoryPlannerROS setting of base_local_planner_params.yaml (acc_lim_*, min_vel_*, sim_*, *_samples, scoring biases, publish_cost_grid_pc true, ...)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L8
+  - name: /move_base/NavfnROS/*
+    description: allow_unknown true, default_tolerance 0.1 (loaded by base_local_planner_params.yaml though the planner is GlobalPlanner)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L4
+  - name: /move_base/recovery_behaviour_enabled
+    description: true (base_local_planner_params.yaml; move_base's own parameter is spelled recovery_behavior_enabled, so it takes no effect)
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L2
+  - name: /move_base/move_base/base_global_planner
+    description: global_planner/GlobalPlanner, one namespace too deep like the GlobalPlanner block beside it
+    source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L1
 
 gripper_commands:
   # --- pymycobot over the arm's socket: the composite's official arm path, not ROS. The arm (280 Pi) runs pymycobot's
