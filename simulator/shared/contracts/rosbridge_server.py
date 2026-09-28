@@ -611,6 +611,73 @@ class _ActionServer:
         self.provider = provider
 
 
+#: A message field at least this long is spliced into its frame rather than serialised
+#: through `json.dumps`: an image's or a point cloud's base64 `data`.
+_SPLICE_MIN = 1 << 16
+
+
+class Base64Text(str):
+    """Text a surface made with `base64.b64encode`: JSON-safe by construction, so
+    `publish_frame` splices it without scanning it first."""
+
+
+#: From this many bytes on, `b64text` encodes with numpy rather than `binascii`.
+_B64_NUMPY_MIN = 1 << 20
+_B64_ALPHABET = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+
+def b64text(data) -> Base64Text:
+    """`data` (bytes, or any buffer) as base64 `Base64Text`: a `uint8[]` field's value.
+
+    A megabyte and more (a raw image, a depth camera's point cloud) is encoded with numpy,
+    whose loops release the GIL: `binascii` holds it for the whole buffer, ~1 ms a
+    megabyte, which the physics thread then waits out. The text is identical.
+    """
+    view = memoryview(data).cast("B")
+    if view.nbytes < _B64_NUMPY_MIN:
+        return Base64Text(base64.b64encode(view).decode("ascii"))
+    import numpy as np
+
+    raw = np.frombuffer(view, dtype=np.uint8)
+    whole = len(raw) - len(raw) % 3
+    t = raw[:whole].reshape(-1, 3)
+    n = (t[:, 0].astype(np.uint32) << 16) | (t[:, 1].astype(np.uint32) << 8) | t[:, 2]
+    idx = np.empty((len(n), 4), dtype=np.uint8)
+    idx[:, 0] = n >> 18
+    idx[:, 1] = (n >> 12) & 63
+    idx[:, 2] = (n >> 6) & 63
+    idx[:, 3] = n & 63
+    alphabet = np.frombuffer(_B64_ALPHABET, dtype=np.uint8)
+    head = alphabet[idx].tobytes()
+    tail = base64.b64encode(raw[whole:].tobytes()) if whole < len(raw) else b""
+    return Base64Text((head + tail).decode("ascii"))
+
+
+def publish_frame(topic: str, msg: dict) -> str:
+    """The rosbridge `publish` frame for `msg`, exactly as `json.dumps` writes it.
+
+    A camera's or a point cloud's `data` is megabytes of base64 -- printable ASCII with no
+    quote or backslash, which JSON never escapes -- and `json.dumps` would still scan every one of them, holding the GIL while
+    the physics thread waits. Such a top-level field is serialised as a placeholder and
+    spliced in afterwards; the frame is byte for byte the one `json.dumps` writes.
+    """
+    big = {key: value for key, value in msg.items()
+           if isinstance(value, str) and len(value) >= _SPLICE_MIN
+           and (isinstance(value, Base64Text)
+                or (value.isascii() and value.isprintable()
+                    and "\"" not in value and "\\" not in value))}
+    if not big:
+        return json.dumps({"op": "publish", "topic": topic, "msg": msg})
+    stub = dict(msg)
+    for i, key in enumerate(big):
+        stub[key] = f"\x00splice{i}\x00"   # JSON escapes the NULs: unique in the frame
+    frame = json.dumps({"op": "publish", "topic": topic, "msg": stub})
+    for i, value in enumerate(big.values()):
+        head, _sep, tail = frame.partition(json.dumps(f"\x00splice{i}\x00"))
+        frame = f'{head}"{value}"{tail}'
+    return frame
+
+
 class RosBridgeServer:
     """Serves the rosbridge protocol on a websocket, for one or more clients.
 
@@ -843,7 +910,7 @@ class RosBridgeServer:
         if publisher and publisher not in self._pub_nodes.get(topic, ()):
             with self._lock:
                 self._pub_nodes.setdefault(topic, set()).add(publisher)
-        frame = json.dumps({"op": "publish", "topic": topic, "msg": msg})
+        frame = publish_frame(topic, msg)
         self._deliver(topic, frame, (publisher or "") if latched else None)
 
     def _deliver(self, topic: str, frame: str, latch_key=None) -> None:

@@ -68,7 +68,6 @@ import there could not be compared.
 
 from __future__ import annotations
 
-import base64
 import math
 import sys
 
@@ -550,7 +549,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
     not needed: this robot's transform tree is its launch's and its URDF's, not the
     model's, and the camera and lidar bodies arrive already resolved.
     """
-    from contracts.rosbridge_server import odometry
+    from contracts.rosbridge_server import b64text, odometry
     from mujoco_bridge import PlanarSetpoint, RenderWorker
 
     import robots_spec
@@ -706,7 +705,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
                 "header": header,
                 "height": height, "width": width, "encoding": CAMERA_ENCODING,
                 "is_bigendian": 0, "step": width * 3,
-                "data": base64.b64encode(pixels.tobytes()).decode("ascii"),
+                "data": b64text(pixels),
             }, TYPE_IMAGE, node=NODE_CAMERA)
         if pixels is not None and want_jpeg:
             import cv2
@@ -717,7 +716,7 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
                 bus.publish(TOPIC_CAMERA, {
                     "header": header,
                     "format": COMPRESSED_FORMAT,
-                    "data": base64.b64encode(buf.tobytes()).decode("ascii"),
+                    "data": b64text(buf),
                 }, TYPE_COMPRESSED_IMAGE, node=NODE_CAMERA)
         bus.publish(TOPIC_CAMERA_INFO, info_msg, TYPE_CAMERA_INFO, node=NODE_CAMERA)
 
@@ -815,6 +814,9 @@ def attach_ros(bus, base, model, camera: str | None, *, jpeg_quality: int = 80,
             clocks["camera"].take(now)
 
     step.rate_hz = LOOP_HZ
+    # What myagv_odometry_node does with a /cmd_vel from a node in its own graph (the
+    # composite's move_base), which reaches it without going through a client.
+    step.on_cmd_vel = on_cmd_vel
     print(f"myAGV under namespace {bus.ns or '<bare>'}, stepped at {LOOP_HZ:g} Hz",
           file=sys.stderr)
     return step

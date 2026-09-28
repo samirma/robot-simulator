@@ -40,12 +40,14 @@ DEFAULT_ROS_PORT = 9090
 #: The task every worktop fleet is staged with (spec §2.3).
 TASK = "apple_on_plate"
 
-#: name -> (module, function) presenting that robot's vendor ROS interface. All three
+#: name -> (module, function) presenting that robot's vendor ROS interface. All of them
 #: are shared: an engine supplies the robot, never its interface.
 ROS_SURFACES = {
     "so101": ("ros_surfaces.so101", "attach_ros"),
     "myagv": ("ros_surfaces.myagv", "attach_ros"),
     "ainex": ("ros_surfaces.ainex", "attach_ros"),
+    "myagv_mycobot280": ("ros_surfaces.myagv_mycobot280", "attach_ros"),
+    "rosmaster_x3_plus": ("ros_surfaces.rosmaster_x3_plus", "attach_ros"),
 }
 
 #: The SO-101's arm joints and gripper in MJCF order, and the upright rest pose with the
@@ -177,6 +179,35 @@ def root_body(name: str) -> str:
     return ainex_model.robot_model_root_name() if name == "ainex" else "base"
 
 
+def rest_positions(name: str) -> dict[str, float]:
+    """A mobile robot's arm and gripper joints at the pose it stands in: its contract
+    module's `REST_POSITIONS` (joint -> rad), where it has an arm the base carries."""
+    module = importlib.import_module(ROS_SURFACES[name][0])
+    return dict(getattr(module, "REST_POSITIONS", {}))
+
+
+def hold(model, data, prefix: str, positions: dict[str, float]) -> None:
+    """Put each named joint at its position, with its position servo's target there too,
+    and every joint an equality couples to one (a URDF `<mimic>`) where the coupling says."""
+    for name, q in positions.items():
+        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, prefix + name)
+        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, prefix + name)
+        if jid < 0 or aid < 0:
+            raise SystemExit(f"joint/actuator {prefix}{name!r} missing from the model")
+        data.qpos[model.jnt_qposadr[jid]] = q
+        data.ctrl[aid] = q
+    for e in range(model.neq):
+        if model.eq_type[e] != mujoco.mjtEq.mjEQ_JOINT or model.eq_obj2id[e] < 0:
+            continue
+        j1, j2 = int(model.eq_obj1id[e]), int(model.eq_obj2id[e])
+        if not (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j1) or "").startswith(prefix):
+            continue
+        c = model.eq_data[e]
+        x = float(data.qpos[model.jnt_qposadr[j2]])
+        data.qpos[model.jnt_qposadr[j1]] = c[0] + c[1] * x + c[2] * x ** 2 + c[3] * x ** 3 \
+            + c[4] * x ** 4
+
+
 def bind(model, data, instances) -> None:
     """Give each robot its engine-neutral handles and put it in its rest pose.
 
@@ -198,6 +229,8 @@ def bind(model, data, instances) -> None:
                     raise SystemExit(str(exc)) from exc
                 # ...and its feet meet what lies on the surface it stands on.
                 ainex_model.enable_foot_contacts(model, inst.mjcf)
+            else:
+                hold(model, data, inst.mjcf, rest_positions(inst.name))
         elif inst.name == "so101":
             inst.view = {"arm": JointGroup(model, data, inst.mjcf, SO101_ARM_JOINTS),
                          "gripper": JointGroup(model, data, inst.mjcf, SO101_GRIPPER_JOINTS)}
@@ -355,7 +388,12 @@ def build_world(engine, args) -> World:
     )
     problems = placement.overlaps(instances)
 
+    import robot_models
+
     for inst in instances:
+        # A model built from COLLADA or oversized meshes needs its converted meshes on
+        # disk first; a checkout that has not run setup since gets them here, once.
+        robot_models.ensure(inst.name)
         engine.attach(scene, inst)
     # The AiNex's actuator gains assume an implicit integrator; with Euler its 24 servos
     # on ~1e-4 kg.m^2 links go NaN. Set only when it is present, because it changes the
@@ -444,7 +482,7 @@ def report_reach(model, data, instances, arbiter, scene, worktop) -> None:
 
 def pick_camera(model, prefix: str) -> str | None:
     """A robot's own camera, resolved against its own MJCF prefix."""
-    for candidate in (f"{prefix}front_camera", f"{prefix}wrist_cam"):
+    for candidate in (f"{prefix}front_camera", f"{prefix}wrist_cam", f"{prefix}rgb_camera"):
         if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
             return candidate
     return None
@@ -458,7 +496,9 @@ def surface_kwargs(args, inst, world) -> dict:
                 "jpeg_quality": args.jpeg_quality, "control_hz": args.control_hz,
                 "scene_option": world.scene_option, "prefix": prefix}
     camera = pick_camera(model, prefix)
-    if inst.name == "myagv":
+    if inst.holonomic and inst.name != "ainex":
+        # The planar-base robots: the myAGV, and the two mobile manipulators that ride
+        # the same base. Each surface resolves its own cameras against `prefix`.
         return {
             "base": inst.base, "model": model, "camera": camera,
             "jpeg_quality": args.jpeg_quality, "scene_option": world.scene_option,

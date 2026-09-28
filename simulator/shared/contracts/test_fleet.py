@@ -525,6 +525,9 @@ def main() -> int:
     # The AiNex's contract module against its ROS file (spec §5, "Contracts").
     from contracts import test_ainex_contract
     test_ainex_contract.run(check)
+    # The ROSMASTER X3 PLUS's and the myAGV + myCobot 280's, against theirs and on the wire.
+    from contracts import test_mobile_contracts
+    test_mobile_contracts.run(check)
     print()
     if FAILURES:
         print(f"{len(FAILURES)} check(s) failed: {', '.join(FAILURES)}")

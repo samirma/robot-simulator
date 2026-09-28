@@ -714,11 +714,229 @@ _AINEX_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
 
 # --- end AiNex ----------------------------------------------------------------------------
 
-MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101, **_MYAGV, **_AINEX_INTERFACE}
+# --- myAGV + myCobot 280: its navigation launch (robots_specs/myagv_mycobot280/ros.yml) ---
+#
+# The standard ROS 1 Noetic definitions its map_server, amcl and move_base use, from the
+# distribution's own files: ros/common_msgs noetic-devel (nav_msgs, geometry_msgs,
+# sensor_msgs, actionlib_msgs), ros-planning/navigation_msgs noetic-devel (move_base_msgs,
+# map_msgs), ros/dynamic_reconfigure noetic-devel (msg/*, srv/Reconfigure.srv). The
+# ROSMASTER X3 PLUS shares the dynamic_reconfigure and actionlib_msgs ones.
+
+_NAV: dict[str, list[Field]] = {
+    "nav_msgs/MapMetaData": _h(
+        ("map_load_time", "time", SCALAR), ("resolution", "float32", SCALAR),
+        ("width", "uint32", SCALAR), ("height", "uint32", SCALAR),
+        ("origin", "geometry_msgs/Pose", SCALAR),
+    ),
+    "nav_msgs/OccupancyGrid": _h(
+        ("header", "std_msgs/Header", SCALAR), ("info", "nav_msgs/MapMetaData", SCALAR),
+        ("data", "int8", VARIABLE),
+    ),
+    "nav_msgs/Path": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("poses", "geometry_msgs/PoseStamped", VARIABLE),
+    ),
+    "geometry_msgs/PoseWithCovarianceStamped": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("pose", "geometry_msgs/PoseWithCovariance", SCALAR),
+    ),
+    "geometry_msgs/PoseArray": _h(
+        ("header", "std_msgs/Header", SCALAR), ("poses", "geometry_msgs/Pose", VARIABLE),
+    ),
+    "geometry_msgs/Polygon": _h(("points", "geometry_msgs/Point32", VARIABLE)),
+    "geometry_msgs/PolygonStamped": _h(
+        ("header", "std_msgs/Header", SCALAR), ("polygon", "geometry_msgs/Polygon", SCALAR),
+    ),
+    "map_msgs/OccupancyGridUpdate": _h(
+        ("header", "std_msgs/Header", SCALAR), ("x", "int32", SCALAR), ("y", "int32", SCALAR),
+        ("width", "uint32", SCALAR), ("height", "uint32", SCALAR), ("data", "int8", VARIABLE),
+    ),
+    "actionlib_msgs/GoalID": _h(("stamp", "time", SCALAR), ("id", "string", SCALAR)),
+    "actionlib_msgs/GoalStatus": _h(
+        ("goal_id", "actionlib_msgs/GoalID", SCALAR), ("status", "uint8", SCALAR),
+        ("text", "string", SCALAR),
+    ),
+    "actionlib_msgs/GoalStatusArray": _h(
+        ("header", "std_msgs/Header", SCALAR),
+        ("status_list", "actionlib_msgs/GoalStatus", VARIABLE),
+    ),
+    "move_base_msgs/MoveBaseGoal": _h(("target_pose", "geometry_msgs/PoseStamped", SCALAR)),
+    "move_base_msgs/MoveBaseResult": _h(),
+    "move_base_msgs/MoveBaseFeedback": _h(
+        ("base_position", "geometry_msgs/PoseStamped", SCALAR),
+    ),
+    "move_base_msgs/MoveBaseActionGoal": _h(
+        ("header", "std_msgs/Header", SCALAR), ("goal_id", "actionlib_msgs/GoalID", SCALAR),
+        ("goal", "move_base_msgs/MoveBaseGoal", SCALAR),
+    ),
+    "move_base_msgs/MoveBaseActionResult": _h(
+        ("header", "std_msgs/Header", SCALAR), ("status", "actionlib_msgs/GoalStatus", SCALAR),
+        ("result", "move_base_msgs/MoveBaseResult", SCALAR),
+    ),
+    "move_base_msgs/MoveBaseActionFeedback": _h(
+        ("header", "std_msgs/Header", SCALAR), ("status", "actionlib_msgs/GoalStatus", SCALAR),
+        ("feedback", "move_base_msgs/MoveBaseFeedback", SCALAR),
+    ),
+    "move_base_msgs/RecoveryStatus": _h(
+        ("pose_stamped", "geometry_msgs/PoseStamped", SCALAR),
+        ("current_recovery_number", "uint16", SCALAR),
+        ("total_number_of_recoveries", "uint16", SCALAR),
+        ("recovery_behavior_name", "string", SCALAR),
+    ),
+    "sensor_msgs/PointField": _h(
+        ("name", "string", SCALAR), ("offset", "uint32", SCALAR), ("datatype", "uint8", SCALAR),
+        ("count", "uint32", SCALAR),
+    ),
+    "sensor_msgs/PointCloud2": _h(
+        ("header", "std_msgs/Header", SCALAR), ("height", "uint32", SCALAR),
+        ("width", "uint32", SCALAR), ("fields", "sensor_msgs/PointField", VARIABLE),
+        ("is_bigendian", "bool", SCALAR), ("point_step", "uint32", SCALAR),
+        ("row_step", "uint32", SCALAR), ("data", "uint8", VARIABLE),
+        ("is_dense", "bool", SCALAR),
+    ),
+    "dynamic_reconfigure/BoolParameter": _h(("name", "string", SCALAR), ("value", "bool", SCALAR)),
+    "dynamic_reconfigure/IntParameter": _h(("name", "string", SCALAR), ("value", "int32", SCALAR)),
+    "dynamic_reconfigure/StrParameter": _h(("name", "string", SCALAR), ("value", "string", SCALAR)),
+    "dynamic_reconfigure/DoubleParameter": _h(
+        ("name", "string", SCALAR), ("value", "float64", SCALAR),
+    ),
+    "dynamic_reconfigure/GroupState": _h(
+        ("name", "string", SCALAR), ("state", "bool", SCALAR), ("id", "int32", SCALAR),
+        ("parent", "int32", SCALAR),
+    ),
+    "dynamic_reconfigure/Config": _h(
+        ("bools", "dynamic_reconfigure/BoolParameter", VARIABLE),
+        ("ints", "dynamic_reconfigure/IntParameter", VARIABLE),
+        ("strs", "dynamic_reconfigure/StrParameter", VARIABLE),
+        ("doubles", "dynamic_reconfigure/DoubleParameter", VARIABLE),
+        ("groups", "dynamic_reconfigure/GroupState", VARIABLE),
+    ),
+    "dynamic_reconfigure/ParamDescription": _h(
+        ("name", "string", SCALAR), ("type", "string", SCALAR), ("level", "uint32", SCALAR),
+        ("description", "string", SCALAR), ("edit_method", "string", SCALAR),
+    ),
+    "dynamic_reconfigure/Group": _h(
+        ("name", "string", SCALAR), ("type", "string", SCALAR),
+        ("parameters", "dynamic_reconfigure/ParamDescription", VARIABLE),
+        ("parent", "int32", SCALAR), ("id", "int32", SCALAR),
+    ),
+    "dynamic_reconfigure/ConfigDescription": _h(
+        ("groups", "dynamic_reconfigure/Group", VARIABLE),
+        ("max", "dynamic_reconfigure/Config", SCALAR),
+        ("min", "dynamic_reconfigure/Config", SCALAR),
+        ("dflt", "dynamic_reconfigure/Config", SCALAR),
+    ),
+}
+
+_NAV_CONSTANTS: dict[str, list[tuple[str, str, str]]] = {
+    "actionlib_msgs/GoalStatus": [
+        ("uint8", "PENDING", "0"), ("uint8", "ACTIVE", "1"), ("uint8", "PREEMPTED", "2"),
+        ("uint8", "SUCCEEDED", "3"), ("uint8", "ABORTED", "4"), ("uint8", "REJECTED", "5"),
+        ("uint8", "PREEMPTING", "6"), ("uint8", "RECALLING", "7"), ("uint8", "RECALLED", "8"),
+        ("uint8", "LOST", "9"),
+    ],
+    "sensor_msgs/PointField": [
+        ("uint8", "INT8", "1"), ("uint8", "UINT8", "2"), ("uint8", "INT16", "3"),
+        ("uint8", "UINT16", "4"), ("uint8", "INT32", "5"), ("uint8", "UINT32", "6"),
+        ("uint8", "FLOAT32", "7"), ("uint8", "FLOAT64", "8"),
+    ],
+    "nav_msgs/LoadMapResponse": [
+        ("uint8", "RESULT_SUCCESS", "0"), ("uint8", "RESULT_MAP_DOES_NOT_EXIST", "1"),
+        ("uint8", "RESULT_INVALID_MAP_DATA", "2"), ("uint8", "RESULT_INVALID_MAP_METADATA", "3"),
+        ("uint8", "RESULT_UNDEFINED_FAILURE", "255"),
+    ],
+}
+
+_NAV_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    "nav_msgs/GetMap": ([], _h(("map", "nav_msgs/OccupancyGrid", SCALAR))),
+    "nav_msgs/GetPlan": (
+        _h(("start", "geometry_msgs/PoseStamped", SCALAR),
+           ("goal", "geometry_msgs/PoseStamped", SCALAR), ("tolerance", "float32", SCALAR)),
+        _h(("plan", "nav_msgs/Path", SCALAR)),
+    ),
+    "nav_msgs/LoadMap": (
+        _h(("map_url", "string", SCALAR)),
+        _h(("map", "nav_msgs/OccupancyGrid", SCALAR), ("result", "uint8", SCALAR)),
+    ),
+    "nav_msgs/SetMap": (
+        _h(("map", "nav_msgs/OccupancyGrid", SCALAR),
+           ("initial_pose", "geometry_msgs/PoseWithCovarianceStamped", SCALAR)),
+        _h(("success", "bool", SCALAR)),
+    ),
+    "dynamic_reconfigure/Reconfigure": (
+        _h(("config", "dynamic_reconfigure/Config", SCALAR)),
+        _h(("config", "dynamic_reconfigure/Config", SCALAR)),
+    ),
+}
+
+# --- end myAGV + myCobot 280 ---------------------------------------------------------------
+
+# --- ROSMASTER X3 PLUS (robots_specs/rosmaster_x3_plus/ros.yml) ----------------------------
+#
+# Yahboom's ROS 1 workspace, ROSMASTER-X3Plus_ROS1_code.zip (the Drive archive robots.yml
+# pins): yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_msgs/{msg/ArmJoint.msg,
+# srv/RobotArmArray.srv}; software.zip!/software/library_ws/src/orbbec-ros-sdk (package
+# orbbec_camera) {srv/GetBool, GetCameraInfo, GetCameraParams, GetDeviceInfo, GetInt32,
+# GetString, SetInt32, SetString .srv, msg/DeviceInfo.msg}. Standard Noetic definitions
+# from ros/common_msgs and ros/std_msgs: std_msgs/Int32, sensor_msgs/JoyFeedback(Array).
+# Its std_srvs/SetBool is the SO-101 block's (identical text).
+
+_X3: dict[str, list[Field]] = {
+    "std_msgs/Int32": _h(("data", "int32", SCALAR)),
+    "sensor_msgs/JoyFeedback": _h(
+        ("type", "uint8", SCALAR), ("id", "uint8", SCALAR), ("intensity", "float32", SCALAR),
+    ),
+    "sensor_msgs/JoyFeedbackArray": _h(("array", "sensor_msgs/JoyFeedback", VARIABLE)),
+    "yahboomcar_msgs/ArmJoint": _h(
+        ("id", "int32", SCALAR), ("run_time", "int32", SCALAR), ("angle", "float32", SCALAR),
+        ("joints", "float32", VARIABLE),
+    ),
+    "orbbec_camera/DeviceInfo": _h(
+        ("header", "std_msgs/Header", SCALAR), ("name", "string", SCALAR),
+        ("vid", "int32", SCALAR), ("pid", "int32", SCALAR),
+        ("serial_number", "string", SCALAR), ("firmware_version", "string", SCALAR),
+        ("supported_min_sdk_version", "string", SCALAR),
+        ("hardware_version", "string", SCALAR),
+    ),
+}
+
+_X3_CONSTANTS: dict[str, list[tuple[str, str, str]]] = {
+    "sensor_msgs/JoyFeedback": [
+        ("uint8", "TYPE_LED", "0"), ("uint8", "TYPE_RUMBLE", "1"), ("uint8", "TYPE_BUZZER", "2"),
+    ],
+}
+
+_OB_RESULT = (("success", "bool", SCALAR), ("message", "string", SCALAR))
+
+_X3_SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
+    "yahboomcar_msgs/RobotArmArray": (
+        _h(("apply", "string", SCALAR)), _h(("angles", "float64", VARIABLE)),
+    ),
+    "orbbec_camera/GetBool": ([], _h(("data", "bool", SCALAR), *_OB_RESULT)),
+    "orbbec_camera/GetCameraInfo": (
+        [], _h(("info", "sensor_msgs/CameraInfo", SCALAR), *_OB_RESULT),
+    ),
+    "orbbec_camera/GetCameraParams": ([], _h(
+        ("l_intr_p", "float32", 4), ("r_intr_p", "float32", 4), ("r2l_r", "float32", 9),
+        ("r2l_t", "float32", 3), *_OB_RESULT)),
+    "orbbec_camera/GetDeviceInfo": (
+        [], _h(("info", "orbbec_camera/DeviceInfo", SCALAR), *_OB_RESULT),
+    ),
+    "orbbec_camera/GetInt32": ([], _h(("data", "int32", SCALAR), *_OB_RESULT)),
+    "orbbec_camera/GetString": ([], _h(("data", "string", SCALAR), *_OB_RESULT)),
+    "orbbec_camera/SetInt32": (_h(("data", "int32", SCALAR)), _h(*_OB_RESULT)),
+    "orbbec_camera/SetString": (_h(("data", "string", SCALAR)), _h(*_OB_RESULT)),
+}
+
+# --- end ROSMASTER X3 PLUS -------------------------------------------------------------------
+
+MESSAGES: dict[str, list[Field]] = {**_STD, **_AINEX, **_SO101, **_MYAGV, **_AINEX_INTERFACE,
+                                    **_NAV, **_X3}
 
 #: Constants per definition, as `rosapi`'s `constnames`/`constvalues` carry them. Keyed as
 #: `_SO101_CONSTANTS` documents; a definition with none is simply absent.
-CONSTANTS: dict[str, list[tuple[str, str, str]]] = {**_SO101_CONSTANTS}
+CONSTANTS: dict[str, list[tuple[str, str, str]]] = {**_SO101_CONSTANTS, **_NAV_CONSTANTS,
+                                                   **_X3_CONSTANTS}
 
 #: Services: canonical name -> (request fields, response fields). `rosapi` names the two
 #: halves `<Srv>Request` and `<Srv>Response`, and that is how `typedefs()` labels them.
@@ -743,6 +961,8 @@ SERVICES: dict[str, tuple[list[Field], list[Field]]] = {
     **_SO101_SERVICES,
     **_MYAGV_SERVICES,
     **_AINEX_SERVICES,
+    **_NAV_SERVICES,
+    **_X3_SERVICES,
 }
 
 

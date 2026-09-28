@@ -21,6 +21,15 @@ S_AINEX = simulator("ros_surfaces/ainex/topics.py")
 MYAGV_ROS = ros_file(SPECS / "myagv" / "ros.yml")
 SO101_ROS = ros_file(SPECS / "so101" / "ros2.yml")
 AINEX_ROS = ros_file(SPECS / "ainex" / "ros.yml")
+S_X3 = simulator("ros_surfaces/rosmaster_x3_plus.py")
+S_COMPOSITE = simulator("ros_surfaces/myagv_mycobot280.py")
+X3_ROS = ros_file(SPECS / "rosmaster_x3_plus" / "ros.yml")
+COMPOSITE_ROS = ros_file(SPECS / "myagv_mycobot280" / "ros.yml")
+
+
+def _node(name) -> str:
+    """A node as the contract modules write it: the file's, without a leading slash."""
+    return str(name).lstrip("/")
 
 
 def _rate(value) -> object:
@@ -88,6 +97,41 @@ class AiNex(unittest.TestCase):
 
     def test_the_joints(self) -> None:
         self.assertEqual(list(S_AINEX["JOINT_NAMES"]), AINEX_ROS["joints"])
+
+
+class RosmasterX3Plus(unittest.TestCase):
+    def test_every_topic_row(self) -> None:
+        sim = sorted((n, t, d, node, _rate(hz)) for n, t, d, node, hz in S_X3["TOPICS"])
+        rows = sorted((r["name"], r["type"], r["direction"], _node(r["node"]), _rate(r["rate_hz"]))
+                      for r in X3_ROS["topics"])
+        self.assertEqual(sim, rows)
+
+    def test_every_service_row(self) -> None:
+        self.assertEqual(sorted(S_X3["SERVICES"]),
+                         sorted((r["name"], r["type"], _node(r["node"]))
+                                for r in X3_ROS["services"]))
+
+    def test_every_parameter_name_and_the_joints(self) -> None:
+        self.assertEqual(set(S_X3["PARAMETERS"]) | {S_X3["PARAM_ROBOT_DESCRIPTION"]},
+                         {r["name"] for r in X3_ROS["parameters"]})
+        self.assertEqual(list(S_X3["JOINTS"]), X3_ROS["joints"])
+
+
+class MyAGVMyCobot280(unittest.TestCase):
+    """The composite's module transcribes only what its file adds to the myAGV's."""
+
+    def test_every_added_topic_row(self) -> None:
+        sim = sorted((n, t, d, node, _rate(hz)) for n, t, d, node, hz in S_COMPOSITE["TOPICS"])
+        self.assertEqual(sim, _topic_rows(COMPOSITE_ROS))
+
+    def test_the_conditional_rows(self) -> None:
+        self.assertEqual(set(S_COMPOSITE["CONDITIONAL"]),
+                         {r["name"] for r in COMPOSITE_ROS["topics"] if r.get("active_while")})
+
+    def test_every_added_service_row(self) -> None:
+        self.assertEqual(sorted(S_COMPOSITE["SERVICES"]),
+                         sorted((r["name"], r["type"], r["node"])
+                                for r in COMPOSITE_ROS["services"]))
 
 
 if __name__ == "__main__":

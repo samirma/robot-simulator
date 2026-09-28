@@ -72,6 +72,7 @@ def laser_scan_ranges(
     angle_min: float = -np.pi,
     angle_max: float = np.pi,
     exclude_bodies: frozenset[int] | None = None,
+    geomgroup=None,
 ) -> np.ndarray:
     """A 2D laser scan by ray casting, counter-clockwise from `angle_min`.
 
@@ -110,7 +111,7 @@ def laser_scan_ranges(
     # to 2.1 ms, with identical ranges -- at 30 Hz that was ~6 % of the simulation thread.
     geomids = np.full(beams, -1, dtype=np.int32)
     dists = np.full(beams, -1.0)
-    _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, max_range)
+    _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, max_range, geomgroup)
     ranges = np.where((geomids >= 0) & (dists >= 0.0) & (dists <= max_range),
                       dists, max_range + 1.0)
 
@@ -142,15 +143,16 @@ def laser_scan_ranges(
     return ranges
 
 
-def _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, cutoff) -> None:
+def _multi_ray(model, data, origin, vecs, bodyexclude, geomids, dists, cutoff,
+               geomgroup=None) -> None:
     """`mj_multiRay`, across the bindings' two signatures (3.5 added `normal`)."""
     flat = np.ascontiguousarray(vecs.reshape(-1), dtype=np.float64)
     n = len(geomids)
     if _MULTIRAY_HAS_NORMAL:
-        mujoco.mj_multiRay(model, data, origin, flat, None, 1, bodyexclude, geomids, dists,
+        mujoco.mj_multiRay(model, data, origin, flat, geomgroup, 1, bodyexclude, geomids, dists,
                            None, n, float(cutoff))
     else:
-        mujoco.mj_multiRay(model, data, origin, flat, None, 1, bodyexclude, geomids, dists,
+        mujoco.mj_multiRay(model, data, origin, flat, geomgroup, 1, bodyexclude, geomids, dists,
                            n, float(cutoff))
 
 
@@ -681,7 +683,8 @@ class RenderWorker:
         copy.time = data.time
 
     def submit(self, data, stamp_s: float, jobs, *, queue: bool = False) -> bool:
-        """`jobs`: `(camera, width, height, scene_option, callback(rgb, stamp_s))`.
+        """`jobs`: `(camera, width, height, scene_option, callback(rgb, stamp_s))`, or with a
+        sixth element True, `callback(rgb, stamp_s, depth)` from one render (`render_rgbd`).
 
         True when the frame was taken: started now, or with `queue` parked behind the
         frame in progress. False when the worker cannot take it (busy, and either not
@@ -733,7 +736,9 @@ class RenderWorker:
             mujoco.mj_camlight(self._model, self._copy)
         except Exception as exc:
             print(f"render worker: kinematics: {exc!r}", file=sys.stderr)
-        for camera, width, height, scene_option, callback in self._jobs:
+        for job in self._jobs:
+            camera, width, height, scene_option, callback = job[:5]
+            with_depth = len(job) > 5 and bool(job[5])
             try:
                 renderer = renderers.get((width, height))
                 if renderer is None:
@@ -747,7 +752,11 @@ class RenderWorker:
                                           scene_option=scene_option)
                 else:
                     renderer.update_scene(self._copy, camera=camera)
-                callback(renderer.render(), self._stamp)
+                if with_depth:
+                    rgb, depth = render_rgbd(renderer, self._model)
+                    callback(rgb, self._stamp, depth)
+                else:
+                    callback(renderer.render(), self._stamp)
             except Exception as exc:  # a failed frame must not kill the camera
                 print(f"render worker: {camera}: {exc!r}", file=sys.stderr)
 
@@ -755,6 +764,32 @@ class RenderWorker:
         self._stop = True
         self._wake.set()
         self._thread.join(timeout=2.0)
+
+
+def render_rgbd(renderer, model) -> tuple[np.ndarray, np.ndarray]:
+    """One render of `renderer`'s scene read back twice: colour (H, W, 3 uint8) and metric
+    depth along the optical axis (H, W float32, metres), from the same frame.
+
+    `mujoco.Renderer` reads one buffer per render, and a depth camera beside a colour
+    one would pay the GL render twice. This is its own readback with both buffers, and its
+    own reversed-Z conversion (`mujoco/renderer.py`, identical in 3.3 and 3.5).
+    """
+    width, height = renderer.width, renderer.height
+    rgb = np.empty((height, width, 3), dtype=np.uint8)
+    raw = np.empty((height, width), dtype=np.float32)
+    if renderer._gl_context:
+        renderer._gl_context.make_current()
+    mujoco.mjr_render(renderer._rect, renderer._scene, renderer._mjr_context)
+    mujoco.mjr_readPixels(rgb, raw, renderer._rect, renderer._mjr_context)
+    extent = model.stat.extent
+    zfar = np.float32(model.vis.map.zfar * extent)
+    znear = np.float32(model.vis.map.znear * extent)
+    c_coef = -(zfar + znear) / (zfar - znear)
+    d_coef = -(np.float32(2) * zfar * znear) / (zfar - znear)
+    c_coef = np.float32(-0.5) * c_coef - np.float32(0.5)
+    d_coef = np.float32(-0.5) * d_coef
+    depth = (d_coef / (raw.astype(np.float64) + c_coef)).astype(np.float32)
+    return np.ascontiguousarray(rgb[::-1]), np.ascontiguousarray(depth[::-1])
 
 
 def _camera_frame(topic: str) -> str:
