@@ -1,10 +1,11 @@
 # Simulator — High-Level Specification
 
 This document defines only the simulator's requirements. Its sole external specification
-is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md), referred to
-below as the **robot specification**. Robot ids, identities, kinds, embodiments, component
-assemblies, sources, models, sensors and control interfaces are defined there rather than
-repeated here.
+is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md) together with
+its robot files `../robots_specs/<id>.md` (amended 2026-10-02: the robot sections moved into
+those files), referred to below as the **robot specification**. Robot ids, identities,
+kinds, embodiments, sources, models, sensors and control interfaces are defined there
+rather than repeated here.
 
 **Terms.** A robot's **vendor interface** is every node, topic, service, action and parameter
 that its authoritative sources, as recorded in the robot specification, define. **ROS
@@ -33,8 +34,8 @@ reaching its goal or end state, judged as §5 **Evidence** states.
 Run a MuJoCo simulation of a realistic household scene in a choice of physics **engine**,
 and spawn into it, one at a time and by id, every robot defined in the robot specification.
 Every spawned robot shares the one simulation and serves its recorded control interface
-on **its own rosbridge websocket**, with separate websockets for components where the
-robot specification requires distinct interfaces. Each simulated robot reproduces the
+on **its own rosbridge websocket** (amended 2026-10-02: robots are single bodies; the
+myAGV + myCobot 280 composite is no longer supported). Each simulated robot reproduces the
 recorded real-hardware behaviour within the acceptance bounds in §5 on every engine. Scene content differs
 between engines by design.
 
@@ -133,7 +134,7 @@ kitchen.sh start [--engine molmospaces|robocasa] [--scene <source>:<id>] [--mujo
 ### 2.3 Spawning a robot — `spawn.sh`
 
 ```sh
-spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>] [--arm-port <p>]
+spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
 ```
 
 * `<id>` is one robot id in the robot specification. `spawn.sh --help` lists every
@@ -200,8 +201,8 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>] [--arm-p
     footprint is supported and clear, even on a top too small to drive or walk on, and its
     motions are then its own to keep on the surface.
   The entire initial robot configuration must be supported and free of unintended
-  interpenetration with the scene or earlier robots; intended support and assembly
-  contacts are allowed. Each worktop object must stand on the surface the robot stands on
+  interpenetration with the scene or earlier robots; intended support contacts are
+  allowed. Each worktop object must stand on the surface the robot stands on
   and be free of interpenetration deeper than 1 mm with the scene, the robot and the other
   objects. If no placement satisfies all applicable requirements, spawning
   refuses with a diagnostic and leaves no robot or wire resources behind.
@@ -228,11 +229,9 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>] [--arm-p
   robot on the floor, and a mobile robot on the worktop, moves none of them. The spawn's
   reply and the control port's `robots` and `scene` answers name the objects an arm stands
   among and the scene objects cleared for them; `scene` also names the scene's own.
-* **Assemblies.** Load the components and mounting transform defined in the robot
-  specification as one physical body, preserving their distinct control interfaces.
-  For an assembly with separate base and arm interfaces, serve the base on `--port`
-  and the arm on `--arm-port` (default `--port` + 1), using each component's recorded
-  ROS dialect. Refuse `--arm-port` when the robot has no separate arm interface.
+* **One wire per robot** (amended 2026-10-02: the myAGV + myCobot 280 composite is no longer
+  supported): every robot is a single body with one interface, served on `--port` in its
+  recorded ROS dialect; there is no assembly and no `--arm-port`.
 * Every spawned robot presents every camera required by its recorded interface;
   no flag removes one.
 * The spawn runs in the foreground. Ending it removes its robot from the simulation,
@@ -351,7 +350,7 @@ records as non-periodic are outside this paragraph. Every reference to acceptanc
 in this document means these.
 
 * **Robot loading** — every robot id in the robot specification can be spawned on each
-  engine with its recorded embodiment, components, physical properties and sensors.
+  engine with its recorded embodiment, physical properties and sensors.
 * **Contracts** — each simulator interface contract matches the interface designated by
   the robot specification (names, types, frames, parameters and rates), and every
   published message matches its declared type field for field.
@@ -372,8 +371,8 @@ in this document means these.
   objects keep their state bit for bit; and that a failed addition rolls back the robot and
   its staging together.
   Disable a required wire after successful startup and verify whole-spawn cleanup,
-  including container exit, serving-process failure while its container remains running,
-  and failure of only one of an assembly's two wires. Kill a spawn process, including
+  including container exit and serving-process failure while its container remains
+  running. Kill a spawn process, including
   with `SIGKILL`, and verify its robot, containers, ports, id and placement reservation
   are released. Verify the readiness line and the exit status of every termination path.
 * **Placement** — verify valid placements and refusal when support, non-interpenetration,

@@ -12,8 +12,9 @@ against the simulated robot unchanged.
 ### 1.1 What to expect from the workspace
 
 * Every recorded robot can be spawned into each engine's default household scene and
-  commanded through its vendor interface (§1.3) on its own rosbridge websocket, one per
-  component for a composite robot.
+  commanded through its vendor interface (§1.3) on its own rosbridge websocket (amended
+  2026-10-02: robots are single bodies; the myAGV + myCobot 280 composite is no longer
+  supported).
 * The robot console teleoperates a supported mobile robot, and views the cameras and
   operates the bounded controls of any supported robot, whose wire matches one of its
   profiles, whether the simulator or the physical robot serves that wire.
@@ -27,10 +28,11 @@ against the simulated robot unchanged.
 These expectations are binding: each part's own specification defines the detail and must
 meet them.
 
-**Robot records — `robots_specs/`.** The robot registry: one section per robot giving its
-id, identity, `kind`, embodiment, pinned authoritative sources, authoritative boot and the
-paths of its URDF, its official MJCF where one exists, and its ROS interface file, which
-live under `robots_specs/<id>/` (a composite's under its components' folders). Expect a
+**Robot records — `robots_specs/`.** The robot registry: one robot file per robot,
+`robots_specs/<id>.md`, giving its id, identity, `kind`, embodiment, pinned authoritative
+sources, authoritative boot and the paths of its URDF, its official MJCF where one exists,
+and its ROS interface file, which live under `robots_specs/<id>/` (amended 2026-10-02: the
+robot sections moved into those files). Expect a
 self-contained, source-traceable description of each real robot, normative for the
 simulator and a reference for the console. It holds robot data, plus only the tooling that
 fetches and verifies that data or regenerates its derived models (`robots_specs/tools/`)
@@ -42,9 +44,8 @@ and the tests that check it (`robots_specs/tests/`); no simulator or console cod
   the shared `test` scene on either — headless or in a MuJoCo window;
 * spawn any recorded robot by id onto the floor or the worktop of the running scene without
   restarting it, where a valid placement exists, and remove it again by ending its spawn;
-* reach each spawned robot's vendor interface on its own rosbridge websocket, one per
-  component for a composite robot, presenting exactly the recorded names, types, frames,
-  parameters and periodic rates, except rows marked `optional`, and reproducing the
+* reach each spawned robot's vendor interface on its own rosbridge websocket, presenting
+  exactly the recorded names, types, frames, parameters and periodic rates, except rows marked `optional`, and reproducing the
   recorded geometry and physical behaviour within the simulator's acceptance bounds.
 
 The simulator publishes no simulator-private state on a wire and has no reset service; a
@@ -124,13 +125,15 @@ its user-facing entry points:
 
 Simulator robot embodiments are recorded under `robots_specs/`:
 
-* [`robots_specs/high_level_spec.md`](robots_specs/high_level_spec.md) — one section per robot: its **id**,
-  identity, `kind`, embodiment, official URL, pinned sources, authoritative boot,
+* [`robots_specs/high_level_spec.md`](robots_specs/high_level_spec.md) and its robot files,
+  one per robot, `robots_specs/<id>.md` (amended 2026-10-02: the robot sections moved into
+  those files) — each robot's **id**, identity, `kind`, embodiment, official URL, pinned
+  sources, authoritative boot,
   documentation URLs, and the paths of its URDF, its official MJCF where one exists, and
   its ROS interface file. The simulator hosts every robot recorded there. Every
   robot id argument in the simulator takes these ids; its `--help` lists the ids it
   accepts, each with its name, and the same list appears in the message that refuses an
-  unknown id. This specification is the robot registry; there is no separate YAML registry. The console owns
+  unknown id. These files are the robot registry; there is no separate YAML registry. The console owns
   its supported robot profiles independently and may use the same stable ids where they
   identify the same vendor robot.
 * `robots_specs/<id>/` — the robot's URDF, its official MJCF where one exists (else a
@@ -139,9 +142,8 @@ Simulator robot embodiments are recorded under `robots_specs/`:
   frames, rates and the robot's stop command. Rows that exist only when an optional plugin
   is installed or a launch other than the robot's authoritative boot runs are marked
   `optional`; each camera's raw image stream is marked as a camera.
-* A **composite** robot is two recorded robots mounted as one body. Its entry names them as
-  `base` and `arm`, and it serves each one's interface, unchanged, on its own wire. It has
-  no folder of its own: its files are its components' folders.
+* Every robot is a single body: no robot is assembled from other robots (amended
+  2026-10-02: the myAGV + myCobot 280 composite is no longer supported).
 * Robot meshes are not committed. Each engine's `simulator/<engine>/run.sh setup` fetches
   them into `robots_specs/<id>/` from each robot's pinned sources, verifies them against
   `robots_specs/meshes.sha256` and refuses on a mismatch; `spawn.sh` refuses a robot whose
@@ -164,7 +166,7 @@ default scene. Every robot has a case on each engine; a mobile robot (every `kin
 * a picture from each of the robot's cameras not marked `optional`;
 * a passing smoke run, through the robot's vendor interface on its own wire, of each
   motion listed below using its recorded command. A drive or walk is followed by the
-  robot's recorded stop command (for a composite, its component's); every other motion ends
+  robot's recorded stop command; every other motion ends
   on reaching its goal or end state. A motion passes when the recorded feedback shows the
   commanded displacement within the simulator's acceptance bounds (simulator spec §5) and
   the robot comes to rest after the stop command or, for other motions, once it has reached
@@ -177,15 +179,13 @@ default scene. Every robot has a case on each engine; a mobile robot (every `kin
   * the SO-101 moves its arm and its gripper;
   * the AiNex turns its head, walks and stops, and plays an action group;
   * the myCobot 280 moves its arm and its gripper;
-  * the myAGV + myCobot 280 drives as a myAGV on one wire, and moves its arm and gripper
-    as the myCobot 280 on the other;
-* for each console profile whose id names this robot or one of its `base`/`arm`
-  components, a passing `python -m robot_console.fleet --expect <id>` over the case's wire:
+* for the console profile whose id names this robot, if any, a passing
+  `python -m robot_console.fleet --expect <id>` over the case's wire:
   the profile's typed validation passes and every profile camera not marked `optional` shows
   live images. A
   failure is resolved against the pinned sources; neither project is the other's oracle.
 
 A missing or failing case is a defect. Workspace tests, in `tests/`, check that the index
-has a passing case, with its pictures, for every robot id in
-`robots_specs/high_level_spec.md` on every engine, and that every worktop case records its
+has a passing case, with its pictures, for every robot id in the robot registry (§2) on
+every engine, and that every worktop case records its
 six staged objects.
