@@ -1,8 +1,0 @@
-$ robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect mycobot280
-# started 2026-10-02T11:34:30, took 0.2 s
-wire ws://127.0.0.1:9090: ROS2 humble, 8 topics, 0 non-infrastructure services, 0 actions
-robot mycobot280: typed validation PASS (4 required endpoints)
-  cameras: none in profile 'mycobot280'
-PASS
-
-# exit code: 0

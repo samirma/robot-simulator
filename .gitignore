@@ -78,3 +78,5 @@ robots_specs/.fetch-*/
 # verified against simulator/shared/objects/ycb.sha256 -- and its staging directory.
 simulator/shared/objects/ycb/
 simulator/shared/objects/.fetch-objects-*/
+
+evidences/

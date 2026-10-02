@@ -6,7 +6,7 @@ A local pygame window owns keyboard focus. Held/released keys come from SDL key-
 key-up events (key repeat is disabled and ignored), so a held key is known to be held.
 
 Exit status: 0 ordinary exit (Esc or closing the window); 1 no validated target; 2 refused
-(unknown id, arm, assembly, namespace override); 3 wire unreachable; 4 connection lost;
+(unknown id, arm, namespace override); 3 wire unreachable; 4 connection lost;
 5 keyboard input lost; 130/143 after SIGINT/SIGTERM.
 """
 

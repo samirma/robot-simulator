@@ -209,7 +209,6 @@ def test_every_start_stops_once_without_resumed_motion(fake):
     (["--robot", "turtlebot"], "unknown robot id"),
     (["--robot", "so101"], "is an arm"),
     (["--robot", "mycobot280"], "is an arm"),
-    (["--robot", "myagv_mycobot280"], "assembly"),
     (["--robot", "myagv", "--namespace", "robot1"], "no namespace override"),
 ])
 def test_refusals(args, word):

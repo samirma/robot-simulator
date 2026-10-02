@@ -37,7 +37,7 @@ Conventions:
 | --- | --- | --- |
 | `schema_version` | int | `1` |
 | `robot_id` | str | the robot id; equals the folder name |
-| `name` | str | display name as in `high_level_spec.md` |
+| `name` | str | display name as in the robot file `<id>.md` |
 | `dialect` | `ros1` \| `ros2` | must match the filename (`ros.yml` = `ros1`, `ros2.yml` = `ros2`) |
 | `ros_distribution` | str | e.g. `noetic`, `melodic`, `humble`, `jazzy` |
 | `interface_authority` | `manufacturer` \| `approved_community` | who defines the interface |

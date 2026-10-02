@@ -1,8 +1,0 @@
-$ robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect ainex
-# started 2026-10-02T11:33:26, took 1.5 s
-wire ws://127.0.0.1:9090: ROS1, 45 topics, 29 non-infrastructure services, 0 actions
-robot ainex: typed validation PASS (59 required endpoints)
-  camera /camera/image_raw: LIVE - live (3 frames in 2.5 s window)
-PASS
-
-# exit code: 0

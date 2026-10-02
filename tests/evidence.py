@@ -17,7 +17,7 @@ worktop), and records into `evidences/<engine>/<id>/`:
   the interface publishes none, by readings from the simulation's control port) against
   the tolerances recorded in `robots_specs/<id>/ros*.yml`;
 * `fleet_<profile>.txt` -- `robot_console/python.sh -m robot_console.fleet --expect` for
-  every console profile naming the robot or one of its components;
+  every console profile naming the robot;
 * `case.json` -- robot, engine, scene, placement, ports, readiness line, timestamps, host
   load, per-item results and the verdict.
 
@@ -64,19 +64,18 @@ ENGINES = ["molmospaces", "robocasa"]
 
 
 def registry() -> List[dict]:
-    """Robots of robots_specs/high_level_spec.md: id, name, kind, base/arm components."""
-    text = (SPECS / "high_level_spec.md").read_text()
+    """Robots of the robot files robots_specs/<id>.md: id, name, kind."""
     out = []
-    for sec in re.split(r"\n## ", text)[1:]:
-        m = re.search(r"\*\*Robot id:\*\*\s*`([^`]+)`", sec)
+    for p in sorted(SPECS.glob("*.md")):
+        if p.name in ("high_level_spec.md", "SCHEMA.md"):
+            continue
+        text = p.read_text()
+        m = re.search(r"\*\*Robot id:\*\*\s*`([^`]+)`", text)
         if not m:
             continue
-        r = {"id": m.group(1), "name": sec.splitlines()[0].split(". ", 1)[-1].strip()}
-        k = re.search(r"\*\*Kind:\*\*\s*`([^`]+)`", sec)
+        r = {"id": m.group(1), "name": text.splitlines()[0].lstrip("# ").strip()}
+        k = re.search(r"\*\*Kind:\*\*\s*`([^`]+)`", text)
         r["kind"] = k.group(1) if k else None
-        b = re.search(r"\*\*`base`:\*\*\s*`([^`]+)`", sec)
-        a = re.search(r"\*\*`arm`:\*\*\s*`([^`]+)`", sec)
-        r["components"] = {"base": b.group(1), "arm": a.group(1)} if b and a else {}
         out.append(r)
     return out
 
@@ -675,7 +674,7 @@ def so101_motions(ctx: Ctx) -> List[dict]:
 # --------------------------------------------------------------------------- myCobot 280
 
 
-def mycobot_motions(ctx: Ctx, pre: str) -> List[dict]:
+def mycobot_motions(ctx: Ctx) -> List[dict]:
     """Arm, then gripper, through /joint_states on the myCobot wire; judged by the
     simulation's joint readings (the boot publishes no measured feedback)."""
     w = ctx.wire("mycobot280")
@@ -690,8 +689,7 @@ def mycobot_motions(ctx: Ctx, pre: str) -> List[dict]:
     out = []
 
     def jget():
-        j = ctx.joints()
-        return {k[len(pre):]: v for k, v in j.items() if k.startswith(pre)}
+        return ctx.joints()
 
     try:
         rb.advertise(arm["command"]["name"], "sensor_msgs/msg/JointState")
@@ -1080,9 +1078,7 @@ def smoke(ctx: Ctx) -> List[dict]:
     if rid == "so101":
         return so101_motions(ctx)
     if rid == "mycobot280":
-        return mycobot_motions(ctx, "")
-    if rid == "myagv_mycobot280":
-        return drive_motions(ctx, "myagv") + mycobot_motions(ctx, "arm/")
+        return mycobot_motions(ctx)
     if rid == "ainex":
         return ainex_motions(ctx)
     raise KeyError(f"no smoke run defined for {rid}")
@@ -1150,12 +1146,10 @@ def capture_cameras(wires: List[dict], outdir: Path, say) -> List[dict]:
 # =========================================================================== fleet
 
 
-def fleet_checks(rid: str, comps: dict, wires: List[dict], outdir: Path, say) -> List[dict]:
-    profiles = console_profiles()
-    names = [rid] + list(comps.values())
+def fleet_checks(rid: str, wires: List[dict], outdir: Path, say) -> List[dict]:
     res = []
-    for pid in profiles:
-        if pid not in names:
+    for pid in console_profiles():
+        if pid != rid:
             continue
         owner = pid
         try:
@@ -1294,7 +1288,7 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
 
         # the console's check
         case["host_load_fleet"] = host_load()
-        case["items"]["fleet"] = fleet_checks(rid, robot["components"], wires, outdir, say)
+        case["items"]["fleet"] = fleet_checks(rid, wires, outdir, say)
 
         # the motion smoke run
         case["host_load_smoke"] = host_load()
@@ -1369,14 +1363,11 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
 # =========================================================================== index
 
 
-def required_cameras(rid: str, robots: Dict[str, dict]) -> List[str]:
-    r = robots[rid]
-    owners = list(r["components"].values()) or [rid]
+def required_cameras(rid: str) -> List[str]:
     out = []
-    for o in owners:
-        for c in (interface(o).get("sensors") or {}).get("cameras") or []:
-            if not c.get("optional"):
-                out.append(topic_file(c["image_topic"]))
+    for c in (interface(rid).get("sensors") or {}).get("cameras") or []:
+        if not c.get("optional"):
+            out.append(topic_file(c["image_topic"]))
     return out
 
 
@@ -1410,7 +1401,7 @@ def write_index(out_root: Path) -> dict:
                 "checks": c.get("checks"), "error": c.get("error"),
                 "dir": d, "scene_png": f"{d}/scene.png" if (out_root / d / "scene.png").exists() else None,
                 "camera_pngs": [f"{d}/{x}" for x in cams],
-                "required_camera_pngs": [f"{d}/{x}" for x in required_cameras(rid, robots)],
+                "required_camera_pngs": [f"{d}/{x}" for x in required_cameras(rid)],
                 "motion_pngs": [f"{d}/{x}" for x in motion_pics],
                 "smoke": f"{d}/smoke.json", "motions": c["items"].get("smoke", {}).get("motions"),
                 "fleet": [{"profile": f["profile"], "exit_code": f.get("exit_code"), "pass": f["pass"],
@@ -1472,7 +1463,7 @@ def write_index(out_root: Path) -> dict:
           "forward/back/left/right at 0.2 m/s and a 1 rad turn at 0.5 rad/s, within the placement's "
           "guaranteed travel.",
           "* **Console check**: `robot_console/python.sh -m robot_console.fleet --url <wire> --expect <profile>` "
-          "for every console profile naming the robot or one of its components; exit 0 is the console's own verdict.",
+          "for every console profile naming the robot; exit 0 is the console's own verdict.",
           "* A case also requires `spawn.sh` to exit 0 on SIGINT with no container left.",
           "* **Worktop objects** (an arm on the worktop): the spawn staged the six worktop objects "
           "(apple, plate, bowl, mug, banana, lemon) around the arm (simulator spec §2.3); the scene "

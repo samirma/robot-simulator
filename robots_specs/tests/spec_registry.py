@@ -1,7 +1,7 @@
-"""The robot registry as recorded in robots_specs/high_level_spec.md, read for the tests.
+"""The robot registry as recorded in the robot files `robots_specs/<id>.md`, read for the tests.
 
 The specification is the registry (there is no YAML registry); this module only parses
-its robot sections: `## N. <name>` headings with `* **Key:** value` bullets.
+the robot files (robot specification §2): `# <name>` then `* **Key:** value` bullets.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from pathlib import Path
 SPECS = Path(__file__).resolve().parent.parent
 ROOT = SPECS.parent
 SPEC = SPECS / "high_level_spec.md"
+NOT_ROBOT_FILES = ("high_level_spec.md", "SCHEMA.md")
 
 
 @dataclass
@@ -21,17 +22,12 @@ class Robot:
     name: str
     kind: str
     section: str
+    file: Path
     urdf: str | None = None
     mjcf: str | None = None
     ros: str | None = None
-    base: str | None = None
-    arm: str | None = None
     revisions: list[str] = field(default_factory=list)
     sha256: dict[str, str] = field(default_factory=dict)
-
-    @property
-    def composite(self) -> bool:
-        return self.base is not None
 
 
 def _code(value: str) -> str | None:
@@ -39,10 +35,17 @@ def _code(value: str) -> str | None:
     return m.group(1) if m else None
 
 
+def robot_files() -> list[Path]:
+    return sorted(p for p in SPECS.glob("*.md") if p.name not in NOT_ROBOT_FILES)
+
+
 def robots() -> list[Robot]:
-    text = SPEC.read_text()
     out = []
-    for m in re.finditer(r"^## \d+\. (.+?)\n(.*?)(?=^## |\Z)", text, re.S | re.M):
+    for path in robot_files():
+        text = path.read_text()
+        m = re.match(r"# (.+?)\n(.*)", text, re.S)
+        if not m:
+            continue
         name, body = m.group(1).strip(), m.group(2)
         bullets = {}
         for b in re.finditer(r"^\* \*\*(.+?):\*\*\s*(.*(?:\n  .*)*)", body, re.M):
@@ -50,12 +53,10 @@ def robots() -> list[Robot]:
         if "Robot id" not in bullets:
             continue
         r = Robot(id=_code(bullets["Robot id"]), name=name, kind=_code(bullets.get("Kind", "")) or "",
-                  section=body)
+                  section=body, file=path)
         r.urdf = _code(bullets.get("Official URDF", ""))
         r.mjcf = _code(bullets.get("Official MJCF", ""))
         r.ros = _code(bullets.get("ROS interface", ""))
-        r.base = _code(bullets.get("base", "")) if "base" in bullets else None
-        r.arm = _code(bullets.get("arm", "")) if "arm" in bullets else None
         r.revisions = re.findall(r"revision\s+`([0-9a-f]{40})`", body)
         for key, val in bullets.items():
             if key.endswith("SHA-256"):

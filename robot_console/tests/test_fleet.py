@@ -103,7 +103,6 @@ def test_missing_camera_reported(fake):
     assert code != 0 and "camera /camera/rgb/image_raw: MISSING" in out, out
 
 
-@pytest.mark.parametrize("bad, word", [("myagv_mycobot280", "assembly"), ("turtlebot", "unknown")])
-def test_unknown_and_assembly_ids(bad, word):
-    code, out = fleet("--url", "ws://127.0.0.1:1", "--expect", bad)
-    assert code == 2 and word in out, out
+def test_unknown_id():
+    code, out = fleet("--url", "ws://127.0.0.1:1", "--expect", "turtlebot")
+    assert code == 2 and "unknown robot id" in out, out

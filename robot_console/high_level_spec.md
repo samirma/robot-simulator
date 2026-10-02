@@ -6,11 +6,12 @@ sibling source tree. No other document or code in the console may contradict thi
 
 This document defines only the console's requirements, subject to the shared goal and
 project boundary in [`../high_level_spec.md`](../high_level_spec.md). The designated robot
-reference is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md),
-referred to below as the **robot specification**. It identifies robots and pinned interface
-sources. The console independently derives and packages the interface facts it needs from
-those sources. The simulator's specification and implementation are not authoritative
-for the console.
+reference is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md)
+together with its robot files `../robots_specs/<id>.md` (amended 2026-10-02: the robot
+sections moved into those files), referred to below as the **robot specification**. It
+identifies robots and pinned interface sources. The console independently derives and
+packages the interface facts it needs from those sources. The simulator's specification
+and implementation are not authoritative for the console.
 
 ## 1. Goal
 
@@ -70,10 +71,6 @@ present; otherwise a single discovered target is selected, and several require e
 selection. Other profiles offer no namespace override and refuse
 one rather than rebasing hardware names. Validation, subscriptions and commands always
 use the same selected target, preserving documented absolute/global names.
-
-`myagv_mycobot280` is not an accepted console id. Operate its base as `myagv` and its
-arm as `mycobot280` through independent invocations with their respective websocket URLs.
-No invocation combines the assembly's ROS 1 and ROS 2 wires.
 
 ## 2. Components
 
@@ -240,4 +237,5 @@ Verify that no base-drive or walking command is exposed.
 Verify `python -m robot_console.fleet` passes on a matching wire and exits non-zero on
 wrong types, missing required endpoints, ambiguous candidates (naming the candidates
 found), a wire with no supported robot and an unreachable wire.
-Verify that unknown robot ids and assembly ids (`myagv_mycobot280`) are refused.
+Verify that unknown robot ids are refused (amended 2026-10-02: the robot specification no
+longer defines an assembly, so a former assembly id is an ordinary unknown id).

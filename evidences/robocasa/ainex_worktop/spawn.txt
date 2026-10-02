@@ -1,2 +1,0 @@
-spawn: ainex placed on the worktop at (2.115, -0.225, 0.927), heading 247.5 deg
-spawn ready: ainex (AiNex) in robocasa robocasa:1-1 on the worktop; wire(s): ainex ws://127.0.0.1:9090 [ROS 1 noetic]

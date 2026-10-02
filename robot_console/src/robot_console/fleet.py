@@ -6,7 +6,7 @@ profile's names but optional rows and ROS infrastructure), and reports each prof
 as live, stale or missing. It publishes nothing: it only calls rosapi and subscribes.
 
 Exit status: 0 pass; 1 validation failed, an expected camera is not live, ambiguous
-candidates, or no supported robot; 2 bad arguments (unknown/assembly id); 3 wire unreachable.
+candidates, or no supported robot; 2 bad arguments (unknown id); 3 wire unreachable.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Checks of the robot records in robots_specs/ against robots_specs/high_level_spec.md.
+"""Checks of the robot records in robots_specs/ against the robot files robots_specs/<id>.md.
 
     uv run --with pytest --with pyyaml --with mujoco pytest robots_specs/tests
 
@@ -26,8 +26,7 @@ import spec_registry  # noqa: E402
 
 SPECS, ROOT = spec_registry.SPECS, spec_registry.ROOT
 ROBOTS = spec_registry.robots()
-SINGLE = [r for r in ROBOTS if not r.composite]
-COMPOSITE = [r for r in ROBOTS if r.composite]
+SINGLE = ROBOTS
 IDS = [r.id for r in SINGLE]
 
 #: Motions each robot's evidence case exercises (workspace spec §3).
@@ -61,21 +60,28 @@ def manifest() -> dict[str, str]:
 
 def test_registry_lists_the_robots():
     assert {r.id for r in ROBOTS} == {"myagv", "so101", "ainex", "mycobot280",
-                                      "myagv_mycobot280", "rosmaster_x3_plus"}
+                                      "rosmaster_x3_plus"}
+
+
+def test_every_robot_file_is_a_robot_named_by_its_id():
+    files = spec_registry.robot_files()
+    assert [p.stem for p in files] == sorted(r.id for r in ROBOTS), \
+        "every robots_specs/*.md but high_level_spec.md and SCHEMA.md is one robot's file"
+    for r in ROBOTS:
+        assert r.file.name == f"{r.id}.md"
+
+
+def test_spec_lists_exactly_the_robot_files():
+    text = spec_registry.SPEC.read_text()
+    listed = re.findall(r"^\| `([^`]+)` \| (.+?) \| `([^`]+)` \| \[`([^`]+)`\]\(([^)]+)\) \|$", text, re.M)
+    assert [(rid, name, kind, f"{rid}.md", f"{rid}.md") for rid, name, kind, *_ in listed] == listed
+    assert sorted((rid, name, kind) for rid, name, kind, *_ in listed) == \
+        sorted((r.id, r.name, r.kind) for r in ROBOTS)
 
 
 def test_no_yaml_registry():
     stray = [p.name for p in SPECS.glob("*.y*ml")]
     assert not stray, f"the specification is the registry; remove {stray}"
-
-
-@pytest.mark.parametrize("robot", COMPOSITE, ids=lambda r: r.id)
-def test_composite_has_no_folder_and_known_components(robot):
-    assert not (SPECS / robot.id).exists(), "a composite has no folder of its own"
-    ids = {r.id for r in SINGLE}
-    assert robot.base in ids and robot.arm in ids
-    for comp in (robot.base, robot.arm):
-        assert f"robots_specs/{comp}/" in robot.section
 
 
 @pytest.mark.parametrize("robot", SINGLE, ids=lambda r: r.id)

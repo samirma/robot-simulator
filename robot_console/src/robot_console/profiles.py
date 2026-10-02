@@ -23,9 +23,6 @@ from robot_console import dialect as d
 #: Every accepted robot id, in display order (console spec §1.1).
 SUPPORTED_IDS: Tuple[str, ...] = ("myagv", "ainex", "rosmaster_x3_plus", "so101", "mycobot280")
 
-#: Assembly ids that are *not* console ids, with the component ids to use instead.
-ASSEMBLY_IDS: Mapping[str, Tuple[str, str]] = {"myagv_mycobot280": ("myagv", "mycobot280")}
-
 
 class ProfileError(ValueError):
     """A robot id or namespace request the console refuses."""
@@ -368,11 +365,6 @@ def teleop_ids() -> Tuple[str, ...]:
 # ------------------------------------------------------------------ id selection
 
 def refuse_unknown(robot_id: str, allowed: Sequence[str] = SUPPORTED_IDS) -> str:
-    if robot_id in ASSEMBLY_IDS:
-        base, arm = ASSEMBLY_IDS[robot_id]
-        return (f"'{robot_id}' is an assembly, not a console robot id: operate its base as "
-                f"'{base}' and its arm as '{arm}' through separate invocations, each with its "
-                f"own --url. Accepted ids: {', '.join(allowed)}")
     return f"unknown robot id '{robot_id}'. Accepted ids: {', '.join(allowed)}"
 
 
@@ -437,7 +429,6 @@ def profile_json(p: Profile) -> dict:
 def all_profiles_json() -> dict:
     return {
         "supported_ids": list(SUPPORTED_IDS),
-        "assembly_ids": {k: list(v) for k, v in ASSEMBLY_IDS.items()},
         "infrastructure": {
             "topics": sorted(d.INFRA_TOPICS), "prefixes": list(d.INFRA_PREFIXES),
             "node_service_suffixes": list(d._NODE_SERVICE_SUFFIXES),

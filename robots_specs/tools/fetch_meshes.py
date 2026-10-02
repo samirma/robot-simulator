@@ -2,13 +2,12 @@
 """Fetch the robot meshes robots_specs/ references but git does not commit.
 
     python3 robots_specs/tools/fetch_meshes.py               every robot
-    python3 robots_specs/tools/fetch_meshes.py so101 ainex   only these (a composite id
-                                                             brings both components)
+    python3 robots_specs/tools/fetch_meshes.py so101 ainex   only these
     python3 robots_specs/tools/fetch_meshes.py --check       verify only, fetch nothing
 
 `robots_specs/meshes.sha256` lists every file (`<sha256>  <path from the repo root>`).
 Each one comes from its robot's pinned source (SOURCES below, the revisions recorded in
-robots_specs/high_level_spec.md): a sparse, blobless git checkout at the pinned commit,
+the robot files robots_specs/<id>.md): a sparse, blobless git checkout at the pinned commit,
 or, for the ROSMASTER X3 PLUS, range reads of the one nested zip it needs from Yahboom's
 pinned Google Drive archive. MuJoCo reads no COLLADA and no STL over 200000 faces, so
 some files are also derived, deterministically and with the standard library only, under
@@ -48,7 +47,7 @@ ROOT = SPECS.parent                                     # repository root
 MANIFEST = SPECS / "meshes.sha256"
 CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "robot-simulator"
 
-#: Pinned sources. Revisions are those of robots_specs/high_level_spec.md (a test checks).
+#: Pinned sources. Revisions are those of the robot files robots_specs/<id>.md (a test checks).
 GIT = {
     "SO-ARM100": ("https://github.com/TheRobotStudio/SO-ARM100",
                   "aec17bbc256d1a7342d53aaa4950595d4c30b40d"),
@@ -76,7 +75,6 @@ SOURCES = [
     ("rosmaster_x3_plus", "rosmaster_x3_plus/meshes/", "yahboom",
      "yahboomcar_ws/src/yahboomcar_description/meshes/"),
 ]
-COMPOSITES = {"myagv_mycobot280": ("myagv", "mycobot280")}
 DERIVED_DIR = "derived_meshes"
 
 
@@ -609,12 +607,9 @@ def main(argv=None) -> int:
     known = sorted({robot_of(p) for p in manifest})
     wanted_ids = set()
     for r in a.robots:
-        if r in COMPOSITES:
-            wanted_ids.update(COMPOSITES[r])
-        elif r in known:
-            wanted_ids.add(r)
-        else:
-            raise Refused(f"unknown robot {r!r}; known: {', '.join(known + sorted(COMPOSITES))}")
+        if r not in known:
+            raise Refused(f"unknown robot {r!r}; known: {', '.join(known)}")
+        wanted_ids.add(r)
     entries = {p: d for p, d in manifest.items() if not wanted_ids or robot_of(p) in wanted_ids}
     origins = {p: origin_of(p) for p in entries}
 

@@ -7,7 +7,7 @@ import pytest
 
 from robot_console import dialect as d
 from robot_console.profiles import (
-    ASSEMBLY_IDS, SUPPORTED_IDS, ProfileError, check_namespace_allowed, fill_template, load,
+    SUPPORTED_IDS, ProfileError, check_namespace_allowed, fill_template, load,
     load_all, select_id, teleop_ids,
 )
 
@@ -15,7 +15,7 @@ EXPECTED = {  # console spec §1.1
     "myagv": ("ros1", "base"), "ainex": ("ros1", "walk"), "rosmaster_x3_plus": ("ros1", "base"),
     "so101": ("ros2", "none"), "mycobot280": ("ros2", "none"),
 }
-# Pinned revisions identified by the robot specification (§2-§7).
+# Pinned revisions identified by the robot specification (robots_specs/<id>.md).
 PINNED = {
     "myagv": {"c71f3cc574e5ed1973a925238eabe88662cfa701", "addab4a65fdf65c460fec2cc3eee8fab94699370"},
     "ainex": {"e8fe2a816797cf83054135160df5a82ec3596a69"},
@@ -171,15 +171,11 @@ def test_namespace_only_where_documented():
 
 
 def test_id_refusals():
-    with pytest.raises(ProfileError, match="Accepted ids"):
+    with pytest.raises(ProfileError, match="unknown robot id 'turtlebot'. Accepted ids"):
         select_id("turtlebot")
-    with pytest.raises(ProfileError, match="assembly") as e:
-        select_id("myagv_mycobot280")
-    assert "'myagv'" in str(e.value) and "'mycobot280'" in str(e.value)
     for arm in ("so101", "mycobot280"):
         with pytest.raises(ProfileError, match="myagv, ainex, rosmaster_x3_plus"):
             select_id(arm, teleop=True)
-    assert "myagv_mycobot280" in ASSEMBLY_IDS and "myagv_mycobot280" not in SUPPORTED_IDS
 
 
 def test_template_fill():

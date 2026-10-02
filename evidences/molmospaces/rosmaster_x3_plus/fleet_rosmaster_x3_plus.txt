@@ -1,8 +1,0 @@
-$ robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect rosmaster_x3_plus
-# started 2026-10-02T11:44:10, took 2.6 s
-wire ws://127.0.0.1:9090: ROS1, 40 topics, 58 non-infrastructure services, 0 actions
-robot rosmaster_x3_plus: typed validation PASS (22 required endpoints, 6 optional present)
-  camera /camera/rgb/image_raw: LIVE - live (3 frames in 4.5 s window)
-PASS
-
-# exit code: 0

@@ -1,8 +1,9 @@
-"""The robot registry: `robots_specs/high_level_spec.md`, read as it is now.
+"""The robot registry: the robot specification's robot files, `robots_specs/<id>.md`,
+read as they are now.
 
 There is no separate YAML registry (workspace spec §2): every robot id the simulator
-accepts, its name, kind, files, ROS dialect and, for a composite, its components and
-mounting transform, are parsed from the robot specification's per-robot sections.
+accepts, its name, kind, files and ROS dialect are parsed from the robot files (robot
+specification §2), one robot per file, named by its id.
 
 Stdlib only and Python 3.8-compatible: `spawn.sh` runs it under any python3, and the
 wire containers import it through the read-only mount.
@@ -17,7 +18,8 @@ from typing import Dict, List, Optional, Tuple
 
 SIM_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(os.environ.get("RSIM_REPO_ROOT", str(SIM_ROOT.parent)))
-SPEC = REPO_ROOT / "robots_specs" / "high_level_spec.md"
+SPECS = REPO_ROOT / "robots_specs"
+SPEC = SPECS / "high_level_spec.md"
 
 KINDS = ("mobile_base", "arm", "humanoid", "mobile_manipulator")
 
@@ -27,7 +29,7 @@ class RegistryError(ValueError):
 
 
 class Robot:
-    """One robot section of the robot specification."""
+    """One robot file of the robot specification."""
 
     def __init__(self, rid: str, name: str, section: str, fields: Dict[str, str]):
         self.id = rid
@@ -35,20 +37,13 @@ class Robot:
         self.section = section
         self.fields = fields
         self.kind = _code(fields.get("kind", "")) or ""
-        self.base = _code(fields.get("`base`", "")) or None
-        self.arm = _code(fields.get("`arm`", "")) or None
-        self.folder = _code(fields.get("folder", "")) or (f"robots_specs/{rid}/" if not self.base else None)
+        self.folder = _code(fields.get("folder", "")) or f"robots_specs/{rid}/"
         self.urdf = _code(fields.get("official urdf", "")) or None
         self.mjcf = _code(fields.get("official mjcf", "")) or None
         ros = fields.get("ros interface", "")
         self.ros_file = _code(ros) or None
-        self.mounting = fields.get("mounting transform", "")
 
     # ------------------------------------------------------------------ derived facts
-
-    @property
-    def composite(self) -> bool:
-        return bool(self.base and self.arm)
 
     @property
     def mobile(self) -> bool:
@@ -77,73 +72,52 @@ class Robot:
             return self.path(self.mjcf)
         return folder / "model.xml" if folder is not None else None
 
-    def mounting_transform(self) -> Tuple[str, List[float], List[float]]:
-        """(base link, xyz, rpy) of the arm's root link relative to a named base link, read
-        from the robot specification's mounting-transform entry (its only copy):
-        "`<arm>` link `<arm link>` relative to `<base>` link `<base link>`: xyz = (..) m,
-        rpy = (..) rad"."""
-        text = self.mounting
-        m = re.search(r"`([^`]+)`\s+link\s+`([^`]+)`\s+relative\s+to\s+`([^`]+)`\s+link\s+"
-                      r"`([^`]+)`", text)
-        xyz = _triple(text, "xyz")
-        rpy = _triple(text, "rpy")
-        if m is None or xyz is None or rpy is None:
-            raise RegistryError(
-                f"{self.id}: the robot specification's mounting transform is not recorded "
-                f"as a named link with xyz and rpy: {text.strip()[:200]!r}")
-        self.mount_arm_link = m.group(2)
-        return m.group(4), xyz, rpy
-
 
 def _code(text: str) -> Optional[str]:
     m = re.search(r"`([^`]+)`", text or "")
     return m.group(1) if m else None
 
 
-_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+def _parse(text: str) -> Optional[Robot]:
+    """The robot of one robot file: `# <name>` then `* **Key:** value` bullets."""
+    title, _, body = text.lstrip().partition("\n")
+    name = title.lstrip("#").strip()
+    fields: Dict[str, str] = {}
+    # A bullet runs until the next bullet or a blank line.
+    for m in re.finditer(r"^\* +\*\*(.+?):?\*\*:?\s*(.*?)(?=^\* |^\s*$|\Z)", body, re.M | re.S):
+        key = m.group(1).strip().rstrip(":").strip().lower()
+        fields[key] = " ".join(m.group(2).split())
+    rid = _code(fields.get("robot id", ""))
+    return Robot(rid, name, name, fields) if rid else None
 
 
-def _triple(text: str, key: str) -> Optional[List[float]]:
-    m = re.search(key + r"[^0-9+\-.]{0,40}(" + _NUM + r")[\s,;/]+(" + _NUM + r")[\s,;/]+(" + _NUM + ")",
-                  text, re.I)
-    if not m:
-        return None
-    return [float(m.group(i)) for i in (1, 2, 3)]
+_cache: Dict[str, Tuple[tuple, List[Robot]]] = {}
 
 
-def _parse(text: str) -> List[Robot]:
-    robots = []
-    sections = re.split(r"^## +", text, flags=re.M)[1:]
-    for sec in sections:
-        title, _, body = sec.partition("\n")
-        name = re.sub(r"^\d+\.\s*", "", title).strip()
-        fields: Dict[str, str] = {}
-        # A bullet runs until the next bullet or a blank line.
-        for m in re.finditer(r"^\* +\*\*(.+?):?\*\*:?\s*(.*?)(?=^\* |^\s*$)", body, re.M | re.S):
-            key = m.group(1).strip().rstrip(":").strip().lower()
-            if key.startswith("`"):
-                key = m.group(1).strip().rstrip(":").strip()
-            fields[key] = " ".join(m.group(2).split())
-        rid = _code(fields.get("robot id", ""))
-        if rid:
-            robots.append(Robot(rid, name, title.strip(), fields))
-    return robots
-
-
-_cache: Dict[str, Tuple[float, List[Robot]]] = {}
+def _robot_files() -> List[Path]:
+    """Every `.md` of the robot specification but its main document and schema, by name."""
+    if not SPEC.is_file():
+        raise RegistryError(f"the robot specification {SPEC} is missing")
+    return sorted(p for p in SPECS.glob("*.md") if p.name not in ("high_level_spec.md", "SCHEMA.md"))
 
 
 def robots() -> List[Robot]:
-    """Every robot in the robot specification, in document order (re-read on change)."""
-    try:
-        mtime = SPEC.stat().st_mtime
-    except OSError:
-        raise RegistryError(f"the robot specification {SPEC} is missing")
-    hit = _cache.get(str(SPEC))
-    if hit and hit[0] == mtime:
+    """Every robot of the robot specification, ordered by file name (re-read on change)."""
+    files = _robot_files()
+    stamp = tuple((p.name, p.stat().st_mtime) for p in files)
+    hit = _cache.get(str(SPECS))
+    if hit and hit[0] == stamp:
         return hit[1]
-    found = _parse(SPEC.read_text(encoding="utf-8"))
-    _cache[str(SPEC)] = (mtime, found)
+    found = []
+    for p in files:
+        r = _parse(p.read_text(encoding="utf-8"))
+        if r is None:
+            continue
+        if r.id != p.stem:
+            raise RegistryError(f"{p.relative_to(REPO_ROOT)} records robot id {r.id!r}; a robot "
+                                f"file is named by its robot id")
+        found.append(r)
+    _cache[str(SPECS)] = (stamp, found)
     return found
 
 
@@ -162,20 +136,6 @@ def listing(indent: str = "  ") -> str:
     rows = robots()
     width = max((len(r.id) for r in rows), default=0)
     return "\n".join(f"{indent}{r.id.ljust(width)}  {r.name}" for r in rows)
-
-
-def components(robot: Robot) -> List[Robot]:
-    """The robots whose files and interfaces make this one: itself, or base and arm."""
-    if robot.composite:
-        return [get(robot.base), get(robot.arm)]
-    return [robot]
-
-
-def wires(robot: Robot) -> List[Tuple[str, Robot]]:
-    """(wire role, interface owner) per wire: ("main", robot) or ("base", ..), ("arm", ..)."""
-    if robot.composite:
-        return [("base", get(robot.base)), ("arm", get(robot.arm))]
-    return [("main", robot)]
 
 
 # ---------------------------------------------------------------- required files
@@ -228,25 +188,24 @@ def _urdf_files(urdf: Path) -> List[Path]:
 
 
 def missing_files(robot: Robot) -> List[str]:
-    """Required files of this robot (and its components) that are not on disk."""
+    """Required files of this robot that are not on disk."""
     missing: List[str] = []
-    for comp in components(robot):
-        need: List[Path] = []
-        for rel in (comp.urdf, comp.mjcf, comp.ros_file):
-            if rel:
-                need.append(REPO_ROOT / rel)
-        model = comp.model_path()
-        if model is not None:
-            need.append(model)
-            need.extend(_model_files(model))
-        if comp.urdf:
-            need.extend(_urdf_files(REPO_ROOT / comp.urdf))
-        for p in need:
-            if not p.exists():
-                try:
-                    missing.append(str(p.relative_to(REPO_ROOT)))
-                except ValueError:
-                    missing.append(str(p))
+    need: List[Path] = []
+    for rel in (robot.urdf, robot.mjcf, robot.ros_file):
+        if rel:
+            need.append(REPO_ROOT / rel)
+    model = robot.model_path()
+    if model is not None:
+        need.append(model)
+        need.extend(_model_files(model))
+    if robot.urdf:
+        need.extend(_urdf_files(REPO_ROOT / robot.urdf))
+    for p in need:
+        if not p.exists():
+            try:
+                missing.append(str(p.relative_to(REPO_ROOT)))
+            except ValueError:
+                missing.append(str(p))
     return sorted(dict.fromkeys(missing))
 
 

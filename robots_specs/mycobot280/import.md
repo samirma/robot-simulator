@@ -106,8 +106,3 @@ Joint ranges J1 ±168°, J2 ±140°, J3 ±150°, J4 ±150°, J5 −155…+160°,
 = pymycobot limits); gripper command 0..100 with 100 = open, mapped from
 `gripper_controller` ∈ [−0.74, 0.15] rad (0.15 = open). Payload 250 g, reach 280 mm,
 repeatability ±0.5 mm, gripper range 20–45 mm, gripping force 150 g.
-
-## Mounting on the myAGV
-
-The `myagv_mycobot280` assembly's mounting transform is recorded only in
-`robots_specs/high_level_spec.md` §6; these notes do not repeat it.
