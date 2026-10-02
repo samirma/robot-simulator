@@ -26,7 +26,6 @@ commands are enabled. ROS 1 and ROS 2 type spellings and action/service conventi
 handled by the transport layer; they do not change user-facing behaviour. The **launchers**
 are the shell entry points (`teleop.sh`, `view.sh`).
 
-
 | Entry point | Responsibility |
 | --- | --- |
 | `teleop.sh` | Keyboard teleoperation of a supported mobile robot, with all its discovered supported cameras shown live. |
@@ -94,8 +93,8 @@ teleop.sh [--robot <id>] [--namespace <name>] [--url ws://…]
   model turns it (amended 2026-10-02: Left turns the head to the robot's left, which is a
   negative `head_pan` on the model's −Z axis). They are not motion keys and never request the
   walking stop.
-* **Other keys.** `Space` stops (below). `Esc` quits, an ordinary exit. Commands are
-  enabled automatically once the start-up stop was delivered (amended 2026-10-02): no key is
+* **Other keys.** `Space` stops (below). `Esc` quits as an ordinary exit. Commands are
+  enabled automatically once the start-up stop has been delivered (amended 2026-10-02): no key is
   needed to start controlling the robot. `Enter` explicitly re-enables commands after a
   failed stop, including a failed start-up stop.
 * **Motion lifecycle.** Motion is hold-to-move: release of a motion key removes its
@@ -110,10 +109,10 @@ teleop.sh [--robot <id>] [--namespace <name>] [--url ws://…]
   key-event source ending or failing, and closing the window is an ordinary exit.
 * **Speed.** A held motion key commands its profile's recorded teleoperation speed for
   that axis, never above documented limits.
-* On ordinary exit or interruption that the process can handle, clear motion intent and
+* On an ordinary exit or an interruption the process can handle, clear motion intent and
   attempt the documented stop. Show connection/stop failures. Do not claim stop delivery
   on a broken connection or uncatchable process termination; state any independently
-  documented robot watchdog behavior, or explicitly state that stopping in those cases is
+  documented robot watchdog behaviour, or explicitly state that stopping in those cases is
   not guaranteed.
 * **Connection loss** clears motion intent, shows the failure and the limitation above,
   and ends `teleop.sh` with a non-zero status; reconnecting means launching it again. On
@@ -123,8 +122,8 @@ teleop.sh [--robot <id>] [--namespace <name>] [--url ws://…]
 * A stop fails explicitly when the transport rejects or cannot send it, or when the
   documented stop service or action returns an error or times out; a publish with no
   acknowledgement is not a failure. An explicitly failed stop disables commands and clears
-  held input. Re-enabling requires
-  an explicit user action and fresh key input; never resume old motion intent.
+  held input. Re-enabling requires an explicit user action and fresh key input; old motion
+  intent is never resumed.
   Re-enablement does not check or confirm that prior motion stopped. Display that
   limitation together with the failure.
 
@@ -141,17 +140,17 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
 * Robot selection, and namespace selection where supported, follows §1.1. Without a
   validated target the page shows the reason and a robot selector, and offers no controls.
 * Controls are live as soon as the target passes typed validation; there is no arm or
-  enable step (user decision, 2026-10-01). Nothing is sent before validation or on load.
+  enable step. Nothing is sent before validation or on load.
   A value the user changes is sent to the validated target immediately:
   * a topic-publish control publishes while its slider, or the AiNex head pad, is dragged,
-    at about 10 messages per second;
-  * an action control (the `so101` arm trajectory and gripper) sends a new goal while its
-    slider is dragged, at about 5 goals per second, each goal preempting the previous one
-    on the action server;
-  * both rates come from a throttle with a leading and a trailing edge, so the final value
-    is always sent; a typed number is sent when it is committed;
-  * service controls (`mycobot280` joint angles and gripper open/close, AiNex init pose)
-    and the AiNex action-group buttons send once per click and are never streamed.
+    at about 10 messages per second.
+* The page shows a 3D model of the selected target's embodiment in its current pose,
+  updated from the joint positions the robot reports (amended 2026-10-02): when an arm
+  joint moves, the same joint in the model turns by the same angle. Each movable joint
+  that a catalog control commands can be clicked in the model to change that control's
+  value.
+* Every joint and topic that a control commands can be edited on the page and shows the
+  robot's current value, where the profile documents feedback for it.
 * Every control commands a single finite target. Values are clamped to the documented
   limits, and a value outside them is shown as invalid and never sent. Where the profile
   documents measured joint positions, the page shows them and can copy them into the
@@ -178,9 +177,8 @@ raw image types and encodings supported by the profile, without substituting a s
 image source. Each stream shows live images and a visible unavailable, unsupported,
 stale or failed state when applicable. Profiles define a finite stale-image threshold
 from documented rates or an explicitly identified console policy. Never present a frozen
-frame as live. No cameras is a visible state, not a connection failure for independent
-controls. Exiting closes subscriptions and the connection.
-
+frame as live. Having no cameras is a visible state, not a connection failure for
+independent controls. Exiting closes subscriptions and the connection.
 
 ### 2.4 Wire check — `python -m robot_console.fleet`
 
@@ -201,9 +199,9 @@ python -m robot_console.fleet [--url ws://…] [--expect <id>]
 
 The console has these constraints:
 
-* Self-installs its venv on first run and when `pyproject.toml` changes.
-* Share profile selection, typed validation and ROS transport code between shell entry
-  points; the browser follows the same profile contracts.
+* It installs its own venv on first run and whenever `pyproject.toml` changes.
+* The shell entry points share profile selection, typed validation and ROS transport
+  code; the browser follows the same profile contracts.
 
 ## 4. Acceptance criteria
 
@@ -211,7 +209,7 @@ For each supported profile, verify against its independently derived authoritati
 interface that discovery selects the correct target or refuses ambiguity; explicit
 selection cannot bypass type checks; unsupported controls remain unavailable; and camera
 discovery displays all supported streams with visible failure/staleness states. Verify
-namespace behavior only where the documented hardware interface supports it, including
+namespace behaviour only where the documented hardware interface supports it, including
 refusal of overrides for other profiles. The installed console must run without sibling
 source trees and use the same profile against matching physical and simulated wires.
 
@@ -242,4 +240,4 @@ Verify that no base-drive or walking command is exposed.
 Verify `python -m robot_console.fleet` passes on a matching wire and exits non-zero on
 wrong types, missing required endpoints, ambiguous candidates (naming the candidates
 found), a wire with no supported robot and an unreachable wire.
-Unknown robot ids, assembly ids.
+Verify that unknown robot ids and assembly ids (`myagv_mycobot280`) are refused.
