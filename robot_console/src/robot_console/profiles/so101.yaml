@@ -1,0 +1,424 @@
+id: so101
+name: "TheRobotStudio SO-101 arm (ros2_so_arm real-hardware bringup + usb_cam wrist camera)"
+dialect: ros2
+kind: arm
+teleop: none
+sources:
+  ros2_so_arm:
+    url: https://github.com/ros-physical-ai/ros2_so_arm
+    revision: e166df9d51f43b24da9b99047c6c51c306bda74f
+    note: "Approved community ROS 2 interface (the manufacturer defines none). CI targets ROS 2 jazzy, kilted, rolling (ros2_so_arm:.github/workflows/build_and_test.yaml#L16-L18); message/service/action types below use the jazzy ros2_control/ros2_controllers spelling."
+  usb_cam:
+    url: https://github.com/ros-drivers/usb_cam
+    revision: cb2ae6bc0a312de629f84fef933fb3e07dac1ef8
+    note: "Wrist camera driver (approved community boot). ros2_so_arm does not start or mention a camera; the camera boot is the usb_cam README default invocation `ros2 run usb_cam usb_cam_node_exe` with no params file (usb_cam:README.md#L72-L73): node /usb_cam, no namespace, source-default parameters."
+  image_common:
+    url: https://github.com/ros-perception/image_common
+    tag: "5.1.8"
+    revision: f1444cf32ce82672c2b75e1c964a72c4b0245996
+    note: "camera_info_manager as shipped for Jazzy (ros-jazzy-camera-info-manager 5.1.8), used by usb_cam; source of the set_camera_info service name."
+  docs:
+    url: https://huggingface.co/docs/lerobot/so101
+    note: "Hardware assembly/calibration only; defines no ROS interface."
+  ros2_control:
+    url: https://github.com/ros-controls/ros2_control
+    tag: "4.48.0"
+    revision: cdbc1127521074c2c5d19b4af2b73591e69d762b
+    note: "controller_manager / controller_interface as shipped for Jazzy (ros-jazzy-controller-manager 4.48.0), run by the bringup's ros2_control_node; source of the release-dependent controller_manager introspection/statistics topics."
+  ros2_controllers:
+    url: https://github.com/ros-controls/ros2_controllers
+    tag: "4.42.1"
+    revision: aacd842600a09d556b983ac3d53a0983e9ebcbb1
+    note: "joint_trajectory_controller / parallel_gripper_controller as shipped for Jazzy (ros-jazzy-joint-trajectory-controller 4.42.1)."
+  pal_statistics:
+    url: https://github.com/pal-robotics/pal_statistics
+    tag: "2.8.2"
+    revision: fb01203897860844c038663b813a7ca7de7ba520
+    note: "Publisher behind ros2_control's introspection registries (ros-jazzy-pal-statistics 2.8.2): <topic>/full, /names, /values."
+  rcl:
+    url: https://github.com/ros2/rcl
+    tag: "9.2.11"
+    revision: 22c0b957140035c675f0a061daaab5fd6b2080e7
+    note: "rcl_lifecycle as shipped for Jazzy (ros-jazzy-rcl-lifecycle 9.2.11): every lifecycle node (each ros2_control controller) publishes ~/transition_event."
+boot:
+  - "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L48-L152"
+  - "usb_cam:README.md#L72-L73 (ros2 run usb_cam usb_cam_node_exe)"
+boot_args:
+  controllers_bringup: "hardware_type:=real (usb_port defaults to /dev/LeRobotFollower); namespace args left at defaults"
+  camera: "ros2 run usb_cam usb_cam_node_exe (no params file, no remaps, no namespace)"
+boot_note: >-
+  Real hardware = `ros2 launch so_arm101_description controllers_bringup.launch.py hardware_type:=real`.
+  README documents `hardware_type:=real` -> USB /dev/LeRobotFollower (ros2_so_arm:README.md#L80-L82),
+  "To use the SO-ARM101, use the so_arm101_description package instead" (ros2_so_arm:README.md#L86-L87) and the
+  bring-up-only low-level controllers command (ros2_so_arm:README.md#L94). The launch starts ros2_control_node
+  (controller_manager) with the feetech_ros2_driver/FeetechHardwareInterface plugin when hardware_type == real
+  (ros2_so_arm:so_arm101_description/control/so_arm101.ros2_control.xacro#L12-L15), robot_state_publisher, and
+  spawners for joint_state_broadcaster, joint_trajectory_controller, gripper_controller
+  (ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L13-L17). The MoveIt demo in the repo is
+  SO-ARM100 only (MoveItConfigs(robot_name="so_arm100"), ros2_so_arm:so_arm100_moveit_config/launch/move_group.launch.py#L16),
+  and so_arm_gz is Gazebo simulation; neither is part of this profile's boot. Camera: the usb_cam README default
+  invocation `ros2 run usb_cam usb_cam_node_exe` without a params file (usb_cam:README.md#L72-L73; executable
+  usb_cam:CMakeLists.txt#L94). The node is named usb_cam (usb_cam:src/ros2/usb_cam_node.cpp#L43), runs in no
+  namespace, and uses its declared defaults (#L65-L85): framerate 30.0, frame_id default_cam, 640x480,
+  pixel_format yuyv, /dev/video0. Its relative names therefore resolve at the root: /image_raw, /camera_info,
+  /set_capture.
+namespace:
+  default: ""
+  compose: "/{ns}{name}"
+  # Joints are named <ns>/<joint> when the bringup is namespaced with use_namespace:=true
+  # (ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L96-L105,
+  # ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L20); templates use {joint_prefix}.
+  joint_prefix: "{ns}/"
+  global_names:
+    - /tf
+    - /tf_static
+    - /image_raw
+    - /camera_info
+    - /image_raw/compressed
+    - /image_raw/compressedDepth
+    - /image_raw/theora
+    - /set_capture
+    - /usb_cam/set_camera_info
+  source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L78-L88"
+  note: >-
+    The real-hardware bringup declares launch args `use_namespace` (default "false", "Whether to apply a namespace
+    to the controller stack") and `namespace` (default "", "Namespace for the controller_manager and related nodes")
+    (#L78-L88). ros2_control_node and every spawner run in `namespace` (#L119-L127, #L130-L138); the controllers yaml
+    is re-rooted under `namespace` (#L107-L115) and, only if use_namespace is true, `<robot_namespace>` in joint names
+    becomes "<ns>/" (#L96-L105, ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L20, #L32-L36).
+    robot_state_publisher runs in namespace "<ns>/" and the URDF joint/link prefix becomes "<ns>/" whenever namespace
+    is non-empty (#L22-L44). The controller_manager's ~/robot_description is remapped to the ABSOLUTE
+    /robot_description (#L124), while robot_state_publisher publishes robot_description relative to its namespace,
+    so a non-empty namespace is internally inconsistent in the pinned launch (upstream issue, not a console fact).
+    /tf and /tf_static are absolute names of tf2_ros broadcasters (standard ROS 2 behaviour, not stated in the pinned
+    sources). The camera names are not affected by the arm namespace: the camera boot runs usb_cam_node_exe
+    separately with no namespace (usb_cam:README.md#L72-L73).
+    Default (no namespace) names are listed below.
+owned_prefixes:
+  - /controller_manager/
+  - /joint_trajectory_controller/
+  - /gripper_controller/
+  - /joint_state_broadcaster/
+  - /forward_position_controller/
+  - /usb_cam/          # the camera node's private namespace (usb_cam:src/ros2/usb_cam_node.cpp#L43)
+  # The camera's public names are at the root (/image_raw, /camera_info): no camera prefix is owned,
+  # so image_transport plugin topics beyond those listed (plugin-dependent) are not flagged.
+owned_prefixes_source:
+  - "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L1-L15"
+topics:
+  # ---- robot_state_publisher --------------------------------------------------------
+  - name: /robot_description
+    type: std_msgs/msg/String
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L37-L44"
+    note: "Latched (transient_local) URDF published by robot_state_publisher; controller_manager subscribes to it via the ~/robot_description -> /robot_description remap (#L124)."
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L37-L44"
+    note: "robot_state_publisher transforms of the revolute joints, driven by /joint_states."
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L37-L44"
+    note: "Fixed joints (world->base_link, gripper_frame_joint) from the URDF (ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L25-L28, #L662-L665)."
+  # ---- joint_state_broadcaster -------------------------------------------------------
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    direction: out
+    rate_hz: 50
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L8-L9"
+    note: "joint_state_broadcaster/JointStateBroadcaster, spawned at startup (controllers_bringup.launch.py#L13-L17); published every controller_manager update, update_rate 50 Hz (ros2_controllers.yaml#L3). Joints: shoulder_pan_joint, shoulder_lift_joint, elbow_flex_joint, wrist_flex_joint, wrist_roll_joint, gripper_joint (position+velocity state, so_arm101.ros2_control.xacro#L27-L85)."
+  - name: /dynamic_joint_states
+    type: control_msgs/msg/DynamicJointState
+    direction: out
+    rate_hz: 50
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L8-L9"
+    note: "Second topic published by joint_state_broadcaster (ros2_controllers jazzy); rate = controller_manager update_rate (ros2_controllers.yaml#L3)."
+  # ---- joint_trajectory_controller (arm) --------------------------------------------
+  - name: /joint_trajectory_controller/joint_trajectory
+    type: trajectory_msgs/msg/JointTrajectory
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L5-L6"
+    note: "joint_trajectory_controller/JointTrajectoryController over the 5 arm joints, position command interface (ros2_controllers.yaml#L24-L36). The console uses the action instead (cancellable)."
+  - name: /joint_trajectory_controller/controller_state
+    type: control_msgs/msg/JointTrajectoryControllerState
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L5-L6"
+    note: "jazzy JTC state topic (humble also used control_msgs/msg/JointTrajectoryControllerState). Published from the controller update loop; no state_publish_rate is set in the pinned yaml, so no rate is asserted."
+  # ---- forward_position_controller (configured, NOT spawned by the bringup) ----------
+  - name: /forward_position_controller/commands
+    type: std_msgs/msg/Float64MultiArray
+    direction: in
+    rate_hz: null
+    optional: true
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L11-L12"
+    note: "position_controllers/JointGroupPositionController is declared (joints ros2_controllers.yaml#L38-L45) but not in startup_controllers (controllers_bringup.launch.py#L13-L17); only present if loaded/activated manually (as so_arm_gz does, ros2_so_arm:so_arm_gz/README.md#L85). Unbounded streaming command: not used as a console control."
+  # ---- controller_manager (optional, distro-dependent) -------------------------------
+  - name: /controller_manager/activity
+    type: controller_manager_msgs/msg/ControllerManagerActivity
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+    note: "Present only in newer ros2_control releases (kilted/rolling, later jazzy); not stated in the pinned sources."
+  # Release-dependent rows of the Jazzy binaries the bringup runs (ros2_so_arm pins no
+  # ros2_control release): present on a robot running ros2_control >= the tags in
+  # `sources`, absent on older releases, so optional. Diagnostics/introspection only;
+  # no console control uses them.
+  - name: /controller_manager/introspection_data/full
+    type: pal_statistics_msgs/msg/Statistics
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "ros2_control:controller_manager/src/controller_manager.cpp#L680-L683"
+    note: "INITIALIZE_ROS2_CONTROL_INTROSPECTION_REGISTRY(this, DEFAULT_INTROSPECTION_TOPIC = \"~/introspection_data\") (ros2_control:hardware_interface/include/hardware_interface/introspection.hpp#L48); pal_statistics publishes <topic>/full (pal_statistics:pal_statistics/src/pal_statistics.cpp#L76-L77)."
+  - name: /controller_manager/introspection_data/names
+    type: pal_statistics_msgs/msg/StatisticsNames
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "pal_statistics:pal_statistics/src/pal_statistics.cpp#L79-L80"
+    note: "<topic>/names of the ~/introspection_data registry (ros2_control:controller_manager/src/controller_manager.cpp#L680-L683)."
+  - name: /controller_manager/introspection_data/values
+    type: pal_statistics_msgs/msg/StatisticsValues
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "pal_statistics:pal_statistics/src/pal_statistics.cpp#L81-L82"
+    note: "<topic>/values of the ~/introspection_data registry (ros2_control:controller_manager/src/controller_manager.cpp#L680-L683)."
+  - name: /controller_manager/statistics/full
+    type: pal_statistics_msgs/msg/Statistics
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "ros2_control:controller_manager/src/controller_manager.cpp#L684-L686"
+    note: "Execution-statistics registry CM_STATISTICS_TOPIC = \"~/statistics\" (ros2_control:hardware_interface/include/hardware_interface/introspection.hpp#L50); pal_statistics <topic>/full."
+  - name: /controller_manager/statistics/names
+    type: pal_statistics_msgs/msg/StatisticsNames
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "pal_statistics:pal_statistics/src/pal_statistics.cpp#L79-L80"
+    note: "<topic>/names of the ~/statistics registry (ros2_control:controller_manager/src/controller_manager.cpp#L684-L686)."
+  - name: /controller_manager/statistics/values
+    type: pal_statistics_msgs/msg/StatisticsValues
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "pal_statistics:pal_statistics/src/pal_statistics.cpp#L81-L82"
+    note: "<topic>/values of the ~/statistics registry (ros2_control:controller_manager/src/controller_manager.cpp#L684-L686)."
+  - name: /joint_trajectory_controller/speed_scaling_input
+    type: control_msgs/msg/SpeedScalingFactor
+    direction: in
+    rate_hz: null
+    optional: true
+    source: "ros2_controllers:joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1075-L1083"
+    note: "Subscribed when the controller has no velocity/acceleration/effort command interface, as here (position only, ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L24-L36). Not used by the console."
+  - name: /joint_state_broadcaster/transition_event
+    type: lifecycle_msgs/msg/TransitionEvent
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "rcl:rcl_lifecycle/src/com_interface.c#L40"
+    note: "Each controller is an rclcpp_lifecycle::LifecycleNode (ros2_control:controller_interface/src/controller_interface_base.cpp#L77-L79, lifecycle services disabled); rcl_lifecycle's ~/transition_event publisher remains. Published on state transitions only."
+  - name: /joint_trajectory_controller/transition_event
+    type: lifecycle_msgs/msg/TransitionEvent
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "rcl:rcl_lifecycle/src/com_interface.c#L40"
+    note: "Lifecycle state-transition events of the controller (see /joint_state_broadcaster/transition_event)."
+  - name: /gripper_controller/transition_event
+    type: lifecycle_msgs/msg/TransitionEvent
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "rcl:rcl_lifecycle/src/com_interface.c#L40"
+    note: "Lifecycle state-transition events of the controller (see /joint_state_broadcaster/transition_event)."
+  # ---- usb_cam wrist camera (node /usb_cam, no namespace, source defaults) ----------------
+  - name: /image_raw
+    type: sensor_msgs/msg/Image
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L37-L49"
+    note: "image_transport CameraPublisher on base topic image_raw (relative, node in no namespace -> /image_raw). One frame per wall-timer tick of 1000/framerate ms (#L212-L215), framerate default 30.0 (#L67); 640x480 (#L69-L70); frame_id default_cam (#L68); encoding from pixel_format yuyv (#L72) = yuv422_yuy2 (usb_cam:include/usb_cam/formats/yuyv.hpp#L49-L51, usb_cam:include/usb_cam/constants.hpp#L102), set per frame (#L361)."
+  - name: /camera_info
+    type: sensor_msgs/msg/CameraInfo
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L378-L380"
+    note: "Published with each image by the CameraPublisher (image_raw -> sibling camera_info). Not calibrated by default (camera_info_url empty, #L66): width/height/frame_id only (#L147-L152)."
+  - name: /image_raw/compressed
+    type: sensor_msgs/msg/CompressedImage
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L47-L49"
+    note: "image_transport compressed plugin output; present when image_transport_plugins is installed (usb_cam:README.md#L149). The node's own image_raw/compressed publisher exists only for pixel_format mjpeg (#L174-L182), not the default yuyv."
+  - name: /image_raw/compressedDepth
+    type: sensor_msgs/msg/CompressedImage
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L47-L49"
+    note: "image_transport compressedDepth plugin output; plugin-dependent."
+  - name: /image_raw/theora
+    type: theora_image_transport/msg/Packet
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L47-L49"
+    note: "image_transport theora plugin output; plugin-dependent."
+services:
+  # ---- controller_manager (ros2_control_node, node /controller_manager) ---------------
+  - name: /controller_manager/list_controllers
+    type: controller_manager_msgs/srv/ListControllers
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/list_controller_types
+    type: controller_manager_msgs/srv/ListControllerTypes
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/list_hardware_components
+    type: controller_manager_msgs/srv/ListHardwareComponents
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/list_hardware_interfaces
+    type: controller_manager_msgs/srv/ListHardwareInterfaces
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/load_controller
+    type: controller_manager_msgs/srv/LoadController
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/configure_controller
+    type: controller_manager_msgs/srv/ConfigureController
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/switch_controller
+    type: controller_manager_msgs/srv/SwitchController
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/unload_controller
+    type: controller_manager_msgs/srv/UnloadController
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/reload_controller_libraries
+    type: controller_manager_msgs/srv/ReloadControllerLibraries
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/set_hardware_component_state
+    type: controller_manager_msgs/srv/SetHardwareComponentState
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+  - name: /controller_manager/cleanup_controller
+    type: controller_manager_msgs/srv/CleanupController
+    optional: true
+    source: "ros2_so_arm:so_arm101_description/launch/controllers_bringup.launch.py#L119-L127"
+    note: "Only in newer ros2_control releases (kilted/rolling); distro-dependent."
+  # ---- joint_trajectory_controller ------------------------------------------------------
+  - name: /joint_trajectory_controller/query_state
+    type: control_msgs/srv/QueryTrajectoryState
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L5-L6"
+    note: "Service of joint_trajectory_controller/JointTrajectoryController (jazzy)."
+  # ---- usb_cam ----------------------------------------------------------------------------
+  - name: /set_capture
+    type: std_srvs/srv/SetBool
+    optional: false
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L54-L62"
+    note: "Relative name 'set_capture' (not ~/), node in no namespace, so it resolves to /set_capture. true = start, false = stop capturing (usb_cam:src/ros2/usb_cam_node.cpp#L109-L122)."
+  - name: /usb_cam/set_camera_info
+    type: sensor_msgs/srv/SetCameraInfo
+    optional: false
+    source: "image_common:camera_info_manager/src/camera_info_manager.cpp#L109-L111"
+    note: "usb_cam always constructs camera_info_manager::CameraInfoManager on itself (usb_cam:src/ros2/usb_cam_node.cpp#L143-L145), which creates the PRIVATE service ~/set_camera_info, resolving to /usb_cam/set_camera_info for node /usb_cam."
+actions:
+  - name: /joint_trajectory_controller/follow_joint_trajectory
+    type: control_msgs/action/FollowJointTrajectory
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L5-L6"
+    note: "Action server of joint_trajectory_controller/JointTrajectoryController; joints ros2_controllers.yaml#L31-L36."
+  - name: /gripper_controller/gripper_cmd
+    type: control_msgs/action/ParallelGripperCommand
+    optional: false
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L14-L15"
+    note: "parallel_gripper_action_controller/GripperActionController (package parallel_gripper_controller, ros2_so_arm:so_arm101_description/package.xml#L20) on joint gripper_joint with allow_stalling true (ros2_controllers.yaml#L18-L21). Goal: sensor_msgs/JointState command (position[0] = target, rad). This controller exists from jazzy on."
+cameras:
+  - topic: /image_raw
+    type: sensor_msgs/msg/Image
+    encodings: [yuv422_yuy2]
+    rate_hz: 30
+    stale_after_s: 1.0
+    optional: false
+    source: "usb_cam:src/ros2/usb_cam_node.cpp#L67-L72"
+    policy: "stale_after_s = max(1.0 s, 5 frame periods at the 30 Hz default framerate)."
+    note: "Default pixel_format yuyv (#L72) publishes ROS encoding yuv422_yuy2 without conversion (usb_cam:include/usb_cam/formats/yuyv.hpp#L49-L51, usb_cam:include/usb_cam/constants.hpp#L102), set per frame (#L361); the console decodes YUYV 4:2:2 for display. Timer period 1000/framerate ms (#L212-L215)."
+stop: []
+stop_note: "No velocity-driven motion exists (teleop none). Motion is stopped by cancelling the active goal of the FollowJointTrajectory / ParallelGripperCommand action (see controls[].stop)."
+watchdog: "No command timeout configured in the pinned controllers yaml (no cmd_timeout for joint_trajectory_controller, ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L24-L36); JTC holds the last trajectory end point. The feetech_ros2_driver hardware plugin is not in the pinned sources; none found in source."
+controls:
+  - id: arm_trajectory
+    label: "Arm joint goal"
+    kind: action
+    name: /joint_trajectory_controller/follow_joint_trajectory
+    type: control_msgs/action/FollowJointTrajectory
+    template:
+      trajectory:
+        joint_names: ["{joint_prefix}shoulder_pan_joint", "{joint_prefix}shoulder_lift_joint", "{joint_prefix}elbow_flex_joint", "{joint_prefix}wrist_flex_joint", "{joint_prefix}wrist_roll_joint"]
+        points:
+          - positions: ["$shoulder_pan", "$shoulder_lift", "$elbow_flex", "$wrist_flex", "$wrist_roll"]
+            time_from_start: {sec: "$duration", nanosec: 0}
+    fields:
+      - {name: shoulder_pan, label: "Shoulder pan", min: -1.91986, max: 1.91986, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L540"}
+      - {name: shoulder_lift, label: "Shoulder lift", min: -1.74533, max: 1.74533, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L564"}
+      - {name: elbow_flex, label: "Elbow flex", min: -1.69, max: 1.54, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L592"}
+      - {name: wrist_flex, label: "Wrist flex", min: -1.6, max: 1.6, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L619"}
+      - {name: wrist_roll, label: "Wrist roll", min: -2.3, max: 2.3, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L643"}
+      - {name: duration, label: "Duration", min: 1, max: 10, default: 3, unit: s, integer: true, policy: "Console policy: whole seconds written to builtin_interfaces/Duration.sec; URDF velocity limit 10 rad/s (so_arm101_macro.xacro#L540) is not a useful bound, so a conservative 1-10 s range is used."}
+    stop:
+      - {op: cancel}
+    prerequisites:
+      - /joint_trajectory_controller/follow_joint_trajectory
+      - /joint_states
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L24-L36"
+    note: "Joint names without prefix (default namespace; with a non-empty namespace they become '<ns>/<joint>', controllers_bringup.launch.py#L22-L34). Joint names: so_arm101_macro.xacro#L532, #L559, #L584, #L611, #L638. Initial positions 0.0 (so_arm101.ros2_control.xacro#L28)."
+  - id: gripper
+    label: "Gripper"
+    kind: action
+    name: /gripper_controller/gripper_cmd
+    type: control_msgs/action/ParallelGripperCommand
+    template:
+      command:
+        name: ["{joint_prefix}gripper_joint"]
+        position: ["$position"]
+    fields:
+      - {name: position, label: "Gripper joint", min: 0.0, max: 1.70, default: 0.0, unit: rad, source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L675"}
+    stop:
+      - {op: cancel}
+    prerequisites:
+      - /gripper_controller/gripper_cmd
+      - /joint_states
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L14-L21"
+    note: "gripper_joint is revolute 0.0..1.70 rad (so_arm101_macro.xacro#L670-L675), position command interface only (so_arm101.ros2_control.xacro#L77-L85). allow_stalling true: goal succeeds when the jaw stalls on an object (ros2_controllers.yaml#L21)."
+uncertainties:
+  - "ros2_control / ros2_controllers endpoint names and types (controller_manager services, JSB/JTC topics, gripper_cmd action) come from the upstream jazzy implementations of the controller types named in the pinned yaml, not from the pinned repos themselves."
+  - "controller_manager ~/activity topic and ~/cleanup_controller service are distro/release dependent (listed optional)."
+  - "/usb_cam/set_camera_info comes from camera_info_manager (image_common 5.1.8, Jazzy's release), a dependency of the pinned usb_cam, not usb_cam itself."
+  - "The mounting of a wrist camera is not documented by ros2_so_arm; the approved camera boot uses usb_cam source defaults (/dev/video0, 640x480 @30, yuyv -> yuv422_yuy2, frame_id default_cam)."
+  - "Namespaced bringup appears internally inconsistent upstream (controller_manager reads absolute /robot_description; robot_state_publisher publishes namespaced)."

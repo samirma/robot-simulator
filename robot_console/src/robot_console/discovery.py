@@ -1,376 +1,369 @@
-"""Which robot is on this rosbridge, and under what name?
+"""Typed discovery of robots on a rosbridge wire, validation against profiles, and target
+selection. Shared by teleop, fleet and (as the same algorithm in ``web/console.js``) the page.
 
-The console's constants are the *bare* vendor contract -- `/cmd_vel`, `/odom`,
-`/camera/image_raw/compressed` -- because that is what one real robot's stack presents.
-The simulator, meanwhile, gives every robot a namespace and defaults it to the robot's own
-name, so a lone myAGV is on `/myagv/*`. Both defaults are right and they do not meet: with
-neither `--namespace` nor `--robot` given the console published into a void and subscribed
-to topics nobody fed, and **nothing errored** -- roslibpy subscribes happily to a name that
-does not exist and the bridge never acks.
+Discovery reads the graph through ``rosapi`` only (never publishes). A profile is a
+*candidate* at a namespace when every one of its required endpoint names is present there;
+it then passes validation when every present endpoint has its documented type and nothing
+else is under the profile's names (its owned prefixes, or the whole namespace) but its
+optional rows and ROS infrastructure.
 
-So the console asks `/rosapi/topics` (console spec §2.1: robot and namespace default to
-discovered). This module is the pure half of that question: it takes `{topic: type}` as
-rosapi reports it and answers which robots are there. After `--robot` and `--namespace`
-narrow the candidates exactly one must remain; none, or more than one, is an error that
-names what was found -- including candidates rejected for a missing or mistyped topic, so
-"nothing drivable" never hides "something almost drivable".
-
-A robot is identified by a signature **command** topic, confirmed by its distinguishing
-companions, all with the contract's types. Command topics because a robot whose first
-frame has not been encoded yet is still identifiable, and rosapi keeps declared
-subscriptions in its answer precisely so a client can discover how to *drive* something.
-
-There is one table of signatures, `MEMBER_SIGNATURES`, typed and covering every fleet
-member the console knows a contract for. Two questions are asked of it:
-
-* `survey` / `discover`: which robot does teleop drive? Only the kinds with
-  `COMPANIONS` (a myAGV, a myAGV + myCobot 280, a ROSMASTER X3 PLUS, an AiNex) are
-  candidates, and each must also carry its distinguishing companions.
-
-Three of those kinds take the same `/cmd_vel` Twist and report the same `/odom`, so that
-pair identifies none of them. Each is identified instead by a command topic only it
-takes -- the composite by `move_base`'s action goal, the X3 PLUS by its driver's arm
-command, the myAGV by `/cmd_vel` when neither is there -- and `MEMBER_SIGNATURES` lists
-the more specific first: a namespace that composes several signatures is the first
-kind's. (A physical myAGV running its own navigation launch presents what the composite
-does over ROS -- the arm is not on ROS -- and is taken for one; `--robot myagv` still
-drives it through the same `/cmd_vel`.)
-* `find_members`: what is on the wire at all? The fleet check and the camera page ask
-  this; it counts every kind, including the ones teleop never drives (an SO-101, the
-  worktop rig), and reports a signature of the wrong type rather than counting it.
-
-Both apply one typing rule (console spec §4, Discovery: wrong types fail, listing the
-candidates found): a name counts only with its contract type, and a type rosapi leaves
-empty is a wrong type, reported as `untyped`. rosapi states the type of every topic it
-lists, so an empty one means the wire could not say what the topic carries -- and a name
-alone is a claim anybody can make. `survey` reports such a candidate in its rejected
-list; `find_members` in its wrong-type list.
-
-The console's camera and control page (`live_cameras.html`, served by `bin/view.sh`)
-identifies members the same way, from a copy of `MEMBER_SIGNATURES` in its `CONTRACT`
-block. The two are duplicated rather than shared because the page is one static file with
-no Python behind it; `tests/test_view_page.py` holds them equal.
+Stock ROS 2 rosapi cannot report action types (its ``action_type`` service crashes the
+rosapi node on Jazzy and hangs on Humble, and hidden ``_action`` endpoints are not listed),
+so a ROS 2 action is identified by name through ``/rosapi/action_servers`` and its type is
+reported as not verifiable over rosbridge. The console never calls ``action_type``.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import dataclasses
-from typing import List, Mapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from robot_console import ainex_topics, composite_topics, x3plus_topics
-from robot_console.robots import AINEX, MYAGV, MYAGV_MYCOBOT280, ROSMASTER_X3_PLUS
-
-SO101 = "so101"
-from robot_console.topics import (
-    TOPIC_CAMERA,
-    TOPIC_CMD_VEL,
-    TOPIC_ODOM,
-    TYPE_ODOM,
-    TYPE_TWIST,
-    namespaced,
-)
-
-#: `(member kind, signature topic, its type)`, most specific first: every kind of fleet
-#: member this console knows a contract for. A robot is identified by its signature
-#: **command** topic. Typed, because a name alone is a claim anybody can make -- a
-#: `/cmd_vel` that is a `std_msgs/String` is not a myAGV. Each type is its robot's own
-#: dialect, exactly as its ROS file spells it; the two dialects are never folded together.
-MEMBER_SIGNATURES: Tuple[Tuple[str, str, str], ...] = (
-    (SO101, "/joint_trajectory_controller/joint_trajectory",
-     "trajectory_msgs/msg/JointTrajectory"),
-    (AINEX, ainex_topics.TOPIC_SET_WALKING_PARAM, ainex_topics.TYPE_WALKING_PARAM),
-    (MYAGV_MYCOBOT280, composite_topics.TOPIC_GOAL, composite_topics.TYPE_GOAL),
-    (ROSMASTER_X3_PLUS, x3plus_topics.TOPIC_TARGET_ANGLE, x3plus_topics.TYPE_ARM_JOINT),
-    (MYAGV, TOPIC_CMD_VEL, TYPE_TWIST),
-)
-
-#: The worktop's fixed camera rig (simulator spec §3): a workspace-owned member under a
-#: namespace of its own, identified by its overhead view. Not a robot and not drivable.
-RIG_KIND = "scene"
-RIG_NAMESPACE = "scene"
-RIG_SIGNATURE = ("/scene/overhead/color/compressed", "sensor_msgs/msg/CompressedImage")
-
-#: The kinds teleop drives, and the topics besides the signature that must be on the wire,
-#: with which type, for a signature hit to be that robot: what distinguishes it from
-#: anything else that happens to take the same command (a Twist base without odometry is
-#: not a myAGV). An SO-101 has no place in teleop, so it has no entry.
-COMPANIONS: Mapping[str, Mapping[str, str]] = {
-    MYAGV: {TOPIC_ODOM: TYPE_ODOM},
-    MYAGV_MYCOBOT280: {TOPIC_CMD_VEL: TYPE_TWIST, TOPIC_ODOM: TYPE_ODOM,
-                       composite_topics.TOPIC_CANCEL: composite_topics.TYPE_GOAL_ID},
-    ROSMASTER_X3_PLUS: {x3plus_topics.TOPIC_CMD_VEL: x3plus_topics.TYPE_TWIST,
-                        x3plus_topics.TOPIC_ODOM: x3plus_topics.TYPE_ODOM},
-    AINEX: {ainex_topics.TOPIC_IS_WALKING: ainex_topics.TYPE_BOOL},
-}
-
-#: A kind whose camera is not the myAGV-shaped `/camera/image_raw/compressed`: its own
-#: contract name, used as it is.
-CAMERAS: Mapping[str, str] = {ROSMASTER_X3_PLUS: x3plus_topics.TOPIC_CAMERA}
-
-#: `(robot, signature topic)` of the drivable kinds, in `MEMBER_SIGNATURES` order.
-SIGNATURES: Tuple[Tuple[str, str], ...] = tuple(
-    (kind, topic) for kind, topic, _ in MEMBER_SIGNATURES if kind in COMPANIONS
-)
-
-#: Everything that must be on the wire for a drivable kind: its signature and companions.
-REQUIRED: Mapping[str, Mapping[str, str]] = {
-    kind: {topic: topic_type, **COMPANIONS[kind]}
-    for kind, topic, topic_type in MEMBER_SIGNATURES
-    if kind in COMPANIONS
-}
-
-#: Both dialects of the same message type. Two robots on one graph can speak two: the
-#: myAGV and the AiNex are ROS 1 stacks and the SO-101 is a ROS 2 bringup, and rosapi
-#: reports each one's strings verbatim.
-CAMERA_TYPES: frozenset = frozenset(
-    {"sensor_msgs/CompressedImage", "sensor_msgs/msg/CompressedImage"}
-)
-
-#: A raw image stream, in both dialects: a camera of its own on the view page where no
-#: compressed republish sits beside it (the ROSMASTER X3 PLUS's only colour stream).
-RAW_CAMERA_TYPES: frozenset = frozenset({"sensor_msgs/Image", "sensor_msgs/msg/Image"})
+from robot_console import dialect as d
+from robot_console.profiles import Profile, ProfileError, check_namespace_allowed, expand_endpoint, load_all
+from robot_console.rosbridge import Rosbridge, ServiceError, TransportError
 
 
 class DiscoveryError(RuntimeError):
-    """No single robot could be picked. The message is what the user is shown."""
+    """The wire could not be read (unreachable, rosapi missing or failing)."""
 
 
-@dataclasses.dataclass(frozen=True)
-class Discovered:
-    """One drivable robot on the wire."""
+class SelectionError(RuntimeError):
+    """No unique validated target: carries the reason and the candidates found."""
 
-    robot: str
+    def __init__(self, reason: str, candidates: Sequence["Target"] = ()) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.candidates = list(candidates)
+
+
+# ------------------------------------------------------------------ graph
+
+@dataclasses.dataclass
+class Graph:
+    dialect: Optional[str]
+    topics: Dict[str, str]
+    services: Dict[str, str]            # "" when rosapi could not tell the type
+    actions: Dict[str, Optional[str]]   # ROS 2: None (type not reportable)
+    action_parts: Set[str]              # wire names that belong to a discovered action
+    nodes: List[str] = dataclasses.field(default_factory=list)
+    distro: str = ""
+
+    def names(self) -> Set[str]:
+        return set(self.topics) | set(self.services) | set(self.actions)
+
+    def has(self, kind: str, name: str) -> bool:
+        return name in {"topic": self.topics, "service": self.services, "action": self.actions}[kind]
+
+    def type_of(self, kind: str, name: str) -> Optional[str]:
+        return {"topic": self.topics, "service": self.services, "action": self.actions}[kind].get(name)
+
+    def cameras(self) -> Dict[str, str]:
+        """Every topic of a supported raw image type (sensor_msgs/Image)."""
+        return {n: t for n, t in self.topics.items() if d.normalize_type(t) == "sensor_msgs/Image"}
+
+
+def _call(rb: Rosbridge, service: str, args: Optional[dict] = None, timeout: float = 5.0) -> dict:
+    try:
+        return rb.call_service(service, args, timeout=timeout)
+    except (ServiceError, TimeoutError, TransportError) as exc:
+        raise DiscoveryError(f"rosapi {service} failed: {exc}") from None
+
+
+def fetch_graph(rb: Rosbridge, timeout: float = 5.0) -> Graph:
+    """Read topics, services (typed), actions and the dialect through rosapi."""
+    tr = _call(rb, "/rosapi/topics", timeout=timeout)
+    topics = dict(zip(tr.get("topics") or [], tr.get("types") or []))
+    services_list = list((_call(rb, "/rosapi/services", timeout=timeout).get("services")) or [])
+    dia: Optional[str] = None
+    for t in topics.values():
+        dia = d.type_dialect(t)
+        if dia == d.ROS2:
+            break
+    # ROS 2 stock nodes always publish /parameter_events and /rosout with ROS 2 spellings.
+    distro = ""
+    if "/rosapi/get_ros_version" in services_list:
+        try:
+            v = rb.call_service("/rosapi/get_ros_version", timeout=timeout)
+            dia = d.ROS2 if int(v.get("version", 1)) == 2 else d.ROS1
+            distro = str(v.get("distro", ""))
+        except (ServiceError, TimeoutError, TransportError, ValueError):
+            pass
+    # Service types, pipelined; infrastructure services are skipped (never part of a robot).
+    services: Dict[str, str] = {}
+    futs: Dict[str, concurrent.futures.Future] = {}
+    for s in services_list:
+        if d.is_infrastructure(s, "service"):
+            continue
+        futs[s] = rb.call_service_async("/rosapi/service_type", {"service": s})
+    for s, f in futs.items():
+        try:
+            services[s] = str(f.result(timeout).get("type") or "")
+        except (ServiceError, TransportError, concurrent.futures.TimeoutError):
+            services[s] = ""
+        except Exception:  # noqa: BLE001
+            services[s] = ""
+    if dia is None:
+        for t in services.values():
+            dia = d.type_dialect(t) or dia
+    actions: Dict[str, Optional[str]] = {}
+    parts: Set[str] = set()
+    if dia == d.ROS1:
+        for n, t in topics.items():
+            hit = d.ros1_action_from_goal_topic(n, t)
+            if hit and all(f"{hit[0]}/{p}" in topics for p in ("cancel", "status", "feedback", "result")):
+                actions[hit[0]] = hit[1]
+                parts |= set(d.ros1_action_topics(hit[0], hit[1]))
+    elif dia == d.ROS2:
+        if "/rosapi/action_servers" in services_list:
+            ar = _call(rb, "/rosapi/action_servers", timeout=timeout)
+            for a in ar.get("action_servers") or []:
+                actions[a] = None
+        for s, t in list(services.items()):   # a rosapi that does list hidden services
+            hit = d.ros2_action_from_send_goal(s, t)
+            if hit:
+                actions[hit[0]] = hit[1]
+        for a, t in actions.items():
+            tp, sv = d.ros2_action_endpoints(a, t or "x/action/X")
+            parts |= set(tp) | set(sv)
+    nodes: List[str] = []
+    return Graph(dialect=dia, topics=topics, services=services, actions=actions,
+                 action_parts=parts, nodes=nodes, distro=distro)
+
+
+def read_wire(url: str, timeout: float = 5.0) -> Graph:
+    rb = Rosbridge(url)
+    rb.connect(timeout)
+    try:
+        return fetch_graph(rb, timeout)
+    finally:
+        rb.close()
+
+
+# ------------------------------------------------------------------ validation
+
+@dataclasses.dataclass
+class Validation:
+    missing: List[Tuple[str, str, str]] = dataclasses.field(default_factory=list)      # kind, name, type
+    wrong_type: List[Tuple[str, str, str, str]] = dataclasses.field(default_factory=list)  # kind, name, want, got
+    unexpected: List[Tuple[str, str]] = dataclasses.field(default_factory=list)       # kind, name
+    unverified: List[Tuple[str, str, str]] = dataclasses.field(default_factory=list)   # kind, name, why
+    dialect_mismatch: Optional[str] = None
+    optional_present: List[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return not (self.missing or self.wrong_type or self.unexpected or self.dialect_mismatch)
+
+    def problems(self) -> List[str]:
+        out = []
+        if self.dialect_mismatch:
+            out.append(self.dialect_mismatch)
+        out += [f"missing {k} {n} ({t})" for k, n, t in self.missing]
+        out += [f"wrong type on {k} {n}: expected {w}, found {g or 'unknown'}" for k, n, w, g in self.wrong_type]
+        out += [f"unexpected {k} {n} under the profile's names" for k, n in self.unexpected]
+        return out
+
+
+@dataclasses.dataclass
+class Target:
+    profile: Profile
     namespace: str
-    camera_topic: str
+    validation: Validation
 
-    def describe(self) -> str:
-        where = f"/{self.namespace}/*" if self.namespace else "the bare contract (no namespace)"
-        return f"{self.robot} on {where}, camera {self.camera_topic}"
+    @property
+    def label(self) -> str:
+        return self.profile.id + (f" (namespace /{self.namespace})" if self.namespace else "")
 
+    def wire(self, name: str) -> str:
+        return self.profile.resolve(name, self.namespace)
 
-@dataclasses.dataclass(frozen=True)
-class Member:
-    """One fleet member on the wire: its kind (a `robots.yml` id, or `scene`) and namespace."""
-
-    kind: str
-    namespace: str
-
-    def describe(self) -> str:
-        where = f"/{self.namespace}/*" if self.namespace else "the bare contract"
-        return f"{self.kind} on {where}"
+    def required_names(self) -> Set[str]:
+        return {self.wire(e.name) for e in self.profile.required()}
 
 
-@dataclasses.dataclass(frozen=True)
-class Rejected:
-    """A signature hit that is not a usable robot, and why."""
-
-    robot: str
-    namespace: str
-    reason: str
-
-    def describe(self) -> str:
-        where = f"/{self.namespace}/*" if self.namespace else "the bare contract"
-        return f"{self.robot}? on {where}: {self.reason}"
-
-
-def describe_type(topic_type: Optional[str]) -> str:
-    """A stated type as a message shows it; an empty one is `untyped`."""
-    return topic_type or "untyped"
-
-
-def typed_as(present: Mapping[str, str], topic: str, contract_type: str) -> bool:
-    """The one typing rule: `topic` is on the wire with exactly `contract_type`."""
-    return present.get(topic) == contract_type
-
-
-def namespace_of(topic: str, signature: str) -> Optional[str]:
-    """The namespace that makes `topic` be `signature`, or None if it is not.
-
-    Derived from the signature rather than by taking the first path segment, because a
-    signature can have several segments of its own: a bare AiNex's `/walking/set_param`
-    must not be read as a robot called `walking`.
-    """
-    signature = "/" + signature.strip("/")
-    if topic == signature:
-        return ""
-    if topic.endswith(signature):
-        namespace = topic[: -len(signature)].strip("/")
-        if namespace and namespaced(signature, namespace) == topic:
-            return namespace
-    return None
+def validate(p: Profile, ns: str, g: Graph) -> Validation:
+    v = Validation()
+    if g.dialect and g.dialect != p.dialect:
+        v.dialect_mismatch = (f"the wire is {g.dialect.upper()} but profile '{p.id}' is "
+                              f"{p.dialect.upper()}")
+    claimed: Set[str] = set()
+    for e in p.endpoints:
+        wire = p.resolve(e.name, ns)
+        for _, part, _ in expand_endpoint(p, e):
+            claimed.add(p.resolve(part, ns))
+        claimed.add(wire)
+        if not g.has(e.kind, wire):
+            if not e.optional:
+                v.missing.append((e.kind, wire, e.type))
+            continue
+        if e.optional:
+            v.optional_present.append(wire)
+        got = g.type_of(e.kind, wire)
+        if e.kind == "action" and got is None:
+            v.unverified.append((e.kind, wire, "stock ROS 2 rosapi cannot report action types"))
+            continue
+        if not got or not d.types_equal(got, e.type):
+            v.wrong_type.append((e.kind, wire, e.type, got or ""))
+    # Nothing else under the profile's names.
+    owned = [p.resolve(pref, ns) for pref in p.owned_prefixes]
+    nsp = f"/{ns.strip('/')}/" if ns else None
+    for kind, table in (("topic", g.topics), ("service", g.services), ("action", g.actions)):
+        for name in table:
+            if name in claimed or d.is_infrastructure(name, kind):
+                continue
+            if name in g.action_parts and any(name.startswith(a + "/") for a in claimed):
+                continue
+            if any(name.startswith(o) for o in owned) or (nsp and name.startswith(nsp)):
+                v.unexpected.append((kind, name))
+    return v
 
 
-def in_namespace(topic: str, namespace: str) -> bool:
-    """Is `topic` one of the names the robot under `namespace` presents?"""
-    return not namespace or topic.startswith(f"/{namespace.strip('/')}/")
+def _namespaces_for(p: Profile, g: Graph) -> List[str]:
+    """Candidate namespaces where ``p``'s required names could be (default first)."""
+    if p.namespace is None:
+        return [""]
+    out = [p.namespace.default.strip("/")]
+    wire = g.names()
+    for e in p.required():
+        if e.name in p.namespace.global_names:
+            continue
+        for w in wire:
+            if w != e.name and w.endswith(e.name):
+                prefix = w[: -len(e.name)].strip("/")
+                if prefix and prefix not in out:
+                    out.append(prefix)
+    return out
 
 
-def _camera_for(present: Mapping[str, str], namespace: str, robot: str = "") -> str:
-    """The contract camera name if present, else the namespace's one CompressedImage
-    topic, else (ambiguous or none) the contract name. A kind with a camera of its own
-    (`CAMERAS`) gets that."""
-    if robot in CAMERAS:
-        return namespaced(CAMERAS[robot], namespace)
-    contract = namespaced(TOPIC_CAMERA, namespace)
-    if contract in present:
-        return contract
-    cameras = [
-        topic
-        for topic, kind in present.items()
-        if kind in CAMERA_TYPES and in_namespace(topic, namespace)
-    ]
-    return cameras[0] if len(cameras) == 1 else contract
+def candidates(g: Graph, profiles: Iterable[Profile], namespace: Optional[str] = None
+               ) -> Tuple[List[Target], List[Tuple[Target, List[str]]]]:
+    """(full candidates, near misses with their missing names)."""
+    full: List[Target] = []
+    near: List[Tuple[Target, List[str]]] = []
+    for p in profiles:
+        if g.dialect and g.dialect != p.dialect:
+            continue
+        nss = [namespace.strip("/")] if (namespace is not None and p.namespace) else _namespaces_for(p, g)
+        for ns in nss:
+            req = p.required()
+            present = [e for e in req if g.has(e.kind, p.resolve(e.name, ns))]
+            t = Target(p, ns, validate(p, ns, g))
+            if req and len(present) == len(req):
+                full.append(t)
+            elif req and len(present) * 2 >= len(req):
+                near.append((t, [p.resolve(e.name, ns) for e in req if e not in present]))
+    return full, near
 
 
-def _problems(present: Mapping[str, str], robot: str, namespace: str) -> List[str]:
-    problems = []
-    for topic, kind in REQUIRED[robot].items():
-        name = namespaced(topic, namespace)
-        if name not in present:
-            problems.append(f"missing {name}")
-        # One rule with `find_members`: an empty type is not the contract type.
-        elif not typed_as(present, name, kind):
-            problems.append(f"{name} is {describe_type(present[name])}, not {kind}")
-    return problems
+def _prune_dominated(full: List[Target]) -> Tuple[List[Target], List[Tuple[Target, Target]]]:
+    """Drop a candidate whose required names are a strict subset of another candidate's
+    (the other presents strictly more typed evidence). Returns (kept, [(dropped, by)])."""
+    kept, dropped = [], []
+    for a in full:
+        by = next((b for b in full if b is not a and a.required_names() < b.required_names()), None)
+        if by is None:
+            kept.append(a)
+        else:
+            dropped.append((a, by))
+    return kept, dropped
 
 
-def _signature_hits(present: Mapping[str, str]) -> dict:
-    """`{namespace: {kind: (topic, stated type)}}` for every name match of a signature.
+@dataclasses.dataclass
+class Discovery:
+    graph: Graph
+    targets: List[Target]                       # distinct, non-overlapping identified targets
+    ambiguous: List[List[Target]]               # overlapping candidate groups
+    dominated: List[Tuple[Target, Target]]
+    near: List[Tuple[Target, List[str]]]
 
-    The one scan both questions share; each then decides what a type mismatch means.
-    """
-    hits: dict = {}
-    for topic, topic_type in present.items():
-        for kind, signature, _ in MEMBER_SIGNATURES:
-            namespace = namespace_of(topic, signature)
-            if namespace is not None:
-                hits.setdefault(namespace, {})[kind] = (topic, topic_type)
+
+def discover(g: Graph, profiles: Optional[Iterable[Profile]] = None,
+             namespace: Optional[str] = None) -> Discovery:
+    profiles = list(profiles) if profiles is not None else load_all()
+    full, near = candidates(g, profiles, namespace)
+    kept, dominated = _prune_dominated(full)
+    # Group overlapping candidates (shared wire names) -> ambiguity.
+    groups: List[List[Target]] = []
+    for t in kept:
+        for grp in groups:
+            if any(t.required_names() & o.required_names() for o in grp):
+                grp.append(t)
                 break
-    return hits
-
-
-def survey(present: Mapping[str, str]) -> Tuple[List[Discovered], List[Rejected]]:
-    """Every drivable robot the wire offers, and every near miss with its reason."""
-    hits = _signature_hits(present)
-    found: List[Discovered] = []
-    rejected: List[Rejected] = []
-    for namespace in sorted(hits):
-        # `SIGNATURES` order decides, not the order rosapi listed the topics in.
-        robot = next((r for r, _ in SIGNATURES if r in hits[namespace]), None)
-        if robot is None:
-            continue  # only members teleop does not drive (an SO-101) live here
-        problems = _problems(present, robot, namespace)
-        if problems:
-            rejected.append(Rejected(robot, namespace, "; ".join(problems)))
         else:
-            found.append(Discovered(robot, namespace, _camera_for(present, namespace, robot)))
-    return found, rejected
+            groups.append([t])
+    targets = [grp[0] for grp in groups if len(grp) == 1]
+    ambiguous = [grp for grp in groups if len(grp) > 1]
+    return Discovery(g, targets, ambiguous, dominated, near)
 
 
-def find_robots(present: Mapping[str, str]) -> List[Discovered]:
-    """The drivable robots only; see `survey` for the near misses."""
-    return survey(present)[0]
+def describe_candidates(ts: Iterable[Target]) -> str:
+    return ", ".join(t.label for t in ts)
 
 
-def find_members(present: Mapping[str, str]) -> Tuple[List[Member], List[str]]:
-    """Every fleet member on the wire, and what looked like one but had the wrong type.
-
-    `present` is `{topic: type}` from `/rosapi/topics`. A member is a namespace composing
-    a `MEMBER_SIGNATURES` topic **with that signature's type**; a name match with any
-    other type (an empty one included) is returned in the second list as
-    `"<topic> is <type>, not <expected>"`, so a caller can fail on it rather than silently
-    ignore it. A namespace holds at most one member, the first kind in `MEMBER_SIGNATURES`
-    that it composes. The rig is a member when its signature is on the wire with its type.
-    Sorted by namespace.
-    """
-    expected = {kind: topic_type for kind, _, topic_type in MEMBER_SIGNATURES}
-    members: List[Member] = []
-    wrong: List[str] = []
-    for namespace, kinds in _signature_hits(present).items():
-        typed = []
-        for kind, (topic, topic_type) in kinds.items():
-            if typed_as(present, topic, expected[kind]):
-                typed.append(kind)
+def select_target(g: Graph, robot: Optional[Profile], namespace: Optional[str]) -> Target:
+    """The unique validated target for an entry point, or SelectionError."""
+    if robot is not None:
+        check_namespace_allowed(robot, namespace)
+    disc = discover(g, None, namespace if (robot is None or robot.namespace) else None)
+    pool = [t for t in disc.targets + [x for grp in disc.ambiguous for x in grp]]
+    if robot is not None:
+        mine = [t for t in pool if t.profile.id == robot.id]
+        mine_dom = [(a, b) for a, b in disc.dominated if a.profile.id == robot.id]
+        if not mine and mine_dom:
+            a, b = mine_dom[0]
+            raise SelectionError(f"'{robot.id}' is not uniquely identified: the wire presents "
+                                 f"{b.label}, whose interface contains all of {robot.id}'s required "
+                                 f"names", [a, b])
+        if not mine:
+            near = [(t, m) for t, m in disc.near if t.profile.id == robot.id]
+            if near:
+                t, missing = near[0]
+                raise SelectionError(f"'{robot.id}' not found on the wire: missing "
+                                     + ", ".join(missing[:8]) + ("…" if len(missing) > 8 else ""), [t])
+            raise SelectionError(f"'{robot.id}' not found on the wire (none of its required "
+                                 f"interface is present)")
+        if len(mine) > 1:
+            default = robot.namespace.default.strip("/") if robot.namespace else ""
+            pick = [t for t in mine if t.namespace == default] if namespace is None else []
+            if len(pick) == 1:
+                mine = pick
             else:
-                wrong.append(f"{topic} is {describe_type(topic_type)}, not {expected[kind]}")
-        if typed:
-            members.append(Member(next(k for k, _, _ in MEMBER_SIGNATURES if k in typed),
-                                  namespace))
-    rig_topic, rig_type = RIG_SIGNATURE
-    if rig_topic in present:
-        if typed_as(present, rig_topic, rig_type):
-            members.append(Member(RIG_KIND, RIG_NAMESPACE))
-        else:
-            wrong.append(f"{rig_topic} is {describe_type(present[rig_topic])}, not {rig_type}")
-    members.sort(key=lambda m: (m.namespace, m.kind))
-    return members, sorted(wrong)
-
-
-def choose(
-    found: Sequence[Discovered],
-    want: Optional[str] = None,
-    namespace: Optional[str] = None,
-    rejected: Sequence[Rejected] = (),
-) -> Discovered:
-    """The one robot to drive, or a `DiscoveryError` naming every candidate found."""
-    candidates = [
-        d
-        for d in found
-        if (want is None or d.robot == want) and (namespace is None or d.namespace == namespace)
-    ]
-    if len(candidates) == 1:
-        return candidates[0]
-
-    offered = "; ".join(d.describe() for d in found) or "none"
-    near = "; ".join(r.describe() for r in rejected)
-    seen = f"drivable robots there: {offered}" + (f"; rejected: {near}" if near else "")
-    if not candidates:
-        wanted = f"no {want} " if want else "no robot this console can drive "
-        where = f" under namespace {namespace!r}" if namespace is not None else ""
-        raise DiscoveryError(
-            f"{wanted}is on the wire{where} ({seen}). "
-            "Name the robot and its namespace with --robot and --namespace, "
-            "or check what the simulator was started with."
-        )
-    names = ", ".join(f"--namespace {d.namespace!r} ({d.robot})" for d in candidates)
-    raise DiscoveryError(
-        f"{len(candidates)} robots match on the wire ({seen}); say which with one of: {names}"
-    )
-
-
-def discover_from(
-    present: Mapping[str, str], want: Optional[str] = None, namespace: Optional[str] = None
-) -> Discovered:
-    found, rejected = survey(present)
-    return choose(found, want, namespace, rejected)
-
-
-def unreachable(url: str, want: Optional[str], namespace: Optional[str], exc: BaseException) -> DiscoveryError:
-    """The error for a wire whose `/rosapi` cannot be asked: no candidates were found."""
-    asked = []
-    if want:
-        asked.append(f"--robot {want}")
-    if namespace is not None:
-        asked.append(f"--namespace {namespace!r}")
-    return DiscoveryError(
-        f"could not ask {url} which robots are on it: /rosapi/topics failed ({exc}); "
-        f"candidates found: none{' for ' + ' '.join(asked) if asked else ''}. "
-        "Start rosapi beside rosbridge, or name both --robot and --namespace."
-    )
-
-
-def discover(
-    url: str,
-    want: Optional[str] = None,
-    namespace: Optional[str] = None,
-    timeout: float = 2.0,
-) -> Discovered:
-    """Ask the rosbridge at `url` what it has, and pick the robot to drive.
-
-    Raises `DiscoveryError` for a wire that answers and holds nothing usable, and lets a
-    transport failure through as itself. Opens its own connection and closes it without
-    terminating (roslibpy's reactor is process-global and single-shot).
-    """
-    from robot_console.fleet import list_topics
-
-    return discover_from(list_topics(url, timeout), want, namespace)
+                raise SelectionError(f"several '{robot.id}' targets found; choose one with "
+                                     f"--namespace: {describe_candidates(mine)}", mine)
+        t = mine[0]
+        others = [grp for grp in disc.ambiguous if t in grp]
+        if others and robot.namespace is None:
+            rivals = [x for x in others[0] if x.profile.id != robot.id]
+            if rivals:
+                raise SelectionError(f"ambiguous wire: {describe_candidates(others[0])} all match",
+                                     others[0])
+    else:
+        if disc.ambiguous:
+            grp = disc.ambiguous[0]
+            same = {x.profile.id for x in grp}
+            if len(same) == 1:
+                p = grp[0].profile
+                default = p.namespace.default.strip("/") if p.namespace else ""
+                pick = [x for x in grp if x.namespace == default]
+                if len(pick) == 1 and namespace is None:
+                    grp = pick
+            if len(grp) > 1:
+                raise SelectionError("ambiguous wire, select a robot explicitly (--robot/--namespace); "
+                                     f"candidates: {describe_candidates(grp)}", grp)
+            disc.targets.append(grp[0])
+        if len(disc.targets) != 1:
+            if not disc.targets:
+                near = "; ".join(f"{t.label} (missing {', '.join(m[:4])})" for t, m in disc.near)
+                raise SelectionError("no supported robot identified on the wire"
+                                     + (f"; incomplete candidates: {near}" if near else ""),
+                                     [t for t, _ in disc.near])
+            raise SelectionError("several robots on the wire, select one with --robot: "
+                                 f"{describe_candidates(disc.targets)}", disc.targets)
+        t = disc.targets[0]
+    if namespace is not None and t.profile.namespace is None:
+        raise ProfileError(f"'{t.profile.id}' offers no namespace override")
+    if not t.validation.ok:
+        raise SelectionError(f"{t.label} failed typed validation: " + "; ".join(t.validation.problems()),
+                             [t])
+    return t

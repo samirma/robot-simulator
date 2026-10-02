@@ -1,0 +1,636 @@
+id: ainex
+name: "Hiwonder AiNex humanoid (ROS 1, Raspberry Pi)"
+dialect: ros1
+kind: humanoid
+teleop: walk
+sources:
+  ainex:
+    url: https://github.com/Hiwonder/ainex
+    branch: main
+    revision: e8fe2a816797cf83054135160df5a82ec3596a69
+  docs:
+    url: https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/
+
+boot:
+  launches:
+    - "ainex:src/ainex_bringup/launch/bringup.launch#L17-L41"
+    - "ainex:src/ainex_peripherals/launch/usb_cam_with_calib.launch#L1-L13"
+    - "ainex:src/ainex_peripherals/launch/usb_cam.launch#L8-L16"
+    - "ainex:src/ainex_peripherals/launch/image_calib.launch#L4-L18"
+    - "ainex:src/ainex_bringup/launch/base.launch#L3-L10"
+    - "ainex:src/ainex_driver/ainex_sdk/launch/sensor_node.launch#L3"
+    - "ainex:src/ainex_driver/ainex_kinematics/launch/ainex_controller.launch#L4-L9"
+    - "ainex:src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L6-L10"
+    - "ainex:src/ainex_peripherals/launch/imu.launch#L24-L40"
+    - "ainex:src/ainex_peripherals/launch/joystick_control.launch#L3-L9"
+    - "ainex:src/ainex_app/launch/rosbridge.launch#L60-L88"
+    - "ainex:src/ainex_app/launch/start.launch#L4-L20"
+    - "ainex:src/ainex_example/scripts/color_detection/color_detection_node.launch#L22-L28"
+    - "ainex:src/ainex_example/scripts/face_detect/face_detect_node.launch#L20-L24"
+  note: >-
+    systemd unit start_app_node.service (enabled by ainex:src/ainex_bringup/service/install.sh#L4)
+    runs `roslaunch ainex_bringup bringup.launch` (ainex:src/ainex_bringup/service/start_app_node.service#L10;
+    same in ainex:src/ainex_bringup/scripts/start_app_node.sh#L4). bringup.launch documents itself as the
+    auto-start launch (ainex:src/ainex_bringup/launch/bringup.launch#L2-L15); vendor docs stop/start it with
+    `sudo systemctl stop|start start_app_node.service`
+    (https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/docs/5.ROS%20Robot%20Control%20Course.html).
+    Chain: usb_cam_with_calib (usb_cam node "camera" + image_proc rectify nodelet), base.launch
+    (sensor_node, ainex_controller.launch -> ros_robot_controller + ainex_controller, imu.launch ->
+    imu_calib apply_calib + imu_complementary_filter), joystick_control.launch (joy_node + joystick_control),
+    web_video_server, rosbridge.launch (rosbridge_websocket + rosapi, infrastructure, not listed),
+    ainex_app start.launch (color_detection, face_detect, app). No robot_state_publisher / joint_state_publisher
+    in the boot (only in imu.launch debug group, debug=false), so no /tf rows.
+
+namespace: null
+
+owned_prefixes:
+  - "/walking/"
+  - "/ros_robot_controller/"
+  - "/app/"
+  - "/sensor/"
+  - "/color_detection/"
+  - "/face_detect/"
+  - "/object/"
+  - "/head_pan_controller/"
+  - "/head_tilt_controller/"
+
+topics:
+  # ---- camera (usb_cam node "camera" + image_proc rectify) ----
+  - name: /camera/image_raw
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/usb_cam.launch#L8-L15"
+    note: >-
+      usb_cam_node named $(camera_name)=camera, image_topic image_raw (ainex:src/ainex_bringup/launch/bringup.launch#L18-L25);
+      640x480 yuyv capture (usb_cam.launch#L10-L12). framerate not set in launch -> usb_cam driver default (30), not pinned here.
+  - name: /camera/camera_info
+    type: sensor_msgs/CameraInfo
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/image_calib.launch#L15"
+    note: "published by usb_cam alongside image_raw (camera_info_url usb_cam.launch#L15); consumed by the rectify nodelet"
+  - name: /camera/image_rect_color
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/image_calib.launch#L11-L17"
+    note: "image_proc/rectify nodelet in /camera ns (manager /camera/manager, #L8); publishes only while subscribed"
+  # ---- gait / head controller (ainex_controller) ----
+  - name: /walking/set_param
+    type: ainex_interfaces/WalkingParam
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L160"
+    note: "callback clamps amplitudes/heights (#L594-L645); balance_* fields are ignored"
+  - name: /walking/is_walking
+    type: std_msgs/Bool
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L165"
+    note: "published on walking start (True, #L189-L190) and on stop (False, #L225-L227) only"
+  - name: /app/set_walking_param
+    type: ainex_interfaces/AppWalkingParam
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L161"
+    note: "phone-app gait presets (speed 1..4); x/y clamped to +-0.05 m, angle +-10 deg (#L386-L592)"
+  - name: /app/set_action
+    type: std_msgs/String
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L162"
+    note: "action-group name; stops walking, plays <name>.d6a, then returns to init pose (#L375-L384)"
+  - name: /head_pan_controller/command
+    type: ainex_interfaces/HeadState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156"
+    note: "position rad (servo 23), duration s (#L337-L339); subscribed only when gazebo_sim=false (real hardware)"
+  - name: /head_tilt_controller/command
+    type: ainex_interfaces/HeadState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L157"
+    note: "position rad (servo 24), duration s (#L341-L343)"
+  # ---- ros_robot_controller (STM32 board driver) ----
+  - name: /ros_robot_controller/imu_raw
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L33"
+    note: "loop at freq=100 Hz (ros_robot_controller_node.launch#L3; node #L55-L66) but publishes only when the board delivered a frame (#L256-L300)"
+  - name: /ros_robot_controller/mag_raw
+    type: sensor_msgs_ext/magnetometer
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L34"
+    note: "only when the board IMU frame carries 9 values (#L285-L290)"
+  - name: /ros_robot_controller/mag
+    type: sensor_msgs/MagneticField
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L35"
+    note: "calibrated with ~calibration from mag_calib.yaml (launch #L5,#L9; node #L291-L299)"
+  - name: /ros_robot_controller/joy
+    type: sensor_msgs/Joy
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L36"
+  - name: /ros_robot_controller/sbus
+    type: ros_robot_controller/Sbus
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L37"
+  - name: /ros_robot_controller/button
+    type: ros_robot_controller/ButtonState
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L38"
+  - name: /ros_robot_controller/battery
+    type: std_msgs/UInt16
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L39"
+    note: "battery voltage (mV) when reported by the board (#L221-L229)"
+  - name: /ros_robot_controller/set_led
+    type: ros_robot_controller/LedState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L40"
+  - name: /ros_robot_controller/set_buzzer
+    type: ros_robot_controller/BuzzerState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L41"
+  - name: /ros_robot_controller/set_oled
+    type: ros_robot_controller/OLEDState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L42"
+  - name: /ros_robot_controller/set_motor
+    type: ros_robot_controller/MotorsState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L43"
+  - name: /ros_robot_controller/set_rgb
+    type: ros_robot_controller/RGBsState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L44"
+  - name: /ros_robot_controller/set_motor_duty
+    type: ros_robot_controller/MotorsState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L45"
+  - name: /ros_robot_controller/bus_servo/set_state
+    type: ros_robot_controller/SetBusServoState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L46"
+  - name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L47"
+    note: "raw servo pulses 0..1000 + duration s; used by ainex_controller MotionManager (motion_manager.py#L20,#L32-L42)"
+  - name: /ros_robot_controller/enable_reception
+    type: std_msgs/Bool
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L49"
+  - name: /ros_robot_controller/pwm_servo/set_state
+    type: ros_robot_controller/SetPWMServoState
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L51"
+  # ---- IMU pipeline (imu.launch) ----
+  - name: /imu_corrected
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/imu.launch#L24-L28"
+    note: "imu_calib apply_calib 'corrected' (ainex:src/third_party/imu_calib/src/apply_calib.cpp#L72) remapped; follows imu_raw"
+  - name: /imu
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/imu.launch#L30-L40"
+    note: "imu_complementary_filter output (imu/data -> imu), use_mag=true; follows imu_corrected"
+  # ---- onboard sensor node (ainex_sdk sensor_node) ----
+  - name: /sensor/button/get_button_state
+    type: std_msgs/Bool
+    direction: out
+    rate_hz: 50
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L24"
+    note: "~freq default 50 (#L28-L39); only while button publishing is enabled (#L37-L38)"
+  - name: /sensor/led/set_led_state
+    type: std_msgs/Bool
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L23"
+  # ---- joystick ----
+  - name: /joy
+    type: sensor_msgs/Joy
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/joystick_control.launch#L3-L7"
+    note: "joy_node on /dev/input/js0 (autorepeat 20 Hz only with a gamepad attached); consumed by joystick_control (ainex:src/ainex_peripherals/scripts/joystick_control.py#L40)"
+  # ---- app vision nodes (start.launch) ----
+  - name: /color_detection/image_result
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L46"
+  - name: /color_detection/update_detect
+    type: ainex_interfaces/ColorsDetect
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L51"
+  - name: /object/pixel_coords
+    type: ainex_interfaces/ObjectsInfo
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L49"
+    note: "also published by face_detect (ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L48); only while a detector is started"
+  - name: /face_detect/image_result
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L45"
+  - name: /app/image_result
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L185"
+    note: "node constructed as AppNode('app') (#L885) so relative names resolve under /app/"
+
+services:
+  - name: /walking/command
+    type: ainex_interfaces/SetWalkingCommand
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L159"
+    note: "accepted command strings: start, stop, enable, disable (require init_pose_finish), enable_control, disable_control (#L349-L373); response result always true"
+  - name: /walking/init_pose
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L158"
+  - name: /walking/get_param
+    type: ainex_interfaces/GetWalkingParam
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L163"
+  - name: /walking/is_walking
+    type: ainex_interfaces/GetWalkingState
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L164"
+  - name: /ros_robot_controller/bus_servo/get_position
+    type: ros_robot_controller/GetBusServosPosition
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48"
+  - name: /ros_robot_controller/bus_servo/get_state
+    type: ros_robot_controller/GetBusServoState
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L50"
+  - name: /ros_robot_controller/pwm_servo/get_state
+    type: ros_robot_controller/GetPWMServoState
+    optional: false
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L52"
+  - name: /sensor/button/enable
+    type: std_srvs/SetBool
+    optional: false
+    source: "ainex:src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L22"
+  - name: /color_detection/enter
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L53"
+  - name: /color_detection/exit
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L54"
+  - name: /color_detection/start
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L55"
+  - name: /color_detection/stop
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L56"
+  - name: /color_detection/update_lab
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L57"
+  - name: /face_detect/enter
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L50"
+  - name: /face_detect/exit
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L51"
+  - name: /face_detect/start
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L52"
+  - name: /face_detect/stop
+    type: std_srvs/Empty
+    optional: false
+    source: "ainex:src/ainex_example/scripts/face_detect/face_detect_node.py#L53"
+  - name: /app/enter
+    type: ainex_interfaces/SetInt
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L188"
+  - name: /app/set_running
+    type: std_srvs/SetBool
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L189"
+  - name: /app/set_target_color
+    type: ainex_interfaces/SetPoint
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L190"
+  - name: /app/get_target_color
+    type: std_srvs/Trigger
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L191"
+  - name: /app/set_threshold
+    type: ainex_interfaces/SetFloat
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L192"
+  - name: /app/heartbeat
+    type: std_srvs/SetBool
+    optional: false
+    source: "ainex:src/ainex_app/scripts/app_node.py#L193"
+    note: "Heart helper (ainex:src/ainex_app/src/ainex_app/common.py#L64-L84); timeout only logs (app_node.py#L213-L214)"
+
+actions: []
+
+cameras:
+  - topic: /camera/image_raw
+    type: sensor_msgs/Image
+    encodings: [rgb8]
+    rate_hz: 30
+    stale_after_s: 1.0
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/usb_cam.launch#L8-L15"
+    note: >-
+      yuyv capture converted by usb_cam; vendor consumers treat the frame as RGB
+      (ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L164-L166) and publish results as rgb8
+      (ainex:src/ainex_driver/ainex_sdk/src/ainex_sdk/common.py#L26-L33). 30 fps = usb_cam default (framerate not set
+      in the launch) - not pinned in this repo. stale_after_s = max(1.0, 5/30).
+
+stop:
+  - op: call
+    name: /walking/command
+    type: ainex_interfaces/SetWalkingCommand
+    request: {command: stop}
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L356-L359"
+    note: "walking_module.stop() then blocks until the gait cycle finishes (self.stop set at #L225-L230); vendor GaitManager.stop() does exactly this (ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L210-L212)"
+
+watchdog: >-
+  none found in source: with period_times=0 the gait runs until /walking/command stop
+  (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242); the /app/heartbeat timeout only logs
+  (ainex:src/ainex_app/scripts/app_node.py#L213-L214). The console must send stop itself on key release / disconnect.
+
+teleop_walk:
+  param_topic: /walking/set_param
+  param_type: ainex_interfaces/WalkingParam
+  param_template:
+    init_x_offset: 0.0
+    init_y_offset: -0.005
+    init_z_offset: 0.025
+    init_roll_offset: 0.0
+    init_pitch_offset: 0.0
+    init_yaw_offset: 0.0
+    period_time: 400.0
+    dsp_ratio: 0.2
+    step_fb_ratio: 0.028
+    period_times: 0
+    x_move_amplitude: 0.0
+    y_move_amplitude: 0.0
+    z_move_amplitude: 0.02
+    angle_move_amplitude: 0.0
+    move_aim_on: false
+    arm_swing_gain: 0.5
+    y_swap_amplitude: 0.02
+    z_swap_amplitude: 0.006
+    pelvis_offset: 5.0
+    hip_pitch_offset: 15.0
+    balance_enable: false
+    balance_hip_roll_gain: 0.0
+    balance_knee_gain: 0.0
+    balance_ankle_roll_gain: 0.0
+    balance_ankle_pitch_gain: 0.0
+  param_template_source: "ainex:src/ainex_driver/ainex_kinematics/config/walking_param.yaml#L3-L22"
+  param_template_note: >-
+    Field list from ainex:src/ainex_interfaces/msg/WalkingParam.msg#L1-L31. Values are the walking_param.yaml the
+    controller loads on real hardware (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L146).
+    period_times 0 = walk continuously until stop (#L234-L242). balance_* are not in the yaml and are never read by
+    the controller (#L594-L645): policy false/0. Units: offsets/amplitudes m, roll/pitch/yaw/hip/pelvis deg,
+    period_time ms, arm_swing_gain rad (clamped 0..60 deg, #L79,#L639-L643).
+  axes:
+    x:
+      field: x_move_amplitude
+      speed: 0.01
+      limit: 0.02
+      unit: m
+      source: "ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L29-L30"
+      policy: >-
+        0.01 m per step = the stride every app speed preset uses (ainex_controller.py#L470,#L511,#L554);
+        limit 0.02 = GaitManager tested range (update_param rejects |x|>0.02, gait_manager.py#L114-L115);
+        controller hard clamp is +-0.05 (ainex_controller.py#L72,#L611-L615).
+    y:
+      field: y_move_amplitude
+      speed: 0.01
+      limit: 0.02
+      unit: m
+      source: "ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L31"
+      policy: >-
+        0.01 m (app presets ainex_controller.py#L472,#L513,#L556); limit 0.02 = GaitManager check
+        (gait_manager.py#L116-L117); controller hard clamp +-0.05 (ainex_controller.py#L73,#L616-L620).
+    yaw:
+      field: angle_move_amplitude
+      speed: 5.0
+      limit: 10.0
+      unit: deg
+      source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L77"
+      policy: >-
+        5 deg per step (below the joystick's 8 deg, ainex:src/ainex_peripherals/scripts/joystick_control.py#L62-L67);
+        limit = controller clamp +-10 deg (ainex_controller.py#L626-L630) = GaitManager range (gait_manager.py#L35,#L118-L119).
+  enable:
+    - op: call
+      name: /walking/command
+      type: ainex_interfaces/SetWalkingCommand
+      request: {command: enable_control}
+      source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L368-L369"
+      note: "sets init_pose_finish=True (already True at real-hardware boot, #L89-L90); the app may have cleared it (disable_control, ainex:src/ainex_app/scripts/app_node.py#L339). Vendor remote-control mode calls it first (app_node.py#L306-L309)."
+    - op: call
+      name: /walking/command
+      type: ainex_interfaces/SetWalkingCommand
+      request: {command: enable}
+      source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L360-L361"
+      note: "sets walking_enable=True (True at boot, #L120); cleared by 'disable'. Same call as GaitManager.enable (gait_manager.py#L218-L220)."
+  start:
+    - op: publish
+      name: /walking/set_param
+      type: ainex_interfaces/WalkingParam
+      msg: "$param"
+      source: "ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L145-L153"
+      note: "publish the template with the axis amplitudes first (GaitManager.set_step order, #L176-L194)"
+    - op: call
+      name: /walking/command
+      type: ainex_interfaces/SetWalkingCommand
+      request: {command: start}
+      source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L352-L355"
+      note: "only honoured while init_pose_finish is True (#L350); GaitManager sends it once when entering the walking state (gait_manager.py#L189-L194)"
+  stop:
+    - op: call
+      name: /walking/command
+      type: ainex_interfaces/SetWalkingCommand
+      request: {command: stop}
+      source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L356-L359"
+      note: "blocks until the current gait cycle ends; joystick_control releases the stick -> gait_manager.stop() (joystick_control.py#L76-L78)"
+  rate_hz: 5
+  rate_policy: "console policy: re-publish the param at 5 Hz while a key is held (the joystick only publishes on axis change, joystick_control.py#L162-L164)"
+
+head:
+  pan:
+    topic: /head_pan_controller/command
+    type: ainex_interfaces/HeadState
+    template: {position: 0.0, duration: 0.2}
+    field: position
+    min: -1.57
+    max: 1.57
+    rate: 1.0
+    unit: rad
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156,#L337-L339"
+    limit_source: "ainex:src/ainex_app/scripts/app_node.py#L89"
+    note: >-
+      min/max = vendor app 'control' mode pan range pulses 125..875 (app_node.py#L89) converted with
+      angle2pulse: pulse = 500 + rad*1000/(240 deg) (ainex_controller.py#L24-L25,#L320-L322;
+      servo_controller.yaml#L222-L231 init 500, 0..1000). Hardware/URDF limit +-2.09 rad
+      (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L788-L790). Positive = higher pulse =
+      robot's left on the vendor app (find-ball 'left' uses pan 650, app_node.py#L144-L146).
+      The simulated model's head_pan joint axis is -Z (robots_specs/ainex/model.xml), so there
+      a positive command turns the head right; teleop maps the Left key to a negative pan.
+    policy: "slew 1.0 rad/s (servo max ~0.2 s/60 deg, ainex_controller.py#L177); duration 0.2 s per command as the app's manual head moves (app_node.py#L684)"
+  tilt:
+    topic: /head_tilt_controller/command
+    type: ainex_interfaces/HeadState
+    template: {position: 0.0, duration: 0.2}
+    field: position
+    min: -0.77
+    max: 0.52
+    rate: 1.0
+    unit: rad
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L157,#L341-L343"
+    limit_source: "ainex:src/ainex_app/scripts/app_node.py#L89"
+    note: >-
+      min/max = vendor app 'control' mode tilt range pulses 315..625 (app_node.py#L89) -> -0.775..+0.524 rad,
+      rounded inward. Servo 24 0..1000 (servo_controller.yaml#L232-L241), URDF +-2.09
+      (ainex.urdf.xacro#L845-L847). Positive = higher pulse = up (app 'up' 500 vs 'down' 300, app_node.py#L144-L146).
+    policy: "slew 1.0 rad/s; duration 0.2 s per command"
+
+controls:
+  - id: head_pan
+    label: "Head pan"
+    kind: publish
+    name: /head_pan_controller/command
+    type: ainex_interfaces/HeadState
+    template: {position: "$position", duration: "$duration"}
+    fields:
+      - {name: position, label: "Pan (+ = left)", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: "console policy; controller converts to ms (ainex_controller.py#L339)"}
+    stop: null
+    prerequisites: [/head_pan_controller/command]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156,#L337-L339"
+  - id: head_tilt
+    label: "Head tilt"
+    kind: publish
+    name: /head_tilt_controller/command
+    type: ainex_interfaces/HeadState
+    template: {position: "$position", duration: "$duration"}
+    fields:
+      - {name: position, label: "Tilt (+ = up)", min: -0.77, max: 0.52, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: "console policy; controller converts to ms (ainex_controller.py#L343)"}
+    stop: null
+    prerequisites: [/head_tilt_controller/command]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L157,#L341-L343"
+  - id: init_pose
+    label: "Stand (init pose)"
+    kind: call
+    name: /walking/init_pose
+    type: std_srvs/Empty
+    template: {}
+    fields: []
+    stop: null
+    prerequisites: [/walking/init_pose]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L158,#L248-L256"
+    note: "single finite target: stops any gait, moves body servos to init_pose.yaml over 0.5 s (#L262-L318); used by the app before every mode (app_node.py#L208-L211)"
+  - id: action_group
+    label: "Play action group"
+    kind: publish
+    name: /app/set_action
+    type: std_msgs/String
+    template: {data: "$action"}
+    fields:
+      - name: action
+        label: "Action group"
+        choices: [stand, walk_ready, greet, twist, left_shot, right_shot, hand_open, hand_back]
+        default: stand
+        source: "https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/docs/5.ROS%20Robot%20Control%20Course.html"
+        choice_sources:
+          stand: "ainex:src/ainex_example/scripts/color_track/color_track_node.py#L51"
+          walk_ready: "ainex:src/ainex_example/scripts/visual_patrol/visual_patrol_node.py#L44"
+          greet: "ainex:src/ainex_app/scripts/app_node.py#L790"
+          twist: "ainex:src/ainex_example/scripts/hand_gesture_control/hand_gesture_control_node.py#L64"
+          left_shot: "ainex:src/ainex_app/scripts/app_node.py#L124"
+          right_shot: "ainex:src/ainex_app/scripts/app_node.py#L125"
+          hand_open: "ainex:src/ainex_tutorial/scripts/gait_control/gait_control_demo.py#L30"
+          hand_back: "ainex:src/ainex_example/scripts/hurdles/hurdles_node.py#L53"
+        policy: >-
+          The .d6a files live on the robot at /home/ubuntu/software/ainex_controller/ActionGroups
+          (ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L16,#L72) and are NOT in the
+          pinned repo; choices are names the pinned code / vendor docs (5.1.6 Action Group Calling) invoke on a standing
+          robot. Excluded on purpose: walking groups (go_forward), fall recovery (lie_to_stand, recline_to_stand),
+          obstacle/stair/pick-up groups. An unknown name is ignored ('can not find aciton file', motion_manager.py#L97-L99).
+    stop: null
+    prerequisites: [/app/set_action]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L162,#L375-L384"
+    note: >-
+      Finite: the controller stops walking, plays the group once, then returns to init pose. No stop endpoint exists:
+      run_action 'Cannot send a stop signal' (motion_manager.py#L65) and stop_action_group is an in-process flag only (#L60-L61).

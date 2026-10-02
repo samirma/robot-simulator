@@ -1,0 +1,165 @@
+{
+ "robot": "mycobot280",
+ "engine": "molmospaces",
+ "scene": "ithor:1",
+ "bounds_note": "Bounds are the tolerances recorded in robots_specs/<id>/ros*.yml; a recorded {relative, absolute} pair bounds |measured - commanded| by max(relative*|commanded|, absolute). Commands are each robot's recorded command (its interface file's motions[].command and example) through the vendor wire; feedback is the recorded feedback, or the simulation's control-port readings where the interface records none.",
+ "motions": [
+  {
+   "name": "arm",
+   "renders": {
+    "before": "motion_arm_before.png",
+    "after": "motion_arm_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/joint_states",
+    "type": "sensor_msgs/msg/JointState",
+    "message": {
+     "header": {
+      "stamp": {
+       "sec": 0,
+       "nanosec": 0
+      },
+      "frame_id": ""
+     },
+     "name": [
+      "joint2_to_joint1",
+      "joint3_to_joint2",
+      "joint4_to_joint3",
+      "joint5_to_joint4",
+      "joint6_to_joint5",
+      "joint6output_to_joint6",
+      "gripper_controller"
+     ],
+     "position": [
+      0.3,
+      -0.3,
+      0.5,
+      -0.4,
+      0.2,
+      0.5,
+      -0.0
+     ],
+     "velocity": [],
+     "effort": []
+    }
+   },
+   "feedback": "none on the wire (interface feedback: []); judged by sim-port readings",
+   "commanded": {
+    "joint2_to_joint1": 0.3,
+    "joint3_to_joint2": -0.3,
+    "joint4_to_joint3": 0.5,
+    "joint5_to_joint4": -0.4,
+    "joint6_to_joint5": 0.2,
+    "joint6output_to_joint6": 0.5
+   },
+   "before": {
+    "joint2_to_joint1": 0.0001,
+    "joint3_to_joint2": -0.0126,
+    "joint4_to_joint3": -1.2127,
+    "joint5_to_joint4": -0.0045,
+    "joint6_to_joint5": -0.0,
+    "joint6output_to_joint6": 0.0
+   },
+   "measured": {
+    "joint2_to_joint1": 0.2999,
+    "joint3_to_joint2": -0.3035,
+    "joint4_to_joint3": 0.4992,
+    "joint5_to_joint4": -0.4015,
+    "joint6_to_joint5": 0.1999,
+    "joint6output_to_joint6": 0.5001
+   },
+   "error": {
+    "joint2_to_joint1": 0.0001,
+    "joint3_to_joint2": 0.0035,
+    "joint4_to_joint3": 0.0008,
+    "joint5_to_joint4": 0.0015,
+    "joint6_to_joint5": 0.0001,
+    "joint6output_to_joint6": 0.0001
+   },
+   "moved_last_0_5s": {
+    "joint2_to_joint1": 0.0,
+    "joint3_to_joint2": 3e-05,
+    "joint4_to_joint3": 0.0,
+    "joint5_to_joint4": 0.0,
+    "joint6_to_joint5": 0.0,
+    "joint6output_to_joint6": 0.0
+   },
+   "bound": {
+    "figure": "arm joint reaches its commanded angle",
+    "tolerance": {
+     "absolute": 0.0175,
+     "unit": "rad"
+    },
+    "rule": "each arm joint within the absolute tolerance; at rest = moved < 0.002 rad over 0.5 s"
+   },
+   "settle_time_s": 4.08,
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "gripper",
+   "renders": {
+    "before": "motion_gripper_before.png",
+    "after": "motion_gripper_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/joint_states",
+    "type": "sensor_msgs/msg/JointState",
+    "message": {
+     "header": {
+      "stamp": {
+       "sec": 0,
+       "nanosec": 0
+      },
+      "frame_id": ""
+     },
+     "name": [
+      "joint2_to_joint1",
+      "joint3_to_joint2",
+      "joint4_to_joint3",
+      "joint5_to_joint4",
+      "joint6_to_joint5",
+      "joint6output_to_joint6",
+      "gripper_controller"
+     ],
+     "position": [
+      0.2999,
+      -0.3035,
+      0.4992,
+      -0.4015,
+      0.1999,
+      0.5001,
+      -0.5
+     ],
+     "velocity": [],
+     "effort": []
+    }
+   },
+   "feedback": "none on the wire (interface feedback: []); judged by sim-port readings",
+   "commanded": {
+    "gripper_controller": -0.5,
+    "pymycobot_value": 26
+   },
+   "before": {
+    "gripper_controller": -0.0
+   },
+   "measured": {
+    "gripper_controller": -0.4994
+   },
+   "error": 0.0006,
+   "bound": {
+    "figure": "gripper reaches its commanded opening",
+    "tolerance": {
+     "absolute": 0.05,
+     "unit": "rad"
+    },
+    "rule": "gripper within the absolute tolerance; at rest = moved < 0.002 rad over 0.5 s"
+   },
+   "settle_time_s": 1.53,
+   "problems": [],
+   "pass": true
+  }
+ ]
+}

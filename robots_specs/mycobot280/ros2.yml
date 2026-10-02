@@ -1,0 +1,459 @@
+# myCobot 280 Pi + myCobot Adaptive Gripper — ROS 2 interface of the real-hardware boot.
+# Schema: robots_specs/SCHEMA.md (version 1). Established by reading the pinned sources below on
+# 2026-09-30; nothing here was measured on a real robot.
+schema_version: 1
+robot_id: mycobot280
+name: myCobot 280
+dialect: ros2
+ros_distribution: humble
+interface_authority: manufacturer
+
+sources:
+  - id: mycobot_ros2
+    url: https://github.com/elephantrobotics/mycobot_ros2
+    branch: humble
+    revision: d42ff61a78122c79246623391540d75738b03b23
+    role: official source — description (URDF, meshes) and the real-hardware ROS 2 boot (package mycobot_280pi)
+  - id: pymycobot
+    url: https://pypi.org/project/pymycobot/4.0.7/
+    revision: pymycobot-4.0.7-py3-none-any.whl
+    sha256: cbcde96238af4a1a30a6ee38ba584164ea8aae00340c5afc0e7e811366d4adc4
+    retrieved: 2026-09-30
+    role: >-
+      official Elephant Robotics serial driver the boot node forwards every command to (the node
+      requires pymycobot >= 4.0.0; 4.0.7, released 2026-09-05, is the newest release before the
+      pinned mycobot_ros2 commit of 2026-09-08). Source of the command limits.
+  - id: robot_state_publisher
+    url: https://github.com/ros/robot_state_publisher
+    branch: humble
+    revision: 8b5af4f31e0f754c7c262eb487ccd3956cb788cc
+    role: dependency (release 3.0.3, the humble branch head, used by the boot's distribution)
+  - id: joint_state_publisher
+    url: https://github.com/ros/joint_state_publisher
+    branch: humble
+    revision: bbcac1ebfc43f920ed0b5e17d75cdc674c4229e6
+    role: dependency (release 2.4.0, humble branch head) — joint_state_publisher_gui, optional rows only
+  - id: rclcpp
+    url: https://github.com/ros2/rclcpp
+    branch: humble
+    revision: cfdb3b7dcea4a503c0acaa304d033636beeb1dba
+    role: dependency — QoS-override parameters robot_state_publisher declares
+  - id: docs_ros2
+    url: https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/ROS/12.2-ROS2/12.2.4-rivzIntroductionAndUse/
+    revision: retrieved 2026-09-30
+    role: vendor documentation of the 280 Pi ROS 2 boot (slider control, /dev/ttyAMA0 at 1000000 baud)
+  - id: docs_parameters
+    url: https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/1-ProductInformation/2.ProductParameter/2-ProductParameters.html
+    revision: retrieved 2026-09-30
+    role: manufacturer specifications (payload, reach, repeatability, weight, joint ranges)
+  - id: docs_gripper
+    url: https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/4-SupportAndService/Accessories/AdaptiveGripper.html
+    revision: retrieved 2026-09-30
+    role: manufacturer specifications and pymycobot usage of the adaptive gripper (100 = open, 0 = closed)
+
+boot:
+  summary: >-
+    The vendor's slider-control boot for the 280 Pi, in its adaptive-gripper variant:
+    robot_state_publisher with the Pi + adaptive gripper URDF, rviz2, and the node
+    /slider_control_adaptive_gripper, which forwards every sensor_msgs/JointState on /joint_states
+    to the arm over the Pi's serial port (pymycobot MyCobot280.send_angles at speed 25 and
+    set_gripper_value at speed 80, gripper type 1 = adaptive gripper). The documentation starts
+    `ros2 launch mycobot_280pi slider_control.launch.py` for the bare arm; the same package's
+    slider_control_adaptive_gripper.launch.py is its adaptive-gripper counterpart and is the
+    only mycobot_280pi launch that loads this embodiment's URDF and drives the gripper. The
+    recorded boot runs it with gui:=false: with the default gui:=true the desktop slider app
+    joint_state_publisher_gui is the command source and republishes /joint_states at 10 Hz,
+    which would override any ROS client; its rows are recorded as optional. rviz2 is started
+    unconditionally but is a desktop viewer that needs a display and is not part of the robot's
+    control interface; its rows are optional. The boot publishes no measured joint feedback.
+  commands:
+    - ros2 launch mycobot_280pi slider_control_adaptive_gripper.launch.py gui:=false
+  launch_files:
+    - source: mycobot_ros2
+      path: mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py
+      role: the boot launch (port /dev/ttyAMA0, baud 1000000 defaults)
+    - source: mycobot_ros2
+      path: mycobot_280/mycobot_280pi/setup.py
+      role: >-
+        entry point slider_control_adaptive_gripper = mycobot_280.slider_control_adaptive_gripper:main
+        (line 63): the executable runs the module of the sibling package mycobot_280, not the
+        mycobot_280pi copy; the two differ only in their port/baud defaults, which the launch overrides
+  data_files:
+    - source: mycobot_ros2
+      path: mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf
+      role: robot_description (run through xacro by the launch)
+  hardware: >-
+    myCobot 280 Pi (2023): Raspberry Pi 4B (Broadcom BCM2711) in the base, talking to the arm's
+    Atom controller over /dev/ttyAMA0 at 1000000 baud; six servo joints; the myCobot Adaptive
+    Gripper (myCobot_gripperAg_white) on the end servo interface, driven through the Atom. The
+    spec pins the humble branch (README: Ubuntu 22.04 / ROS 2 Humble); the vendor ROS 2 page
+    describes the Pi image as Ubuntu 20.04 — an unresolved documentation conflict, the humble
+    branch governs here. Docs note Atom firmware 6.5 and pymycobot 3.5.3 for "better motion
+    effects", while the pinned node refuses pymycobot < 4.0.0.
+
+model:
+  urdf: mycobot_280_pi_adaptive_gripper.urdf
+  urdf_sha256: 8c8fbea8f2a0d26f6f6c0642d9cbbb6004fa871caf8a84e407b01f681efd7f12
+  urdf_source: {source: mycobot_ros2, path: mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf}
+  mjcf: model.xml
+  mjcf_official: false
+  robot_description:
+    published_as: parameter robot_description of /robot_state_publisher and latched topic /robot_description
+    content: >-
+      `xacro mycobot_280_pi_adaptive_gripper.urdf` (launch lines 53-54): element-for-element the
+      URDF file (robot name "firefighter"); xacro only drops the unused xacro:property and adds
+      its header comment.
+    differences_from_model:
+      - >-
+        URDF mimic joints carry their own limits that the mimic relation exceeds
+        (gripper_left3_to_gripper_left1 and gripper_right3_to_gripper_right1 [-0.5, 0.5],
+        gripper_base_to_gripper_right3 [-0.15, 0.7] against gripper_controller in [-0.74, 0.15]);
+        robot_state_publisher ignores them, so the model leaves mimic joints unlimited and follows
+        the mimic relation.
+      - URDF velocity="0" and effort="1000.0" are placeholders; the model uses estimated actuator torque limits (import.md).
+
+nodes:
+  - name: /robot_state_publisher
+    package: robot_state_publisher
+    executable: robot_state_publisher
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L56-L62
+  - name: /slider_control_adaptive_gripper
+    package: mycobot_280pi
+    executable: slider_control_adaptive_gripper
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L80-L90
+    notes: The launch sets the node name; the code's own default name is control_slider.
+  - name: /joint_state_publisher
+    package: joint_state_publisher_gui
+    executable: joint_state_publisher_gui
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L64-L69
+    notes: Only with gui:=true (the launch default); desktop slider app, node name joint_state_publisher.
+  - name: /rviz2
+    package: rviz2
+    executable: rviz2
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L71-L78
+    notes: Desktop viewer with config/mycobot_pi.rviz; needs a display; not part of the control interface.
+  - name: /listen_real_service
+    package: mycobot_280pi
+    executable: listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/teleop_keyboard.launch.py#L54-L64
+    notes: >-
+      Another launch (teleop_keyboard.launch.py), exclusive with the boot (same serial port).
+      Publishes measured /joint_states at 50 Hz (timer 0.02 s) and serves the services below.
+  - name: /listen_real
+    package: mycobot_280pi
+    executable: listen_real
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/simple_gui.launch.py#L71-L77
+    notes: Another launch (simple_gui.launch.py); publishes measured /joint_states at up to 30 Hz.
+  - name: /follow_display
+    package: mycobot_280pi
+    executable: follow_display
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/mycobot_follow.launch.py#L58-L64
+    notes: Another launch (mycobot_follow.launch.py); releases all servos and publishes measured /joint_states and a marker.
+
+topics:
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    direction: in
+    nodes: [/robot_state_publisher, /slider_control_adaptive_gripper]
+    rate: non_periodic
+    qos: {reliability: reliable, durability: volatile, depth: 10}
+    source:
+      - https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L26-L31
+      - https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L144-L148
+    notes: >-
+      The arm and gripper command (see motions). /slider_control_adaptive_gripper subscribes
+      reliable, depth 10; /robot_state_publisher subscribes with SensorDataQoS (best effort,
+      depth 5) and turns the same message into /tf. Nothing in the recorded boot publishes it:
+      with gui:=true /joint_state_publisher publishes it at 10 Hz from its sliders; the optional
+      /listen_real_service (50 Hz), /listen_real and /follow_display (30 Hz) publish measured
+      angles from other launches.
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    nodes: [/robot_state_publisher]
+    rate: non_periodic
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L331-L357
+    notes: >-
+      One message per accepted /joint_states message (at most one per joint per 50 ms,
+      publish_frequency 20 Hz, by header stamp), carrying the commanded — not measured —
+      joint transforms, mimic joints included. No periodic source exists in the boot.
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    nodes: [/robot_state_publisher]
+    rate: non_periodic
+    latched: true
+    qos: {reliability: reliable, durability: transient_local, depth: 1}
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L150
+    notes: The two fixed URDF joints, sent once at start-up.
+  - name: /robot_description
+    type: std_msgs/msg/String
+    direction: out
+    nodes: [/robot_state_publisher]
+    rate: non_periodic
+    latched: true
+    qos: {reliability: reliable, durability: transient_local, depth: 1}
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L132-L135
+  - name: /initialpose
+    type: geometry_msgs/msg/PoseWithCovarianceStamped
+    direction: out
+    nodes: [/rviz2]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L221-L227
+  - name: /goal_pose
+    type: geometry_msgs/msg/PoseStamped
+    direction: out
+    nodes: [/rviz2]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L228-L234
+  - name: /clicked_point
+    type: geometry_msgs/msg/PointStamped
+    direction: out
+    nodes: [/rviz2]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L235-L242
+  - name: /visualization_marker
+    type: visualization_msgs/msg/Marker
+    direction: out
+    nodes: [/follow_display]
+    rate: 30
+    rate_basis: source
+    rate_note: create_rate(30) loop in follow_display.py; another launch.
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/mycobot_280pi/follow_display.py#L37-L46
+
+services:
+  - name: /set_angles
+    type: mycobot_interfaces/srv/SetAngles
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L67-L68
+  - name: /set_coords
+    type: mycobot_interfaces/srv/SetCoords
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L69-L70
+  - name: /get_coords
+    type: mycobot_interfaces/srv/GetCoords
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L71-L72
+  - name: /get_angles
+    type: mycobot_interfaces/srv/GetAngles
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L73-L74
+  - name: /set_gripper
+    type: mycobot_interfaces/srv/GripperStatus
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L75-L76
+    notes: status true opens (set_gripper_state(0, 80, 1)), false closes.
+  - name: /set_pump_status
+    type: mycobot_interfaces/srv/PumpStatus
+    node: /listen_real_service
+    optional: true
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L77-L78
+
+actions: []
+
+parameters:
+  - name: robot_description
+    node: /robot_state_publisher
+    value: {generated: "xacro mycobot_280_pi_adaptive_gripper.urdf (the URDF in this folder, element-for-element)"}
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L53-L60
+  - name: publish_frequency
+    node: /robot_state_publisher
+    value: 20.0
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L118
+  - name: frame_prefix
+    node: /robot_state_publisher
+    value: ""
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L124
+  - name: ignore_timestamp
+    node: /robot_state_publisher
+    value: false
+    source: https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L127
+  - name: qos_overrides./joint_states.subscription.history
+    node: /robot_state_publisher
+    value: keep_last
+    source: https://github.com/ros2/rclcpp/blob/cfdb3b7dcea4a503c0acaa304d033636beeb1dba/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+    notes: Read-only; declared by QosOverridingOptions::with_default_policies() on the /joint_states subscription (SensorDataQoS).
+  - name: qos_overrides./joint_states.subscription.depth
+    node: /robot_state_publisher
+    value: 5
+    source: https://github.com/ros2/rclcpp/blob/cfdb3b7dcea4a503c0acaa304d033636beeb1dba/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  - name: qos_overrides./joint_states.subscription.reliability
+    node: /robot_state_publisher
+    value: best_effort
+    source: https://github.com/ros2/rclcpp/blob/cfdb3b7dcea4a503c0acaa304d033636beeb1dba/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  - name: port
+    node: /slider_control_adaptive_gripper
+    value: /dev/ttyAMA0
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L40-L45
+    notes: Launch argument default, passed as a parameter (the node's own default is /dev/ttyUSB0).
+  - name: baud
+    node: /slider_control_adaptive_gripper
+    value: 1000000
+    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L46-L51
+    notes: Integer parameter (the node's own default is 115200).
+  - name: rate
+    node: /joint_state_publisher
+    value: 10
+    optional: true
+    source: https://github.com/ros/joint_state_publisher/blob/bbcac1ebfc43f920ed0b5e17d75cdc674c4229e6/joint_state_publisher/joint_state_publisher/joint_state_publisher.py#L271
+
+tf:
+  - {parent: g_base, child: joint1, static: true, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, 0.0, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L146-L152"}
+  - {parent: joint6_flange, child: gripper_base, static: true, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, 0.0, 0.034], rpy: [1.579, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L207-L214"}
+  - {parent: joint1, child: joint2, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, 0.0, 0.13956], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L155-L161"}
+  - {parent: joint2, child: joint3, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, 0.0, -0.001], rpy: [0.0, 1.5708, -1.5708],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L164-L170"}
+  - {parent: joint3, child: joint4, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [-0.1104, 0.0, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L173-L179"}
+  - {parent: joint4, child: joint5, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [-0.096, 0.0, 0.06462], rpy: [0.0, 0.0, -1.5708],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L183-L189"}
+  - {parent: joint5, child: joint6, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, -0.07318, -0.001], rpy: [1.5708, -1.5708, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L191-L197"}
+  - {parent: joint6, child: joint6_flange, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.0, 0.0456, 0.0], rpy: [-1.5708, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L199-L205"}
+  - {parent: gripper_base, child: gripper_left3, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [-0.012, 0.005, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L322-L328"}
+  - {parent: gripper_base, child: gripper_left2, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [-0.005, 0.027, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L330-L337"}
+  - {parent: gripper_left3, child: gripper_left1, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [-0.027, 0.016, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L339-L346"}
+  - {parent: gripper_base, child: gripper_right3, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.012, 0.005, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L348-L355"}
+  - {parent: gripper_base, child: gripper_right2, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.005, 0.027, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L357-L364"}
+  - {parent: gripper_right3, child: gripper_right1, static: false, publisher: /robot_state_publisher, rate: non_periodic, xyz: [0.027, 0.016, 0.0], rpy: [0.0, 0.0, 0.0],
+     source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L366-L373"}
+
+motions:
+  - id: arm
+    velocity_driven: false
+    command:
+      interface: topic
+      name: /joint_states
+      type: sensor_msgs/msg/JointState
+      fields:
+        - {field: "position[0] (joint2_to_joint1)", unit: rad, min: -2.9321, max: 2.9321,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J1 -168..168 deg)"}
+        - {field: "position[1] (joint3_to_joint2)", unit: rad, min: -2.4434, max: 2.4434,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J2 -140..140 deg)"}
+        - {field: "position[2] (joint4_to_joint3)", unit: rad, min: -2.6179, max: 2.6179,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J3 -150..150 deg)"}
+        - {field: "position[3] (joint5_to_joint4)", unit: rad, min: -2.6179, max: 2.6179,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J4 -150..150 deg)"}
+        - {field: "position[4] (joint6_to_joint5)", unit: rad, min: -2.7052, max: 2.7925,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J5 -155..160 deg)"}
+        - {field: "position[5] (joint6output_to_joint6)", unit: rad, min: -3.14159, max: 3.14159,
+           source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/robot_info.py#L440-L444 (J6 -180..180 deg)"}
+        - {field: name, unit: none,
+           source: "https://github.com/ros/robot_state_publisher/blob/8b5af4f31e0f754c7c262eb487ccd3956cb788cc/src/robot_state_publisher.cpp#L300-L310"}
+      example:
+        name: [joint2_to_joint1, joint3_to_joint2, joint4_to_joint3, joint5_to_joint4, joint6_to_joint5, joint6output_to_joint6, gripper_controller]
+        position: [0.3, -0.3, 0.5, -0.4, 0.2, 0.5, 0.15]
+      notes: >-
+        Positional, not by name: the node converts position[0..5] to degrees rounded to 0.01 and
+        calls send_angles(angles, 25, _async=True) (speed 25 of 1..100) after set_fresh_mode(1)
+        (the latest command preempts the previous one); limits and ranges are those the
+        manufacturer documents and pymycobot enforces, equal to the URDF limits. Every message
+        also commands the gripper (see gripper): send the gripper's current value in position[6]
+        to move only the arm. `name` is ignored by the node but robot_state_publisher drops a
+        message whose name and position lengths differ, so name the seven joints in order.
+        A message with fewer than 6 positions, or an angle outside the limits, makes pymycobot
+        raise inside the subscription callback, which ends the node (no error reply).
+      source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: >-
+        Derived from the pinned source, not measured on hardware: each /joint_states message is
+        forwarded once as an absolute position target; no timer or timeout exists in the node or
+        in pymycobot's send_angles, and the servos hold the last target. The real-hardware
+        measurement the robot specification asks for has not been made.
+      date: 2026-09-30
+      source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L23-L66
+    feedback: []
+    feedback_note: >-
+      The boot publishes no measured joint feedback: /tf and /joint_states carry commanded values
+      only. Measured angles exist only in other launches (optional /listen_real_service,
+      /listen_real, /follow_display); the arm's motion is judged from the simulation's joint readings.
+    end_state: The six joints reach the commanded angles (the firmware moves at speed 25 and stops there).
+  - id: gripper
+    velocity_driven: false
+    command:
+      interface: topic
+      name: /joint_states
+      type: sensor_msgs/msg/JointState
+      fields:
+        - {field: "position[6] (gripper_controller; the last element after index 5)", unit: rad, min: -0.74, max: 0.15,
+           source: "https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L58-L62"}
+      example:
+        name: [joint2_to_joint1, joint3_to_joint2, joint4_to_joint3, joint5_to_joint4, joint6_to_joint5, joint6output_to_joint6, gripper_controller]
+        position: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.74]
+      notes: >-
+        The last position after index 5 is mapped linearly to the pymycobot gripper value
+        int((p + 0.74) / 0.89 * 100) (truncated), 0..100, and sent with
+        set_gripper_value(value, 80, gripper_type=1) (1 = adaptive gripper). 100 is fully open
+        (p = 0.15), 0 fully closed (p = -0.74). A message with exactly 6 positions sends value 0
+        (closes the gripper); a value outside 0..100 makes pymycobot raise and ends the node.
+      source: "pymycobot-4.0.7-py3-none-any.whl!/pymycobot/mycobot280.py#L777-L798; pymycobot/error.py#L760-L764"
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: >-
+        Derived from the pinned source, not measured on hardware: set_gripper_value sets an
+        absolute opening; nothing times it out. No real-hardware measurement has been made.
+      date: 2026-09-30
+      source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66
+    feedback: []
+    feedback_note: The boot publishes no gripper feedback; judged from the simulation's joint readings.
+    end_state: The gripper reaches the commanded opening, or stops closed on an object.
+
+sensors:
+  cameras: []
+  lidars: []
+  imus: []
+
+tolerances:
+  - figure: end-effector position repeatability
+    applies_to: flange position when the same joint command is repeated
+    tolerance: {absolute: 0.0005, unit: m}
+    basis: manufacturer
+    source: https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/1-ProductInformation/2.ProductParameter/2-ProductParameters.html
+  - figure: arm joint reaches its commanded angle
+    applies_to: each of the six arm joints at the end of an arm motion
+    tolerance: {absolute: 0.0175, unit: rad}
+    basis: estimate
+    notes: >-
+      1 deg. No manufacturer joint-accuracy figure exists; chosen to cover the model's gravity
+      sag under its estimated servo gains (< 0.007 rad in the derived model) and the node's
+      0.01 deg rounding, while remaining far tighter than any visible pose error.
+  - figure: gripper reaches its commanded opening
+    applies_to: gripper_controller at the end of a gripper motion, without an object
+    tolerance: {absolute: 0.05, unit: rad}
+    basis: estimate
+    notes: >-
+      Manufacturer gripper repeatability is 1 mm (docs_gripper); the joint-space value covers
+      the node's 1-in-100 quantisation (0.0089 rad per step) and the model's servo error.
+
+notes: >-
+  Command units: rad on the wire, degrees and a 0..100 gripper value on the serial link.
+  Manufacturer figures: payload 250 g, working radius 280 mm, arm weight 860 g, gripper
+  gripping range 20-45 mm, max gripping force 150 g, gripper weight 110 g.

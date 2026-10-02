@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>orbbec_camera</name>
+  <version>1.4.2</version>
+  <description>Messages and services of the Orbbec ROS 1 camera driver (message-only build).</description>
+  <maintainer email="noreply@example.com">robot-simulator</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>message_generation</build_depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <exec_depend>message_runtime</exec_depend>
+</package>

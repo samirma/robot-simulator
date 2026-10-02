@@ -1,3 +1,3 @@
-"""Keyboard teleoperation with a live camera feed for a myAGV over rosbridge."""
+"""Robot console: teleoperate, view and check ROS 1 / ROS 2 robots over rosbridge."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

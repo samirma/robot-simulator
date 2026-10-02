@@ -1,93 +1,62 @@
 #!/usr/bin/env bash
-# MolmoSpaces simulator launcher.
+# MolmoSpaces engine: MuJoCo with iTHOR and ProcTHOR houses (the default engine).
 #
-#   ./run.sh setup                     install venv + package, fetch default assets
-#   ./run.sh assets [ithor|objects|..] pre-fetch bulk asset sources
-#   ./run.sh repair                    re-point the venv and assets/ at this checkout after
-#                                      it has been moved; every command does this anyway
+#   ./run.sh setup                   venv, upstream checkout (pinned), default assets,
+#                                    robot meshes (fetched and verified into robots_specs/),
+#                                    worktop objects (into simulator/shared/objects/ycb/)
+#   ./run.sh assets [<source>]       pre-fetch asset sources for offline use: every one, or
+#                                    one of: ithor, procthor, objects, grasps, default
+#   ./run.sh start [--scene <s>] [--sim-port <p>] [--mujoco]
+#                                    start this engine's simulation with the scene alone,
+#                                    headless unless --mujoco opens a MuJoCo window
+#   ./run.sh repair                  re-point the venv and assets/ after the checkout moved
+#                                    (every command does this itself)
+#
+# start:
+#   --scene <source>:<id>   ithor:<n> (an iTHOR floor plan), procthor:<n> (a ProcTHOR-10k
+#                           house) or test:1 (flat floor and one worktop); default ithor:1.
+#                           Scenes install on demand.
+#   --sim-port <p>          the simulation's local control port (default 9080); refused
+#                           when taken. spawn.sh adds robots through it.
+#   --mujoco                open a MuJoCo window in the simulation process; closing it
+#                           ends the simulation and every spawned robot.
 set -euo pipefail
 
-# Resolved without cd; see the note in env.sh about title-escape capture.
 _self="${BASH_SOURCE[0]}"
 case "$_self" in /*) ;; *) _self="$PWD/$_self" ;; esac
-SIM_ROOT="$(dirname "$_self")"
-SIM_ROOT="$(realpath "$SIM_ROOT" 2>/dev/null || echo "${SIM_ROOT%/.}")"
+_dir="$(dirname "$_self")"
+_dir="$(realpath "$_dir" 2>/dev/null || echo "${_dir%/.}")"
 # shellcheck source=/dev/null
-source "$SIM_ROOT/env.sh"
+source "$_dir/env.sh"
+# shellcheck source=/dev/null
+source "$SHARED_ROOT/engine_common.sh"
 
-PY="$VENV_DIR/bin/python"
-
-die() { echo "error: $*" >&2; exit 1; }
-
-# ---------------------------------------------------------------- setup
-
-find_python311() {
-  for c in /opt/homebrew/opt/python@3.11/bin/python3.11 \
-           /usr/local/opt/python@3.11/bin/python3.11 \
-           "$(command -v python3.11 || true)"; do
-    [ -n "$c" ] && [ -x "$c" ] && { echo "$c"; return 0; }
-  done
-  return 1
-}
+MOLMOSPACES_URL="https://github.com/allenai/molmospaces.git"
 
 do_setup() {
-  command -v uv >/dev/null || die "uv not found; install from https://docs.astral.sh/uv/"
-
-  echo ">> fetching the robot meshes into robots_specs/"
-  "$SIM_ROOT/../../fetch_robot_assets.sh"
-
-  if [ ! -d "$MOLMOSPACES_DIR" ]; then
-    echo ">> cloning molmospaces"
-    git clone https://github.com/allenai/molmospaces.git "$MOLMOSPACES_DIR"
-  fi
-
-  if [ ! -x "$PY" ]; then
-    # mjpython needs a shared libpython, which uv's standalone CPython does not
-    # ship, so the venv is built on a Homebrew/system framework Python 3.11.
-    py311="$(find_python311)" || die "python 3.11 not found. Run: brew install python@3.11"
-    echo ">> creating venv on $py311"
-    uv venv --python "$py311" "$VENV_DIR"
-  fi
+  [ $# -eq 0 ] || die "setup takes no arguments"
+  need_uv
+  fetch_robot_meshes
+  fetch_worktop_objects
+  checkout "$MOLMOSPACES_URL" "$MOLMOSPACES_REV" "$MOLMOSPACES_DIR"
+  make_venv
   do_repair
-
-  echo ">> installing molmospaces[mujoco]"
-  # mujoco-filament is a linux-x86_64-only wheel; the plain mujoco extra is the
-  # only option on macOS arm64.
-  VIRTUAL_ENV="$VENV_DIR" uv pip install -e "$MOLMOSPACES_DIR[mujoco]"
-
-  echo ">> installing default assets (robots, scene indices)"
-  "$PY" -m molmo_spaces.molmo_spaces_constants
+  echo ">> installing molmospaces[mujoco] (editable, pinned checkout)"
+  VIRTUAL_ENV="$VENV_DIR" uv pip install -q -e "${MOLMOSPACES_DIR}[mujoco]" pyyaml scipy pillow
+  echo ">> installing default assets (scene indices, object and grasp metadata)"
+  "$PY" -m molmo_spaces.molmo_spaces_constants >/dev/null
   do_repair
-
-  echo ">> converting the robot meshes MuJoCo cannot read (shared/robot_models.py)"
-  "$PY" "$SHARED_ROOT/robot_models.py" --assets
-
+  echo ">> installing the default scene ithor:1"
+  "$PY" "$ENGINE_ROOT/tools/resolve_scene.py" ithor 1 >/dev/null
   echo ">> setup complete"
 }
 
-# A checkout that has been moved or copied keeps working only after two things are
-# re-pointed at it, and neither fails where it breaks. The venv: uv writes absolute paths
-# into every script's shebang and the editable finder, so `python` starts while `mjpython`
-# does not. The asset tree: assets/ is absolute symlinks into data/, and the installer
-# trusts its own completion markers over the links, so a scene then "fails to download"
-# into a directory that holds it. Both are no-ops when nothing has moved, so every
-# command runs this rather than asking anyone to remember it.
 do_repair() {
   [ -x "$PY" ] || return 0
   "$PY" "$SHARED_ROOT/tools/relocate_venv.py" "$VENV_DIR"
-  "$PY" "$SIM_ROOT/tools/relink_assets.py"
+  "$PY" "$ENGINE_ROOT/tools/relink_assets.py"
 }
 
-ensure_setup() {
-  [ -x "$PY" ] || die "not installed yet - run: ./run.sh setup"
-  do_repair
-}
-
-# ---------------------------------------------------------------- assets
-
-# Bulk sources worth pre-fetching for offline use. Deliberately excludes
-# objaverse (~129k objects) and the procthor/holodeck scene sets, which are
-# enormous and stream on demand anyway.
 declare -a ITHOR_SOURCES=(
   "mujoco/scenes/ithor/20251217_with_occupancy"
   "mujoco/objects/thor/20251117"
@@ -96,48 +65,47 @@ declare -a ITHOR_SOURCES=(
 
 do_assets() {
   ensure_setup
-  local what="${1:-ithor}"
+  [ $# -le 1 ] || die "assets takes at most one source"
+  local what="${1:-all}"
   case "$what" in
-    list)
-      "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" "$DATA_ROOT" --list
-      ;;
-    ithor)
-      for src in "${ITHOR_SOURCES[@]}"; do
-        echo ">> fetching $src"
-        "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" \
-          "$DATA_ROOT" --data_source_dir "$src" --versioned --yes
-      done
-      echo ">> relinking into $MLSPACES_ASSETS_DIR"
-      "$PY" -m molmo_spaces.molmo_spaces_constants
-      # Scene files are fetched per-file on demand, so the archive pull above is
-      # not enough to make every house usable offline -- walk them explicitly.
-      echo ">> installing every iTHOR house (this is the slow part)"
-      "$PY" "$SIM_ROOT/tools/prefetch_scenes.py" ithor
-      ;;
-    default)
-      "$PY" -m molmo_spaces.molmo_spaces_constants
-      ;;
-    *)
-      # treat as an explicit source dir
-      "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" \
-        "$DATA_ROOT" --data_source_dir "$what" --versioned --yes
-      ;;
+    all|ithor|procthor|objects|grasps|default) ;;
+    *) die "unknown asset source '$what' (one of: ithor, procthor, objects, grasps, default)" ;;
   esac
+  if [ "$what" = default ] || [ "$what" = all ]; then
+    "$PY" -m molmo_spaces.molmo_spaces_constants >/dev/null
+  fi
+  if [ "$what" = objects ] || [ "$what" = all ] || [ "$what" = ithor ]; then
+    echo ">> fetching mujoco/objects/thor/20251117"
+    "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" "$DATA_ROOT" \
+      --data_source_dir "mujoco/objects/thor/20251117" --versioned --yes
+  fi
+  if [ "$what" = grasps ] || [ "$what" = all ]; then
+    echo ">> fetching mujoco/grasps/droid/20251116"
+    "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" "$DATA_ROOT" \
+      --data_source_dir "mujoco/grasps/droid/20251116" --versioned --yes
+  fi
+  if [ "$what" = ithor ] || [ "$what" = all ]; then
+    echo ">> fetching mujoco/scenes/ithor/20251217_with_occupancy"
+    "$PY" "$MOLMOSPACES_DIR/scripts/assets/hf_download.py" "$DATA_ROOT" \
+      --data_source_dir "mujoco/scenes/ithor/20251217_with_occupancy" --versioned --yes
+    "$PY" -m molmo_spaces.molmo_spaces_constants >/dev/null
+    echo ">> installing every iTHOR house"
+    "$PY" "$ENGINE_ROOT/tools/prefetch_scenes.py" ithor
+  fi
+  if [ "$what" = procthor ] || [ "$what" = all ]; then
+    echo ">> installing every ProcTHOR-10k training house (large)"
+    "$PY" "$ENGINE_ROOT/tools/prefetch_scenes.py" procthor-10k
+  fi
+  do_repair
 }
-
-# ---------------------------------------------------------------- dispatch
 
 cmd="${1:-help}"
 [ $# -gt 0 ] && shift || true
-
 case "$cmd" in
   setup)  do_setup "$@" ;;
   assets) do_assets "$@" ;;
-  repair) do_repair ;;
-  help|-h|--help)
-    # Print the header comment block: everything after the shebang up to the
-    # first non-comment line, with the leading "# " stripped.
-    awk 'NR==1 {next} /^#/ {sub(/^# ?/, ""); print; next} {exit}' "$0"
-    ;;
-  *) die "unknown command '$cmd' (try: ./run.sh help)" ;;
+  repair) [ $# -eq 0 ] || die "repair takes no arguments"; do_repair ;;
+  start)  start_simulation "$@" ;;
+  help|-h|--help) usage ;;
+  *) die "unknown command '$cmd' (see ./run.sh --help)" ;;
 esac

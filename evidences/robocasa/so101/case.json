@@ -1,0 +1,421 @@
+{
+ "robot": "so101",
+ "name": "SO-101",
+ "kind": "arm",
+ "engine": "robocasa",
+ "placement": "worktop",
+ "started": "2026-10-02T11:46:47+01:00",
+ "items": {
+  "scene": {
+   "file": "scene.png",
+   "view": {
+    "lookat": [
+     2.16695880099083,
+     -0.35000000000000003,
+     1.0344850254297093
+    ],
+    "distance": 1.994757793097285,
+    "azimuth": 120.00000000000001,
+    "elevation": -25.0
+   },
+   "sim_time": 18.084000000000856,
+   "width": 1280,
+   "height": 720,
+   "std": 54.02,
+   "pass": true
+  },
+  "cameras": [
+   {
+    "wire": "ws://127.0.0.1:9090",
+    "owner": "so101",
+    "camera": "wrist",
+    "topic": "/image_raw",
+    "recorded": {
+     "encoding": "yuv422_yuy2",
+     "width": 640,
+     "height": 480,
+     "frame_id": "default_cam"
+    },
+    "file": "cam__image_raw.png",
+    "frames_seen": 2,
+    "message": {
+     "width": 640,
+     "height": 480,
+     "encoding": "yuv422_yuy2",
+     "step": 1280,
+     "nbytes": 614400,
+     "frame_id": "default_cam",
+     "mean_rgb": [
+      188.6,
+      176.8,
+      156.1
+     ],
+     "std": 72.55
+    },
+    "pass": true,
+    "problems": []
+   }
+  ],
+  "fleet": [
+   {
+    "profile": "so101",
+    "wire": "ws://127.0.0.1:9090",
+    "command": "robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect so101",
+    "exit_code": 0,
+    "file": "fleet_so101.txt",
+    "pass": true,
+    "summary": "PASS"
+   }
+  ],
+  "smoke": {
+   "file": "smoke.json",
+   "pass": true,
+   "motions": {
+    "arm": true,
+    "gripper": true
+   }
+  }
+ },
+ "notes": [],
+ "host_load_before": {
+  "load1": 6.32,
+  "load5": 7.87,
+  "load15": 8.98,
+  "ncpu": 14,
+  "waited_s": 80.0
+ },
+ "simulation_ready_line": "simulation ready: engine robocasa, scene robocasa:1-1, sim-port 9080, headless",
+ "simulation_command": "simulator/kitchen.sh start --engine robocasa --sim-port 9080",
+ "scene": "robocasa:1-1",
+ "engine_reported": "robocasa",
+ "spawn_command": "simulator/spawn.sh so101 --placement worktop --sim-port 9080 --port 9090",
+ "readiness_line": "spawn ready: so101 (SO-101) in robocasa robocasa:1-1 on the worktop; wire(s): so101 ws://127.0.0.1:9090 [ROS 2 jazzy]",
+ "ready_at": "2026-10-02T11:48:17+01:00",
+ "wires": [
+  {
+   "role": "main",
+   "owner": "so101",
+   "host": "127.0.0.1",
+   "port": 9090,
+   "ros": "ROS 2 jazzy",
+   "url": "ws://127.0.0.1:9090"
+  }
+ ],
+ "ports": {
+  "main": 9090,
+  "sim_port": 9080
+ },
+ "spawned": {
+  "state": "running",
+  "placement": "worktop",
+  "xyz": [
+   2.2311,
+   -0.2,
+   0.9218
+  ],
+  "yaw": -1.5708,
+  "ports": [
+   9090
+  ],
+  "staged": {
+   "apple": {
+    "body": "task_apple",
+    "pos": [
+     2.331088192318004,
+     -0.5,
+     0.9440000000000001
+    ],
+    "quat": [
+     0.7071067811865476,
+     0.0,
+     0.0,
+     -0.7071067811865475
+    ]
+   },
+   "plate": {
+    "body": "task_plate",
+    "pos": [
+     2.005088192318004,
+     -0.42600000000000005,
+     0.924
+    ],
+    "quat": [
+     0.7071067811865476,
+     0.0,
+     0.0,
+     -0.7071067811865475
+    ]
+   },
+   "bowl": {
+    "body": "task_bowl",
+    "pos": [
+     1.831088192318004,
+     -0.3400000000000001,
+     0.9511000000000001
+    ],
+    "quat": [
+     0.7071067811865476,
+     0.0,
+     0.0,
+     -0.7071067811865475
+    ]
+   },
+   "mug": {
+    "body": "task_mug",
+    "pos": [
+     2.501088192318004,
+     -0.25000000000000006,
+     0.9512
+    ],
+    "quat": [
+     0.7071067811865476,
+     0.0,
+     0.0,
+     -0.7071067811865475
+    ]
+   },
+   "banana": {
+    "body": "task_banana",
+    "pos": [
+     2.387088192318004,
+     -0.3560000000000001,
+     0.9412
+    ],
+    "quat": [
+     0.923803328935701,
+     0.0,
+     0.0,
+     -0.38286735228707724
+    ]
+   },
+   "lemon": {
+    "body": "task_lemon",
+    "pos": [
+     1.971088192318004,
+     -0.27000000000000013,
+     0.9534
+    ],
+    "quat": [
+     0.7071067811865476,
+     0.0,
+     0.0,
+     -0.7071067811865475
+    ]
+   }
+  },
+  "cleared": [
+   "rc_obj_2_main",
+   "rc_obj_3_main",
+   "rc_obj_6_main",
+   "rc_obj_8_main",
+   "rc_obj_9_main",
+   "rc_obj_10_main"
+  ]
+ },
+ "rtf_at_start": 0.931,
+ "view": {
+  "lookat": [
+   2.16695880099083,
+   -0.35000000000000003,
+   1.0344850254297093
+  ],
+  "distance": 1.994757793097285,
+  "azimuth": 120.00000000000001,
+  "elevation": -25.0,
+  "_clear_fraction": 1.0,
+  "_context_m": 2.06
+ },
+ "host_load_fleet": {
+  "load1": 10.73,
+  "load5": 8.79,
+  "load15": 9.28,
+  "ncpu": 14
+ },
+ "host_load_smoke": {
+  "load1": 10.73,
+  "load5": 8.79,
+  "load15": 9.28,
+  "ncpu": 14
+ },
+ "rtf_at_end": 0.924,
+ "collection": {
+  "from": "2026-10-02T11:48:29+01:00",
+  "to": "2026-10-02T11:48:39+01:00"
+ },
+ "rtf_low_windows_during_collection": [],
+ "rtf_samples": [
+  [
+   0.0,
+   1.0
+  ],
+  [
+   1.1,
+   1.0
+  ],
+  [
+   2.1,
+   1.0
+  ],
+  [
+   3.2,
+   1.0
+  ],
+  [
+   4.2,
+   1.0
+  ],
+  [
+   5.2,
+   1.0
+  ],
+  [
+   6.2,
+   1.0
+  ],
+  [
+   7.2,
+   1.0
+  ],
+  [
+   8.3,
+   1.0
+  ],
+  [
+   9.3,
+   1.0
+  ],
+  [
+   10.3,
+   0.931
+  ],
+  [
+   11.3,
+   0.931
+  ],
+  [
+   12.3,
+   0.931
+  ],
+  [
+   13.3,
+   0.931
+  ],
+  [
+   14.3,
+   0.931
+  ],
+  [
+   15.3,
+   0.931
+  ],
+  [
+   16.3,
+   0.931
+  ],
+  [
+   17.3,
+   0.931
+  ],
+  [
+   18.5,
+   0.931
+  ],
+  [
+   19.5,
+   0.931
+  ],
+  [
+   20.5,
+   0.924
+  ],
+  [
+   21.5,
+   0.924
+  ],
+  [
+   22.5,
+   0.924
+  ],
+  [
+   23.5,
+   0.924
+  ],
+  [
+   24.5,
+   0.924
+  ],
+  [
+   25.5,
+   0.924
+  ],
+  [
+   26.5,
+   0.924
+  ],
+  [
+   27.5,
+   0.924
+  ],
+  [
+   28.5,
+   0.924
+  ],
+  [
+   29.5,
+   0.924
+  ],
+  [
+   30.5,
+   1.0
+  ],
+  [
+   31.5,
+   1.0
+  ],
+  [
+   32.5,
+   1.0
+  ],
+  [
+   33.6,
+   1.0
+  ],
+  [
+   34.6,
+   1.0
+  ],
+  [
+   35.6,
+   1.0
+  ],
+  [
+   36.6,
+   1.0
+  ],
+  [
+   37.6,
+   1.0
+  ]
+ ],
+ "spawn_exit_code": 0,
+ "simulation_exit_code": 0,
+ "containers_left": [],
+ "rtf_warnings": [],
+ "host_load_after": {
+  "load1": 9.26,
+  "load5": 8.59,
+  "load15": 9.2,
+  "ncpu": 14
+ },
+ "finished": "2026-10-02T11:48:52+01:00",
+ "checks": {
+  "scene": true,
+  "cameras": true,
+  "fleet": true,
+  "smoke": true,
+  "spawn_clean_exit": true,
+  "worktop_objects": true
+ },
+ "pass": true,
+ "rtf_clean": true
+}

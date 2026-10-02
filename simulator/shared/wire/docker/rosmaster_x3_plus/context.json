@@ -1,0 +1,26 @@
+{
+  "comment": "Vendor packages spawn.sh extracts into the build context from the pinned, sha256-verified yahboomcar_ws.zip (never committed).",
+  "extract": [
+    {
+      "archive": "robot-simulator/drive/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU/yahboomcar_ws.zip",
+      "sha256": "13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162",
+      "prefix": "yahboomcar_ws/src/yahboomcar_msgs/",
+      "dest": "vendor/yahboomcar_msgs",
+      "fetch": ["python3", "robots_specs/tools/fetch_meshes.py", "rosmaster_x3_plus"]
+    },
+    {
+      "archive": "robot-simulator/drive/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU/yahboomcar_ws.zip",
+      "sha256": "13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162",
+      "prefix": "yahboomcar_ws/src/yahboomcar_bringup/",
+      "dest": "vendor/yahboomcar_bringup",
+      "fetch": ["python3", "robots_specs/tools/fetch_meshes.py", "rosmaster_x3_plus"]
+    },
+    {
+      "archive": "robot-simulator/drive/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU/yahboomcar_ws.zip",
+      "sha256": "13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162",
+      "prefix": "yahboomcar_ws/src/yahboomcar_ctrl/",
+      "dest": "vendor/yahboomcar_ctrl",
+      "fetch": ["python3", "robots_specs/tools/fetch_meshes.py", "rosmaster_x3_plus"]
+    }
+  ]
+}

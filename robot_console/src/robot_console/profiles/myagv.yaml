@@ -1,0 +1,451 @@
+id: myagv
+name: "Elephant Robotics myAGV (2023, Pi)"
+dialect: ros1
+kind: mobile_base
+teleop: base
+
+sources:
+  myagv_ros:
+    url: https://github.com/elephantrobotics/myagv_ros
+    branch: myagv_ros_2023Pi
+    revision: c71f3cc574e5ed1973a925238eabe88662cfa701
+  usb_cam:
+    url: https://github.com/ros-drivers/usb_cam
+    tag: "0.3.7"
+    revision: addab4a65fdf65c460fec2cc3eee8fab94699370
+    note: >-
+      Approved community camera boot (workspace spec §1.3), not manufacturer-provided:
+      `rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link` beside myagv_active.launch.
+  docs:
+    url: https://docs.elephantrobotics.com/docs/myagv_pi23_en/
+
+boot:
+  - "myagv_ros:myagv_odometry/launch/myagv_active.launch"
+  - "usb_cam:nodes/usb_cam_node.cpp (rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link)"
+boot_note: >-
+  The vendor docs start the robot for normal operation with
+  `./start_ydlidar.sh` (powers the lidar via GPIO 20, not a ROS node:
+  myagv_ros:myagv_odometry/scripts/start_ydlidar.py#L6-L8) followed by
+  `roslaunch myagv_odometry myagv_active.launch`
+  (https://docs.elephantrobotics.com/docs/myagv_pi23_en/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.html ;
+  same in myagv_ros:README.md#L18-L27 and #L44-L46). That launch starts
+  myagv_odometry_node, joint_state_publisher, robot_state_publisher, three tf
+  static_transform_publishers, robot_pose_ekf and includes
+  ydlidar_ros_driver/launch/X2.launch (myagv_ros:myagv_odometry/launch/myagv_active.launch#L3-L25).
+  The boot starts NO ROS camera driver; teleop (myagv_teleop.launch), joystick
+  (myagv_ps2*.launch), gmapping (myagv_slam_laser.launch) and navigation
+  (*navigation_active.launch) are separate optional launches.
+
+namespace: null
+namespace_note: >-
+  Not documented as namespace-configurable. The driver uses relative names
+  (cmd_vel, odom, imu) but frame ids and the serial port are hard-coded
+  (myagv_ros:myagv_odometry/src/myAGV.cpp#L11, #L55-L58, #L264, #L297-L298) and
+  no launch arg / doc offers a namespace.
+
+owned_prefixes:
+  - "/robot_pose_ekf/"
+  - "/usb_cam/"       # the camera node's private namespace (usb_cam:nodes/usb_cam_node.cpp#L84-L85, #L282)
+
+topics:
+  # ---- myagv_odometry_node (base driver) ----
+  - name: /cmd_vel
+    type: geometry_msgs/Twist
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/src/myAGVSub.cpp#L26"
+    note: >-
+      Callback latches linear.x, linear.y, angular.z into globals (#L8-L14);
+      the 100 Hz loop re-sends them every cycle (#L27-L33). writeSpeed clamps
+      each axis to [-1.0, 1.0] and encodes value*100+128 to the MCU
+      (myagv_ros:myagv_odometry/src/myAGV.cpp#L221-L232). Other fields ignored.
+  - name: /odom
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L56"
+    note: >-
+      frame odom -> child base_footprint (#L321, #L329). Published from
+      execute() only after a successful serial read (#L342-L349) inside a
+      ros::Rate(100) loop (myagv_ros:myagv_odometry/src/myAGVSub.cpp#L27);
+      effective rate is gated by the MCU auto-report rate, which is not stated
+      in source. The driver does NOT broadcast odom->base_footprint tf
+      (commented out, #L317); robot_pose_ekf does.
+  - name: /imu
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L55"
+    note: "frame imu_link (#L264); published together with /odom (#L347); rate gated by MCU serial reports."
+  - name: /Voltage
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L57"
+    note: "Main battery voltage in V (buf[16]/10, #L186); published with /odom (#L348, #L249-L257). Capital V is the real name."
+  - name: /voltage_backup
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L58"
+    note: "Backup battery voltage in V, 0.0 when no backup battery (#L188-L193)."
+  # ---- joint_state_publisher / robot_state_publisher (stock packages, not vendored) ----
+  - name: /joint_states
+    type: sensor_msgs/JointState
+    direction: out
+    rate_hz: 10
+    optional: false
+    source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L6"
+    note: >-
+      Stock joint_state_publisher (not in repo); stock default publish rate
+      10 Hz. URDF has one continuous joint base_up
+      (myagv_ros:myagv_urdf/urdf/myAGV.urdf#L28-L33).
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L7-L11"
+    note: >-
+      Aggregate of several publishers: robot_state_publisher (base_footprint->base_up
+      from /joint_states, stock package); tf static_transform_publisher (ROS1 tf
+      version broadcasts on /tf periodically) base_footprint->camera_link every
+      50 ms, base_footprint->imu_link every 50 ms, base_footprint->laser_frame
+      every 10 ms (#L9-L11); robot_pose_ekf odom->base_footprint
+      (myagv_ros:robot_pose_ekf/src/odom_estimation_node.cpp#L480, output_frame=odom
+      per launch #L14). No single periodic rate.
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L7"
+    note: >-
+      Latched; advertised by stock robot_state_publisher (not in repo). The URDF
+      has no fixed joints (myagv_ros:myagv_urdf/urdf/myAGV.urdf#L28), so it may
+      carry no transforms.
+  # ---- robot_pose_ekf (vendored) ----
+  - name: /robot_pose_ekf/odom_combined
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "myagv_ros:robot_pose_ekf/src/odom_estimation_node.cpp#L107"
+    note: >-
+      Vendor-modified to nav_msgs/Odometry (stock is PoseWithCovarianceStamped,
+      commented at #L106), on the private handle. Timer at freq=30.0
+      (launch myagv_active.launch#L16; node #L103); published only when the
+      filter updates (#L434-L470). Subscribes /odom (odom_data=odom, launch #L19;
+      node #L117) and /imu (imu_data remapped to imu, launch #L22; node #L124);
+      vo_used=false (launch #L21).
+  # ---- ydlidar_ros_driver (vendored), via X2.launch ----
+  - name: /scan
+    type: sensor_msgs/LaserScan
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L55"
+    note: >-
+      frame laser_frame, range 0.1-12.0 m, angle -180..180 deg
+      (myagv_ros:ydlidar_ros_driver/launch/X2.launch#L5, #L30-L33). Launch sets
+      frequency 10.0 but comments "frequency is invalid, External PWM control
+      speed" (X2.launch#L34-L35); loop is ros::Rate(30) (driver #L172). Actual
+      scan rate not established from source.
+  - name: /point_cloud
+    type: sensor_msgs/PointCloud
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L56-L57"
+    note: "Published alongside every /scan (#L241-L242)."
+  # ---- optional: teleop / joystick ----
+  # (they publish /cmd_vel, already listed as `in`)
+  # ---- optional: navigation (navigation_active.launch and variants; vendored navigation stack) ----
+  - name: /move_base_simple/goal
+    type: geometry_msgs/PoseStamped
+    direction: in
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L106-L107"
+  - name: /move_base/current_goal
+    type: geometry_msgs/PoseStamped
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L97"
+  - name: /move_base/recovery_status
+    type: move_base_msgs/RecoveryStatus
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L101"
+  - name: /amcl_pose
+    type: geometry_msgs/PoseWithCovarianceStamped
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L477"
+  - name: /particlecloud
+    type: geometry_msgs/PoseArray
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L478"
+  - name: /initialpose
+    type: geometry_msgs/PoseWithCovarianceStamped
+    direction: in
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L494"
+  - name: /map
+    type: nav_msgs/OccupancyGrid
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/map_server/src/main.cpp#L84"
+    note: "Latched. Also published by gmapping in the mapping launch (myagv_ros:myagv_navigation/launch/gmapping.launch#L5, stock slam_gmapping, not vendored)."
+  - name: /map_metadata
+    type: nav_msgs/MapMetaData
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:navigation/map_server/src/main.cpp#L81"
+  - name: /gmapping/entropy
+    type: std_msgs/Float64
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "myagv_ros:myagv_navigation/launch/gmapping.launch#L5"
+    note: "Stock slam_gmapping private topic `~entropy` (package not vendored); node is named gmapping in the launch."
+
+  # ---- camera boot: usb_cam 0.3.7 (node "usb_cam", private NodeHandle "~") ----
+  - name: /usb_cam/image_raw
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+    note: >-
+      image_transport CameraPublisher "image_raw" on the private handle of node "usb_cam"
+      (ros::init name, #L282; node_("~"), #L84-L85). Published once per loop at `framerate`
+      (default 30, #L101; ros::Rate, #L258). Default pixel_format mjpeg (#L103) is decoded to
+      rgb24 and filled as encoding rgb8 (usb_cam:src/usb_cam.cpp#L1252-L1255).
+  - name: /usb_cam/camera_info
+    type: sensor_msgs/CameraInfo
+    direction: out
+    rate_hz: 30
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L240-L251"
+    note: "Companion of image_raw from advertiseCamera (#L89), published with every image."
+  # image_transport plugin topics exist only when the plugins are installed (optional).
+  - name: /usb_cam/image_raw/compressed
+    type: sensor_msgs/CompressedImage
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+    note: "compressed_image_transport plugin (stock image_transport_plugins, not part of usb_cam)."
+  - name: /usb_cam/image_raw/compressed/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/compressed/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/compressedDepth
+    type: sensor_msgs/CompressedImage
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/compressedDepth/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/compressedDepth/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/theora
+    type: theora_image_transport/Packet
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/theora/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+  - name: /usb_cam/image_raw/theora/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+
+services:
+  - name: /usb_cam/start_capture
+    type: std_srvs/Empty
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L124"
+  - name: /usb_cam/stop_capture
+    type: std_srvs/Empty
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L125"
+  - name: /usb_cam/set_camera_info
+    type: sensor_msgs/SetCameraInfo
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L121"
+    note: "camera_info_manager::CameraInfoManager on the node's private handle advertises set_camera_info (stock camera_info_manager behaviour)."
+  - name: /robot_pose_ekf/get_status
+    type: robot_pose_ekf/GetStatus
+    optional: false
+    source: "myagv_ros:robot_pose_ekf/src/odom_estimation_node.cpp#L143"
+  - name: /start_scan
+    type: std_srvs/Empty
+    optional: false
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L159-L160"
+  - name: /stop_scan
+    type: std_srvs/Empty
+    optional: false
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L157-L158"
+  # ---- optional: navigation / mapping ----
+  - name: /move_base/make_plan
+    type: nav_msgs/GetPlan
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L151"
+  - name: /move_base/clear_costmaps
+    type: std_srvs/Empty
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L154"
+  - name: /static_map
+    type: nav_msgs/GetMap
+    optional: true
+    source: "myagv_ros:navigation/map_server/src/main.cpp#L75"
+  - name: /change_map
+    type: nav_msgs/LoadMap
+    optional: true
+    source: "myagv_ros:navigation/map_server/src/main.cpp#L78"
+  - name: /global_localization
+    type: std_srvs/Empty
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L479"
+  - name: /request_nomotion_update
+    type: std_srvs/Empty
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L482"
+  - name: /set_map
+    type: nav_msgs/SetMap
+    optional: true
+    source: "myagv_ros:navigation/amcl/src/amcl_node.cpp#L483"
+  - name: /dynamic_map
+    type: nav_msgs/GetMap
+    optional: true
+    source: "myagv_ros:myagv_navigation/launch/gmapping.launch#L5"
+    note: "Stock slam_gmapping service (package not vendored)."
+
+actions:
+  - name: /move_base
+    type: move_base_msgs/MoveBaseAction
+    optional: true
+    source: "myagv_ros:navigation/move_base/src/move_base.cpp#L61"
+
+cameras:
+  - topic: /usb_cam/image_raw
+    type: sensor_msgs/Image
+    encodings: [rgb8]
+    rate_hz: 30
+    stale_after_s: 1.0
+    optional: false
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+    policy: "stale_after_s = max(1.0 s, 5 frame periods at the 30 Hz default framerate, #L101)."
+    note: "encoding rgb8 for the boot's default pixel_format mjpeg (usb_cam:src/usb_cam.cpp#L1252-L1255); frame_id camera_link from the boot's _camera_frame_id (#L118)."
+cameras_note: >-
+  myagv_active.launch starts no camera driver (it only publishes the static tf
+  base_footprint->camera_link, myagv_ros:myagv_odometry/launch/myagv_active.launch#L9);
+  the approved community camera boot is usb_cam 0.3.7 (tag 0.3.7, commit addab4a6) run
+  beside it with `rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link`, whose raw
+  image stream is required.
+
+stop:
+  - op: publish
+    name: /cmd_vel
+    type: geometry_msgs/Twist
+    msg: {linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}
+    source: "myagv_ros:myagv_teleop/scripts/myagv_teleop.py#L149-L156"
+    note: >-
+      The vendor teleop publishes an all-zero Twist on cmd_vel to stop (also on
+      any non-motion key, #L235-L247). The driver latches the last command and
+      only changes when a new /cmd_vel arrives
+      (myagv_ros:myagv_odometry/src/myAGVSub.cpp#L8-L14, #L32), so an explicit
+      zero Twist is required.
+
+watchdog: >-
+  None found in source. myagv_odometry_node stores the last /cmd_vel in globals
+  and re-sends it to the MCU every 100 Hz loop iteration with no timeout
+  (myagv_ros:myagv_odometry/src/myAGVSub.cpp#L4-L14, #L27-L33;
+  myagv_ros:myagv_odometry/src/myAGV.cpp#L338-L349). If the publisher dies without
+  sending zero, the base keeps moving until a zero Twist arrives. MCU-firmware
+  timeout behaviour is not established from these sources.
+
+teleop_base:
+  topic: /cmd_vel
+  type: geometry_msgs/Twist
+  rate_hz: 10
+  rate_policy: "Console policy: re-publish at 10 Hz while a key is held; send one zero Twist on release (driver has no watchdog)."
+  axes:
+    x:
+      speed: 0.2
+      limit: 0.9
+      unit: m/s
+      source: "https://docs.elephantrobotics.com/docs/myagv_pi23_en/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.5-Real-time_Mapping_with_Gmapping.html"
+      policy: >-
+        Speed 0.2 = vendor-recommended keyboard linear speed (gmapping doc).
+        Limit 0.9 = documented Maximum Movement Speed 0.9 m/s
+        (https://docs.elephantrobotics.com/docs/myagv_pi23_en/2-ProductFeature/2.1-MachineSpecification.html);
+        driver clamps to 1.0 (myagv_ros:myagv_odometry/src/myAGV.cpp#L223-L224).
+    y:
+      speed: 0.2
+      limit: 0.9
+      unit: m/s
+      source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L225-L226"
+      policy: >-
+        Driver passes linear.y (strafe) and clamps it to [-1.0, 1.0]; vendor teleop
+        uses the same linear speed for strafe (myagv_ros:myagv_teleop/scripts/myagv_teleop.py#L138).
+        No separate lateral spec; limit taken as the documented 0.9 m/s max
+        movement speed; speed 0.2 mirrors the recommended linear speed.
+    yaw:
+      speed: 0.4
+      limit: 1.0
+      unit: rad/s
+      source: "https://docs.elephantrobotics.com/docs/myagv_pi23_en/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.5-Real-time_Mapping_with_Gmapping.html"
+      policy: >-
+        Speed 0.4 = vendor-recommended keyboard angular speed (gmapping doc).
+        Limit 1.0 = driver clamp on angular.z
+        (myagv_ros:myagv_odometry/src/myAGV.cpp#L227-L228); vendor teleop
+        turn_limit default also 1.0 (myagv_ros:myagv_teleop/scripts/myagv_teleop.py#L195).
+        No documented rotational spec.
+
+controls: []
+controls_note: >-
+  No bounded, documented non-driving control. The only other commandable
+  endpoints in the boot are the lidar /start_scan and /stop_scan services
+  (myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L157-L160), which the
+  vendor docs do not present as a user control; stopping the lidar would
+  starve navigation/mapping, so they are not exposed as page controls.

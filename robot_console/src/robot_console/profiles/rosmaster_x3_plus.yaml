@@ -1,0 +1,464 @@
+id: rosmaster_x3_plus
+name: "Yahboom ROSMASTER X3 PLUS (ROS 1)"
+dialect: ros1
+kind: mobile_manipulator
+teleop: base
+
+sources:
+  yahboomcar_ws:
+    url: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU (ROSMASTER-X3Plus_ROS1_code.zip) -> yahboomcar_ws.zip"
+    sha256: 13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162
+    note: "Paths are relative to the extracted yahboomcar_ws/ directory (e.g. src/yahboomcar_bringup/...)."
+  ROSMASTERX3-PLUS:
+    url: https://github.com/YahboomTechnology/ROSMASTERX3-PLUS
+    branch: main
+    revision: 9732c62247dfb57a899aea01e4fe72ed434bac6d
+  docs:
+    url: http://www.yahboom.net/study/ROSMASTER-X3-PLUS
+
+boot:
+  - "yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch"
+boot_note: >-
+  Run with `export ROBOT_TYPE=X3plus` (the launch reads $(env ROBOT_TYPE),
+  yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L2). The vendor
+  lidar course lists `roslaunch yahboomcar_nav laser_astrapro_bringup.launch  # Astra + laser +
+  yahboomcar` as the robot-side start for the lidar+Astra configuration
+  (https://github.com/YahboomTechnology/ROSMASTERX3-PLUS/blob/9732c62247dfb57a899aea01e4fe72ed434bac6d/12.Lidar%20course/6.gmapping%20mapping%20algorithm/6.gmapping%20mapping%20algorithm.pdf,
+  section 6.2.1). It includes ydlidar_ros_driver/launch/TG.launch (#L4), orbbec_camera/launch/astraproplus.launch
+  (#L5), yahboomcar_bringup/launch/bringup.launch (#L6) and a tf static_transform_publisher
+  laser_link->laser every 30 ms for X3plus (#L10-L11). bringup.launch
+  (yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L1-L74) starts robot_state_publisher (#L10),
+  the X3plus driver Mcnamu_X3plus.py as driver_node (#L19-L27), base_node as odometry_publisher (#L31-L38),
+  imu_filter_madgwick (#L42-L54), robot_localization ekf_localization_node as ekf_localization (#L58-L66)
+  and yahboomcar_ctrl/launch/yahboom_joy.launch (#L70: joy_node + yahboom_joy,
+  yahboomcar_ws:src/yahboomcar_ctrl/launch/yahboom_joy.launch#L4-L10). ydlidar_ros_driver, orbbec_camera and the
+  stock packages (robot_state_publisher, imu_filter_madgwick, robot_localization) are NOT in the pinned
+  workspace (joy is vendored, src/joy); endpoints of those are listed only where the pinned workspace or pinned tutorials name them.
+  Variants: laser_bringup.launch (no camera), astrapro_bringup.launch (camera, depthimage_to_laserscan
+  instead of lidar), laser_usb_bringup.launch (USB mono camera) — all in yahboomcar_ws:src/yahboomcar_nav/launch/.
+
+namespace: null
+namespace_note: >-
+  The authoritative single-robot boot uses global/root names (driver remaps to absolute /vel_raw,
+  /imu/data_raw, /mag/mag_raw, yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L24-L26) and
+  offers no namespace arg. Namespacing exists only in the separate multi-robot launch
+  yahboomcar_ws:src/yahboomcar_multi/launch/laser_astrapro_bringup_multi.launch#L3-L19 (group ns, default
+  "robot1") with library/bringup_multi.launch setting the driver ~prefix and /<ns>/... remaps
+  (yahboomcar_ws:src/yahboomcar_multi/launch/library/bringup_multi.launch#L4-L30). That is a different launch,
+  so it is not treated as the authoritative interface.
+
+owned_prefixes:
+  - "/driver_node/"
+  - "/imu/"
+  - "/mag/"
+
+topics:
+  # ---- driver_node: Mcnamu_X3plus.py (vendor, pinned) ----
+  - name: /cmd_vel
+    type: geometry_msgs/Twist
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L37"
+    note: >-
+      Callback forwards linear.x, linear.y, angular.z straight to Rosmaster.set_car_motion(vx, vy, wz)
+      (#L165-L177) with NO clamping in the node: the ~xlinear_speed_limit/~ylinear_speed_limit/
+      ~angular_speed_limit params (0.7/0.7/3.2 for X3plus, bringup.launch#L20-L22) are read (#L34-L36) but
+      never applied. Units m/s and rad/s; the Rosmaster_Lib docs state v_x, v_y in [-1.0, 1.0], v_z in
+      [-5.0, 5.0] (05.Basic course/8. Control robot movement.pdf). Also published by yahboom_joy
+      (yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_joy.py#L37).
+  - name: /RGBLight
+    type: std_msgs/Int32
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L38"
+    note: "Light-strip effect 0..6 (0 stop, 6 battery display), #L140-L150. Also published by yahboom_joy (yahboom_joy.py#L40)."
+  - name: /Buzzer
+    type: std_msgs/Bool
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L39"
+    note: "true = buzzer on, false = off (#L152-L163); latches until false. Also published by yahboom_joy (yahboom_joy.py#L38)."
+  - name: /TargetAngle
+    type: yahboomcar_msgs/ArmJoint
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L40"
+    note: >-
+      ArmJoint {int32 id, int32 run_time, float32 angle, float32[] joints}
+      (yahboomcar_ws:src/yahboomcar_msgs/msg/ArmJoint.msg#L1-L4). If joints is non-empty all six servos go
+      to joints[0..5] (degrees) over run_time ms, else servo `id` (1..6) goes to `angle` (#L107-L127).
+      No range check in the node. Also published by yahboom_joy (yahboom_joy.py#L41).
+  - name: /ArmAngleUpdate
+    type: yahboomcar_msgs/ArmJoint
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L41"
+    note: "Echo published after each /TargetAngle command (#L115, #L123); on demand. Subscribed by yahboom_joy (yahboom_joy.py#L43)."
+  - name: /edition
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L42"
+    note: "Firmware version; pub_data loop sleeps 0.05 s per iteration (#L62-L63, #L104), so <= 20 Hz."
+  - name: /voltage
+    type: std_msgs/Float32
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L43"
+    note: "Battery voltage (V) (#L70, #L103); <= 20 Hz loop (#L63)."
+  - name: /joint_states
+    type: sensor_msgs/JointState
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L44"
+    note: >-
+      Names arm_joint1..5, grip_joint (#L199); positions = (commanded servo deg - 90) in rad, gripper
+      servo 30..180 mapped to 0..90 first (#L204-L210). Reflects the last COMMANDED angles, not a servo
+      readback. Published every pub_data loop (#L105, <= 20 Hz) and after each arm command (#L125).
+      No joint_state_publisher runs (commented out, bringup.launch#L11-L14).
+  - name: /vel_raw
+    type: geometry_msgs/Twist
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L24"
+    note: "Driver publishes on /pub_vel (Mcnamu_X3plus.py#L45) remapped to /vel_raw; measured vx, vy, wz from the MCU (#L74, #L92-L95); <= 20 Hz."
+  - name: /imu/data_raw
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L25"
+    note: >-
+      Driver /pub_imu (Mcnamu_X3plus.py#L46) remapped to /imu/data_raw; frame imu_link (bringup.launch#L23,
+      #L78); accel + gyro only, no orientation (#L77-L84); <= 20 Hz. (The state-estimation tutorial text
+      says /imu/imu_raw, which is the remap used by yahboomcar.launch#L20, not by bringup.launch.)
+  - name: /mag/mag_raw
+    type: sensor_msgs/MagneticField
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L26"
+    note: "Driver /pub_mag (Mcnamu_X3plus.py#L47) remapped; frame imu_link (#L85-L89); <= 20 Hz. Not consumed (imu filter use_mag=false, bringup.launch#L44)."
+  - name: /driver_node/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
+    note: "dynamic_reconfigure server for PIDparam.cfg (yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L1-L20). Parameter infrastructure; listed only because /driver_node/ is an owned prefix."
+  - name: /driver_node/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
+  # ---- odometry_publisher: base_node (vendor, pinned) ----
+  - name: /odom_raw
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L37"
+    note: >-
+      base_node advertises /pub_odom (yahboomcar_ws:src/yahboomcar_bringup/src/base.cpp#L22) remapped to
+      /odom_raw; one message per /vel_raw (subscribed as /sub_vel, base.cpp#L21, remap bringup.launch#L36;
+      publish base.cpp#L73), frame odom -> base_footprint (bringup.launch#L32-L33). base_node broadcasts no tf.
+  # ---- imu_filter_madgwick (stock package, launched at bringup.launch#L42) ----
+  - name: /imu/data
+    type: sensor_msgs/Imu
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L42"
+    note: >-
+      Stock imu_filter_madgwick subscribes imu/data_raw and publishes imu/data (the /sub_imu,/pub_imu remaps
+      at #L50-L53 match nothing in that node); topic table in the vendor tutorial
+      (10.Robot control course/6.Robot state estimation, section 6.1.3). Consumed by the ekf as /imu0 ->
+      /imu/data (#L60). Rate follows /imu/data_raw.
+  # ---- ekf_localization (stock robot_localization, bringup.launch#L58) ----
+  - name: /odom
+    type: nav_msgs/Odometry
+    direction: out
+    rate_hz: 20
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L59"
+    note: >-
+      ekf output odometry/filtered remapped to odom; frequency 20
+      (yahboomcar_ws:src/yahboomcar_bringup/param/robot_localization.yaml#L4); fuses /odom_raw (remap #L61)
+      and /imu/data (remap #L60); frames odom -> base_footprint (#L62-L64). Topic table in tutorial
+      10.Robot control course/6.Robot state estimation, section 6.1.4.
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L58"
+    note: >-
+      Aggregate: ekf odom->base_footprint (publish_tf default true, robot_localization.yaml#L37-L38; 20 Hz),
+      robot_state_publisher movable arm joints from /joint_states (bringup.launch#L10; URDF
+      yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L138-L319), and tf
+      static_transform_publisher laser_link->laser every 30 ms
+      (yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10-L11). No single rate.
+  - name: /tf_static
+    type: tf2_msgs/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L10"
+    note: "Latched; stock robot_state_publisher fixed joints base_joint, base_imu, astra_joint, laser_joint, mono_joint (yahboomcar_X3plus.urdf#L33, #L38, #L71, #L104, #L510)."
+  # ---- yahboom_joy.launch (bringup.launch#L70) ----
+  - name: /joy
+    type: sensor_msgs/Joy
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/joy/src/joy_node.cpp#L307"
+    note: "Advertised unconditionally by joy_node (yahboom_joy.launch#L4); publishes only on gamepad events (autorepeat_rate default 0, joy_node.cpp#L313). Subscribed by yahboom_joy (yahboom_joy.py#L42)."
+  - name: /joy/set_feedback
+    type: sensor_msgs/JoyFeedbackArray
+    direction: in
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/joy/src/joy_node.cpp#L308"
+  - name: /diagnostics
+    type: diagnostic_msgs/DiagnosticArray
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/joy/src/joy_node.cpp#L82"
+    note: "joy_node diagnostic_updater; the ekf also prints diagnostics (robot_localization.yaml#L27)."
+  - name: /JoyState
+    type: std_msgs/Bool
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_joy.py#L39"
+    note: "Published only on the gamepad cancel gesture (#L264-L277)."
+  - name: /move_base/cancel
+    type: actionlib_msgs/GoalID
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_joy.py#L36"
+    note: "Advertised by yahboom_joy (relative move_base/cancel); publishes only on the gamepad cancel gesture (#L275). Also subscribed by move_base when navigation runs."
+  # ---- lidar: ydlidar_ros_driver TG.launch (stock/vendor package, not in pinned workspace) ----
+  - name: /scan
+    type: sensor_msgs/LaserScan
+    direction: out
+    rate_hz: 10
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L4"
+    note: >-
+      TG.launch include; frame_id laser, frequency 10.0 Hz per the TG.launch listing in the vendor lidar
+      tutorial (12.Lidar course/1.Lidar basics-EAI, section 1.4; `rostopic echo /scan` in 1.3.1). Consumers
+      in workspace: yahboomcar_ws:src/yahboomcar_laser/scripts/laser_Avoidance.py#L30. Other ydlidar
+      endpoints (point cloud, start/stop_scan services) are not named by the pinned sources and are omitted.
+  # ---- Astra Pro Plus: orbbec_camera astraproplus.launch (not in pinned workspace) ----
+  - name: /camera/rgb/image_raw
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_astra/src/KCF_Tracker.cpp#L51"
+    note: >-
+      Colour stream of orbbec_camera/astraproplus.launch (included at laser_astrapro_bringup.launch#L5; the
+      same include feeds this subscriber via yahboomcar_ws:src/yahboomcar_astra/launch/KCFTracker.launch#L4).
+      Tutorial 09.OpenCV courses/8. ROS+Opencv foundation section 8.2.1 lists /camera/rgb/image_raw
+      sensor_msgs/Image.
+  - name: /camera/rgb/image_raw/compressed
+    type: sensor_msgs/CompressedImage
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L5"
+    note: "image_transport plugin topic listed in tutorial 09.OpenCV courses/8. ROS+Opencv foundation section 8.2.1."
+  - name: /camera/rgb/camera_info
+    type: sensor_msgs/CameraInfo
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/rtabmap_nav.launch#L57"
+  - name: /camera/depth/image_raw
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_astra/src/KCF_Tracker.cpp#L52"
+    note: "Depth stream (converted to 32FC1 by the consumer, KCF_Tracker.cpp#L144); listed in tutorial 09.OpenCV courses/8, section 8.2.1."
+  - name: /camera/depth/image
+    type: sensor_msgs/Image
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L5"
+    note: "Listed in tutorial 09.OpenCV courses/8. ROS+Opencv foundation section 8.2.1."
+  # ---- optional: mapping / navigation (separate launches) ----
+  - name: /map
+    type: nav_msgs/OccupancyGrid
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/gmapping.launch#L13"
+    note: "slam_gmapping (yahboomcar_map.launch map_type:=gmapping) or map_server in navigation; topic table in the gmapping tutorial section 6.2."
+  - name: /map_metadata
+    type: nav_msgs/MapMetaData
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/gmapping.launch#L13"
+  - name: /slam_gmapping/entropy
+    type: std_msgs/Float64
+    direction: out
+    rate_hz: null
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/gmapping.launch#L13"
+    note: "Private ~entropy of the node named slam_gmapping (gmapping tutorial section 6.2)."
+
+services:
+  - name: /CurrentAngle
+    type: yahboomcar_msgs/RobotArmArray
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L48"
+    note: "Request {string apply}, response {float64[] angles} (yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L1-L5); reads the six servo angles in degrees, -1 on read error (#L129-L138)."
+  - name: /driver_node/set_parameters
+    type: dynamic_reconfigure/Reconfigure
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
+    note: "PIDparam dynamic_reconfigure; SetArmjoint=true moves all six servos (#L220-L223). Not exposed as a control."
+  - name: /dynamic_map
+    type: nav_msgs/GetMap
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/gmapping.launch#L13"
+    note: "slam_gmapping service (gmapping tutorial section 6.2); mapping launch only."
+
+actions:
+  - name: /move_base
+    type: move_base_msgs/MoveBaseAction
+    optional: true
+    source: "yahboomcar_ws:src/yahboomcar_nav/launch/library/move_base.launch#L6"
+    note: "Navigation launch only (yahboomcar_navigation.launch)."
+
+cameras:
+  - topic: /camera/rgb/image_raw
+    type: sensor_msgs/Image
+    encodings: [rgb8, bgr8]
+    encodings_policy: >-
+      Console acceptance set. The publishing driver (orbbec_camera astraproplus.launch) is not in the pinned
+      sources, so the wire encoding is not established from source; every vendor consumer converts with
+      cv_bridge to BGR8 (yahboomcar_ws:src/yahboomcar_astra/src/KCF_Tracker.cpp#L107,
+      yahboomcar_ws:src/yahboomcar_visual/scripts/astra_rgb_image.py#L13), which accepts either colour order.
+      The tutorial tells users to check it with `rostopic echo /camera/rgb/image_raw/encoding` without
+      stating the value (09.OpenCV courses/8. ROS+Opencv foundation, section 8.2.1).
+    rate_hz: null
+    stale_after_s: 2.0
+    policy: "Frame rate not documented in the pinned sources; console policy stale_after_s = 2.0 s."
+    optional: false
+    source: "yahboomcar_ws:src/yahboomcar_astra/src/KCF_Tracker.cpp#L51"
+
+stop:
+  - op: publish
+    name: /cmd_vel
+    type: geometry_msgs/Twist
+    msg: {linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}
+    source: "yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_keyboard.py#L141"
+    note: >-
+      Vendor keyboard teleop: space sets (x, th) = (0, 0) and publishes the zero Twist (#L141, #L148-L152),
+      and publishes Twist() on exit (#L154); the vendor gamepad cancel also publishes Twist()
+      (yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_joy.py#L276). The driver forwards the zero to
+      set_car_motion(0, 0, 0) (Mcnamu_X3plus.py#L177).
+
+watchdog: >-
+  None found in the pinned source. Mcnamu_X3plus.py forwards each /cmd_vel directly to
+  Rosmaster.set_car_motion with no timer or timeout (yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L165-L177);
+  it only sends set_car_motion(0, 0, 0) at start-up (#L51) and on node shutdown (#L179-L180). Whether the
+  MCU firmware / Rosmaster_Lib times out a stale motion command is not established by these sources, so the
+  base must be assumed to keep the last commanded velocity until a zero Twist arrives.
+
+teleop_base:
+  topic: /cmd_vel
+  type: geometry_msgs/Twist
+  rate_hz: 10
+  rate_policy: "Console policy: re-publish at 10 Hz while a key is held; send one zero Twist on release (driver has no watchdog)."
+  axes:
+    x:
+      speed: 0.2
+      limit: 0.7
+      unit: m/s
+      source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L20"
+      policy: >-
+        Speed 0.2 = vendor keyboard teleop default linear speed
+        (yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_keyboard.py#L108). Limit 0.7 = X3plus
+        xlinear_speed_limit in the boot (bringup.launch#L20) and X3plus linear_speed_limit for the gamepad
+        (yahboomcar_ws:src/yahboomcar_ctrl/launch/yahboom_joy.launch#L8). The driver itself does not clamp
+        (Mcnamu_X3plus.py#L165-L177); Rosmaster_Lib range is [-1.0, 1.0] (tutorial 05.Basic course/8).
+    y:
+      speed: 0.2
+      limit: 0.7
+      unit: m/s
+      source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L21"
+      policy: >-
+        Mecanum strafe (driver passes linear.y, Mcnamu_X3plus.py#L172). Speed 0.2 = keyboard default speed,
+        which the keyboard applies to y when x/y is switched (yahboom_keyboard.py#L108, #L149-L150).
+        Limit 0.7 = X3plus ylinear_speed_limit (bringup.launch#L21); Rosmaster_Lib range [-1.0, 1.0].
+    yaw:
+      speed: 0.5
+      limit: 3.2
+      unit: rad/s
+      source: "yahboomcar_ws:src/yahboomcar_bringup/launch/bringup.launch#L22"
+      policy: >-
+        Speed 0.5 = console policy, conservative (half of the keyboard default turn 1.0,
+        yahboom_keyboard.py#L108). Limit 3.2 = X3plus angular_speed_limit (bringup.launch#L22,
+        yahboom_joy.launch#L9); Rosmaster_Lib range [-5.0, 5.0].
+
+controls:
+  - id: arm_pose
+    label: "Arm pose (servos 1-6)"
+    kind: publish
+    name: /TargetAngle
+    type: yahboomcar_msgs/ArmJoint
+    template: {id: 0, angle: 0.0, run_time: "$run_time", joints: ["$j1", "$j2", "$j3", "$j4", "$j5", "$gripper"]}
+    fields:
+      - {name: j1, label: "Servo 1 (base rotation)", min: 0, max: 180, default: 90, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L13", note: "Rosmaster_Lib s_id 1~4: [0, 180] (tutorial 05.Basic course/9. Control Serial Servo); gamepad clamp yahboom_joy.py#L87-L89; URDF arm_joint1 +-1.5708 rad = 90 +- 90 deg (yahboomcar_X3plus.urdf#L143). Default = driver start pose Mcnamu_X3plus.py#L53."}
+      - {name: j2, label: "Servo 2 (shoulder)", min: 0, max: 180, default: 145, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L14", note: "URDF arm_joint2 +-1.5708 rad (yahboomcar_X3plus.urdf#L178); default = driver start pose (Mcnamu_X3plus.py#L53)."}
+      - {name: j3, label: "Servo 3 (elbow)", min: 0, max: 180, default: 0, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L15", note: "URDF arm_joint3 +-1.5708 rad (yahboomcar_X3plus.urdf#L213); default = driver start pose."}
+      - {name: j4, label: "Servo 4 (wrist pitch)", min: 0, max: 180, default: 45, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L16", note: "URDF arm_joint4 +-1.5708 rad (yahboomcar_X3plus.urdf#L248); default = driver start pose."}
+      - {name: j5, label: "Servo 5 (wrist rotation)", min: 0, max: 270, default: 90, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L17", note: "Rosmaster_Lib s_id 5: [0, 270]; gamepad clamp yahboom_joy.py#L81-L83; URDF arm_joint5 -1.5708..3.14159 rad (yahboomcar_X3plus.urdf#L283)."}
+      - {name: gripper, label: "Servo 6 (gripper)", min: 30, max: 180, default: 30, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L18", note: "Rosmaster_Lib s_id 6: [30, 180]; gamepad clamp yahboom_joy.py#L84-L86; 30 = open (vendor release pose), larger = closed (grip 146 in arm_color_transport/scripts/transport_main.py#L102). Vendor warning: too large an angle on an object stalls/burns the servo (01.Preparation and First Trial/4.Precautions for DIY Robotic Arm)."}
+      - {name: run_time, label: "Move time", min: 500, max: 3000, default: 1000, unit: ms, source: "yahboomcar_ws:src/arm_color_transport/scripts/transport_main.py#L84", policy: "Console policy bounds. Vendor pose moves use run_time 1000 ms (transport_main.py#L84, driver start-up Mcnamu_X3plus.py#L54); Rosmaster_Lib minimum is 0 (tutorial 05.Basic course/9)."}
+    stop: null
+    prerequisites: [/TargetAngle]
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L110-L116"
+    note: >-
+      One message = one finite six-servo target: non-empty `joints` makes the driver call
+      set_uart_servo_angle_array(joints, run_time) (#L110-L116); the order is servo 1..6 (joint6 = gripper,
+      PIDparam.cfg#L13-L18). Same pattern as the vendor transport demo
+      (yahboomcar_ws:src/arm_color_transport/scripts/transport_main.py#L83-L84, pubArm in
+      transport_common.py#L89-L96). The node does not range-check; the bounds above are the documented servo
+      ranges. Joint-space only: collisions with the chassis/camera are not checked.
+  - id: gripper
+    label: "Gripper (servo 6)"
+    kind: publish
+    name: /TargetAngle
+    type: yahboomcar_msgs/ArmJoint
+    template: {id: 6, angle: "$angle", run_time: "$run_time", joints: []}
+    fields:
+      - {name: angle, label: "Gripper angle", min: 30, max: 180, default: 30, unit: deg, source: "yahboomcar_ws:src/yahboomcar_bringup/cfg/PIDparam.cfg#L18", note: "30 = open (transport_main.py#L86), 146 used to grip the 3 cm demo block (transport_main.py#L102); vendor gripper table: 180 deg for a 0 cm object, 134 deg for 3 cm; do not over-close on an object (01.Preparation and First Trial/4.Precautions for DIY Robotic Arm)."}
+      - {name: run_time, label: "Move time", min: 300, max: 2000, default: 500, unit: ms, source: "yahboomcar_ws:src/arm_color_transport/scripts/transport_common.py#L89", policy: "Console policy bounds; default 500 ms = vendor pubArm default run_time (transport_common.py#L89)."}
+    stop: null
+    prerequisites: [/TargetAngle]
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L117-L124"
+    note: >-
+      Single-servo form: empty `joints` makes the driver call set_uart_servo_angle(id, angle, run_time)
+      (#L117-L124). Same form as the vendor demo pubArm([], 6, 30) (transport_main.py#L86).
+controls_note: >-
+  Buzzer (/Buzzer) and light strip (/RGBLight) are documented driver inputs but are deliberately not
+  exposed as page controls (only arm and gripper). No base-drive controls here (teleop_base covers it).

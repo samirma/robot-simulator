@@ -61,6 +61,9 @@ def resolve_url(drive_id, size):
         page = body.decode("utf-8", "replace")
         form = re.search(r'<form[^>]*action="([^"]+)"(.*?)</form>', page, re.S)
         if not form:
+            if "Quota exceeded" in page:
+                die(f"Google Drive refuses file {drive_id} for now: its download quota is "
+                    "exceeded (retry later)")
             die(f"Drive did not serve {drive_id} (no download form; quota exceeded or file moved?)")
         params = dict(re.findall(r'<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"', form.group(2)))
         url = html.unescape(form.group(1)) + "?" + urllib.parse.urlencode(params)

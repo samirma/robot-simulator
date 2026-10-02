@@ -1,0 +1,10 @@
+$ robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect so101
+# started 2026-10-02T11:48:32, took 0.7 s
+wire ws://127.0.0.1:9090: ROS2 jazzy, 25 topics, 14 non-infrastructure services, 2 actions
+robot so101: typed validation PASS (24 required endpoints, 12 optional present)
+  note: action /joint_trajectory_controller/follow_joint_trajectory present; type not verifiable (stock ROS 2 rosapi cannot report action types)
+  note: action /gripper_controller/gripper_cmd present; type not verifiable (stock ROS 2 rosapi cannot report action types)
+  camera /image_raw: LIVE - live (3 frames in 2.5 s window)
+PASS
+
+# exit code: 0

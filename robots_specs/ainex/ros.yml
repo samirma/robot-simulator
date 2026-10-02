@@ -1,619 +1,699 @@
-# AiNex — official ROS 1 interface.
+# AiNex — authoritative ROS 1 interface (schema: robots_specs/SCHEMA.md, version 1).
 #
-# Everything below is what the vendor boot launch presents, read from the vendor sources at
-# the pinned revision (see robots.yml) and the Hiwonder AiNex docs. Line anchors point at
-# that revision. Excluded on purpose: ROS runtime names (/rosout, /rosout_agg, logger
-# services), the rosbridge_websocket/rosapi pair's own names and parameters, and nodelet
-# manager plumbing. web_video_server (bringup.launch#L34) serves HTTP only, no ROS names.
-# The walking engine (ainex_kinematics/walking_module.so, kinematics.so) ships as binaries;
-# only what the Python wrapper ainex_controller.py exposes is recorded. Its gait defaults
-# are read from config/walking_param.yaml as a file, not from the parameter server.
-dialect: ros1          # ROS Noetic
+# Established by reading the pinned vendor source (Hiwonder/ainex @ e8fe2a8) and the stock
+# ROS Noetic packages its boot starts, on 2026-09-30. Nothing here was measured on a real
+# robot: every rate is read from code or launch files (rate_basis says which), and every
+# watchdog is derived from source (basis: source), not measured.
+#
+# Authoritative boot: start_app_node.service -> `roslaunch ainex_bringup bringup.launch`.
+# It starts the camera, the base (board driver, gait controller, IMU pipeline), the
+# joystick, web_video_server, rosbridge (infrastructure, not listed) and the app with its
+# vision nodes. The boot loads no robot_description and publishes no TF.
+#
+# Three boot data files are not in any pinned source (they live on the robot's SD image):
+# the action groups (/home/ubuntu/software/ainex_controller/ActionGroups/*.d6a), the LAB
+# colour thresholds (/home/ubuntu/software/lab_tool/lab_config.yaml) and the camera
+# calibration (/home/ubuntu/.ros/camera_info/head_camera.yaml). See boot.data_files.
+schema_version: 1
+robot_id: ainex
+name: AiNex
+dialect: ros1
+ros_distribution: noetic
+interface_authority: manufacturer
+
 sources:
-  - https://github.com/Hiwonder/ainex/tree/e8fe2a816797cf83054135160df5a82ec3596a69
-  - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_bringup/service/start_app_node.service
-  - https://docs.hiwonder.com/projects/AiNex/en/latest/          # as given; returned HTTP 404 on 2026-09-27
-  - https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/   # live official docs (linked from docs.hiwonder.com index)
-  - https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/docs/5.ROS%20Robot%20Control%20Course.html#walking-control
-boot_launch: src/ainex_bringup/launch/bringup.launch   # started by start_app_node.service: roslaunch ainex_bringup bringup.launch
-# Servo ids 1..24 as declared in ainex_controller.py joint_id (#L42-L65). The docs describe the
-# stock kit as 20 bus servos; ids 21-22 (grippers) belong to the gripper variant.
-joints: [l_ank_roll, r_ank_roll, l_ank_pitch, r_ank_pitch, l_knee, r_knee, l_hip_pitch, r_hip_pitch, l_hip_roll, r_hip_roll, l_hip_yaw, r_hip_yaw, l_sho_pitch, r_sho_pitch, l_sho_roll, r_sho_roll, l_el_pitch, r_el_pitch, l_el_yaw, r_el_yaw, l_gripper, r_gripper, head_pan, head_tilt]
+  - id: ainex
+    url: https://github.com/Hiwonder/ainex
+    branch: main
+    revision: e8fe2a816797cf83054135160df5a82ec3596a69
+    role: official source (boot launch files, drivers, gait controller, URDF xacro, configs)
+  - id: ainex_docs
+    url: https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/
+    revision: retrieved 2026-09-30
+    role: official documentation (Raspberry Pi 5 version; Ubuntu 20.04 + ROS Noetic in the Docker container "AiNex"; camera 640x480, FOV 170 deg; servos HX-35H/HX-35HM/HX-12H)
+  - id: usb_cam
+    url: https://github.com/ros-drivers/usb_cam
+    revision: addab4a65fdf65c460fec2cc3eee8fab94699370
+    role: dependency (usb_cam 0.3.7, the Noetic release; node `camera`)
+  - id: image_pipeline
+    url: https://github.com/ros-perception/image_pipeline
+    branch: noetic
+    revision: 69488e6e455d97c2deaf924234aa5f87b83cfda8
+    role: dependency (image_proc 1.17.0 rectify nodelet `camera/rectify_color`)
+  - id: imu_tools
+    url: https://github.com/CCNYRoboticsLab/imu_tools
+    branch: noetic
+    revision: c6118a2ef3299a9deab419b68c6a7d4e070b4ff7
+    role: dependency (imu_complementary_filter 1.2.7, node `imu_filter`)
+  - id: joystick_drivers
+    url: https://github.com/ros-drivers/joystick_drivers
+    revision: 1.15.1
+    role: dependency (joy 1.15.1, the Noetic release; node `joystick`)
+  - id: ros_comm
+    url: https://github.com/ros/ros_comm
+    branch: noetic-devel
+    revision: 30483a9f218f1545eec16d3934bf3cb042e2cb5b
+    role: "dependency (roslaunch attribute handling; parameter names are stripped)"
+
+boot:
+  summary: >-
+    On power-up systemd runs start_app_node.service, which runs `roslaunch ainex_bringup
+    bringup.launch` inside the robot's ROS Noetic environment. ainex_controller moves all 24
+    servos to init_pose.yaml over 1 s (the robot stands up), then idles with the gait engine
+    enabled and not walking. The app node starts in state `idle`.
+  commands:
+    - sudo systemctl start start_app_node.service   # == roslaunch ainex_bringup bringup.launch
+  launch_files:
+    - {source: ainex, path: src/ainex_bringup/service/start_app_node.service, role: systemd unit}
+    - {source: ainex, path: src/ainex_bringup/launch/bringup.launch, role: top-level boot launch}
+    - {source: ainex, path: src/ainex_peripherals/launch/usb_cam_with_calib.launch}
+    - {source: ainex, path: src/ainex_peripherals/launch/usb_cam.launch}
+    - {source: ainex, path: src/ainex_peripherals/launch/image_calib.launch}
+    - {source: ainex, path: src/ainex_bringup/launch/base.launch}
+    - {source: ainex, path: src/ainex_driver/ainex_sdk/launch/sensor_node.launch}
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/launch/ainex_controller.launch}
+    - {source: ainex, path: src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch}
+    - {source: ainex, path: src/ainex_peripherals/launch/imu.launch}
+    - {source: ainex, path: src/ainex_peripherals/launch/joystick_control.launch}
+    - {source: ainex, path: src/ainex_app/launch/rosbridge.launch, role: "infrastructure (rosbridge_websocket port 9090, rosapi)"}
+    - {source: ainex, path: src/ainex_app/launch/start.launch}
+    - {source: ainex, path: src/ainex_example/scripts/color_detection/color_detection_node.launch}
+    - {source: ainex, path: src/ainex_example/scripts/face_detect/face_detect_node.launch}
+  data_files:
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/config/init_pose.yaml, role: "standing pose (rad) sent at boot and after every action group"}
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/config/servo_controller.yaml, role: "joint -> servo id and pulse zero (init) / direction (min > max = flipped)"}
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/config/walking_param.yaml, role: "gait parameters read as a file (hard-coded path /home/ubuntu/ros_ws/src/ainex_driver/ainex_kinematics/config/walking_param.yaml)"}
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/src/ainex_kinematics/walking_module.so, role: "gait engine (Cython walking_module_without_balance.pyx, compiled for aarch64 / Python 3.8; source not published)"}
+    - {source: ainex, path: src/ainex_driver/ainex_kinematics/src/ainex_kinematics/kinematics.so, role: "leg inverse kinematics (compiled for aarch64 / Python 3.8; source not published)"}
+    - {source: ainex, path: src/ainex_calibration/config/imu_calib.yaml, role: accelerometer calibration for imu_calib}
+    - {source: ainex, path: src/ainex_calibration/config/mag_calib.yaml, role: magnetometer calibration matrix for ros_robot_controller}
+    - {source: ainex, path: src/ainex_example/config/color_track_pid.yaml, role: app head-tracking PID gains}
+    - {source: ainex, path: src/ainex_example/config/calib.yaml, role: "app calibration (center_x_offset 66, head_pan_offset -56)"}
+    - source: ainex_docs
+      path: /home/ubuntu/software/ainex_controller/ActionGroups/*.d6a
+      role: >-
+        action groups played by /app/set_action. NOT in any pinned source: they ship on the
+        robot image. Format (motion_manager.py): SQLite table ActionGroup, one row per frame,
+        column 1 = frame duration (ms), columns 2.. = pulse (0-1000) of servo id 1, 2, ...
+        Names referenced by the pinned code: walk_ready, stand, hand_back, left_shot,
+        right_shot, twist, greet, three, four, hand_open.
+    - source: ainex_docs
+      path: /home/ubuntu/software/lab_tool/lab_config.yaml
+      role: LAB colour thresholds read by color_detection. NOT in any pinned source.
+    - source: ainex_docs
+      path: /home/ubuntu/.ros/camera_info/head_camera.yaml
+      role: camera calibration loaded by usb_cam (camera_info_url). NOT in any pinned source.
+  hardware: >-
+    Raspberry Pi 5 (docs; Pi 4B in older kits) running Ubuntu 20.04 + ROS Noetic in the
+    Docker container "AiNex"; workspace /home/ubuntu/ros_ws. STM32 controller board on
+    /dev/rrc at 1 000 000 baud (ros_robot_controller_sdk.py#L100) driving 24 serial bus
+    servos (ids 1-24: legs 1-12, shoulders 13-16, elbows 17-20, grippers 21-22, head 23-24),
+    reporting IMU, battery, buttons, gamepad and SBUS. Servo pulse 0-1000 spans 240 deg
+    (ainex_controller.py#L24). Head USB camera mapped to /dev/usb_cam, 640x480 YUYV. USB
+    gamepad receiver on /dev/input/js0. 11.1 V Li battery.
+
+model:
+  urdf: ainex.urdf
+  urdf_sha256: e7a5f96ae6e71e96bca7f4af714aa07bb145881b6649ca680e63f9b8ee160147
+  urdf_source: >-
+    xacro 2.1.1 expansion of src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro
+    at ainex@e8fe2a8 (the upstream publishes no .urdf); see import.md.
+  mjcf: model.xml
+  mjcf_official: false
+  robot_description:
+    published_as: none
+    content: >-
+      The authoritative boot sets no /robot_description and starts no robot_state_publisher
+      (only imu.launch with debug:=true, or the vendor's display/gazebo launches, load it from
+      the xacro). Joint names on the wire are those of ainex_controller.py joint_id, which
+      equal the URDF joint names.
+    differences_from_model:
+      - >-
+        Zero offsets / direction: the controller maps angle -> pulse as pulse = init + angle *
+        (+-1000/240 deg) with init and direction from servo_controller.yaml; the URDF has no
+        servo mapping. init_pose.yaml angles applied to the URDF give feet parallel to each
+        other with the torso pitched 0.261 rad forward of the soles, consistent with the
+        gait's hip_pitch_offset 15 deg; no zero-offset conflict was found.
+      - >-
+        Limits: URDF +-2.09 rad on every joint; servo pulse range 0-1000 gives +-2.094 rad for
+        init 500, but l_knee [-1.005, 3.184], r_knee [-3.184, 1.005], l_sho_pitch
+        [-0.524, 3.665], r_sho_pitch [-3.665, 0.524]. The reachable range is the intersection.
+
+nodes:
+  - {name: /camera, package: usb_cam, executable: usb_cam_node, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8-L16}
+  - {name: /camera/manager, package: nodelet, executable: nodelet, notes: "nodelet manager (args manager --no-bond)", source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L8}
+  - {name: /camera/rectify_color, package: nodelet, executable: nodelet, notes: "load image_proc/rectify into /camera/manager --no-bond", source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L11-L17}
+  - {name: /sensor, package: ainex_sdk, executable: sensor_node.py, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/launch/sensor_node.launch#L3}
+  - {name: /ros_robot_controller, package: ros_robot_controller, executable: ros_robot_controller_node.py, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L6-L10}
+  - {name: /ainex_controller, package: ainex_kinematics, executable: ainex_controller.py, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/launch/ainex_controller.launch#L5-L9}
+  - {name: /imu_calib, package: imu_calib, executable: apply_calib, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L24-L28}
+  - {name: /imu_filter, package: imu_complementary_filter, executable: complementary_filter_node, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L30-L40}
+  - {name: /joystick, package: joy, executable: joy_node, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L3-L7}
+  - {name: /joystick_control, package: ainex_peripherals, executable: joystick_control.py, notes: "init_node(anonymous=True), but roslaunch passes __name:=joystick_control, which rospy honours", source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L9}
+  - {name: /web_video_server, package: web_video_server, executable: web_video_server, notes: "HTTP MJPEG server (port 8080 default); subscribes to image topics only while an HTTP client streams one; no ROS topics, services or parameters of its own at boot", source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_bringup/launch/bringup.launch#L34}
+  - {name: /color_detection, package: ainex_example, executable: color_detection_node.py, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch#L22-L28}
+  - {name: /face_detect, package: ainex_example, executable: face_detect_node.py, source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch#L20-L24}
+  - {name: /app, package: ainex_app, executable: app_node.py, notes: "init_node('app', anonymous=True); roslaunch's __name:=app wins", source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/launch/start.launch#L18-L20}
 
 topics:
-  # ---- walking / kinematics (ainex_controller, ainex_kinematics/launch/ainex_controller.launch) ----
+  # ---------------- gait / servo controller: /ainex_controller ----------------
   - name: /walking/set_param
     type: ainex_interfaces/WalkingParam
     direction: in
-    rate_hz: event
-    node: ainex_controller
-    description: Full gait parameter set (offsets, period_time, dsp_ratio, x/y/z/angle amplitudes, arm_swing_gain, period_times); values clamped to the controller's ranges. Also published by joystick_control and app through GaitManager.
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    internal_publishers: [/joystick_control, /app]
+    notes: Full gait parameter set; clamped (ainex_controller.py#L594-L645). balance_* fields are ignored.
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L160
   - name: /app/set_walking_param
     type: ainex_interfaces/AppWalkingParam
     direction: in
-    rate_hz: event
-    node: ainex_controller
-    description: Simplified app gait (speed 1-4, height, x, y, angle); controller fills the rest with fixed presets per speed.
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    notes: Simplified gait (speed 1-4, height m, x m, y m, angle deg); the controller substitutes fixed presets per speed (#L386-L592).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L161
   - name: /app/set_action
     type: std_msgs/String
     direction: in
-    rate_hz: event
-    node: ainex_controller
-    description: Name of an action group (.d6a in /home/ubuntu/software/ainex_controller/ActionGroups); stops walking, plays it, returns to init pose.
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    notes: Action group name; stops walking, plays <name>.d6a, returns to init pose (#L375-L384).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L162
   - name: /head_pan_controller/command
     type: ainex_interfaces/HeadState
     direction: in
-    rate_hz: event
-    node: ainex_controller
-    description: Head pan target (position rad, duration s) sent to servo 23 (real robot only; not subscribed when gazebo_sim).
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    notes: Head pan (servo 23) position rad, duration s (#L337-L339). Subscribed only when gazebo_sim is false (the boot).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156
   - name: /head_tilt_controller/command
     type: ainex_interfaces/HeadState
     direction: in
-    rate_hz: event
-    node: ainex_controller
-    description: Head tilt target (position rad, duration s) sent to servo 24 (real robot only).
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    notes: Head tilt (servo 24) position rad, duration s (#L341-L343).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L157
   - name: /walking/is_walking
     type: std_msgs/Bool
     direction: out
-    rate_hz: event
-    node: ainex_controller
-    description: True when the gait starts moving joints, False once the walk finishes (published on transitions only).
+    nodes: [/ainex_controller]
+    rate: non_periodic
+    notes: True when gait output starts, False when the walk has finished; published on transitions only (#L189-L230).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L165
 
-  # ---- servo / board driver (ros_robot_controller, freq 100) ----
+  # ---------------- board driver: /ros_robot_controller (loop freq 100 Hz) ----------------
   - name: /ros_robot_controller/bus_servo/set_position
     type: ros_robot_controller/SetBusServosPosition
     direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: Move bus servos (duration s, [id, position 0-1000 pulse]); ainex_controller streams gait frames here every ~20 ms while walking.
+    nodes: [/ros_robot_controller]
+    rate: non_periodic
+    internal_publishers: [/ainex_controller, /app]
+    notes: "{duration s, [{id, position pulse 0-1000}]}. While walking, ainex_controller streams one frame per servo_control_cycle (0.02 s) with duration 0 (ainex_controller.py#L209)."
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L47
-  - name: /ros_robot_controller/bus_servo/set_state
-    type: ros_robot_controller/SetBusServoState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: Per-servo config/commands (id change, position, offset, limits, torque, save offset, stop).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L46
-  - name: /ros_robot_controller/pwm_servo/set_state
-    type: ros_robot_controller/SetPWMServoState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: PWM servo position/offset on the controller board.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L51
-  - name: /ros_robot_controller/set_led
-    type: ros_robot_controller/LedState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: Board LED blink pattern (id, on_time, off_time, repeat).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L40
-  - name: /ros_robot_controller/set_buzzer
-    type: ros_robot_controller/BuzzerState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: Buzzer tone (freq, on_time, off_time, repeat); app beeps here at startup.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L41
-  - name: /ros_robot_controller/set_oled
-    type: ros_robot_controller/OLEDState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: OLED text line (index, text).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L42
-  - name: /ros_robot_controller/set_motor
-    type: ros_robot_controller/MotorsState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: DC motor speeds (generic board driver; the AiNex has no DC motors).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L43
-  - name: /ros_robot_controller/set_rgb
-    type: ros_robot_controller/RGBsState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: RGB LED colours (id, r, g, b); app sets it green at startup.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L44
-  - name: /ros_robot_controller/set_motor_duty
-    type: ros_robot_controller/MotorsState
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: DC motor duty (generic board driver; callback reads msg.id/msg.duty which MotorsState does not carry).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L45
-  - name: /ros_robot_controller/enable_reception
-    type: std_msgs/Bool
-    direction: in
-    rate_hz: event
-    node: ros_robot_controller
-    description: Enable/disable the serial reception thread from the controller board.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L49
+  - {name: /ros_robot_controller/bus_servo/set_state, type: ros_robot_controller/SetBusServoState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, notes: "per-servo id/position/offset/limits/torque/save/stop", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L46"}
+  - {name: /ros_robot_controller/pwm_servo/set_state, type: ros_robot_controller/SetPWMServoState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L51"}
+  - {name: /ros_robot_controller/set_led, type: ros_robot_controller/LedState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L40"}
+  - {name: /ros_robot_controller/set_buzzer, type: ros_robot_controller/BuzzerState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, internal_publishers: [/app], source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L41"}
+  - {name: /ros_robot_controller/set_oled, type: ros_robot_controller/OLEDState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L42"}
+  - {name: /ros_robot_controller/set_motor, type: ros_robot_controller/MotorsState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, notes: "generic board driver; the AiNex has no DC motors", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L43"}
+  - {name: /ros_robot_controller/set_rgb, type: ros_robot_controller/RGBsState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, internal_publishers: [/app], source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L44"}
+  - {name: /ros_robot_controller/set_motor_duty, type: ros_robot_controller/MotorsState, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, notes: "callback reads msg.id/msg.duty, which MotorsState lacks (vendor bug)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L45"}
+  - {name: /ros_robot_controller/enable_reception, type: std_msgs/Bool, direction: in, nodes: [/ros_robot_controller], rate: non_periodic, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L49"}
   - name: /ros_robot_controller/imu_raw
     type: sensor_msgs/Imu
     direction: out
-    rate_hz: 100
-    node: ros_robot_controller
-    description: Raw board IMU (accel m/s^2, gyro rad/s, no orientation), frame imu_link; loop rate 100 Hz, published only when the board has a new sample.
+    nodes: [/ros_robot_controller]
+    rate: 100
+    rate_basis: estimate
+    rate_note: >-
+      The node loop runs at ~freq = 100 Hz (launch #L3) and publishes one sample per loop when
+      the board has reported one (queue of 1). The board firmware's IMU report rate is not in
+      any pinned source; 100 Hz is the loop cap, taken as the rate. Needs real-robot measurement.
+    frame_id: imu_link
+    notes: accel in m/s^2 (g * 9.80665), gyro in rad/s, orientation all zero, fixed covariances (#L256-L300).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L33
   - name: /ros_robot_controller/mag_raw
     type: sensor_msgs_ext/magnetometer
     direction: out
-    rate_hz: 100
-    node: ros_robot_controller
-    description: Raw magnetometer x/y/z, only when the board reports 9-axis data.
+    nodes: [/ros_robot_controller]
+    rate: 100
+    rate_basis: estimate
+    rate_note: Published with each 9-axis IMU report (same loop as imu_raw). Whether the board reports 9 axes is not in the pinned source; the boot's use_mag:=true and mag_calib.yaml imply it does.
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L34
   - name: /ros_robot_controller/mag
     type: sensor_msgs/MagneticField
     direction: out
-    rate_hz: 100
-    node: ros_robot_controller
-    description: Calibrated magnetic field (calibration matrix from mag_calib.yaml), only with 9-axis data; feeds imu_filter.
+    nodes: [/ros_robot_controller]
+    rate: 100
+    rate_basis: estimate
+    rate_note: As mag_raw; calibrated with the 4x4 matrix ~calibration (mag_calib.yaml). header.frame_id is left empty by the driver.
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L35
-  - name: /ros_robot_controller/joy
-    type: sensor_msgs/Joy
-    direction: out
-    rate_hz: event
-    node: ros_robot_controller
-    description: Gamepad state as received by the controller board (distinct from /joy); published when the board reports it.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L36
-  - name: /ros_robot_controller/sbus
-    type: ros_robot_controller/Sbus
-    direction: out
-    rate_hz: event
-    node: ros_robot_controller
-    description: SBUS RC channels when the board reports them.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L37
-  - name: /ros_robot_controller/button
-    type: ros_robot_controller/ButtonState
-    direction: out
-    rate_hz: event
-    node: ros_robot_controller
-    description: Board button events (id, state).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L38
+  - {name: /ros_robot_controller/joy, type: sensor_msgs/Joy, direction: out, nodes: [/ros_robot_controller], rate: non_periodic, notes: "gamepad data relayed by the board, only when it reports one", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L36"}
+  - {name: /ros_robot_controller/sbus, type: ros_robot_controller/Sbus, direction: out, nodes: [/ros_robot_controller], rate: non_periodic, notes: "only when an SBUS receiver reports", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L37"}
+  - {name: /ros_robot_controller/button, type: ros_robot_controller/ButtonState, direction: out, nodes: [/ros_robot_controller], rate: non_periodic, notes: "board key click/press events", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L38"}
   - name: /ros_robot_controller/battery
     type: std_msgs/UInt16
     direction: out
-    rate_hz: event
-    node: ros_robot_controller
-    description: Battery voltage reading from the board, published when the board reports it.
+    nodes: [/ros_robot_controller]
+    rate: non_periodic
+    notes: >-
+      Battery voltage as the raw uint16 the board reports (unit not stated in the pinned
+      source), published whenever the board sends a system report. The board's
+      report interval is not in any pinned source, so no rate can be recorded (needs
+      measurement on the real robot).
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L39
 
-  # ---- IMU pipeline (ainex_peripherals/launch/imu.launch) ----
+  # ---------------- IMU pipeline (imu.launch) ----------------
   - name: /imu_corrected
     type: sensor_msgs/Imu
     direction: out
-    rate_hz: 100
-    node: imu_calib
-    description: imu_calib apply_calib output (raw remapped from /ros_robot_controller/imu_raw, calib_file imu_calib.yaml); follows imu_raw.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L26-L27
+    nodes: [/imu_calib]
+    rate: 100
+    rate_basis: estimate
+    rate_note: One output per /ros_robot_controller/imu_raw input, after the first 100 samples (gyro bias calibration, apply_calib.cpp#L77-L94).
+    frame_id: imu_link
+    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/third_party/imu_calib/src/apply_calib.cpp#L71-L72
   - name: /imu
     type: sensor_msgs/Imu
     direction: out
-    rate_hz: 100
-    node: imu_filter
-    description: Orientation-filled IMU from imu_complementary_filter (data_raw=/imu_corrected, mag=/ros_robot_controller/mag, use_mag true); app fall_rise uses it.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L30-L40
+    nodes: [/imu_filter]
+    rate: 100
+    rate_basis: estimate
+    rate_note: One output per synchronised (/imu_corrected, /ros_robot_controller/mag) pair (use_mag true), i.e. the IMU rate.
+    frame_id: imu_link
+    notes: Orientation from the complementary filter (world frame ENU); publish_tf defaults to false, so no TF.
+    source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_complementary_filter/src/complementary_filter_ros.cpp#L53-L80
 
-  # ---- camera (usb_cam node `camera` + image_proc rectify nodelet) ----
+  # ---------------- camera: usb_cam 0.3.7 `/camera` + rectify nodelet ----------------
   - name: /camera/image_raw
     type: sensor_msgs/Image
     direction: out
-    rate_hz: 30
-    node: camera
-    description: usb_cam /dev/usb_cam, 640x480 yuyv, frame_id camera; rate is usb_cam's default framerate (not set by the launch).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8
+    nodes: [/camera]
+    camera: true
+    rate: 30
+    rate_basis: source
+    rate_note: "usb_cam ~framerate is not set by the launch; its default 30 drives the capture loop (usb_cam_node.cpp#L101, #L258)."
+    frame_id: camera
+    notes: 640x480, encoding rgb8 (YUYV converted), stamped at grab time (usb_cam.cpp#L1240-L1255).
+    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8-L16
   - name: /camera/camera_info
     type: sensor_msgs/CameraInfo
     direction: out
-    rate_hz: 30
-    node: camera
-    description: Camera intrinsics published alongside image_raw (launch points camera_info_url at ~/.ros/camera_info/head_camera.yaml).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8
-  - name: /camera/image_raw/compressed
-    type: sensor_msgs/CompressedImage
-    direction: out
-    rate_hz: 30
-    node: camera
-    description: image_transport compressed plugin output of image_raw; present only if the plugin is installed on the image (not declared in vendor sources).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8
-    unverified: true
+    nodes: [/camera]
+    rate: 30
+    rate_basis: source
+    rate_note: Published with every image (image_transport CameraPublisher).
+    frame_id: camera
+    source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L236-L253
+  - {name: /camera/image_raw/compressed, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: 30, rate_basis: source, optional: true, notes: "image_transport compressed plugin; exists only if image_transport_plugins is installed on the robot image (not declared by the vendor)", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
+  - {name: /camera/image_raw/compressedDepth, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: non_periodic, optional: true, notes: "image_transport plugin, only if installed", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
+  - {name: /camera/image_raw/theora, type: theora_image_transport/Packet, direction: out, nodes: [/camera], rate: non_periodic, optional: true, notes: "image_transport plugin, only if installed", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
   - name: /camera/image_rect_color
     type: sensor_msgs/Image
     direction: out
-    rate_hz: 30
-    node: camera/rectify_color
-    description: Rectified colour image from image_proc/rectify nodelet (image_mono remapped to /camera/image_raw).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L11-L17
+    nodes: [/camera/rectify_color]
+    rate: 30
+    rate_basis: source
+    rate_note: >-
+      Lazy: subscribes to /camera/image_raw only while it has a subscriber, then one output per
+      input frame; publishes nothing while camera_info is uncalibrated (K[0] == 0) and passes the
+      image through unchanged when D is all zero (rectify.cpp#L115-L141).
+    frame_id: camera
+    source: https://github.com/ros-perception/image_pipeline/blob/69488e6e455d97c2deaf924234aa5f87b83cfda8/image_proc/src/nodelets/rectify.cpp#L99
+  - {name: /camera/rectify_color/parameter_descriptions, type: dynamic_reconfigure/ConfigDescription, direction: out, nodes: [/camera/rectify_color], rate: non_periodic, latched: true, source: "https://github.com/ros-perception/image_pipeline/blob/69488e6e455d97c2deaf924234aa5f87b83cfda8/image_proc/src/nodelets/rectify.cpp#L91"}
+  - {name: /camera/rectify_color/parameter_updates, type: dynamic_reconfigure/Config, direction: out, nodes: [/camera/rectify_color], rate: non_periodic, latched: true, source: "https://github.com/ros-perception/image_pipeline/blob/69488e6e455d97c2deaf924234aa5f87b83cfda8/image_proc/src/nodelets/rectify.cpp#L91"}
 
-  # ---- joystick (ainex_peripherals/launch/joystick_control.launch) ----
+  # ---------------- joystick ----------------
   - name: /joy
     type: sensor_msgs/Joy
     direction: out
-    rate_hz: 20
-    node: joystick
-    description: joy_node on /dev/input/js0 (autorepeat_rate 20 Hz, events otherwise); consumed by joystick_control which walks via GaitManager.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L3-L7
-  - name: /joy
-    type: sensor_msgs/Joy
-    direction: in
-    rate_hz: event
-    node: joystick_control
-    description: Left stick = walk x/y (±0.013/±0.015 m), right stick x = turn ±8 deg, right stick y = body height, start = reset height; release stops the gait.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/scripts/joystick_control.py#L40
+    nodes: [/joystick]
+    rate: 20
+    rate_basis: source
+    rate_note: autorepeat_rate 20 Hz re-publishes the state while no event arrives (joy_node.cpp#L648-L653); only while a joystick is open at /dev/input/js0.
+    internal_subscribers: [/joystick_control]
+    notes: joystick_control maps left stick to walk x +-0.013 m / y +-0.015 m, right stick x to turn +-8 deg, releases to GaitManager.stop() (joystick_control.py#L42-L79).
+    source: https://github.com/ros-drivers/joystick_drivers/blob/1.15.1/joy/src/joy_node.cpp#L307
+  - {name: /joy/set_feedback, type: sensor_msgs/JoyFeedbackArray, direction: in, nodes: [/joystick], rate: non_periodic, source: "https://github.com/ros-drivers/joystick_drivers/blob/1.15.1/joy/src/joy_node.cpp#L308"}
+  - {name: /diagnostics, type: diagnostic_msgs/DiagnosticArray, direction: out, nodes: [/joystick], rate: 1, rate_basis: source, rate_note: "diagnostic_updater default period 1 s", source: "https://github.com/ros-drivers/joystick_drivers/blob/1.15.1/joy/src/joy_node.cpp#L302"}
 
-  # ---- onboard sensor node (ainex_sdk sensor) ----
+  # ---------------- onboard sensor node ----------------
   - name: /sensor/button/get_button_state
     type: std_msgs/Bool
     direction: out
-    rate_hz: 50
-    node: sensor
-    description: Raspberry Pi GPIO user-button state, published every cycle while enabled (freq default 50).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L24
-  - name: /sensor/led/set_led_state
-    type: std_msgs/Bool
-    direction: in
-    rate_hz: event
-    node: sensor
-    description: Switch the Raspberry Pi expansion LED on/off.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L23
+    nodes: [/sensor]
+    rate: 50
+    rate_basis: source
+    rate_note: rospy.Rate(~freq default 50) loop; publishes every cycle while enabled (enabled at start). Each cycle also shells out to `cat` an LED file, which may slow the loop on hardware.
+    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L24-L39
+  - {name: /sensor/led/set_led_state, type: std_msgs/Bool, direction: in, nodes: [/sensor], rate: non_periodic, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L23"}
 
-  # ---- vision nodes started by ainex_app/launch/start.launch ----
-  - name: /color_detection/update_detect
-    type: ainex_interfaces/ColorsDetect
-    direction: in
-    rate_hz: event
-    node: color_detection
-    description: Colour targets to detect (name or LAB range, circle/line type, ROI); app publishes it.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L51
-  - name: /color_detection/image_result
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: event
-    node: color_detection
-    description: Annotated frame, one per camera frame after /color_detection/enter (subscribes /camera/image_raw then).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L46
-  - name: /face_detect/image_result
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: event
-    node: face_detect
-    description: Annotated frame after /face_detect/enter (mediapipe face detection on /camera/image_raw).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L45
-  - name: /object/pixel_coords
-    type: ainex_interfaces/ObjectsInfo
-    direction: out
-    rate_hz: event
-    node: color_detection
-    description: Detected objects in pixels (label, type circle/line, x, y, w, h, radius, angle); also published by face_detect (label face); only while started.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L49
-  - name: /app/image_result
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: event
-    node: app
-    description: App result image (colour-picker annotated / forwarded detection frames) for the phone app.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L185
+  # ---------------- app and vision nodes (start.launch) ----------------
+  - {name: /color_detection/update_detect, type: ainex_interfaces/ColorsDetect, direction: in, nodes: [/color_detection], rate: non_periodic, internal_publishers: [/app], source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L51"}
+  - {name: /color_detection/image_result, type: sensor_msgs/Image, direction: out, nodes: [/color_detection], rate: non_periodic, notes: "only after /color_detection/enter (then one per camera frame)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L46"}
+  - {name: /object/pixel_coords, type: ainex_interfaces/ObjectsInfo, direction: out, nodes: [/color_detection, /face_detect], rate: non_periodic, notes: "only while detection is started", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L49"}
+  - {name: /face_detect/image_result, type: sensor_msgs/Image, direction: out, nodes: [/face_detect], rate: non_periodic, notes: "only after /face_detect/enter", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L45"}
+  - {name: /app/image_result, type: sensor_msgs/Image, direction: out, nodes: [/app], rate: non_periodic, notes: "only in app modes that forward detection images", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L185"}
 
 services:
-  - name: /walking/command
-    type: ainex_interfaces/SetWalkingCommand
-    node: ainex_controller
-    description: "command: start | stop | enable | disable | enable_control | disable_control. start/stop/enable/disable act only while control is enabled; stop and disable block until the gait has halted; returns result=true always."
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L349-L373
-  - name: /walking/get_param
-    type: ainex_interfaces/GetWalkingParam
-    node: ainex_controller
-    description: Current gait parameters as WalkingParam (period_times returned as 0).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L163
-  - name: /walking/is_walking
-    type: ainex_interfaces/GetWalkingState
-    node: ainex_controller
-    description: state=true while the gait is moving.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L164
-  - name: /walking/init_pose
-    type: std_srvs/Empty
-    node: ainex_controller
-    description: Stop walking and move the body to the init pose (init_pose.yaml, head excluded).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L158
-  - name: /ros_robot_controller/bus_servo/get_position
-    type: ros_robot_controller/GetBusServosPosition
-    node: ros_robot_controller
-    description: Read positions (0-1000 pulse) of the given servo ids.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48
-  - name: /ros_robot_controller/bus_servo/get_state
-    type: ros_robot_controller/GetBusServoState
-    node: ros_robot_controller
-    description: Read servo id/position/offset/voltage/temperature/limits/torque.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L50
-  - name: /ros_robot_controller/pwm_servo/get_state
-    type: ros_robot_controller/GetPWMServoState
-    node: ros_robot_controller
-    description: Read PWM servo position/offset.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L52
-  - name: /sensor/button/enable
-    type: std_srvs/SetBool
-    node: sensor
-    description: Enable/disable publishing of /sensor/button/get_button_state (app enables it at startup).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L22
-  - name: /app/enter
-    type: ainex_interfaces/SetInt
-    node: app
-    description: "Select app mode: 0 idle, 1 control, 2 kick_ball, 3 color_detect, 4 visual_patrol, 5 color_track, 6 face_detect, 7 fall_rise."
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L188
-  - name: /app/set_running
-    type: std_srvs/SetBool
-    node: app
-    description: Start/stop the selected mode; false stops the gait (GaitManager.stop) and the detector; true fails in idle.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L189
-  - name: /app/set_target_color
-    type: ainex_interfaces/SetPoint
-    node: app
-    description: Pick the target colour at image point (x, y); (-1, -1) clears it.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L190
-  - name: /app/get_target_color
-    type: std_srvs/Trigger
-    node: app
-    description: Current target colour as "r,g,b" in message; success false if none.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L191
-  - name: /app/set_threshold
-    type: ainex_interfaces/SetFloat
-    node: app
-    description: Colour-match tolerance (default 0.2) around the picked LAB colour.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L192
-  - name: /app/heartbeat
-    type: std_srvs/SetBool
-    node: app
-    description: App heartbeat; 5 s timeout only logs (no motion side effect).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/src/ainex_app/common.py#L70
-  - name: /color_detection/enter
-    type: std_srvs/Empty
-    node: color_detection
-    description: Subscribe to the camera image and begin publishing image_result.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L53
-  - name: /color_detection/exit
-    type: std_srvs/Empty
-    node: color_detection
-    description: Unsubscribe from the camera and stop.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L54
-  - name: /color_detection/start
-    type: std_srvs/Empty
-    node: color_detection
-    description: Start detection (publishes /object/pixel_coords).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L55
-  - name: /color_detection/stop
-    type: std_srvs/Empty
-    node: color_detection
-    description: Stop detection.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L56
-  - name: /color_detection/update_lab
-    type: std_srvs/Empty
-    node: color_detection
-    description: Reload the LAB colour thresholds.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L57
-  - name: /face_detect/enter
-    type: std_srvs/Empty
-    node: face_detect
-    description: Subscribe to the camera image.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L50
-  - name: /face_detect/exit
-    type: std_srvs/Empty
-    node: face_detect
-    description: Unsubscribe from the camera and stop.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L51
-  - name: /face_detect/start
-    type: std_srvs/Empty
-    node: face_detect
-    description: Start face detection.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L52
-  - name: /face_detect/stop
-    type: std_srvs/Empty
-    node: face_detect
-    description: Stop face detection.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L53
-  - name: /camera/set_camera_info
-    type: sensor_msgs/SetCameraInfo
-    node: camera
-    description: camera_info_manager service provided by usb_cam (package behaviour, not declared in vendor sources).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L8
-    unverified: true
+  - {name: /walking/command, type: ainex_interfaces/SetWalkingCommand, node: /ainex_controller, notes: "command start|stop|enable|disable act only while control is enabled; enable_control|disable_control toggle it; stop/disable block until the step cycle has ended; always returns result true (#L349-L373)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L159"}
+  - {name: /walking/init_pose, type: std_srvs/Empty, node: /ainex_controller, notes: "stop, then move arms/grippers to init pose over 0.5 s (legs follow the gait engine)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L158"}
+  - {name: /walking/get_param, type: ainex_interfaces/GetWalkingParam, node: /ainex_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L163"}
+  - {name: /walking/is_walking, type: ainex_interfaces/GetWalkingState, node: /ainex_controller, notes: "state = not stopped (same name as the Bool topic)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L164"}
+  - {name: /ros_robot_controller/bus_servo/get_position, type: ros_robot_controller/GetBusServosPosition, node: /ros_robot_controller, notes: "servo positions in pulses 0-1000; the only servo position feedback of the boot", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48"}
+  - {name: /ros_robot_controller/bus_servo/get_state, type: ros_robot_controller/GetBusServoState, node: /ros_robot_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L50"}
+  - {name: /ros_robot_controller/pwm_servo/get_state, type: ros_robot_controller/GetPWMServoState, node: /ros_robot_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L52"}
+  - {name: /sensor/button/enable, type: std_srvs/SetBool, node: /sensor, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L22"}
+  - {name: /camera/start_capture, type: std_srvs/Empty, node: /camera, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L124"}
+  - {name: /camera/stop_capture, type: std_srvs/Empty, node: /camera, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L125"}
+  - {name: /camera/set_camera_info, type: sensor_msgs/SetCameraInfo, node: /camera, notes: "camera_info_manager on the node's private namespace", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L121"}
+  - {name: /camera/manager/list, type: nodelet/NodeletList, node: /camera/manager, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L8"}
+  - {name: /camera/manager/load_nodelet, type: nodelet/NodeletLoad, node: /camera/manager, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L8"}
+  - {name: /camera/manager/unload_nodelet, type: nodelet/NodeletUnload, node: /camera/manager, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L8"}
+  - {name: /camera/rectify_color/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /camera/rectify_color, source: "https://github.com/ros-perception/image_pipeline/blob/69488e6e455d97c2deaf924234aa5f87b83cfda8/image_proc/src/nodelets/rectify.cpp#L91"}
+  - {name: /color_detection/enter, type: std_srvs/Empty, node: /color_detection, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L53"}
+  - {name: /color_detection/exit, type: std_srvs/Empty, node: /color_detection, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L54"}
+  - {name: /color_detection/start, type: std_srvs/Empty, node: /color_detection, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L55"}
+  - {name: /color_detection/stop, type: std_srvs/Empty, node: /color_detection, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L56"}
+  - {name: /color_detection/update_lab, type: std_srvs/Empty, node: /color_detection, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L57"}
+  - {name: /face_detect/enter, type: std_srvs/Empty, node: /face_detect, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L50"}
+  - {name: /face_detect/exit, type: std_srvs/Empty, node: /face_detect, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L51"}
+  - {name: /face_detect/start, type: std_srvs/Empty, node: /face_detect, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L52"}
+  - {name: /face_detect/stop, type: std_srvs/Empty, node: /face_detect, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L53"}
+  - {name: /app/enter, type: ainex_interfaces/SetInt, node: /app, notes: "app mode select", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L188"}
+  - {name: /app/set_running, type: std_srvs/SetBool, node: /app, notes: "false stops the gait (GaitManager.stop)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L189"}
+  - {name: /app/set_target_color, type: ainex_interfaces/SetPoint, node: /app, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L190"}
+  - {name: /app/get_target_color, type: std_srvs/Trigger, node: /app, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L191"}
+  - {name: /app/set_threshold, type: ainex_interfaces/SetFloat, node: /app, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L192"}
+  - {name: /app/heartbeat, type: std_srvs/SetBool, node: /app, notes: "5 s timeout that only logs (app_node.py#L213-L214); no motion side effect", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/src/ainex_app/common.py#L64-L83"}
+
+actions: []
 
 parameters:
-  # ainex_controller (rosparam files loaded into its private namespace)
+  # /ainex_controller (rosparam files loaded into its private namespace; leaf names are the flattened keys)
   - name: /ainex_controller/init_pose
-    type: dict
-    value: "{<joint>: rad} for all 24 joints, e.g. l_hip_pitch -0.828, l_knee 1.192, l_ank_pitch 0.625, r_* mirrored, l_sho_roll 1.293, l_el_yaw -1.926, head 0"
-    description: Standing init pose used at boot and by /walking/init_pose.
+    value: {l_ank_pitch: 0.625, l_ank_roll: 0.016, l_hip_pitch: -0.828, l_hip_roll: 0.016, l_hip_yaw: 0.0, l_knee: 1.192, l_sho_pitch: 0.0, l_sho_roll: -1.45, l_el_pitch: 0.0, l_el_yaw: 0.0, l_gripper: 0.0, r_ank_pitch: -0.625, r_ank_roll: -0.016, r_hip_pitch: 0.828, r_hip_roll: -0.016, r_hip_yaw: 0.0, r_knee: -1.192, r_sho_pitch: 0.0, r_sho_roll: 1.45, r_el_pitch: 0.0, r_el_yaw: 0.0, r_gripper: 0.0, head_pan: 0.0, head_tilt: 0.0}
+    notes: >-
+      Legs, head and grippers are the source file's values. The ARM entries are deliberately
+      NOT the source's (l_sho_roll 1.293, l_el_pitch -0.1, l_el_yaw -1.926 and the mirror on
+      the right, which hold the arms raised on this model's joint axes): since 2026-10-02 they
+      are relaxed down at the sides like a person at rest (shoulder roll -1.45 left / +1.45
+      right, shoulder pitch, elbow pitch and elbow yaw 0), the same pose as the model's `home`
+      keyframe, so the boot does not lift the arms again.
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/init_pose.yaml
   - name: /ainex_controller/controllers
-    type: dict
-    value: "<joint>_controller: {type: JointPositionController, joint_name, servo: {id, init, min, max}}"
-    description: Joint-to-servo map and pulse calibration (240 deg over 0-1000; min>max means flipped).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml
-  - name: /ainex_controller/gazebo_sim
-    type: bool
-    value: false
-    description: Simulation mode switch (publishes /<joint>_controller/command Float64 and subscribes /joint_states instead of driving servos).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/launch/ainex_controller.launch#L8
-  - name: /init_pose/init_finish
-    type: bool
-    value: false
-    description: Set false by ainex_controller at start; nothing in the boot stack sets it true.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L85
-  # ros_robot_controller
-  - name: /ros_robot_controller/freq
-    type: int
-    value: 100
-    description: Board polling / sensor publish loop rate (Hz).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L7
-  - name: /ros_robot_controller/imu_frame
-    type: string
-    value: imu_link
-    description: frame_id of imu_raw.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L8
+    value:
+      generated: >-
+        servo_controller.yaml `controllers` map verbatim: <joint>_controller {type:
+        JointPositionController, joint_name, joint_speed 1.0, port_id 1, servo {id, init, min,
+        max}} for the 24 joints (init 500 except l_knee 240, r_knee 760, l_sho_pitch 875
+        flipped, r_sho_pitch 125 flipped), plus ainex_controller {type
+        JointTrajectoryActionController, ...}
+    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L1-L273
+  - name: /ainex_controller/serial_ports
+    value: [{port_name: /dev/ttyAMA0, port_id: 1, baud_rate: 115200, min_motor_id: 1, max_motor_id: 30, fake_read: true, connected_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 12, 22, 23, 24], update_rate: 40}]
+    notes: loaded but unused by ainex_controller.py
+    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L275-L283
+  - {name: /ainex_controller/gazebo_sim, value: false, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/launch/ainex_controller.launch#L8"}
+  - {name: /init_pose/init_finish, value: false, notes: "set by ainex_controller at start; nothing in the boot sets it true", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L85"}
+  # /ros_robot_controller
+  - {name: /ros_robot_controller/freq, value: 100, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L7"}
+  - {name: /ros_robot_controller/imu_frame, value: imu_link, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/launch/ros_robot_controller_node.launch#L8"}
   - name: /ros_robot_controller/calibration
-    type: double[16]
-    value: 4x4 magnetometer calibration matrix
-    description: Loaded from ainex_calibration/config/mag_calib.yaml; enables /ros_robot_controller/mag.
+    value: [0.0000011001, -0.0000000209, -0.0000000051, 0.0000663759, -0.0000000209, 0.0000009472, -0.0000000032, -0.0000612174, -0.0000000051, -0.0000000032, 0.0000011188, 0.0001825604, 0.0, 0.0, 0.0, 1.0]
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_calibration/config/mag_calib.yaml
-  - name: /ros_robot_controller/init_finish
-    type: bool
-    value: true
-    description: Set by the driver once the board link is up.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L59
-  # camera
-  - name: /camera/camera_name
-    type: string
-    value: camera
-    description: Read by color_detection/face_detect to build the image topic.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L5
-  - name: /camera/image_topic
-    type: string
-    value: image_raw
-    description: Image topic the vision nodes subscribe to (/camera/image_raw at boot).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L6
-  - name: /camera/video_device
-    type: string
-    value: /dev/usb_cam
-    description: usb_cam device (udev-mapped).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L9
-  - name: /camera/image_width
-    type: int
-    value: 640
-    description: Capture width.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L10
-  - name: /camera/image_height
-    type: int
-    value: 480
-    description: Capture height.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L11
-  - name: /camera/pixel_format
-    type: string
-    value: yuyv
-    description: Capture pixel format.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L12
-  - name: /camera/camera_frame_id
-    type: string
-    value: camera
-    description: frame_id of image_raw / camera_info.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L13
-  - name: /camera/io_method
-    type: string
-    value: mmap
-    description: V4L2 IO method.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L14
+  - {name: /ros_robot_controller/init_finish, value: true, notes: "set by the driver once the board link is up", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L59"}
+  # camera (usb_cam.launch; node named /camera, so its private params are /camera/*)
+  - {name: /camera/camera_name, value: camera, notes: "also usb_cam's ~camera_name", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L5"}
+  - {name: /camera/image_topic, value: image_raw, notes: "bringup passes image_raw; read by color_detection/face_detect", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L6"}
+  - {name: /camera/video_device, value: /dev/usb_cam, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L9"}
+  - {name: /camera/image_width, value: 640, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L10"}
+  - {name: /camera/image_height, value: 480, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L11"}
+  - {name: /camera/pixel_format, value: yuyv, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L12"}
+  - {name: /camera/camera_frame_id, value: camera, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L13"}
+  - {name: /camera/io_method, value: mmap, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L14"}
   - name: /camera/camera_info_url
-    type: string
     value: file:///home/ubuntu/.ros/camera_info/head_camera.yaml
-    description: Declared in the launch as "camera_info_url " with a trailing space in the name; whether usb_cam receives it is unconfirmed.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L15
-    unverified: true
-  - name: /camera/rectify_color/queue_size
-    type: int
-    value: 10
-    description: image_proc rectify queue size.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L12
+    notes: The launch writes the name as "camera_info_url " (trailing space); roslaunch strips attribute names (ros_comm xmlloader.py#L270), so it reaches usb_cam.
+    source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/usb_cam.launch#L15
+      - https://github.com/ros/ros_comm/blob/30483a9f218f1545eec16d3934bf3cb042e2cb5b/tools/roslaunch/src/roslaunch/xmlloader.py#L270
+  - {name: /camera/rectify_color/queue_size, value: 10, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/image_calib.launch#L12"}
+  - {name: /camera/rectify_color/interpolation, value: 1, notes: "written by the dynamic_reconfigure server (Rectify.cfg default Linear)", source: "https://github.com/ros-perception/image_pipeline/blob/69488e6e455d97c2deaf924234aa5f87b83cfda8/image_proc/cfg/Rectify.cfg#L15-L17"}
   # joystick
-  - name: /joystick/dev
-    type: string
-    value: /dev/input/js0
-    description: joy_node device.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L4
-  - name: /joystick/autorepeat_rate
-    type: double
-    value: 20.0
-    description: /joy repeat rate while an input is held (Hz).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L5
-  - name: /joystick/coalesce_interval
-    type: double
-    value: 0.05
-    description: joy_node event coalescing (s).
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L6
+  - {name: /joystick/dev, value: /dev/input/js0, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L4"}
+  - {name: /joystick/autorepeat_rate, value: 20.0, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L5"}
+  - {name: /joystick/coalesce_interval, value: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/joystick_control.launch#L6"}
   # IMU pipeline
-  - name: /imu_calib/calib_file
-    type: string
-    value: $(find ainex_calibration)/config/imu_calib.yaml
-    description: Accelerometer calibration applied by apply_calib.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L25
-  - name: /imu_filter/use_mag
-    type: bool
-    value: true
-    description: Complementary filter fuses /ros_robot_controller/mag.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L31
-  - name: /imu_filter/gain_acc
-    type: double
-    value: 0.2
-    description: Accelerometer gain.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L32
-  - name: /imu_filter/bias_alpha
-    type: double
-    value: 0.2
-    description: Gyro bias estimation gain.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L34
-  - name: /imu_filter/do_bias_estimation
-    type: bool
-    value: true
-    description: Enable gyro bias estimation.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L35
-  - name: /imu_filter/do_adaptive_gain
-    type: bool
-    value: true
-    description: Enable adaptive gain.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L36
-  # app / vision
-  - name: /color_track
-    type: dict
-    value: "{pid1_p: 0.13, pid1_i: 0.0, pid1_d: 0.003, pid2_p: 0.13, pid2_i: 0.0, pid2_d: 0.003}"
-    description: Head-tracking PID gains (rl, ud) read by app; loaded at root by start.launch and again as /app/color_track.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/launch/start.launch#L4
-  - name: /app/color_track
-    type: dict
-    value: same as /color_track
-    description: Private copy of the PID gains.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/launch/start.launch#L19
-  - name: /color_detection/debug
-    type: bool
-    value: false
-    description: Auto enter+start detection at launch when true.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch
-  - name: /color_detection/enable_display
-    type: bool
-    value: false
-    description: Show an OpenCV window.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch
-  - name: /color_detection/enable_roi
-    type: bool
-    value: true
-    description: Restrict detection to the configured ROI.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch
-  - name: /face_detect/enable_display
-    type: bool
-    value: false
-    description: Show an OpenCV window.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch
-  - name: /face_detect/confidence
-    type: double
-    value: 0.5
-    description: mediapipe minimum detection confidence.
-    source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch
+  - {name: /imu_calib/calib_file, value: /home/ubuntu/ros_ws/src/ainex_calibration/config/imu_calib.yaml, notes: "$(find ainex_calibration)/config/imu_calib.yaml resolved in the robot's workspace", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L25"}
+  - {name: /imu_filter/use_mag, value: true, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L31"}
+  - {name: /imu_filter/gain_acc, value: 0.2, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L32"}
+  - {name: /imu_filter/bias_alpha, value: 0.2, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L34"}
+  - {name: /imu_filter/do_bias_estimation, value: true, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L35"}
+  - {name: /imu_filter/do_adaptive_gain, value: true, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_peripherals/launch/imu.launch#L36"}
+  # app / vision (start.launch)
+  - {name: /color_track, value: {pid1_d: 0.003, pid1_i: 0.0, pid1_p: 0.13, pid2_d: 0.003, pid2_i: 0.0, pid2_p: 0.13}, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/launch/start.launch#L4"}
+  - {name: /app/color_track, value: {color_track: {pid1_d: 0.003, pid1_i: 0.0, pid1_p: 0.13, pid2_d: 0.003, pid2_i: 0.0, pid2_p: 0.13}}, notes: "the yaml's top key nests under ns color_track", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/launch/start.launch#L19"}
+  - {name: /color_detection/debug, value: false, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch#L24"}
+  - {name: /color_detection/enable_display, value: false, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch#L26"}
+  - {name: /color_detection/enable_roi, value: true, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.launch#L27"}
+  - {name: /face_detect/enable_display, value: false, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch#L22"}
+  - {name: /face_detect/confidence, value: 0.5, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch#L23"}
 
-stop_command: >-
-  Official way (docs 5.2.4 Walking Control, GaitManager.stop()): call service /walking/command
-  with command "stop". ainex_controller then calls walking_module.stop() and blocks until the
-  current step cycle ends and /walking/is_walking goes False (ainex_controller.py#L356-L359).
-  "disable" also stops and additionally blocks gait output until "enable"/"start".
-  /app/set_running false and a stick release in joystick_control both end in this same "stop".
-  Nuance: start/stop/enable/disable are ignored (the service still returns result=true) unless
-  control is enabled (init_pose_finish true, ainex_controller.py#L350). "enable_control" sets it
-  true and "disable_control" sets it false; the app sends disable_control on entering fall_rise
-  (app_node.py#L339) and enable_control on control/idle (app_node.py#L292, #L308), and
-  /app/set_action clears it while an action group plays. So after disable_control, send
-  "enable_control" before "stop" or the stop is a no-op. To stop the whole stack, the vendor
-  instructs `sudo systemctl stop start_app_node.service` (bringup.launch header, docs).
+tf: []   # the boot runs no robot_state_publisher / TF broadcaster (tf_broadcaster_imu only with imu.launch debug:=true; imu_filter publish_tf defaults false)
+
+motions:
+  - id: walk
+    velocity_driven: true
+    command:
+      interface: topic
+      name: /walking/set_param
+      type: ainex_interfaces/WalkingParam
+      sequence: >-
+        Official GaitManager flow (gait_manager.py#L107-L197, docs 5.1): read
+        /walking/get_param, publish the modified WalkingParam on /walking/set_param, then call
+        /walking/command {command: "start"}. The gait engine keeps walking with those
+        parameters until stopped (period_times 0) or for period_times steps.
+      fields:
+        - {field: x_move_amplitude, unit: m (per step), min: -0.05, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L72"}
+        - {field: y_move_amplitude, unit: m (per step), min: -0.05, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L73"}
+        - {field: angle_move_amplitude, unit: deg (per step), min: -10, max: 10, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L77"}
+        - {field: z_move_amplitude, unit: m (foot lift), min: 0.0, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L75"}
+        - {field: init_z_offset, unit: m (body lowered from full stretch), min: 0.015, max: 0.06, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L70"}
+        - {field: y_swap_amplitude, unit: m, min: 0.0, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L81"}
+        - {field: arm_swing_gain, unit: rad, min: 0.0, max: 1.0471976, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L79"}
+        - {field: period_time, unit: ms (one gait period), notes: "not clamped; GaitManager levels 300/400/500/600", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L21-L25"}
+        - {field: dsp_ratio, unit: "1 (double-support fraction)", min: 0.0, max: 1.0, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L40"}
+        - {field: period_times, unit: steps (0 = until stopped), source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242"}
+      example:
+        # walking_param.yaml defaults with the joystick's forward step (joystick_control.py#L46-L49)
+        set_param: {init_x_offset: 0.0, init_y_offset: -0.005, init_z_offset: 0.025, init_roll_offset: 0.0, init_pitch_offset: 0.0, init_yaw_offset: 0.0, period_time: 400.0, dsp_ratio: 0.2, step_fb_ratio: 0.028, period_times: 0, x_move_amplitude: 0.013, y_move_amplitude: 0.0, z_move_amplitude: 0.02, angle_move_amplitude: 0.0, move_aim_on: false, arm_swing_gain: 0.5236, y_swap_amplitude: 0.02, z_swap_amplitude: 0.006, pelvis_offset: 5.0, hip_pitch_offset: 15.0, balance_enable: false, balance_hip_roll_gain: 0.0, balance_knee_gain: 0.0, balance_ankle_roll_gain: 0.0, balance_ankle_pitch_gain: 0.0}
+        start: {service: /walking/command, request: {command: start}}
+      alternative: >-
+        /app/set_walking_param (AppWalkingParam speed 1-4, height, x, y, angle) followed by
+        /walking/command start: the controller replaces the amplitudes with fixed presets per
+        speed (ainex_controller.py#L386-L592).
+    stop:
+      interface: service
+      name: /walking/command
+      type: ainex_interfaces/SetWalkingCommand
+      message: {command: stop}
+      notes: >-
+        walking_module.stop(); the call blocks until the current step cycle ends and
+        /walking/is_walking goes False (ainex_controller.py#L356-L359). Ignored (still returns
+        result true) while control is disabled (after disable_control or during an action
+        group); send {command: enable_control} first in that case. `disable` also stops.
+        GaitManager.stop(), a joystick release and /app/set_running false all send this.
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L210-L212
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: >-
+        Derived from the pinned source, not measured on hardware: ainex_controller's run loop
+        (#L182-L246) keeps generating gait frames while walking with period_times 0 until
+        walking_module.stop(); no command timeout exists. /app/heartbeat's 5 s timeout only
+        logs (app_node.py#L213-L214). Real-robot measurement is outstanding.
+      date: 2026-09-30
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L182-L246
+    feedback:
+      - {name: /walking/is_walking, field: data, notes: "True while stepping, False once stopped"}
+    feedback_note: No odometry or joint-state topic exists; displacement must be judged from pose readings (simulator private port).
+    gait:
+      engine: >-
+        ainex_kinematics/walking_module.so (Cython, aarch64, Python 3.8; source
+        walking_module_without_balance.pyx not published) with LegIK from kinematics.so. The
+        controller streams one servo frame every servo_control_cycle to
+        /ros_robot_controller/bus_servo/set_position with duration 0, waiting longer when a
+        joint moves more than the servo speed allows (0.2 s / 60 deg).
+      files:
+        - {source: ainex, path: src/ainex_driver/ainex_kinematics/config/walking_param.yaml}
+        - {source: ainex, path: src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py}
+      defaults: {trajectory_step_s: 0.008, servo_control_cycle: 0.02, init_x_offset: 0.0, init_y_offset: -0.005, init_z_offset: 0.025, init_roll_offset: 0, init_pitch_offset: 0, init_yaw_offset: 0, hip_pitch_offset: 15, period_time: 400, period_times: 0, dsp_ratio: 0.2, step_fb_ratio: 0.028, x_move_amplitude: 0.0, y_move_amplitude: 0.0, z_move_amplitude: 0.02, angle_move_amplitude: 0.0, y_swap_amplitude: 0.02, z_swap_amplitude: 0.006, pelvis_offset: 5, move_aim_on: false, arm_swing_gain: 0.5}
+      speed_levels:   # GaitManager.move(step_velocity) -> [period_time ms, dsp_ratio, y_swap_amplitude m]
+        1: [300, 0.2, 0.02]
+        2: [400, 0.2, 0.02]
+        3: [500, 0.2, 0.02]
+        4: [600, 0.1, 0.04]
+      gait_manager_limits: {x_amplitude: [-0.02, 0.02], y_amplitude: [-0.02, 0.02], rotation_deg: [-10, 10], body_height: [0.015, 0.06], step_height: [0.01, 0.04], arm_swap_deg: [0, 60]}
+      joystick_steps: {x: 0.013, y: 0.015, angle_deg: 8, period: [400, 0.2, 0.02], y_period_swap: 0.025}
+      servo_speed: 0.2 s per 60 deg (ainex_controller.py#L177)
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/walking_param.yaml
+
+  - id: head
+    joint: head_pan
+    velocity_driven: false
+    command:
+      interface: topic
+      name: /head_pan_controller/command
+      type: ainex_interfaces/HeadState
+      fields:
+        - {field: position, unit: rad, min: -2.094, max: 2.094, notes: "pulse = 500 + position * 1000/240deg, servo 23; servo range 0-1000 pulses (+-120 deg); URDF limit +-2.09", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L320-L322"}
+        - {field: duration, unit: s, min: 0.0, max: 65.535, notes: "move time; the board SDK sends int(duration*1000) as 16-bit ms (larger values wrap)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L438-L440"}
+      example: {position: 0.5, duration: 0.5}
+    end_state: The servo reaches `position` after `duration` (interpolated by the servo); nothing is published.
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: Derived from the pinned source, not measured on hardware; a position command with a duration, no timeout exists.
+      date: 2026-09-30
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L337-L339
+    feedback:
+      - {name: /ros_robot_controller/bus_servo/get_position, field: "position[id=23].position", notes: "service, pulses; no joint-state topic"}
+  - id: head
+    joint: head_tilt
+    velocity_driven: false
+    command:
+      interface: topic
+      name: /head_tilt_controller/command
+      type: ainex_interfaces/HeadState
+      fields:
+        - {field: position, unit: rad, min: -2.094, max: 2.094, notes: "servo 24, same mapping as pan", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L341-L343"}
+        - {field: duration, unit: s, min: 0.0, max: 65.535, notes: "16-bit ms as for pan", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L438-L440"}
+      example: {position: -0.3, duration: 0.5}
+    end_state: The servo reaches `position` after `duration`; nothing is published.
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: Derived from the pinned source, not measured on hardware; no timeout exists.
+      date: 2026-09-30
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L341-L343
+    feedback:
+      - {name: /ros_robot_controller/bus_servo/get_position, field: "position[id=24].position", notes: "service, pulses"}
+  - id: action_group
+    velocity_driven: false
+    command:
+      interface: topic
+      name: /app/set_action
+      type: std_msgs/String
+      fields:
+        - {field: data, unit: action group name (file stem), notes: "plays /home/ubuntu/software/ainex_controller/ActionGroups/<data>.d6a; an unknown name prints 'can not find aciton file' and only returns to init pose", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L63-L99"}
+      example: {data: left_shot}
+    end_state: >-
+      Walking is stopped, every frame of the .d6a is sent (each frame's duration in ms, then a
+      sleep of that duration), then move_to_init_pose() returns arms/grippers to init_pose over
+      0.5 s and walking is re-enabled (ainex_controller.py#L375-L384, #L262-L318). No completion
+      message is published. The .d6a files are not in any pinned source (boot.data_files).
+    watchdog:
+      present: false
+      interval_s: null
+      basis: source
+      method: Derived from the pinned source, not measured on hardware; playback runs to the end, MotionManager.stop_action_group is never wired to a ROS endpoint.
+      date: 2026-09-30
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L60-L99
+    feedback: []
+    feedback_note: No topic reports action progress; judge by joint readings.
+
+sensors:
+  cameras:
+    - id: head_camera
+      image_topic: /camera/image_raw
+      info_topic: /camera/camera_info
+      frame_id: camera
+      width: 640
+      height: 480
+      rate: 30
+      encoding: rgb8
+      hfov_deg: 99.7
+      intrinsics:
+        fx: 270.0
+        fy: 270.0
+        cx: 320.0
+        cy: 240.0
+        distortion_model: plumb_bob
+        d: [0.0, 0.0, 0.0, 0.0, 0.0]
+        basis: estimate
+        notes: >-
+          The boot loads its calibration from /home/ubuntu/.ros/camera_info/head_camera.yaml,
+          which is on the robot image and in no pinned source. Manufacturer FOV figures
+          conflict: the official docs give 170 deg (docs 1.x "HD camera: FOV 170",
+          640x480), retail listings give "120 deg wide-angle". Estimate: the 170 deg taken as
+          the diagonal of an equidistant fisheye, f = 400 px / (85 deg in rad) = 270 px,
+          used as a pinhole with zero distortion (hfov 99.7 deg, vfov 83.3 deg); the
+          simulator's CameraInfo publishes exactly this K/P with D zero, consistent with the
+          rendered camera (fovy 83.27 deg).
+        source: https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/docs/1.ROS%20Robot%20Introductory%20Course.html
+      mount:
+        parent: head_tilt_link
+        xyz: [0.038068384, 0.018573352, 0.016398177]
+        rpy: [0.0, 0.0, 0.0]
+        basis: source
+        notes: >-
+          URDF camera_link is fixed to body_link at xyz (0.0430140, 0, 0.1523561); the camera is
+          physically in the head (2-DOF head camera), so the model mounts it on head_tilt_link
+          at the pose that equals camera_link when head_pan = head_tilt = 0. Axes as URDF
+          camera_link (x forward, z up); the image frame "camera" is not in the URDF.
+        source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro
+      hardware: USB 2.0 HD camera, max 640x480, manual focus (docs); device /dev/usb_cam, YUYV.
+  lidars: []
+  imus:
+    - id: board_imu
+      topic: /ros_robot_controller/imu_raw
+      filtered_topic: /imu
+      frame_id: imu_link
+      rate: 100
+      mount:
+        parent: body_link
+        xyz: [-0.0459897867959335, -0.0100999999918824, 0.0702999210083745]
+        rpy: [1.5707963267948966, 0.0, -1.5707963267948966]
+        basis: source
+      source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro
+
+tolerances:
+  - figure: walk displacement over a timed straight walk
+    applies_to: walk (x_move_amplitude 0.013 m, period 400 ms)
+    tolerance: {relative: 0.5}
+    basis: estimate
+    notes: >-
+      No manufacturer walking speed or accuracy is published and the gait engine is a closed
+      binary; real small-humanoid walking slips and drifts. Checked by sign and magnitude
+      within +-50 % of the displacement the same command produces on the reference engine run.
+  - figure: walk heading drift during a straight walk
+    applies_to: walk
+    tolerance: {absolute: 0.35, unit: rad}
+    basis: estimate
+    notes: About 20 deg over the smoke-run distance; open-loop gait without IMU balance (walking_module_without_balance).
+  - figure: head joint reaching its commanded position
+    applies_to: head pan/tilt
+    tolerance: {absolute: 0.035, unit: rad}
+    basis: estimate
+    notes: Servo resolution is 0.24 deg per pulse; 2 deg allows for gravity load and the position loop's steady-state error.
+  - figure: joints reaching the final frame of an action group / init pose
+    applies_to: action_group
+    tolerance: {absolute: 0.05, unit: rad}
+    basis: estimate
+    notes: Loaded leg joints under the robot's weight.
+  - figure: standing height of body_link origin at the init pose
+    applies_to: model
+    tolerance: {absolute: 0.01, unit: m}
+    basis: estimate
+    notes: Model value 0.203 m with soles on the floor; no manufacturer figure.
+
+notes: >-
+  Interface names come from the pinned boot only. Endpoints of other vendor launches (e.g.
+  ainex_example apps started separately, apriltag, calibration launches, gazebo_sim
+  controller topics /<joint>_controller/command Float64 and /joint_states) are not part of
+  the boot and are not listed; none of the listed rows needed `optional` except the
+  image_transport plugin topics, which depend on packages installed on the robot image.

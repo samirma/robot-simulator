@@ -1,0 +1,391 @@
+{
+ "robot": "mycobot280",
+ "name": "myCobot 280",
+ "kind": "arm",
+ "engine": "molmospaces",
+ "placement": "worktop",
+ "started": "2026-10-02T11:34:03+01:00",
+ "items": {
+  "scene": {
+   "file": "scene.png",
+   "view": {
+    "lookat": [
+     -0.2319999726666255,
+     0.15299945935080292,
+     1.270390479764215
+    ],
+    "distance": 2.0958688074029013,
+    "azimuth": 270.0,
+    "elevation": -25.0
+   },
+   "sim_time": 19.981999999999804,
+   "width": 1280,
+   "height": 720,
+   "std": 60.47,
+   "pass": true
+  },
+  "cameras": [],
+  "fleet": [
+   {
+    "profile": "mycobot280",
+    "wire": "ws://127.0.0.1:9090",
+    "command": "robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect mycobot280",
+    "exit_code": 0,
+    "file": "fleet_mycobot280.txt",
+    "pass": true,
+    "summary": "PASS"
+   }
+  ],
+  "smoke": {
+   "file": "smoke.json",
+   "pass": true,
+   "motions": {
+    "arm": true,
+    "gripper": true
+   }
+  }
+ },
+ "notes": [],
+ "host_load_before": {
+  "load1": 6.28,
+  "load5": 8.9,
+  "load15": 10.57,
+  "ncpu": 14,
+  "waited_s": 0.0
+ },
+ "simulation_ready_line": "simulation ready: engine molmospaces, scene ithor:1, sim-port 9080, headless",
+ "simulation_command": "simulator/kitchen.sh start --engine molmospaces --sim-port 9080",
+ "scene": "ithor:1",
+ "engine_reported": "molmospaces",
+ "spawn_command": "simulator/spawn.sh mycobot280 --placement worktop --sim-port 9080 --port 9090",
+ "readiness_line": "spawn ready: mycobot280 (myCobot 280) in molmospaces ithor:1 on the worktop; wire(s): mycobot280 ws://127.0.0.1:9090 [ROS 2 humble]",
+ "ready_at": "2026-10-02T11:34:17+01:00",
+ "wires": [
+  {
+   "role": "main",
+   "owner": "mycobot280",
+   "host": "127.0.0.1",
+   "port": 9090,
+   "ros": "ROS 2 humble",
+   "url": "ws://127.0.0.1:9090"
+  }
+ ],
+ "ports": {
+  "main": 9090,
+  "sim_port": 9080
+ },
+ "spawned": {
+  "state": "running",
+  "placement": "worktop",
+  "xyz": [
+   -0.382,
+   0.218,
+   1.1308
+  ],
+  "yaw": 0.0,
+  "ports": [
+   9090
+  ],
+  "staged": {
+   "apple": {
+    "body": "task_apple",
+    "pos": [
+     -0.08199997266662551,
+     0.31801005655659687,
+     1.1240100382472997
+    ],
+    "quat": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "plate": {
+    "body": "task_plate",
+    "pos": [
+     -0.1559999726666255,
+     -0.007989943443403119,
+     1.1040100382472997
+    ],
+    "quat": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "bowl": {
+    "body": "task_bowl",
+    "pos": [
+     -0.24199997266662548,
+     -0.18198994344340313,
+     1.1311100382472996
+    ],
+    "quat": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "mug": {
+    "body": "task_mug",
+    "pos": [
+     -0.3319999726666255,
+     0.4880100565565969,
+     1.1312100382472996
+    ],
+    "quat": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   },
+   "banana": {
+    "body": "task_banana",
+    "pos": [
+     -0.2259999726666255,
+     0.3740100565565969,
+     1.1212100382472998
+    ],
+    "quat": [
+     0.9239556994702721,
+     0.0,
+     0.0,
+     0.3824994972760097
+    ]
+   },
+   "lemon": {
+    "body": "task_lemon",
+    "pos": [
+     -0.3119999726666255,
+     -0.04198994344340312,
+     1.1334100382472998
+    ],
+    "quat": [
+     1.0,
+     0.0,
+     0.0,
+     0.0
+    ]
+   }
+  },
+  "cleared": [
+   "apple_038a0ea9b393da66a161da588e6ecc2a_1_0_0",
+   "bread_5f50f53c9dcfbae4352335033a8b2bb4_1_0_0",
+   "book_be545aaaeb1f643586d7965f7a571f70_1_0_0"
+  ]
+ },
+ "rtf_at_start": 1.0,
+ "view": {
+  "lookat": [
+   -0.2319999726666255,
+   0.15299945935080292,
+   1.270390479764215
+  ],
+  "distance": 2.0958688074029013,
+  "azimuth": 270.0,
+  "elevation": -25.0,
+  "_clear_fraction": 0.998,
+  "_context_m": 3.48
+ },
+ "host_load_fleet": {
+  "load1": 5.97,
+  "load5": 8.62,
+  "load15": 10.42,
+  "ncpu": 14
+ },
+ "host_load_smoke": {
+  "load1": 5.97,
+  "load5": 8.62,
+  "load15": 10.42,
+  "ncpu": 14
+ },
+ "rtf_at_end": 0.973,
+ "collection": {
+  "from": "2026-10-02T11:34:29+01:00",
+  "to": "2026-10-02T11:34:38+01:00"
+ },
+ "rtf_low_windows_during_collection": [],
+ "rtf_samples": [
+  [
+   0.0,
+   1.0
+  ],
+  [
+   1.0,
+   1.0
+  ],
+  [
+   2.0,
+   1.0
+  ],
+  [
+   3.0,
+   1.0
+  ],
+  [
+   4.0,
+   1.0
+  ],
+  [
+   5.0,
+   1.0
+  ],
+  [
+   6.0,
+   1.0
+  ],
+  [
+   7.0,
+   1.0
+  ],
+  [
+   8.0,
+   1.0
+  ],
+  [
+   9.1,
+   1.0
+  ],
+  [
+   10.1,
+   1.0
+  ],
+  [
+   11.1,
+   1.0
+  ],
+  [
+   12.1,
+   1.0
+  ],
+  [
+   13.1,
+   1.0
+  ],
+  [
+   14.1,
+   1.0
+  ],
+  [
+   15.1,
+   1.0
+  ],
+  [
+   16.1,
+   1.0
+  ],
+  [
+   17.1,
+   1.0
+  ],
+  [
+   18.1,
+   1.0
+  ],
+  [
+   19.1,
+   1.0
+  ],
+  [
+   20.1,
+   0.973
+  ],
+  [
+   21.1,
+   0.973
+  ],
+  [
+   22.2,
+   0.973
+  ],
+  [
+   23.2,
+   0.973
+  ],
+  [
+   24.2,
+   0.973
+  ],
+  [
+   25.2,
+   0.973
+  ],
+  [
+   26.2,
+   0.973
+  ],
+  [
+   27.2,
+   0.973
+  ],
+  [
+   28.2,
+   0.973
+  ],
+  [
+   29.2,
+   0.973
+  ],
+  [
+   30.2,
+   1.027
+  ],
+  [
+   31.2,
+   1.027
+  ],
+  [
+   32.2,
+   1.027
+  ],
+  [
+   33.3,
+   1.027
+  ],
+  [
+   34.3,
+   1.027
+  ],
+  [
+   35.3,
+   1.027
+  ],
+  [
+   36.3,
+   1.027
+  ],
+  [
+   37.3,
+   1.027
+  ],
+  [
+   38.3,
+   1.027
+  ]
+ ],
+ "spawn_exit_code": 0,
+ "simulation_exit_code": 0,
+ "containers_left": [],
+ "rtf_warnings": [],
+ "host_load_after": {
+  "load1": 5.34,
+  "load5": 8.31,
+  "load15": 10.27,
+  "ncpu": 14
+ },
+ "finished": "2026-10-02T11:34:50+01:00",
+ "checks": {
+  "scene": true,
+  "cameras": true,
+  "fleet": true,
+  "smoke": true,
+  "spawn_clean_exit": true,
+  "worktop_objects": true
+ },
+ "pass": true,
+ "rtf_clean": true
+}

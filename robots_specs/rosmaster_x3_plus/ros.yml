@@ -1,1270 +1,2107 @@
-# ROSMASTER X3 PLUS — official ROS 1 interface.
-# Yahboom ships no ROS source on GitHub for this robot: github.com/YahboomTechnology/ROSMASTERX3-PLUS
-# (main @ 9732c62247dfb57a899aea01e4fe72ed434bac6d) holds only PDF tutorials and points to the official
-# Google Drive annex, whose 4.X3PLUS_Code folder holds ROSMASTER-X3Plus_ROS1_code.zip (Drive id
-# 1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU, 6343438429 bytes, retrieved 2026-09-27). Source references below use
-# <zip url>!/<inner zip>!/<path>#Lnn. Inner members: yahboomcar_ws.zip (CRC32 8169fcda, mtime 2025-03-29,
-# SHA-256 13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162) and software.zip
-# (CRC32 3abdab11, mtime 2025-03-29; ydlidar_ros_driver and orbbec-ros-sdk under library_ws/src).
-# The workspace was built against /opt/ros/noetic (build/CMakeCache.txt), matching the Noetic Docker
-# images for Pi 5 / Jetson Orin; the Jetson Nano image and the repo README use ROS 1 Melodic (same packages).
-# Yahboom's X3 PLUS docs offer no ROS 2 image. Names exclude ROS runtime topics/services (/rosout, get_loggers, set_logger_level).
-# Environment: ROBOT_TYPE=X3plus (every launch reads $(env ROBOT_TYPE)).
-dialect: ros1          # ROS 1 Noetic (Melodic on the Jetson Nano image)
+# ROSMASTER X3 PLUS - authoritative ROS 1 interface (schema: robots_specs/SCHEMA.md).
+# Written from the pinned vendor code download; see sources[] and each row's source.
+schema_version: 1
+robot_id: rosmaster_x3_plus
+name: ROSMASTER X3 PLUS
+dialect: ros1
+ros_distribution: noetic
+interface_authority: manufacturer
 sources:
-  - https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
-  - https://github.com/YahboomTechnology/ROSMASTERX3-PLUS/tree/9732c62247dfb57a899aea01e4fe72ed434bac6d
-  - http://www.yahboom.net/study/ROSMASTER-X3-PLUS
-boot_launch: roslaunch yahboomcar_nav laser_astrapro_bringup.launch   # ROBOT_TYPE=X3plus; includes ydlidar_ros_driver/TG.launch, orbbec_camera/astraproplus.launch, yahboomcar_bringup/bringup.launch (+ yahboomcar_ctrl/yahboom_joy.launch). Base only: roslaunch yahboomcar_bringup bringup.launch. At power-on the image autostarts Yahboom's non-ROS APP program (start_rosmaster_app), which must be closed first.
-joints: ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]   # grip_joint drives mimic joints rlink_joint2/3, llink_joint1/2/3; mecanum wheels are not jointed in the URDF
+- id: code_download
+  url: https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
+  revision: ROSMASTER-X3Plus_ROS1_code.zip
+  role: official code download (6343438429 bytes); every 'ROSMASTER-X3Plus_ROS1_code.zip!/...' citation below is
+    a member of it
+  retrieved: '2026-09-27'
+- id: yahboomcar_ws
+  url: https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
+  revision: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip
+  sha256: 13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162
+  role: 'vendor ROS workspace: bringup, driver node, odometry, teleop, URDF (verified against the spec''s workspace-archive
+    SHA-256 on 2026-09-30)'
+- id: software_zip
+  url: https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
+  revision: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip
+  role: 'vendor third-party workspace software/library_ws: ydlidar_ros_driver 1.0.1 and orbbec-ros-sdk (orbbec_camera
+    1.2.9). Read from a copy range-streamed out of the pinned archive on 2026-09-29; per-file sha256 of every cited
+    file: ydlidar_ros_driver.cpp bece21734020a352..., TG.launch 039cdcf5b88c0cfc..., astraproplus.launch ae61b8204c28b4d2...,
+    astra_frames.launch 78cf6bf874dbe2ce..., ob_camera_node.cpp dda5a3ba953f1479..., ros_setup.cpp be1e52e92560f700...,
+    ros_service.cpp 4a18efd24eeed146... (16-hex prefixes). The archive CRC could not be re-checked on 2026-09-30
+    (Google Drive download quota exceeded).'
+- id: rosmaster_lib
+  url: https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
+  revision: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip
+  sha256: 1761c5873b6d1407afe5b4f4c5c4fb05787e07730448e786243071fe9e8b6ce7
+  role: Rosmaster_Lib V3.3.9 (serial protocol to the STM32 expansion board) used by the driver node; Rosmaster_Lib.py
+    sha256 e9fd0f6bb015cda7dba58f4db6994402d83865cc125ab33035dbb39e978b1a8c. Member range-read from the pinned archive
+    on 2026-09-29 (size 13803 bytes matches its central directory entry).
+- id: firmware
+  url: https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU
+  revision: ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip
+  sha256: 09bcd255830bd38da6858c81971d7afeb00f80d33c3fd3309c69b2db384003f6
+  role: expansion-board firmware source V3.5.1 (mecanum kinematics, speed clamps, report period, no command timeout).
+    Member range-read from the pinned archive on 2026-09-29 (size 1063315 bytes matches its central directory entry).
+- id: tutorials
+  url: https://github.com/YahboomTechnology/ROSMASTERX3-PLUS
+  revision: 9732c62247dfb57a899aea01e4fe72ed434bac6d
+  branch: main
+  role: official tutorial repository (PDF courses naming the boot commands); not the ROS source
+- id: robot_state_publisher
+  url: https://github.com/ros/robot_state_publisher
+  revision: 85ed2140a0966f492a038d47f222f593047760c3
+  branch: noetic-devel
+  role: dependency (1.15.3, noetic-devel head read for behaviour; the image installs the Noetic apt release)
+- id: robot_localization
+  url: https://github.com/cra-ros-pkg/robot_localization
+  revision: 9ef26a57fafd9b97c135a7e07f52cf0168e94178
+  branch: noetic-devel
+  role: dependency (2.7.7, noetic-devel head read for behaviour)
+- id: imu_tools
+  url: https://github.com/CCNYRoboticsLab/imu_tools
+  revision: c6118a2ef3299a9deab419b68c6a7d4e070b4ff7
+  branch: noetic
+  role: dependency imu_filter_madgwick (1.2.7, noetic head read for behaviour)
+- id: geometry
+  url: https://github.com/ros/geometry
+  revision: f23e0aa39053a57263615ebb7d603fc97f09707c
+  branch: noetic-devel
+  role: dependency tf 1.13.4 (static_transform_publisher with period)
+- id: geometry2
+  url: https://github.com/ros/geometry2
+  revision: 8fef92a6b56a26e2b5be58d4d5c84dc4de5ee696
+  branch: noetic-devel
+  role: dependency tf2_ros 0.7.10 (static_transform_publisher, latched /tf_static)
+- id: diagnostics
+  url: https://github.com/ros/diagnostics
+  revision: 43557d53cd1073d01affc1ad5dd10a3eb9cd8782
+  branch: noetic-devel
+  role: dependency diagnostic_updater 1.12.1 (default ~diagnostic_period 1 s)
+boot:
+  summary: With ROBOT_TYPE=X3plus exported (every launch reads $(env ROBOT_TYPE)), the vendor lidar/camera bringup
+    yahboomcar_nav/laser_astrapro_bringup.launch, which the tutorials start before every lidar, camera, mapping
+    and navigation course. It includes ydlidar_ros_driver/TG.launch (YDLIDAR 4ROS), orbbec_camera/astraproplus.launch
+    (Astra Pro Plus) and yahboomcar_bringup/bringup.launch (URDF + robot_state_publisher, Mcnamu_X3plus.py driver_node,
+    odometry_publisher, imu_filter_madgwick, robot_localization EKF, and yahboomcar_ctrl/yahboom_joy.launch), plus
+    a tf static_transform_publisher /laser_link -> /laser. The pinned workspace was built against /opt/ros/noetic
+    (yahboomcar_ws/build/CMakeCache.txt; devel/_setup_util.py CMAKE_PREFIX_PATH ends in /opt/ros/noetic), matching
+    Yahboom's Noetic Docker images (Raspberry Pi 5, Jetson Orin); the tutorial README states Ubuntu 18.04 + ROS
+    Melodic for the Jetson Nano image, which runs the same packages.
+  commands:
+  - 'export ROBOT_TYPE=X3plus   # ~/.bashrc (tutorial 10.3 ''Robot information release'')'
+  - 'export RPLIDAR_TYPE=4ROS   # ~/.bashrc (tutorial 19/12.1 ''Lidar basic-4ROS-EAI''); read only by mapping launches'
+  - roslaunch yahboomcar_nav laser_astrapro_bringup.launch
+  launch_files:
+  - source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch
+    role: top-level boot
+  - source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch
+  - source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml
+  - source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch
+  - source: software_zip
+    path: software/library_ws/src/ydlidar_ros_driver/launch/TG.launch
+  - source: software_zip
+    path: software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch
+  - source: software_zip
+    path: software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch
+  data_files:
+  - source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf
+    role: robot_description (loaded through xacro; the file has no xacro macros)
+  hardware: 'Yahboom ROSMASTER X3 PLUS: aluminium chassis with four 80 mm mecanum wheels on 520 geared motors (205
+    rpm, 56:1, 11-line Hall encoders; firmware ENCODER_CIRCLE_205) and pendulum suspension; Yahboom ROS expansion
+    board V3 (STM32F103, firmware Rosmaster V3.5.1, 115200 baud on /dev/myserial, ICM20948 or MPU9250 IMU, car type
+    2 = X3 PLUS); 6-DOF bus-servo arm (servos 1-4 0-180 deg, servo 5 0-270 deg, gripper servo 6); YDLIDAR 4ROS ToF
+    lidar on /dev/ydlidar at 512000 baud; Orbbec Astra Pro Plus RGB-D camera (USB, vendor id 0x2bc5); optional USB
+    gamepad (/dev/input/js0); main computer Jetson Nano 4GB, Jetson Orin NX/Nano SUPER or Raspberry Pi 5 (Noetic
+    in Docker on Pi 5 and Orin). At power-on the image autostarts Yahboom''s non-ROS APP program, which the tutorials
+    close before any roslaunch (05.Basic course/2).'
+model:
+  urdf: yahboomcar_X3plus.urdf
+  urdf_sha256: 17c7c8fac92774f0d0cd093fb7500704d3b5149998cb8b60c958f5352646919c
+  urdf_source:
+    source: yahboomcar_ws
+    path: yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf
+  mjcf: model.xml
+  mjcf_official: false
+  robot_description:
+    published_as: ROS parameter /robot_description
+    content: xacro --inorder of yahboomcar_X3plus.urdf (no macros, so the same links, joints, limits and meshes
+      as the committed URDF)
+    differences_from_model:
+    - model.xml adds four wheel joints front_left_joint, front_right_joint, back_left_joint, back_right_joint and
+      48 passive roller joints that robot_description does not have (the URDF draws the wheels as part of base_link.STL);
+      they are not on the wire
+    - model.xml replaces base_link's mesh collision with four boxes and shows the URDF's collision meshes as visuals
+      of base_link, arm_link2, arm_link3 and arm_link4 (their visual STLs exceed MuJoCo's 200000-face limit)
+    - the driver reports grip_joint = -pi/2 for the open gripper (servo 30 deg) while the URDF lower limit is -1.54
+      rad; model.xml keeps the URDF limit (robot_description governs)
+nodes:
+- name: /driver_node
+  package: yahboomcar_bringup
+  executable: Mcnamu_X3plus.py
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L19-L27
+- name: /odometry_publisher
+  package: yahboomcar_bringup
+  executable: base_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L31-L38
+- name: /robot_state_publisher
+  package: robot_state_publisher
+  executable: robot_state_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L10
+- name: /imu_filter_madgwick
+  package: imu_filter_madgwick
+  executable: imu_filter_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L42-L54
+- name: /ekf_localization
+  package: robot_localization
+  executable: ekf_localization_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L58-L66
+- name: /joy_node
+  package: joy
+  executable: joy_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L4
+- name: /yahboom_joy
+  package: yahboomcar_ctrl
+  executable: yahboom_joy.py
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L5-L10
+- name: /ydlidar_lidar_publisher
+  package: ydlidar_ros_driver
+  executable: ydlidar_ros_driver_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L3-L37
+- name: /laser_link_to_laser
+  package: tf
+  executable: static_transform_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10-L11
+- name: /camera/camera
+  package: orbbec_camera
+  executable: orbbec_camera_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L49-L50
+- name: /camera/camera_base_link
+  package: tf2_ros
+  executable: static_transform_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L12-L13
+- name: /camera/camera_base_link1
+  package: tf2_ros
+  executable: static_transform_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L14-L15
+- name: /camera/camera_base_link2
+  package: tf2_ros
+  executable: static_transform_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L16-L17
+- name: /camera/camera_base_link3
+  package: tf2_ros
+  executable: static_transform_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L18-L19
+- name: /move_base
+  package: move_base
+  executable: move_base
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/library/move_base.launch#L6
+  optional: true
+  notes: navigation (yahboomcar_nav/yahboomcar_navigation.launch), not the boot
+- name: /amcl
+  package: amcl
+  executable: amcl
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L11
+  optional: true
+  notes: navigation localisation, not the boot
+- name: /map_server
+  package: map_server
+  executable: map_server
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L9
+  optional: true
+  notes: navigation map, not the boot
+- name: /slam_gmapping
+  package: gmapping
+  executable: slam_gmapping
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/library/gmapping.launch#L13
+  optional: true
+  notes: mapping (yahboomcar_map.launch map_type:=gmapping), not the boot
 topics:
-  - name: /cmd_vel
-    type: geometry_msgs/Twist
-    direction: in
-    rate_hz: event
-    node: /driver_node
-    description: "Chassis velocity command (linear.x, linear.y, angular.z) forwarded to the STM32 board via set_car_motion, whose X3PLUS input range is v_x, v_y [-0.7, 0.7] m/s and v_z [-3.2, 3.2] rad/s (Rosmaster_Lib, py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L558); no timeout watchdog"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L37"
-  - name: /RGBLight
-    type: std_msgs/Int32
-    direction: in
-    rate_hz: event
-    node: /driver_node
-    description: "Light-bar effect 0-6 (0 off, 1 running water, 2 marquee, 3 breathing, 4 gradient, 5 starlight, 6 battery)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L38"
-  - name: /Buzzer
-    type: std_msgs/Bool
-    direction: in
-    rate_hz: event
-    node: /driver_node
-    description: Buzzer on (true) / off (false)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L39"
-  - name: /TargetAngle
-    type: yahboomcar_msgs/ArmJoint
-    direction: in
-    rate_hz: event
-    node: /driver_node
-    description: "Arm servo target: single servo (id 1-6, angle deg, run_time ms) or all six via joints[] (degrees)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L40"
-  - name: /ArmAngleUpdate
-    type: yahboomcar_msgs/ArmJoint
-    direction: out
-    rate_hz: event
-    node: /driver_node
-    description: Echo of the arm target just applied (sent twice per command)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L41"
-  - name: /edition
-    type: std_msgs/Float32
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: Expansion-board firmware version (publish loop sleeps 50 ms)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L42"
-  - name: /voltage
-    type: std_msgs/Float32
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: Battery voltage (V)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L43"
-  - name: /joint_states
-    type: sensor_msgs/JointState
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: "Commanded arm_joint1-5 and grip_joint positions (rad, servo deg minus 90; gripper 30-180 deg mapped to 0-90 first)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L44"
-  - name: /vel_raw
-    type: geometry_msgs/Twist
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: "Measured chassis velocity from the board (driver's /pub_vel remapped)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L24"
-  - name: /imu/data_raw
-    type: sensor_msgs/Imu
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: "Raw accel + gyro in frame imu_link, no orientation (driver's /pub_imu remapped)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L25"
-  - name: /mag/mag_raw
-    type: sensor_msgs/MagneticField
-    direction: out
-    rate_hz: 20
-    node: /driver_node
-    description: "Raw magnetometer in frame imu_link (driver's /pub_mag remapped)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L26"
-  - name: /driver_node/parameter_descriptions
-    type: dynamic_reconfigure/ConfigDescription
-    direction: out
-    rate_hz: latched
-    node: /driver_node
-    description: dynamic_reconfigure description of PIDparam.cfg
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
-  - name: /driver_node/parameter_updates
-    type: dynamic_reconfigure/Config
-    direction: out
-    rate_hz: latched
-    node: /driver_node
-    description: dynamic_reconfigure current values of PIDparam.cfg
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
-  - name: /odom_raw
-    type: nav_msgs/Odometry
-    direction: out
-    rate_hz: 20
-    node: /odometry_publisher
-    description: "Dead-reckoned odom -> base_footprint from /vel_raw (scale x 1.1, y 0.95); published per /vel_raw message"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L37"
-  - name: /imu/data
-    type: sensor_msgs/Imu
-    direction: out
-    rate_hz: 20
-    node: /imu_filter_madgwick
-    description: "Madgwick-fused IMU with orientation (use_mag false); input /imu/data_raw. Topic names are imu_filter_madgwick defaults; the launch's /sub_imu,/pub_imu remaps match no topic"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L42"
-    unverified: true
-  - name: /odom
-    type: nav_msgs/Odometry
-    direction: out
-    rate_hz: 20
-    node: /ekf_localization
-    description: "EKF (robot_localization, 2D) fusion of /odom_raw twist and /imu/data; odometry/filtered remapped"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L59"
-  - name: /diagnostics
-    type: diagnostic_msgs/DiagnosticArray
-    direction: out
-    rate_hz: unverified
-    node: /ekf_localization
-    description: "robot_localization diagnostics (print_diagnostics: true)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L27"
-    unverified: true
-  - name: /tf
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: 20
-    node: /ekf_localization
-    description: "odom->base_footprint from the EKF estimate (publish_tf default true), at its frequency 20"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L4"
-  - name: /tf
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: 20
-    node: /robot_state_publisher
-    description: "Movable URDF joints (arm_joint1-5, grip_joint and its mimic joints), one message per /joint_states message"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L10"
-  - name: /tf
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: 33.333
-    node: /laser_link_to_laser
-    description: "tf static_transform_publisher laser_link->laser (0 0 0, yaw 6.28), period 30 ms"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10"
-  - name: /tf
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: 10
-    node: /camera/camera
-    description: "camera_link->camera_depth_frame / camera_color_frame / camera_ir_frame and each to its optical frame, re-sent at tf_publish_rate 10 (a rate above 0 sends them on /tf, not /tf_static)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L750"
-  - name: /tf_static
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /robot_state_publisher
-    description: "Fixed URDF joints: base_footprint->base_link, base_link->imu_link, camera_link, laser_link, arm_link4->mono_link"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L10"
-  - name: /tf_static
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /camera/camera_base_link
-    description: "tf2_ros static_transform_publisher camera_link->camera_depth_frame (identity)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L12"
-  - name: /tf_static
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /camera/camera_base_link1
-    description: "tf2_ros static_transform_publisher camera_link->camera_rgb_frame (identity)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L14"
-  - name: /tf_static
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /camera/camera_base_link2
-    description: "tf2_ros static_transform_publisher camera_depth_frame->camera_depth_optical_frame (rpy -pi/2, 0, -pi/2)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L16"
-  - name: /tf_static
-    type: tf2_msgs/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /camera/camera_base_link3
-    description: "tf2_ros static_transform_publisher camera_rgb_frame->camera_rgb_optical_frame (rpy -pi/2, 0, -pi/2)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L18"
-  - name: /joy
-    type: sensor_msgs/Joy
-    direction: out
-    rate_hz: event
-    node: /joy_node
-    description: USB gamepad state (autorepeat_rate 0 = on change)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/joy/src/joy_node.cpp#L307"
-  - name: /joy/set_feedback
-    type: sensor_msgs/JoyFeedbackArray
-    direction: in
-    rate_hz: event
-    node: /joy_node
-    description: Gamepad force-feedback commands
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/joy/src/joy_node.cpp#L308"
-  - name: /cmd_vel
-    type: geometry_msgs/Twist
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Teleop velocity from the gamepad (also sends zero Twist when joystick control is toggled off)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L37"
-  - name: /Buzzer
-    type: std_msgs/Bool
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Gamepad buzzer button
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L38"
-  - name: /JoyState
-    type: std_msgs/Bool
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Whether gamepad control is active
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L39"
-  - name: /RGBLight
-    type: std_msgs/Int32
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Gamepad cycles light effects
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L40"
-  - name: /TargetAngle
-    type: yahboomcar_msgs/ArmJoint
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Gamepad jogs single arm servos (every 30 ms while held)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L41"
-  - name: /ArmAngleUpdate
-    type: yahboomcar_msgs/ArmJoint
-    direction: in
-    rate_hz: event
-    node: /yahboom_joy
-    description: Tracks applied arm angles
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L43"
-  - name: /move_base/cancel
-    type: actionlib_msgs/GoalID
-    direction: out
-    rate_hz: event
-    node: /yahboom_joy
-    description: Cancels any navigation goal when gamepad control toggles
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L36"
-  - name: /scan
-    type: sensor_msgs/LaserScan
-    direction: out
-    rate_hz: 10
-    node: /ydlidar_lidar_publisher
-    description: "YDLIDAR 4ROS scan in frame laser, angle -85..85 deg, range 0.01-50 m (TG.launch settings)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L55"
-  - name: /point_cloud
-    type: sensor_msgs/PointCloud
-    direction: out
-    rate_hz: 10
-    node: /ydlidar_lidar_publisher
-    description: Same scan as a point cloud
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L56"
-  - name: /camera/depth/image_raw
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: Depth image 640x480 Y11
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L217"
-  - name: /camera/depth/camera_info
-    type: sensor_msgs/CameraInfo
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: "Depth intrinsics; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224"
-  - name: /camera/rgb/image_raw
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: Color image 640x480 (MJPG source); color/image_raw remapped
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L90"
-  - name: /camera/rgb/camera_info
-    type: sensor_msgs/CameraInfo
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: "Color intrinsics; color/camera_info remapped; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L91"
-  - name: /camera/ir/image_raw
-    type: sensor_msgs/Image
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: IR image 640x480 Y10
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L217"
-  - name: /camera/ir/camera_info
-    type: sensor_msgs/CameraInfo
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: "IR intrinsics; sent with every frame of its stream, on a latched publisher (ob_camera_node.cpp#L473)"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224"
-  - name: /camera/depth/points
-    type: sensor_msgs/PointCloud2
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: Depth point cloud (enable_point_cloud true)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L236"
-  - name: /camera/depth_registered/points
-    type: sensor_msgs/PointCloud2
-    direction: out
-    rate_hz: 30
-    node: /camera/camera
-    description: Colored point cloud (enable_colored_point_cloud true)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L244"
+- name: /cmd_vel
+  type: geometry_msgs/Twist
+  direction: in
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  notes: chassis velocity command; linear.x, linear.y (m/s), angular.z (rad/s) forwarded unchanged to Rosmaster.set_car_motion
+    (motions[drive]); /yahboom_joy also publishes it (yahboom_joy.py L37)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L37
+- name: /RGBLight
+  type: std_msgs/Int32
+  direction: in
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  notes: light-bar effect 0-6 (0 off, 1 running water, 2 marquee, 3 breathing, 4 gradient, 5 starlight, 6 battery)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L38
+- name: /Buzzer
+  type: std_msgs/Bool
+  direction: in
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  notes: true = buzzer on, false = off; /yahboom_joy also publishes it (yahboom_joy.py L38)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L39
+- name: /TargetAngle
+  type: yahboomcar_msgs/ArmJoint
+  direction: in
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  notes: arm/gripper servo command (motions[arm], motions[gripper]); /yahboom_joy also publishes it (yahboom_joy.py
+    L41)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L40
+- name: /ArmAngleUpdate
+  type: yahboomcar_msgs/ArmJoint
+  direction: out
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  notes: echo of each applied /TargetAngle, published twice per command (Armcallback loop); subscribed by /yahboom_joy
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L41
+- name: /edition
+  type: std_msgs/Float32
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105)
+  notes: expansion-board firmware version
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L42
+- name: /voltage
+  type: std_msgs/Float32
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105)
+  notes: battery voltage, V (board reports tenths of a volt)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L43
+- name: /joint_states
+  type: sensor_msgs/JointState
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105);
+    one extra message per /TargetAngle command
+  frame_id: joint_states
+  notes: COMMANDED (not measured) arm_joint1-5 and grip_joint, rad = (servo deg - 90) * pi/180; the gripper servo
+    30-180 deg is first mapped to 0-90 deg, so grip_joint spans -pi/2 (open) .. 0 (closed) (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L194-L211).
+    Measured angles exist only through /CurrentAngle.
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L44
+- name: /vel_raw
+  type: geometry_msgs/Twist
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105)
+  notes: measured chassis velocity from wheel encoders (firmware Motion_Get_Speed, ROSMASTER-X3Plus_ROS1_code.zip!/Expansion
+    board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_motion.c#L214-L240), driver's /pub_vel remapped;
+    linear.x, linear.y m/s, angular.z rad/s
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L24
+- name: /imu/data_raw
+  type: sensor_msgs/Imu
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105)
+  frame_id: imu_link
+  notes: raw accelerometer (m/s^2) and gyroscope (rad/s), no orientation; /pub_imu remapped
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L25
+- name: /mag/mag_raw
+  type: sensor_msgs/MagneticField
+  direction: out
+  nodes:
+  - /driver_node
+  rate: 20
+  rate_basis: source
+  rate_note: driver_node.pub_data() loops with sleep(0.05) plus serial reads, so at most 20 Hz (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L62-L105)
+  frame_id: imu_link
+  notes: raw magnetometer; /pub_mag remapped
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L26
+- name: /driver_node/parameter_descriptions
+  type: dynamic_reconfigure/ConfigDescription
+  direction: out
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  latched: true
+  notes: dynamic_reconfigure server for PIDparam.cfg
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49
+- name: /driver_node/parameter_updates
+  type: dynamic_reconfigure/Config
+  direction: out
+  nodes:
+  - /driver_node
+  rate: non_periodic
+  latched: true
+  notes: dynamic_reconfigure current values
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49
+- name: /odom_raw
+  type: nav_msgs/Odometry
+  direction: out
+  nodes:
+  - /odometry_publisher
+  rate: 20
+  rate_basis: source
+  rate_note: one message per /vel_raw message
+  frame_id: odom
+  child_frame_id: base_footprint
+  notes: dead reckoning of /vel_raw with linear_scale_x 1.1 and linear_scale_y 0.95 (bringup.launch L34-L35); /sub_vel
+    and /pub_odom remapped; no TF
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/src/base.cpp#L21-L73
+- name: /imu/data
+  type: sensor_msgs/Imu
+  direction: out
+  nodes:
+  - /imu_filter_madgwick
+  rate: 20
+  rate_basis: source
+  rate_note: one message per /imu/data_raw message
+  frame_id: imu_link
+  notes: Madgwick orientation (use_mag false). The launch's /sub_imu, /pub_imu remaps match no topic of the node,
+    which uses its defaults imu/data_raw -> imu/data
+  source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L117-L118
+- name: /imu_filter_madgwick/parameter_descriptions
+  type: dynamic_reconfigure/ConfigDescription
+  direction: out
+  nodes:
+  - /imu_filter_madgwick
+  rate: non_periodic
+  latched: true
+  source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
+- name: /imu_filter_madgwick/parameter_updates
+  type: dynamic_reconfigure/Config
+  direction: out
+  nodes:
+  - /imu_filter_madgwick
+  rate: non_periodic
+  latched: true
+  source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
+- name: /odom
+  type: nav_msgs/Odometry
+  direction: out
+  nodes:
+  - /ekf_localization
+  rate: 20
+  rate_basis: source
+  rate_note: EKF frequency 20 Hz (robot_localization.yaml L4); odometry/filtered remapped
+  frame_id: odom
+  child_frame_id: base_footprint
+  notes: 2-D EKF of /odom_raw (vx, vy, vyaw, differential) and /imu/data (roll, pitch, yaw and rates)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L59
+- name: /set_pose
+  type: geometry_msgs/PoseWithCovarianceStamped
+  direction: in
+  nodes:
+  - /ekf_localization
+  rate: non_periodic
+  source: https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1061
+- name: /diagnostics
+  type: diagnostic_msgs/DiagnosticArray
+  direction: out
+  nodes:
+  - /ekf_localization
+  - /joy_node
+  rate: 2
+  rate_basis: source
+  rate_note: 'each node''s diagnostic_updater publishes once per ~diagnostic_period (default 1 s): 1 Hz from /ekf_localization
+    (print_diagnostics true) + 1 Hz from /joy_node (also while no gamepad is present)'
+  source:
+  - https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L2075-L2077
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/joy/src/joy_node.cpp#L302
+  - https://github.com/ros/diagnostics/blob/43557d53cd1073d01affc1ad5dd10a3eb9cd8782/diagnostic_updater/include/diagnostic_updater/diagnostic_updater.h#L404-L406
+- name: /tf
+  type: tf2_msgs/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  - /ekf_localization
+  - /laser_link_to_laser
+  - /camera/camera
+  rate: 83.333
+  rate_basis: source
+  rate_note: 'sum of the tf rows: robot_state_publisher 20 (one message per /joint_states) + EKF 20 + laser_link_to_laser
+    33.333 (period 30 ms) + orbbec_camera 10 (tf_publish_rate)'
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  - https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1988
+  - https://github.com/ros/geometry/blob/f23e0aa39053a57263615ebb7d603fc97f09707c/tf/src/static_transform_publisher.cpp#L84-L89
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L729-L744
+- name: /tf_static
+  type: tf2_msgs/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  - /camera/camera_base_link
+  - /camera/camera_base_link1
+  - /camera/camera_base_link2
+  - /camera/camera_base_link3
+  rate: non_periodic
+  latched: true
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L112
+  - https://github.com/ros/geometry2/blob/8fef92a6b56a26e2b5be58d4d5c84dc4de5ee696/tf2_ros/src/static_transform_broadcaster_program.cpp#L87
+- name: /joy
+  type: sensor_msgs/Joy
+  direction: out
+  nodes:
+  - /joy_node
+  rate: non_periodic
+  notes: gamepad state on change (autorepeat_rate 0); absent while no gamepad is plugged in
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/joy/src/joy_node.cpp#L307
+- name: /joy/set_feedback
+  type: sensor_msgs/JoyFeedbackArray
+  direction: in
+  nodes:
+  - /joy_node
+  rate: non_periodic
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/joy/src/joy_node.cpp#L308
+- name: /JoyState
+  type: std_msgs/Bool
+  direction: out
+  nodes:
+  - /yahboom_joy
+  rate: non_periodic
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L39
+- name: /move_base/cancel
+  type: actionlib_msgs/GoalID
+  direction: out
+  nodes:
+  - /yahboom_joy
+  rate: non_periodic
+  notes: sent when the gamepad toggles control; no move_base runs in the boot
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L36
+- name: /scan
+  type: sensor_msgs/LaserScan
+  direction: out
+  nodes:
+  - /ydlidar_lidar_publisher
+  rate: 10
+  rate_basis: source
+  rate_note: publish loop ros::Rate(10) and scan frequency 10 Hz (TG.launch L36)
+  frame_id: laser
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L55
+- name: /point_cloud
+  type: sensor_msgs/PointCloud
+  direction: out
+  nodes:
+  - /ydlidar_lidar_publisher
+  rate: 10
+  rate_basis: source
+  rate_note: published with every /scan
+  frame_id: laser
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L56
+- name: /camera/rgb/image_raw
+  type: sensor_msgs/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: orbbec_camera starts the stream only while the topic (or a point cloud) has a subscriber, then publishes
+    every frame at the configured 30 fps
+  camera: true
+  frame_id: camera_color_optical_frame
+  notes: 640x480 rgb8 (MJPG decoded); /camera/color/image_raw remapped
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L217-L223
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L90
+- name: /camera/rgb/camera_info
+  type: sensor_msgs/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with every colour frame on a latched publisher
+  latched: true
+  frame_id: ''
+  notes: factory intrinsics from the device; header.frame_id is left empty by the driver
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224-L226
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L91
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L461-L474
+- name: /camera/depth/image_raw
+  type: sensor_msgs/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: orbbec_camera starts the stream only while the topic (or a point cloud) has a subscriber, then publishes
+    every frame at the configured 30 fps
+  camera: true
+  frame_id: camera_color_optical_frame
+  notes: 640x480 16UC1, depth in mm, registered to colour (enable_colored_point_cloud forces depth_registration,
+    ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L98-L100)
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L217-L223
+- name: /camera/depth/camera_info
+  type: sensor_msgs/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with every depth frame
+  latched: true
+  frame_id: ''
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224-L226
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L461-L474
+- name: /camera/ir/image_raw
+  type: sensor_msgs/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: orbbec_camera starts the stream only while the topic (or a point cloud) has a subscriber, then publishes
+    every frame at the configured 30 fps
+  camera: true
+  frame_id: camera_color_optical_frame
+  notes: 640x480 mono16 IR. If the device refuses to start the pipeline with IR enabled, the driver disables IR
+    and restarts without it (ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L112-L124);
+    whether the Astra Pro Plus does so has not been measured
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L217-L223
+- name: /camera/ir/camera_info
+  type: sensor_msgs/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with every IR frame
+  latched: true
+  frame_id: ''
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L224-L226
+  - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L461-L474
+- name: /camera/depth/points
+  type: sensor_msgs/PointCloud2
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: per depth frame while subscribed
+  frame_id: camera_depth_optical_frame
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L236-L237
+- name: /camera/depth_registered/points
+  type: sensor_msgs/PointCloud2
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: per depth+colour frame set while subscribed
+  frame_id: camera_color_optical_frame
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L244-L246
+- name: /map
+  type: nav_msgs/OccupancyGrid
+  direction: out
+  nodes:
+  - /map_server
+  rate: non_periodic
+  optional: true
+  latched: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L9
+- name: /move_base_simple/goal
+  type: geometry_msgs/PoseStamped
+  direction: in
+  nodes:
+  - /move_base
+  rate: non_periodic
+  optional: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/library/move_base.launch#L6
 services:
-  - name: /CurrentAngle
-    type: yahboomcar_msgs/RobotArmArray
-    node: /driver_node
-    description: Read back the six arm servo angles (deg; -1 = read failure)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L48"
-  - name: /driver_node/set_parameters
-    type: dynamic_reconfigure/Reconfigure
-    node: /driver_node
-    description: Set PIDparam.cfg values; SetArmjoint=true moves the arm to joint1-6
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49"
-  - name: /stop_scan
-    type: std_srvs/Empty
-    node: /ydlidar_lidar_publisher
-    description: Stop lidar scanning
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L154"
-  - name: /start_scan
-    type: std_srvs/Empty
-    node: /ydlidar_lidar_publisher
-    description: Start lidar scanning
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L156"
-  - name: /camera/get_depth_exposure
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get depth exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13"
-  - name: /camera/set_depth_exposure
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set depth exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19"
-  - name: /camera/reset_depth_exposure
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset depth exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25"
-  - name: /camera/get_depth_gain
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get depth gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32"
-  - name: /camera/set_depth_gain
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set depth gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38"
-  - name: /camera/reset_depth_gain
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset depth gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44"
-  - name: /camera/set_depth_mirror
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Mirror depth stream (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51"
-  - name: /camera/set_depth_auto_exposure
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Enable/disable depth auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59"
-  - name: /camera/get_depth_auto_exposure
-    type: orbbec_camera/GetBool
-    node: /camera/camera
-    description: Get depth auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67"
-  - name: /camera/toggle_depth
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Turn depth stream on/off (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73"
-  - name: /camera/get_depth_camera_info
-    type: orbbec_camera/GetCameraInfo
-    node: /camera/camera
-    description: Get depth camera info (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81"
-  - name: /camera/get_color_exposure
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get color exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13"
-  - name: /camera/set_color_exposure
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set color exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19"
-  - name: /camera/reset_color_exposure
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset color exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25"
-  - name: /camera/get_color_gain
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get color gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32"
-  - name: /camera/set_color_gain
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set color gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38"
-  - name: /camera/reset_color_gain
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset color gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44"
-  - name: /camera/set_color_mirror
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Mirror color stream (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51"
-  - name: /camera/set_color_auto_exposure
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Enable/disable color auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59"
-  - name: /camera/get_color_auto_exposure
-    type: orbbec_camera/GetBool
-    node: /camera/camera
-    description: Get color auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67"
-  - name: /camera/toggle_color
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Turn color stream on/off (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73"
-  - name: /camera/get_color_camera_info
-    type: orbbec_camera/GetCameraInfo
-    node: /camera/camera
-    description: Get color camera info (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81"
-  - name: /camera/get_ir_exposure
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get ir exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13"
-  - name: /camera/set_ir_exposure
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set ir exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19"
-  - name: /camera/reset_ir_exposure
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset ir exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25"
-  - name: /camera/get_ir_gain
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get ir gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32"
-  - name: /camera/set_ir_gain
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set ir gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38"
-  - name: /camera/reset_ir_gain
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset ir gain (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44"
-  - name: /camera/set_ir_mirror
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Mirror ir stream (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51"
-  - name: /camera/set_ir_auto_exposure
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Enable/disable ir auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59"
-  - name: /camera/get_ir_auto_exposure
-    type: orbbec_camera/GetBool
-    node: /camera/camera
-    description: Get ir auto exposure (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67"
-  - name: /camera/toggle_ir
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Turn ir stream on/off (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73"
-  - name: /camera/get_ir_camera_info
-    type: orbbec_camera/GetCameraInfo
-    node: /camera/camera
-    description: Get ir camera info (created for each enabled stream; support depends on device)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81"
-  - name: /camera/get_auto_white_balance
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get color auto white balance
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L91"
-  - name: /camera/set_auto_white_balance
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set color auto white balance
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L97"
-  - name: /camera/get_white_balance
-    type: orbbec_camera/GetInt32
-    node: /camera/camera
-    description: Get color white balance
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L103"
-  - name: /camera/set_white_balance
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Set color white balance
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L109"
-  - name: /camera/reset_white_balance
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Reset color white balance
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L115"
-  - name: /camera/set_fan_work_mode
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Camera fan mode
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L121"
-  - name: /camera/set_floor
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Camera flood light on/off
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L127"
-  - name: /camera/set_laser
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Camera IR projector on/off
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L133"
-  - name: /camera/set_ldp
-    type: std_srvs/SetBool
-    node: /camera/camera
-    description: Laser distance protection on/off
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L139"
-  - name: /camera/get_ldp_status
-    type: orbbec_camera/GetBool
-    node: /camera/camera
-    description: Laser distance protection status
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L145"
-  - name: /camera/get_device_info
-    type: orbbec_camera/GetDeviceInfo
-    node: /camera/camera
-    description: "Device name, serial, firmware"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L151"
-  - name: /camera/get_serial
-    type: orbbec_camera/GetString
-    node: /camera/camera
-    description: Device serial number
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L157"
-  - name: /camera/get_camera_params
-    type: orbbec_camera/GetCameraParams
-    node: /camera/camera
-    description: Depth/color intrinsics and extrinsics
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L163"
-  - name: /camera/get_sdk_version
-    type: orbbec_camera/GetString
-    node: /camera/camera
-    description: OrbbecSDK version
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L170"
-  - name: /camera/get_device_type
-    type: orbbec_camera/GetString
-    node: /camera/camera
-    description: Device type string
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L176"
-  - name: /camera/save_point_cloud
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Save current point cloud to disk
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L182"
-  - name: /camera/save_images
-    type: std_srvs/Empty
-    node: /camera/camera
-    description: Save current images to disk
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L187"
-  - name: /camera/switch_ir_mode
-    type: orbbec_camera/SetInt32
-    node: /camera/camera
-    description: Switch IR mode
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L192"
-  - name: /camera/switch_ir
-    type: orbbec_camera/SetString
-    node: /camera/camera
-    description: Switch IR data source channel
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L198"
-actions: []   # the bringup starts no action server (yahboom_joy only publishes /move_base/cancel)
+- name: /CurrentAngle
+  type: yahboomcar_msgs/RobotArmArray
+  node: /driver_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L48
+  notes: reads the six servo angles from the board (deg; -1 for a servo that did not answer)
+- name: /driver_node/set_parameters
+  type: dynamic_reconfigure/Reconfigure
+  node: /driver_node
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L49
+  notes: PIDparam.cfg; SetArmjoint=true sends joint1-joint6 to the arm
+- name: /set_pose
+  type: robot_localization/SetPose
+  node: /ekf_localization
+  source: https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1067
+- name: /ekf_localization/enable
+  type: std_srvs/Empty
+  node: /ekf_localization
+  source: https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1070
+- name: /ekf_localization/toggle
+  type: robot_localization/ToggleFilterProcessing
+  node: /ekf_localization
+  source: https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1073-L1074
+- name: /imu_filter_madgwick/set_parameters
+  type: dynamic_reconfigure/Reconfigure
+  node: /imu_filter_madgwick
+  source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
+- name: /stop_scan
+  type: std_srvs/Empty
+  node: /ydlidar_lidar_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L154
+- name: /start_scan
+  type: std_srvs/Empty
+  node: /ydlidar_lidar_publisher
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L156
+- name: /camera/get_depth_exposure
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13
+- name: /camera/set_depth_exposure
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19
+- name: /camera/reset_depth_exposure
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25
+- name: /camera/get_depth_gain
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32
+- name: /camera/set_depth_gain
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38
+- name: /camera/reset_depth_gain
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44
+- name: /camera/set_depth_mirror
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51
+- name: /camera/set_depth_auto_exposure
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59
+- name: /camera/get_depth_auto_exposure
+  type: orbbec_camera/GetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67
+- name: /camera/toggle_depth
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73
+- name: /camera/get_depth_camera_info
+  type: orbbec_camera/GetCameraInfo
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81
+- name: /camera/get_ir_exposure
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13
+- name: /camera/set_ir_exposure
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19
+- name: /camera/reset_ir_exposure
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25
+- name: /camera/get_ir_gain
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32
+- name: /camera/set_ir_gain
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38
+- name: /camera/reset_ir_gain
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44
+- name: /camera/set_ir_mirror
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51
+- name: /camera/set_ir_auto_exposure
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59
+- name: /camera/get_ir_auto_exposure
+  type: orbbec_camera/GetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67
+- name: /camera/toggle_ir
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73
+- name: /camera/get_ir_camera_info
+  type: orbbec_camera/GetCameraInfo
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81
+- name: /camera/get_color_exposure
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L13
+- name: /camera/set_color_exposure
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L19
+- name: /camera/reset_color_exposure
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L25
+- name: /camera/get_color_gain
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L32
+- name: /camera/set_color_gain
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L38
+- name: /camera/reset_color_gain
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L44
+- name: /camera/set_color_mirror
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L51
+- name: /camera/set_color_auto_exposure
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L59
+- name: /camera/get_color_auto_exposure
+  type: orbbec_camera/GetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L67
+- name: /camera/toggle_color
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L73
+- name: /camera/get_color_camera_info
+  type: orbbec_camera/GetCameraInfo
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L81
+- name: /camera/get_auto_white_balance
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L90
+- name: /camera/set_auto_white_balance
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L96
+- name: /camera/get_white_balance
+  type: orbbec_camera/GetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L102
+- name: /camera/set_white_balance
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L108
+- name: /camera/reset_white_balance
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L114
+- name: /camera/set_fan_work_mode
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L120
+- name: /camera/set_floor
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L126
+- name: /camera/set_laser
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L132
+- name: /camera/set_ldp
+  type: std_srvs/SetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L138
+- name: /camera/get_ldp_status
+  type: orbbec_camera/GetBool
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L144
+- name: /camera/get_device_info
+  type: orbbec_camera/GetDeviceInfo
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L150
+- name: /camera/get_serial
+  type: orbbec_camera/GetString
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L156
+- name: /camera/get_camera_params
+  type: orbbec_camera/GetCameraParams
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L162
+- name: /camera/get_sdk_version
+  type: orbbec_camera/GetString
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L169
+- name: /camera/get_device_type
+  type: orbbec_camera/GetString
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L175
+- name: /camera/save_point_cloud
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L181
+- name: /camera/save_images
+  type: std_srvs/Empty
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L186
+- name: /camera/switch_ir_mode
+  type: orbbec_camera/SetInt32
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L191
+- name: /camera/switch_ir
+  type: orbbec_camera/SetString
+  node: /camera/camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_service.cpp#L197
+actions:
+- name: /move_base
+  type: move_base_msgs/MoveBaseAction
+  node: /move_base
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/library/move_base.launch#L6
+  optional: true
+  notes: navigation launch only (yahboomcar_nav/yahboomcar_navigation.launch)
 parameters:
-  - name: /robot_description
-    type: string
-    default: xacro of yahboomcar_description/urdf/yahboomcar_X3plus.urdf
-    node: /robot_state_publisher
-    description: Robot model (ROBOT_TYPE=X3plus)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L8"
-  - name: /driver_node/xlinear_speed_limit
-    type: double
-    default: 0.7
-    node: /driver_node
-    description: Declared x speed limit (m/s); read but not applied in code
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L20"
-  - name: /driver_node/ylinear_speed_limit
-    type: double
-    default: 0.7
-    node: /driver_node
-    description: Declared y speed limit (m/s); read but not applied in code
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L21"
-  - name: /driver_node/angular_speed_limit
-    type: double
-    default: 3.2
-    node: /driver_node
-    description: Declared yaw rate limit (rad/s); read but not applied in code
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L22"
-  - name: /driver_node/imu_link
-    type: string
-    default: imu_link
-    node: /driver_node
-    description: frame_id for IMU and magnetometer messages
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L23"
-  - name: /driver_node/prefix
-    type: string
-    default: ""
-    node: /driver_node
-    description: Optional joint-name prefix for /joint_states (multi-robot)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L33"
-  - name: /driver_node/Kp
-    type: double
-    default: 1.5
-    node: /driver_node
-    description: PID Kp (dynamic_reconfigure; board call commented out)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L6"
-  - name: /driver_node/Ki
-    type: double
-    default: 0.3
-    node: /driver_node
-    description: PID Ki (dynamic_reconfigure; board call commented out)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L7"
-  - name: /driver_node/Kd
-    type: double
-    default: 0.2
-    node: /driver_node
-    description: PID Kd (dynamic_reconfigure; board call commented out)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L8"
-  - name: /driver_node/linear_max
-    type: double
-    default: 0.4
-    node: /driver_node
-    description: Stored only
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L9"
-  - name: /driver_node/angular_max
-    type: double
-    default: 2.0
-    node: /driver_node
-    description: Stored only
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L10"
-  - name: /driver_node/linear_min
-    type: double
-    default: 0.0
-    node: /driver_node
-    description: Stored only
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L11"
-  - name: /driver_node/angular_min
-    type: double
-    default: 0.0
-    node: /driver_node
-    description: Stored only
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L12"
-  - name: /driver_node/joint1
-    type: int
-    default: 90
-    node: /driver_node
-    description: "Arm servo 1 target deg (0-180), applied when SetArmjoint"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L13"
-  - name: /driver_node/joint2
-    type: int
-    default: 145
-    node: /driver_node
-    description: Arm servo 2 target deg (0-180)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L14"
-  - name: /driver_node/joint3
-    type: int
-    default: 0
-    node: /driver_node
-    description: Arm servo 3 target deg (0-180)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L15"
-  - name: /driver_node/joint4
-    type: int
-    default: 0
-    node: /driver_node
-    description: Arm servo 4 target deg (0-180)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L16"
-  - name: /driver_node/joint5
-    type: int
-    default: 90
-    node: /driver_node
-    description: Arm servo 5 target deg (0-270)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L17"
-  - name: /driver_node/joint6
-    type: int
-    default: 30
-    node: /driver_node
-    description: Gripper servo target deg (30-180)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L18"
-  - name: /driver_node/SetArmjoint
-    type: bool
-    default: false
-    node: /driver_node
-    description: "When set true, sends joint1-6 to the arm"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L19"
-  - name: /odometry_publisher/odom_frame
-    type: string
-    default: odom
-    node: /odometry_publisher
-    description: Odometry frame
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L32"
-  - name: /odometry_publisher/base_footprint_frame
-    type: string
-    default: base_footprint
-    node: /odometry_publisher
-    description: Child frame
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L33"
-  - name: /odometry_publisher/linear_scale_x
-    type: double
-    default: 1.1
-    node: /odometry_publisher
-    description: x velocity scale
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L34"
-  - name: /odometry_publisher/linear_scale_y
-    type: double
-    default: 0.95
-    node: /odometry_publisher
-    description: y velocity scale
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L35"
-  - name: /imu_filter_madgwick/fixed_frame
-    type: string
-    default: base_link
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L43"
-  - name: /imu_filter_madgwick/use_mag
-    type: bool
-    default: false
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L44"
-  - name: /imu_filter_madgwick/publish_tf
-    type: bool
-    default: false
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L45"
-  - name: /imu_filter_madgwick/use_magnetic_field_msg
-    type: bool
-    default: false
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L46"
-  - name: /imu_filter_madgwick/world_frame
-    type: string
-    default: enu
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L47"
-  - name: /imu_filter_madgwick/orientation_stddev
-    type: double
-    default: 0.05
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L48"
-  - name: /imu_filter_madgwick/angular_scale
-    type: double
-    default: 1.03
-    node: /imu_filter_madgwick
-    description: imu_filter_madgwick setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L49"
-  - name: /ekf_localization/odom_frame
-    type: string
-    default: /odom
-    node: /ekf_localization
-    description: EKF frame
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L62"
-  - name: /ekf_localization/world_frame
-    type: string
-    default: /odom
-    node: /ekf_localization
-    description: EKF frame
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L63"
-  - name: /ekf_localization/base_link_frame
-    type: string
-    default: /base_footprint
-    node: /ekf_localization
-    description: EKF frame
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L64"
-  - name: /ekf_localization/frequency
-    type: int
-    default: 20
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L4"
-  - name: /ekf_localization/sensor_timeout
-    type: double
-    default: 0.1
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L9"
-  - name: /ekf_localization/two_d_mode
-    type: bool
-    default: true
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L15"
-  - name: /ekf_localization/odom0
-    type: string
-    default: /odom0 (remapped to /odom_raw)
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L72"
-  - name: /ekf_localization/odom0_config
-    type: string
-    default: "vx, vy, vyaw"
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L81"
-  - name: /ekf_localization/odom0_differential
-    type: bool
-    default: true
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L104"
-  - name: /ekf_localization/imu0
-    type: string
-    default: /imu0 (remapped to /imu/data)
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L113"
-  - name: /ekf_localization/imu0_config
-    type: string
-    default: "roll, pitch, yaw, vroll, vpitch, vyaw"
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L114"
-  - name: /ekf_localization/imu0_differential
-    type: bool
-    default: true
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L121"
-  - name: /ekf_localization/imu0_remove_gravitational_acceleration
-    type: bool
-    default: true
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L127"
-  - name: /ekf_localization/use_control
-    type: bool
-    default: false
-    node: /ekf_localization
-    description: robot_localization.yaml (full covariance matrices in file)
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L141"
-  - name: /use_sim_time
-    type: bool
-    default: false
-    node: global
-    description: Set by yahboom_joy.launch
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L3"
-  - name: /yahboom_joy/linear_speed_limit
-    type: double
-    default: 0.7
-    node: /yahboom_joy
-    description: "Set for X3plus, but the node reads ~xspeed_limit/~yspeed_limit (default 1.0) instead"
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L8"
-  - name: /yahboom_joy/angular_speed_limit
-    type: double
-    default: 3.2
-    node: /yahboom_joy
-    description: Gamepad yaw-rate limit (rad/s) for X3plus
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L9"
-  - name: /ydlidar_lidar_publisher/port
-    type: string
-    default: /dev/ydlidar
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L5"
-  - name: /ydlidar_lidar_publisher/frame_id
-    type: string
-    default: laser
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L6"
-  - name: /ydlidar_lidar_publisher/ignore_array
-    type: string
-    default: ""
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L8"
-  - name: /ydlidar_lidar_publisher/baudrate
-    type: int
-    default: 512000
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L12"
-  - name: /ydlidar_lidar_publisher/lidar_type
-    type: int
-    default: 0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L14"
-  - name: /ydlidar_lidar_publisher/device_type
-    type: int
-    default: 0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L16"
-  - name: /ydlidar_lidar_publisher/sample_rate
-    type: int
-    default: 20
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L17"
-  - name: /ydlidar_lidar_publisher/abnormal_check_count
-    type: int
-    default: 4
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L18"
-  - name: /ydlidar_lidar_publisher/resolution_fixed
-    type: bool
-    default: true
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L21"
-  - name: /ydlidar_lidar_publisher/auto_reconnect
-    type: bool
-    default: true
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L22"
-  - name: /ydlidar_lidar_publisher/reversion
-    type: bool
-    default: true
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L23"
-  - name: /ydlidar_lidar_publisher/inverted
-    type: bool
-    default: true
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L24"
-  - name: /ydlidar_lidar_publisher/isSingleChannel
-    type: bool
-    default: false
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L25"
-  - name: /ydlidar_lidar_publisher/intensity
-    type: bool
-    default: false
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L26"
-  - name: /ydlidar_lidar_publisher/support_motor_dtr
-    type: bool
-    default: false
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L27"
-  - name: /ydlidar_lidar_publisher/invalid_range_is_inf
-    type: bool
-    default: true
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L28"
-  - name: /ydlidar_lidar_publisher/point_cloud_preservative
-    type: bool
-    default: false
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L29"
-  - name: /ydlidar_lidar_publisher/angle_min
-    type: double
-    default: -85.0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L32"
-  - name: /ydlidar_lidar_publisher/angle_max
-    type: double
-    default: 85.0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L33"
-  - name: /ydlidar_lidar_publisher/range_min
-    type: double
-    default: 0.01
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L34"
-  - name: /ydlidar_lidar_publisher/range_max
-    type: double
-    default: 50.0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L35"
-  - name: /ydlidar_lidar_publisher/frequency
-    type: double
-    default: 10.0
-    node: /ydlidar_lidar_publisher
-    description: YDLIDAR TG.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L36"
-  - name: /camera/camera/camera_name
-    type: string
-    default: camera
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L3"
-  - name: /camera/camera/depth_registration
-    type: bool
-    default: false
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L5"
-  - name: /camera/camera/serial_number
-    type: string
-    default: ""
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L6"
-  - name: /camera/camera/usb_port
-    type: string
-    default: ""
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L7"
-  - name: /camera/camera/device_num
-    type: int
-    default: 1
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L8"
-  - name: /camera/camera/vendor_id
-    type: string
-    default: 0x2bc5
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L9"
-  - name: /camera/camera/product_id
-    type: string
-    default: ""
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L10"
-  - name: /camera/camera/enable_point_cloud
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L11"
-  - name: /camera/camera/enable_colored_point_cloud
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L12"
-  - name: /camera/camera/connection_delay
-    type: int
-    default: 100
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L13"
-  - name: /camera/camera/color_width
-    type: int
-    default: 640
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L14"
-  - name: /camera/camera/color_height
-    type: int
-    default: 480
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L15"
-  - name: /camera/camera/color_fps
-    type: int
-    default: 30
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L16"
-  - name: /camera/camera/enable_color
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L17"
-  - name: /camera/camera/color_format
-    type: string
-    default: MJPG
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L18"
-  - name: /camera/camera/flip_color
-    type: bool
-    default: false
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L19"
-  - name: /camera/camera/enable_color_auto_exposure
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L20"
-  - name: /camera/camera/depth_width
-    type: int
-    default: 640
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L21"
-  - name: /camera/camera/depth_height
-    type: int
-    default: 480
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L22"
-  - name: /camera/camera/depth_fps
-    type: int
-    default: 30
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L23"
-  - name: /camera/camera/enable_depth
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L24"
-  - name: /camera/camera/depth_format
-    type: string
-    default: Y11
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L25"
-  - name: /camera/camera/flip_depth
-    type: bool
-    default: false
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L26"
-  - name: /camera/camera/ir_width
-    type: int
-    default: 640
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L27"
-  - name: /camera/camera/ir_height
-    type: int
-    default: 480
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L28"
-  - name: /camera/camera/ir_fps
-    type: int
-    default: 30
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L29"
-  - name: /camera/camera/enable_ir
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L30"
-  - name: /camera/camera/ir_format
-    type: string
-    default: Y10
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L31"
-  - name: /camera/camera/flip_ir
-    type: bool
-    default: false
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L32"
-  - name: /camera/camera/enable_ir_auto_exposure
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L33"
-  - name: /camera/camera/publish_tf
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L34"
-  - name: /camera/camera/tf_publish_rate
-    type: double
-    default: 10.0
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L35"
-  - name: /camera/camera/ir_info_uri
-    type: string
-    default: ""
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L36"
-  - name: /camera/camera/color_info_uri
-    type: string
-    default: ""
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L37"
-  - name: /camera/camera/log_level
-    type: string
-    default: none
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L38"
-  - name: /camera/camera/enable_d2c_viewer
-    type: bool
-    default: false
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L39"
-  - name: /camera/camera/enable_pipeline
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L40"
-  - name: /camera/camera/enable_soft_filter
-    type: bool
-    default: true
-    node: /camera/camera
-    description: astraproplus.launch setting
-    source: "https://drive.google.com/file/d/1SRg1aD_u8kyxxjm4vp0cFYxu8Ddj2sXU!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L41"
-
-stop_command: "rostopic pub -1 /cmd_vel geometry_msgs/Twist '{linear: {x: 0.0, y: 0.0, z: 0.0}, angular: {x: 0.0, y: 0.0, z: 0.0}}'"   # driver has no cmd_vel timeout; on shutdown it calls set_car_motion(0, 0, 0) (Mcnamu_X3plus.py#L180)
+- name: /robot_description
+  value:
+    file: yahboomcar_X3plus.urdf
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L8-L9
+  notes: xacro --inorder of yahboomcar_description/urdf/yahboomcar_X3plus.urdf
+- name: /use_sim_time
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L3
+- name: /driver_node/xlinear_speed_limit
+  value: 0.7
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L20
+  notes: read (L34) but never applied by the node
+- name: /driver_node/ylinear_speed_limit
+  value: 0.7
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L21
+  notes: read (L35) but never applied
+- name: /driver_node/angular_speed_limit
+  value: 3.2
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L22
+  notes: read (L36) but never applied
+- name: /driver_node/imu_link
+  value: imu_link
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L23
+- name: /driver_node/Kp
+  value: 1.5
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L6
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/Ki
+  value: 0.3
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L7
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/Kd
+  value: 0.2
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L8
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/linear_max
+  value: 0.4
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L9
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/angular_max
+  value: 2.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L10
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/linear_min
+  value: 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L11
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/angular_min
+  value: 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L12
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint1
+  value: 90
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L13
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint2
+  value: 145
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L14
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint3
+  value: 0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L15
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint4
+  value: 0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L16
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint5
+  value: 90
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L17
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/joint6
+  value: 30
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L18
+  notes: dynamic_reconfigure default written by the server at start
+- name: /driver_node/SetArmjoint
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L19
+  notes: dynamic_reconfigure default written by the server at start
+- name: /odometry_publisher/odom_frame
+  value: odom
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L32
+- name: /odometry_publisher/base_footprint_frame
+  value: base_footprint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L33
+- name: /odometry_publisher/linear_scale_x
+  value: 1.1
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L34
+- name: /odometry_publisher/linear_scale_y
+  value: 0.95
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L35
+- name: /imu_filter_madgwick/fixed_frame
+  value: base_link
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L43
+- name: /imu_filter_madgwick/use_mag
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L44
+- name: /imu_filter_madgwick/publish_tf
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L45
+- name: /imu_filter_madgwick/use_magnetic_field_msg
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L46
+- name: /imu_filter_madgwick/world_frame
+  value: enu
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L47
+- name: /imu_filter_madgwick/orientation_stddev
+  value: 0.05
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L48
+- name: /imu_filter_madgwick/angular_scale
+  value: 1.03
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L49
+- name: /ekf_localization/odom_frame
+  value: /odom
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L62
+  notes: leading slash stripped by the node
+- name: /ekf_localization/world_frame
+  value: /odom
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L63
+- name: /ekf_localization/base_link_frame
+  value: /base_footprint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L64
+- name: /ekf_localization/frequency
+  value: 20
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L4
+- name: /ekf_localization/sensor_timeout
+  value: 0.1
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L9
+- name: /ekf_localization/two_d_mode
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L15
+- name: /ekf_localization/transform_time_offset
+  value: 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L19
+- name: /ekf_localization/transform_timeout
+  value: 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L23
+- name: /ekf_localization/print_diagnostics
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L27
+- name: /ekf_localization/debug
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L32
+- name: /ekf_localization/debug_out_file
+  value: /path/to/debug/file.txt
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L35
+- name: /ekf_localization/publish_acceleration
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L41
+- name: /ekf_localization/odom0
+  value: /odom0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L72
+- name: /ekf_localization/odom0_config
+  value:
+  - false
+  - false
+  - false
+  - false
+  - false
+  - false
+  - true
+  - true
+  - false
+  - false
+  - false
+  - true
+  - false
+  - false
+  - false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L81
+- name: /ekf_localization/odom0_queue_size
+  value: 1
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L89
+- name: /ekf_localization/odom0_nodelay
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L94
+- name: /ekf_localization/odom0_differential
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L104
+- name: /ekf_localization/odom0_relative
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L110
+- name: /ekf_localization/imu0
+  value: /imu0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L113
+- name: /ekf_localization/imu0_config
+  value:
+  - false
+  - false
+  - false
+  - true
+  - true
+  - true
+  - false
+  - false
+  - false
+  - true
+  - true
+  - true
+  - false
+  - false
+  - false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L114
+- name: /ekf_localization/imu0_differential
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L121
+- name: /ekf_localization/imu0_relative
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L122
+- name: /ekf_localization/imu0_queue_size
+  value: 1
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L123
+- name: /ekf_localization/imu0_remove_gravitational_acceleration
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L127
+- name: /ekf_localization/use_control
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L141
+- name: /ekf_localization/stamped_control
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L144
+- name: /ekf_localization/control_timeout
+  value: 0.2
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L146
+- name: /ekf_localization/control_config
+  value:
+  - true
+  - false
+  - false
+  - false
+  - false
+  - true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L148
+- name: /ekf_localization/acceleration_limits
+  value:
+  - 1.3
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 3.4
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L150
+- name: /ekf_localization/deceleration_limits
+  value:
+  - 1.3
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 4.5
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L152
+- name: /ekf_localization/acceleration_gains
+  value:
+  - 0.8
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.9
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L155
+- name: /ekf_localization/deceleration_gains
+  value:
+  - 1.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 0.0
+  - 1.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L158
+- name: /ekf_localization/process_noise_covariance
+  value:
+    generated: 15x15 diagonal matrix of robot_localization.yaml L168-L182
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L168-L182
+- name: /ekf_localization/initial_estimate_covariance
+  value:
+    generated: 15x15 diagonal 1e-9 matrix of robot_localization.yaml L189-L203
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/param/robot_localization.yaml#L189-L203
+- name: /yahboom_joy/linear_speed_limit
+  value: 0.7
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L8
+  notes: set for X3plus, but the node reads ~xspeed_limit/~yspeed_limit (default 1.0) instead
+- name: /yahboom_joy/angular_speed_limit
+  value: 3.2
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/launch/yahboom_joy.launch#L9
+- name: /ydlidar_lidar_publisher/port
+  value: /dev/ydlidar
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L5
+- name: /ydlidar_lidar_publisher/frame_id
+  value: laser
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L6
+- name: /ydlidar_lidar_publisher/ignore_array
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L8
+- name: /ydlidar_lidar_publisher/baudrate
+  value: 512000
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L12
+- name: /ydlidar_lidar_publisher/lidar_type
+  value: 0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L14
+- name: /ydlidar_lidar_publisher/device_type
+  value: 0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L16
+- name: /ydlidar_lidar_publisher/sample_rate
+  value: 20
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L17
+- name: /ydlidar_lidar_publisher/abnormal_check_count
+  value: 4
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L18
+- name: /ydlidar_lidar_publisher/resolution_fixed
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L21
+- name: /ydlidar_lidar_publisher/auto_reconnect
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L22
+- name: /ydlidar_lidar_publisher/reversion
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L23
+- name: /ydlidar_lidar_publisher/inverted
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L24
+- name: /ydlidar_lidar_publisher/isSingleChannel
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L25
+- name: /ydlidar_lidar_publisher/intensity
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L26
+- name: /ydlidar_lidar_publisher/support_motor_dtr
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L27
+- name: /ydlidar_lidar_publisher/invalid_range_is_inf
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L28
+- name: /ydlidar_lidar_publisher/point_cloud_preservative
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L29
+- name: /ydlidar_lidar_publisher/angle_min
+  value: -85.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L32
+- name: /ydlidar_lidar_publisher/angle_max
+  value: 85.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L33
+- name: /ydlidar_lidar_publisher/range_min
+  value: 0.01
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L34
+- name: /ydlidar_lidar_publisher/range_max
+  value: 50.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L35
+- name: /ydlidar_lidar_publisher/frequency
+  value: 10.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L36
+- name: /camera/camera/camera_name
+  value: camera
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L51
+- name: /camera/camera/depth_registration
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L52
+- name: /camera/camera/serial_number
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L53
+- name: /camera/camera/usb_port
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L54
+- name: /camera/camera/vendor_id
+  value: '0x2bc5'
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L55
+- name: /camera/camera/product_id
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L56
+- name: /camera/camera/enable_point_cloud
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L57
+- name: /camera/camera/enable_colored_point_cloud
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L58
+- name: /camera/camera/connection_delay
+  value: 100
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L59
+- name: /camera/camera/color_width
+  value: 640
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L60
+- name: /camera/camera/color_height
+  value: 480
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L61
+- name: /camera/camera/color_fps
+  value: 30
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L62
+- name: /camera/camera/enable_color
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L63
+- name: /camera/camera/color_format
+  value: MJPG
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L64
+- name: /camera/camera/flip_color
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L65
+- name: /camera/camera/enable_color_auto_exposure
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L66
+- name: /camera/camera/depth_width
+  value: 640
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L67
+- name: /camera/camera/depth_height
+  value: 480
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L68
+- name: /camera/camera/depth_fps
+  value: 30
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L69
+- name: /camera/camera/enable_depth
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L70
+- name: /camera/camera/depth_format
+  value: Y11
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L71
+- name: /camera/camera/flip_depth
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L72
+- name: /camera/camera/ir_width
+  value: 640
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L73
+- name: /camera/camera/ir_height
+  value: 480
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L74
+- name: /camera/camera/ir_fps
+  value: 30
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L75
+- name: /camera/camera/enable_ir
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L76
+- name: /camera/camera/ir_format
+  value: Y10
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L77
+- name: /camera/camera/flip_ir
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L78
+- name: /camera/camera/enable_ir_auto_exposure
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L79
+- name: /camera/camera/publish_tf
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L80
+- name: /camera/camera/tf_publish_rate
+  value: 10.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L81
+- name: /camera/camera/ir_info_uri
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L82
+- name: /camera/camera/color_info_uri
+  value: ''
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L83
+- name: /camera/camera/log_level
+  value: none
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L84
+- name: /camera/camera/enable_d2c_viewer
+  value: false
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L85
+- name: /camera/camera/enable_pipeline
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L86
+- name: /camera/camera/device_num
+  value: 1
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L87
+- name: /camera/camera/enable_soft_filter
+  value: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astraproplus.launch#L88
+tf:
+- parent: odom
+  child: base_footprint
+  static: false
+  publisher: /ekf_localization
+  rate: 20
+  source: https://github.com/cra-ros-pkg/robot_localization/blob/9ef26a57fafd9b97c135a7e07f52cf0168e94178/src/ros_filter.cpp#L1988
+- parent: base_footprint
+  child: base_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.076
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: yahboomcar_X3plus.urdf joint base_joint
+- parent: base_link
+  child: imu_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.001
+  - 0.017
+  - 0.0322
+  rpy:
+  - 0.0
+  - 3.1415
+  - 1.5707
+  source: yahboomcar_X3plus.urdf joint base_imu
+- parent: base_link
+  child: camera_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - -0.043645
+  - 0.0
+  - 0.41955
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: yahboomcar_X3plus.urdf joint astra_joint
+- parent: base_link
+  child: laser_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.10478
+  - 0.0
+  - 0.0471
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: yahboomcar_X3plus.urdf joint laser_joint
+- parent: arm_link4
+  child: mono_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - -0.0481
+  - -0.05145
+  - -0.0022
+  rpy:
+  - 1.5708
+  - 0.0
+  - 0.0
+  source: yahboomcar_X3plus.urdf joint mono_joint
+- parent: base_link
+  child: arm_link1
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint arm_joint1; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link1
+  child: arm_link2
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint arm_joint2; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link2
+  child: arm_link3
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint arm_joint3; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link3
+  child: arm_link4
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint arm_joint4; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link4
+  child: arm_link5
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint arm_joint5; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link5
+  child: rlink1
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint grip_joint; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: rlink1
+  child: rlink2
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint rlink_joint2 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link5
+  child: rlink3
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint rlink_joint3 (mimic grip_joint x 1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link5
+  child: llink1
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint llink_joint1 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: llink1
+  child: llink2
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint llink_joint2 (mimic grip_joint x 1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: arm_link5
+  child: llink3
+  static: false
+  publisher: /robot_state_publisher
+  rate: 20
+  source: yahboomcar_X3plus.urdf joint llink_joint3 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+- parent: /laser_link
+  child: /laser
+  static: true
+  publisher: /laser_link_to_laser
+  rate: 33.333
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 6.28
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10-L11
+  notes: tf (ROS 1) static_transform_publisher with period 30 ms on /tf; args are x y z yaw pitch roll; frame ids
+    go on the wire with their leading slash
+- parent: /camera_link
+  child: /camera_depth_frame
+  static: true
+  publisher: /camera/camera_base_link
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L12-L13
+- parent: /camera_link
+  child: /camera_rgb_frame
+  static: true
+  publisher: /camera/camera_base_link1
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L14-L15
+- parent: /camera_depth_frame
+  child: /camera_depth_optical_frame
+  static: true
+  publisher: /camera/camera_base_link2
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L16-L17
+- parent: /camera_rgb_frame
+  child: /camera_rgb_optical_frame
+  static: true
+  publisher: /camera/camera_base_link3
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/launch/astra_frames.launch#L18-L19
+- parent: camera_link
+  child: camera_depth_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L723
+- parent: camera_link
+  child: camera_ir_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L725
+- parent: camera_link
+  child: camera_color_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
+  notes: the driver computes this from the device's depth-to-colour extrinsic (unit-specific factory calibration);
+    identity is an ESTIMATE, the real offset is a few centimetres along y
+- parent: camera_color_frame
+  child: camera_color_optical_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L716-L717
+- parent: camera_depth_frame
+  child: camera_depth_optical_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L718-L719
+- parent: camera_ir_frame
+  child: camera_ir_optical_frame
+  static: true
+  publisher: /camera/camera
+  rate: 10
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L720-L721
+- parent: map
+  child: odom
+  static: false
+  publisher: /amcl
+  rate: non_periodic
+  optional: true
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L11
+motions:
+- id: drive
+  velocity_driven: true
+  command:
+    interface: topic
+    name: /cmd_vel
+    type: geometry_msgs/Twist
+    fields:
+    - field: linear.x
+      unit: m/s
+      min: -0.7
+      max: 0.7
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L560-L564
+    - field: linear.y
+      unit: m/s
+      min: -0.7
+      max: 0.7
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L560-L564
+    - field: angular.z
+      unit: rad/s
+      min: -3.2
+      max: 3.2
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L560-L564
+    notes: the driver passes the values unclamped to Rosmaster.set_car_motion (int16 of value*1000); the ranges
+      are the library's documented X3PLUS input range. The firmware converts to wheel speeds and clamps EACH WHEEL
+      to +/-700 mm/s (app_mecanum.h L31, app_mecanum.c L45-L55); all-zero input brakes the motors (L34-L37). The
+      firmware also applies a yaw-hold correction from the IMU while driving (ENABLE_YAW_ADJUST, app_motion.c L277-L289).
+    example:
+      linear:
+        x: 0.2
+        y: 0.0
+        z: 0.0
+      angular:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+  stop:
+    interface: topic
+    name: /cmd_vel
+    type: geometry_msgs/Twist
+    message:
+      linear:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+      angular:
+        x: 0.0
+        y: 0.0
+        z: 0.0
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.c#L34-L37
+    - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L276
+    notes: an all-zero Twist makes the firmware brake (Motion_Stop(STOP_BRAKE)); the driver also sends set_car_motion(0,0,0)
+      when it shuts down (Mcnamu_X3plus.py L179-L180)
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'DERIVED FROM SOURCE, NOT MEASURED on real hardware: driver_node forwards each /cmd_vel once to the
+      board and never re-sends or times it out; Rosmaster_Lib has no timer; firmware V3.5.1 keeps the last wheel-speed
+      targets until a new command (no command timeout; its IWDG is compiled out, ENABLE_IWDG 0). A lost publisher
+      therefore leaves the base moving at the last command. No real-hardware measurement has been made; it is still
+      outstanding.'
+    date: '2026-09-30'
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L165-L177
+    - ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L558-L577
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/config.h#L17
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.c#L28-L67
+  feedback:
+  - name: /vel_raw
+    field: linear.x, linear.y, angular.z
+    notes: encoder-derived body velocity
+  - name: /odom_raw
+    field: pose.pose
+    notes: integrated /vel_raw x 1.1 (x) and x 0.95 (y)
+  - name: /odom
+    field: pose.pose
+    notes: EKF, frame odom, 20 Hz
+  kinematics:
+    type: mecanum
+    wheel_radius: 0.04
+    lx_plus_ly: 0.2141
+    lx: 0.11
+    ly: 0.104
+    wheel_order_and_mixing: 'firmware motor order M1..M4 = L1, L2, R1, R2 = front-left, back-left, front-right,
+      back-right: v_FL = vx - vy - (lx+ly) wz, v_BL = vx + vy - (lx+ly) wz, v_FR = vx + vy + (lx+ly) wz, v_BR =
+      vx - vy + (lx+ly) wz (m/s at the rim)'
+    wheel_speed_limit: 0.7
+    basis: source
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.h#L20-L31
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.c#L28-L67
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_motion.c#L304-L324
+    notes: wheel_radius from MECANUM_MAX_CIRCLE_MM 251.327 mm / pi; lx+ly from MECANUM_MAX_APB 214.1 mm; the split
+      lx 0.110 / ly 0.104 m is an ESTIMATE measured from the wheels drawn in X3plus/visual/base_link.STL (sum 0.214
+      m agrees with the firmware)
+- id: arm
+  velocity_driven: false
+  command:
+    interface: topic
+    name: /TargetAngle
+    type: yahboomcar_msgs/ArmJoint
+    fields:
+    - field: joints[0..3] (servos 1-4 = arm_joint1-4)
+      unit: deg
+      min: 0
+      max: 180
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L808-L814
+    - field: joints[4] (servo 5 = arm_joint5)
+      unit: deg
+      min: 0
+      max: 270
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L808-L814
+    - field: id (single-servo form, used when joints is empty)
+      unit: servo id
+      min: 1
+      max: 6
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L117-L124
+    - field: angle (single-servo form)
+      unit: deg
+      min: 0
+      max: 270
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L711-L750
+    - field: run_time
+      unit: ms
+      min: 0
+      max: 2000
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L814-L818
+    notes: joints[] must hold all six servo angles; the library ignores the whole array (prints 'angle_s input error!')
+      if any is out of range, and a single-servo angle out of its servo's range. Wire joint angle = (servo deg -
+      90) deg, i.e. servo 90 = URDF zero. Each command is sent to the board twice (Mcnamu_X3plus.py L112-L124).
+    example:
+      id: 0
+      run_time: 1000
+      angle: 0.0
+      joints:
+      - 90
+      - 120
+      - 30
+      - 45
+      - 90
+      - 30
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'DERIVED FROM SOURCE, NOT MEASURED on real hardware: arm commands are position targets executed by the
+      bus servos over run_time; nothing times them out. No real-hardware measurement has been made; it is still
+      outstanding.'
+    date: '2026-09-30'
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L165-L177
+    - ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L558-L577
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/config.h#L17
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.c#L28-L67
+  feedback:
+  - name: /joint_states
+    field: position[0..4]
+    notes: the COMMANDED angles, not measured ones (driver_node republishes its last command)
+  - name: /CurrentAngle
+    field: angles
+    notes: measured servo angles in deg, on request
+  end_state: every commanded servo has reached its angle after run_time ms (servo internal position control)
+- id: gripper
+  velocity_driven: false
+  command:
+    interface: topic
+    name: /TargetAngle
+    type: yahboomcar_msgs/ArmJoint
+    fields:
+    - field: joints[5] or id=6/angle (servo 6 = grip_joint)
+      unit: deg
+      min: 30
+      max: 180
+      source:
+      - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_ctrl/scripts/yahboom_joy.py#L84-L86
+      - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/cfg/PIDparam.cfg#L18
+    - field: run_time
+      unit: ms
+      min: 0
+      max: 2000
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L814-L818
+    notes: 30 deg = fully open, 180 deg = fully closed (the vendor grasp sequence closes to 146 deg on a block,
+      arm_color_transport/scripts/transport_main.py L98-L102). The library accepts 0-180 but the vendor teleop and
+      dynamic_reconfigure limit it to 30-180 and /joint_states maps 30-180 deg to grip_joint -pi/2..0 rad.
+    example:
+      id: 6
+      run_time: 500
+      angle: 146.0
+      joints: []
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'DERIVED FROM SOURCE, NOT MEASURED on real hardware: gripper commands are servo position targets; nothing
+      times them out. No real-hardware measurement has been made; it is still outstanding.'
+    date: '2026-09-30'
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L165-L177
+    - ROSMASTER-X3Plus_ROS1_code.zip!/py_install_V3.3.9.zip!/py_install/Rosmaster_Lib/Rosmaster_Lib.py#L558-L577
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/config.h#L17
+    - ROSMASTER-X3Plus_ROS1_code.zip!/Expansion board STM32 firmware/Rosmaster_V3.5.1.zip!/V3.5.1/Source/APP/app_mecanum.c#L28-L67
+  feedback:
+  - name: /joint_states
+    field: position[5] (grip_joint)
+    notes: commanded, not measured
+  - name: /CurrentAngle
+    field: angles[5]
+    notes: measured servo angle in deg, on request
+  end_state: the gripper servo has reached its angle, or stalls on a grasped object
+sensors:
+  cameras:
+  - id: astra_color
+    image_topic: /camera/rgb/image_raw
+    info_topic: /camera/rgb/camera_info
+    frame_id: camera_color_optical_frame
+    width: 640
+    height: 480
+    rate: 30
+    encoding: rgb8
+    hfov_deg: 52.0
+    intrinsics:
+      fx: 655.8
+      fy: 655.8
+      cx: 319.5
+      cy: 239.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.orbbec.com/products/astra-pro-plus
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at
+        run time (ob_camera_node.cpp L461-L473); no value is in the pinned sources. The estimate keeps Orbbec''s
+        published RGB vertical FoV 40.2 deg (stated for 1920x1080) for the 640x480 mode: fy = 240 / tan(20.1 deg)
+        = 655.8, square pixels, centred principal point, no distortion. Depth and IR are published in camera_color_optical_frame
+        (depth registered to colour), so the same estimate is used for them.'
+    mount:
+      parent: camera_link
+      xyz:
+      - 0.0
+      - 0.0
+      - 0.0
+      rpy:
+      - -1.5707963267948966
+      - 0.0
+      - -1.5707963267948966
+      basis: estimate
+      source:
+      - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
+      - yahboomcar_X3plus.urdf joint astra_joint
+      notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
+        extrinsic, estimated as zero
+    hardware: Orbbec Astra Pro Plus colour sensor (MJPG 640x480@30 decoded to RGB888)
+  - id: astra_depth
+    image_topic: /camera/depth/image_raw
+    info_topic: /camera/depth/camera_info
+    frame_id: camera_color_optical_frame
+    width: 640
+    height: 480
+    rate: 30
+    encoding: 16UC1
+    hfov_deg: 52.0
+    intrinsics:
+      fx: 655.8
+      fy: 655.8
+      cx: 319.5
+      cy: 239.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.orbbec.com/products/astra-pro-plus
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at
+        run time (ob_camera_node.cpp L461-L473); no value is in the pinned sources. The estimate keeps Orbbec''s
+        published RGB vertical FoV 40.2 deg (stated for 1920x1080) for the 640x480 mode: fy = 240 / tan(20.1 deg)
+        = 655.8, square pixels, centred principal point, no distortion. Depth and IR are published in camera_color_optical_frame
+        (depth registered to colour), so the same estimate is used for them.'
+    mount:
+      parent: camera_link
+      xyz:
+      - 0.0
+      - 0.0
+      - 0.0
+      rpy:
+      - -1.5707963267948966
+      - 0.0
+      - -1.5707963267948966
+      basis: estimate
+      source:
+      - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
+      - yahboomcar_X3plus.urdf joint astra_joint
+      notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
+        extrinsic, estimated as zero
+    range_m:
+    - 0.6
+    - 8.0
+    range_basis: manufacturer
+    hardware: Orbbec Astra Pro Plus structured-light depth, hardware-registered to colour, values in mm
+  - id: astra_ir
+    image_topic: /camera/ir/image_raw
+    info_topic: /camera/ir/camera_info
+    frame_id: camera_color_optical_frame
+    width: 640
+    height: 480
+    rate: 30
+    encoding: mono16
+    hfov_deg: 52.0
+    intrinsics:
+      fx: 655.8
+      fy: 655.8
+      cx: 319.5
+      cy: 239.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.orbbec.com/products/astra-pro-plus
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at
+        run time (ob_camera_node.cpp L461-L473); no value is in the pinned sources. The estimate keeps Orbbec''s
+        published RGB vertical FoV 40.2 deg (stated for 1920x1080) for the 640x480 mode: fy = 240 / tan(20.1 deg)
+        = 655.8, square pixels, centred principal point, no distortion. Depth and IR are published in camera_color_optical_frame
+        (depth registered to colour), so the same estimate is used for them.'
+    mount:
+      parent: camera_link
+      xyz:
+      - 0.0
+      - 0.0
+      - 0.0
+      rpy:
+      - -1.5707963267948966
+      - 0.0
+      - -1.5707963267948966
+      basis: estimate
+      source:
+      - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
+      - yahboomcar_X3plus.urdf joint astra_joint
+      notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
+        extrinsic, estimated as zero
+    hardware: Orbbec Astra Pro Plus IR sensor (native FoV 58.4 x 45.5 deg per Orbbec; the driver labels it with
+      the colour optical frame)
+  lidars:
+  - id: ydlidar_4ros
+    topic: /scan
+    frame_id: laser
+    model: YDLIDAR 4ROS (ToF)
+    angle_min: -1.48353
+    angle_max: 1.48353
+    samples: 945
+    range_min: 0.01
+    range_max: 50.0
+    scan_rate: 10
+    invalid_range: inf
+    mount:
+      parent: laser_link
+      xyz:
+      - 0.0
+      - 0.0
+      - 0.0
+      rpy:
+      - 0.0
+      - 0.0
+      - 6.28
+      basis: source
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/laser_astrapro_bringup.launch#L10-L11
+    basis: source
+    source:
+    - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/launch/TG.launch#L17-L36
+    - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L185-L202
+    notes: angle limits +/-85 deg and ranges from TG.launch (range_max 50 m is the launch setting; Yahboom states
+      a 30 m scanning radius). samples = 170 deg / (360 deg / (sample_rate 20 kHz / 10 Hz)) + 1 = 945 is DERIVED
+      from the launch settings assuming the SDK's fixed resolution; the SDK source (YDLidar-SDK) is not in the pinned
+      archive.
+  imus:
+  - id: board_imu
+    topic: /imu/data_raw
+    frame_id: imu_link
+    rate: 20
+    mount:
+      parent: base_link
+      xyz:
+      - 0.001
+      - 0.017
+      - 0.0322
+      rpy:
+      - 0.0
+      - 3.1415
+      - 1.5707
+      basis: source
+      source: yahboomcar_X3plus.urdf joint base_imu
+    source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L64-L101
+    notes: ICM20948 or MPU9250 on the expansion board; fused copy on /imu/data
+tolerances:
+- figure: 'drive: translation displacement (forward/back/sideways) over a commanded run'
+  applies_to: motions[drive], judged from /odom or /odom_raw
+  tolerance:
+    relative: 0.15
+  basis: estimate
+  notes: no vendor accuracy figure; covers mecanum roller slip and the odometry scale factors 1.1 (x) / 0.95 (y)
+    that odometry_publisher applies to /vel_raw
+- figure: 'drive: yaw change over a commanded turn'
+  applies_to: motions[drive], judged from /odom
+  tolerance:
+    relative: 0.15
+  basis: estimate
+  notes: no vendor figure
+- figure: 'drive: residual motion after the stop command'
+  applies_to: motions[drive]
+  tolerance:
+    absolute: 0.02
+    unit: m
+  basis: estimate
+  notes: distance travelled after the zero Twist; the firmware brakes on an all-zero command
+- figure: arm joint reached position
+  applies_to: motions[arm], each arm_joint1-5
+  tolerance:
+    absolute: 0.035
+    unit: rad
+  basis: estimate
+  notes: bus-servo position loop under gravity load; servo command resolution is 180 deg / 2200 counts (Rosmaster_Lib
+    __arm_convert_value); no vendor accuracy figure
+- figure: gripper reached position (free, no object)
+  applies_to: motions[gripper], grip_joint
+  tolerance:
+    absolute: 0.05
+    unit: rad
+  basis: estimate
+- figure: camera and lidar mount poses
+  applies_to: sensors.cameras[*].mount, sensors.lidars[*].mount
+  tolerance:
+    absolute: 0.005
+    unit: m
+  basis: estimate
+  notes: URDF poses are exact; the colour-sensor offset inside the Astra is unknown (factory extrinsic)
+- figure: camera horizontal field of view
+  applies_to: sensors.cameras[*].hfov_deg
+  tolerance:
+    absolute: 5.0
+    unit: deg
+  basis: estimate
+  notes: intrinsics are an estimate (see sensors.cameras[*].intrinsics)
+notes: 'Excluded as ROS infrastructure: rosbridge/rosapi, /rosout, /rosout_agg, master parameters, and every node''s
+  get_loggers / set_logger_level services. Topic rates are derived from the pinned source (rate_basis source) and
+  have not been measured on a real ROSMASTER X3 PLUS. Frame ids on the wire keep any leading slash the launch files
+  give them (/laser_link, /laser, /camera_link, ...); robot_localization strips its own.'

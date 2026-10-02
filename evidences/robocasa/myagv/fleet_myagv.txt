@@ -1,0 +1,8 @@
+$ robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect myagv
+# started 2026-10-02T11:46:16, took 0.4 s
+wire ws://127.0.0.1:9090: ROS1, 17 topics, 6 non-infrastructure services, 0 actions
+robot myagv: typed validation PASS (19 required endpoints)
+  camera /usb_cam/image_raw: LIVE - live (3 frames in 2.5 s window)
+PASS
+
+# exit code: 0

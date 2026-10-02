@@ -1,0 +1,604 @@
+{
+ "robot": "rosmaster_x3_plus",
+ "engine": "molmospaces",
+ "scene": "ithor:1",
+ "bounds_note": "Bounds are the tolerances recorded in robots_specs/<id>/ros*.yml; a recorded {relative, absolute} pair bounds |measured - commanded| by max(relative*|commanded|, absolute). Commands are each robot's recorded command (its interface file's motions[].command and example) through the vendor wire; feedback is the recorded feedback, or the simulation's control-port readings where the interface records none.",
+ "motions": [
+  {
+   "name": "drive_forward",
+   "renders": {
+    "before": "motion_drive_forward_before.png",
+    "after": "motion_drive_forward_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/cmd_vel",
+    "type": "geometry_msgs/Twist",
+    "message": {
+     "linear": {
+      "x": 0.2,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    },
+    "duration_s": 1.267
+   },
+   "stop": {
+    "topic": "/cmd_vel",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    }
+   },
+   "feedback": "/odom",
+   "commanded": {
+    "forward_m": 0.2533,
+    "left_m": 0.0,
+    "yaw_rad": 0.0
+   },
+   "measured": {
+    "forward_m": 0.2808,
+    "left_m": -0.0001,
+    "yaw_rad": -0.0074
+   },
+   "sim_readings_crosscheck": {
+    "forward_m": 0.1052,
+    "left_m": 0.0006,
+    "yaw_rad": -0.0033
+   },
+   "bound": {
+    "figure": "drive: translation displacement (forward/back/sideways) over a commanded run",
+    "tolerance": {
+     "relative": 0.15
+    },
+    "bound": 0.038,
+    "unit": "m",
+    "rule": "|measured - commanded displacement vector| <= max(relative*|commanded|, absolute)"
+   },
+   "error": 0.0274,
+   "rest": {
+    "figure": "drive: residual motion after the stop command",
+    "tolerance": {
+     "absolute": 0.02,
+     "unit": "m"
+    },
+    "lx_plus_ly_m": 0.2141,
+    "stop_pose_from": "/odom interpolated at the stop's wall time by header stamp (nearest stamp +0.026 s)",
+    "travel_after_stop_m": 0.0123,
+    "yaw_after_stop_rad": 0.0076,
+    "yaw_after_stop_at_rim_m": 0.0016,
+    "vel_raw_1_5s_info": {
+     "linear": {
+      "x": -0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": -0.0
+     }
+    },
+    "rule": "/odom from the zero Twist to 1.5 s after it: travel <= 0.02 m and |yaw|*(lx+ly) <= 0.02 m"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "drive_back",
+   "renders": {
+    "before": "motion_drive_back_before.png",
+    "after": "motion_drive_back_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/cmd_vel",
+    "type": "geometry_msgs/Twist",
+    "message": {
+     "linear": {
+      "x": -0.2,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    },
+    "duration_s": 1.257
+   },
+   "stop": {
+    "topic": "/cmd_vel",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    }
+   },
+   "feedback": "/odom",
+   "commanded": {
+    "forward_m": -0.2513,
+    "left_m": 0.0,
+    "yaw_rad": 0.0
+   },
+   "measured": {
+    "forward_m": -0.2783,
+    "left_m": 0.0,
+    "yaw_rad": 0.0001
+   },
+   "sim_readings_crosscheck": {
+    "forward_m": -0.1743,
+    "left_m": 0.0,
+    "yaw_rad": 0.0
+   },
+   "bound": {
+    "figure": "drive: translation displacement (forward/back/sideways) over a commanded run",
+    "tolerance": {
+     "relative": 0.15
+    },
+    "bound": 0.0377,
+    "unit": "m",
+    "rule": "|measured - commanded displacement vector| <= max(relative*|commanded|, absolute)"
+   },
+   "error": 0.027,
+   "rest": {
+    "figure": "drive: residual motion after the stop command",
+    "tolerance": {
+     "absolute": 0.02,
+     "unit": "m"
+    },
+    "lx_plus_ly_m": 0.2141,
+    "stop_pose_from": "/odom interpolated at the stop's wall time by header stamp (nearest stamp +0.025 s)",
+    "travel_after_stop_m": 0.0099,
+    "yaw_after_stop_rad": 0.0001,
+    "yaw_after_stop_at_rim_m": 0.0,
+    "vel_raw_1_5s_info": {
+     "linear": {
+      "x": 0.001,
+      "y": -0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": -0.0
+     }
+    },
+    "rule": "/odom from the zero Twist to 1.5 s after it: travel <= 0.02 m and |yaw|*(lx+ly) <= 0.02 m"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "drive_left",
+   "renders": {
+    "before": "motion_drive_left_before.png",
+    "after": "motion_drive_left_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/cmd_vel",
+    "type": "geometry_msgs/Twist",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.2,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    },
+    "duration_s": 1.26
+   },
+   "stop": {
+    "topic": "/cmd_vel",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    }
+   },
+   "feedback": "/odom",
+   "commanded": {
+    "forward_m": 0.0,
+    "left_m": 0.252,
+    "yaw_rad": 0.0
+   },
+   "measured": {
+    "forward_m": -0.0008,
+    "left_m": 0.2412,
+    "yaw_rad": 0.0026
+   },
+   "sim_readings_crosscheck": {
+    "forward_m": -0.0002,
+    "left_m": 0.144,
+    "yaw_rad": 0.0053
+   },
+   "bound": {
+    "figure": "drive: translation displacement (forward/back/sideways) over a commanded run",
+    "tolerance": {
+     "relative": 0.15
+    },
+    "bound": 0.0378,
+    "unit": "m",
+    "rule": "|measured - commanded displacement vector| <= max(relative*|commanded|, absolute)"
+   },
+   "error": 0.0108,
+   "rest": {
+    "figure": "drive: residual motion after the stop command",
+    "tolerance": {
+     "absolute": 0.02,
+     "unit": "m"
+    },
+    "lx_plus_ly_m": 0.2141,
+    "stop_pose_from": "/odom interpolated at the stop's wall time by header stamp (nearest stamp +0.012 s)",
+    "travel_after_stop_m": 0.0071,
+    "yaw_after_stop_rad": 0.003,
+    "yaw_after_stop_at_rim_m": 0.0006,
+    "vel_raw_1_5s_info": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.007
+     }
+    },
+    "rule": "/odom from the zero Twist to 1.5 s after it: travel <= 0.02 m and |yaw|*(lx+ly) <= 0.02 m"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "drive_right",
+   "renders": {
+    "before": "motion_drive_right_before.png",
+    "after": "motion_drive_right_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/cmd_vel",
+    "type": "geometry_msgs/Twist",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": -0.2,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    },
+    "duration_s": 1.257
+   },
+   "stop": {
+    "topic": "/cmd_vel",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    }
+   },
+   "feedback": "/odom",
+   "commanded": {
+    "forward_m": 0.0,
+    "left_m": -0.2514,
+    "yaw_rad": 0.0
+   },
+   "measured": {
+    "forward_m": -0.002,
+    "left_m": -0.2321,
+    "yaw_rad": -0.0349
+   },
+   "sim_readings_crosscheck": {
+    "forward_m": 0.0,
+    "left_m": -0.128,
+    "yaw_rad": -0.0225
+   },
+   "bound": {
+    "figure": "drive: translation displacement (forward/back/sideways) over a commanded run",
+    "tolerance": {
+     "relative": 0.15
+    },
+    "bound": 0.0377,
+    "unit": "m",
+    "rule": "|measured - commanded displacement vector| <= max(relative*|commanded|, absolute)"
+   },
+   "error": 0.0194,
+   "rest": {
+    "figure": "drive: residual motion after the stop command",
+    "tolerance": {
+     "absolute": 0.02,
+     "unit": "m"
+    },
+    "lx_plus_ly_m": 0.2141,
+    "stop_pose_from": "/odom interpolated at the stop's wall time by header stamp (nearest stamp -0.000 s)",
+    "travel_after_stop_m": 0.0043,
+    "yaw_after_stop_rad": 0.0198,
+    "yaw_after_stop_at_rim_m": 0.0042,
+    "vel_raw_1_5s_info": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.001,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": -0.004
+     }
+    },
+    "rule": "/odom from the zero Twist to 1.5 s after it: travel <= 0.02 m and |yaw|*(lx+ly) <= 0.02 m"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "drive_turn",
+   "renders": {
+    "before": "motion_drive_turn_before.png",
+    "after": "motion_drive_turn_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/cmd_vel",
+    "type": "geometry_msgs/Twist",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.5
+     }
+    },
+    "duration_s": 2.01
+   },
+   "stop": {
+    "topic": "/cmd_vel",
+    "message": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    }
+   },
+   "feedback": "/odom",
+   "commanded": {
+    "forward_m": 0.0,
+    "left_m": 0.0,
+    "yaw_rad": 1.0051
+   },
+   "measured": {
+    "forward_m": -0.0004,
+    "left_m": 0.0003,
+    "yaw_rad": 0.997,
+    "translation_m": 0.0006
+   },
+   "sim_readings_crosscheck": {
+    "forward_m": -0.0011,
+    "left_m": 0.003,
+    "yaw_rad": 0.592
+   },
+   "bound": {
+    "figure": "drive: yaw change over a commanded turn",
+    "tolerance": {
+     "relative": 0.15
+    },
+    "bound": 0.1508,
+    "unit": "rad",
+    "rule": "|measured yaw - commanded yaw| <= max(relative*|commanded|, absolute)"
+   },
+   "error": 0.0081,
+   "rest": {
+    "figure": "drive: residual motion after the stop command",
+    "tolerance": {
+     "absolute": 0.02,
+     "unit": "m"
+    },
+    "lx_plus_ly_m": 0.2141,
+    "stop_pose_from": "/odom interpolated at the stop's wall time by header stamp (nearest stamp -0.010 s)",
+    "travel_after_stop_m": 0.0005,
+    "yaw_after_stop_rad": 0.0274,
+    "yaw_after_stop_at_rim_m": 0.0059,
+    "vel_raw_1_5s_info": {
+     "linear": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     },
+     "angular": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+     }
+    },
+    "rule": "/odom from the zero Twist to 1.5 s after it: travel <= 0.02 m and |yaw|*(lx+ly) <= 0.02 m"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "arm",
+   "renders": {
+    "before": "motion_arm_before.png",
+    "after": "motion_arm_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/TargetAngle",
+    "type": "yahboomcar_msgs/ArmJoint",
+    "message": {
+     "id": 0,
+     "run_time": 1000,
+     "angle": 0.0,
+     "joints": [
+      90,
+      120,
+      30,
+      45,
+      90,
+      33
+     ]
+    }
+   },
+   "feedback": "/CurrentAngle (measured servo angles, deg)",
+   "commanded_servo_deg": [
+    90,
+    120,
+    30,
+    45,
+    90
+   ],
+   "commanded": {
+    "arm_joint1": 0.0,
+    "arm_joint2": 0.5236,
+    "arm_joint3": -1.0472,
+    "arm_joint4": -0.7854,
+    "arm_joint5": 0.0
+   },
+   "before_servo_deg": [
+    90.0,
+    145.0,
+    0.0,
+    45.0,
+    90.0,
+    33.0
+   ],
+   "measured_servo_deg": [
+    90.0,
+    120.0,
+    30.0,
+    45.0,
+    90.0
+   ],
+   "measured": {
+    "arm_joint1": 0.0,
+    "arm_joint2": 0.5236,
+    "arm_joint3": -1.0472,
+    "arm_joint4": -0.7854,
+    "arm_joint5": 0.0
+   },
+   "error": {
+    "arm_joint1": 0.0,
+    "arm_joint2": 0.0,
+    "arm_joint3": 0.0,
+    "arm_joint4": 0.0,
+    "arm_joint5": 0.0
+   },
+   "sim_readings_crosscheck": {
+    "arm_joint1": -0.0,
+    "arm_joint2": 0.5187,
+    "arm_joint3": -1.0546,
+    "arm_joint4": -0.7902,
+    "arm_joint5": -0.0004
+   },
+   "bound": {
+    "figure": "arm joint reached position",
+    "tolerance": {
+     "absolute": 0.035,
+     "unit": "rad"
+    },
+    "rule": "each arm joint (servo deg - 90) within the absolute tolerance; at rest = measured angles change < 0.5 deg over 0.5 s"
+   },
+   "settle_time_s": 2.07,
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "gripper",
+   "renders": {
+    "before": "motion_gripper_before.png",
+    "after": "motion_gripper_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/TargetAngle",
+    "type": "yahboomcar_msgs/ArmJoint",
+    "message": {
+     "id": 6,
+     "run_time": 500,
+     "angle": 146.0,
+     "joints": []
+    }
+   },
+   "feedback": "/CurrentAngle angles[5] (measured, deg)",
+   "commanded_servo_deg": 146.0,
+   "commanded": {
+    "grip_joint": -0.356
+   },
+   "before_servo_deg": 33.0,
+   "measured_servo_deg": 146.0,
+   "measured": {
+    "grip_joint": -0.356
+   },
+   "error": 0.0,
+   "sim_readings_crosscheck": {
+    "grip_joint": -0.3561
+   },
+   "bound": {
+    "figure": "gripper reached position (free, no object)",
+    "tolerance": {
+     "absolute": 0.05,
+     "unit": "rad"
+    },
+    "rule": "grip_joint ((deg-180)/150*pi/2) within the absolute tolerance; at rest"
+   },
+   "settle_time_s": 1.54,
+   "problems": [],
+   "pass": true
+  }
+ ]
+}

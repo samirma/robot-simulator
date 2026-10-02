@@ -1,0 +1,10 @@
+# Stock ROS 1 Noetic + rosbridge_suite: the console's real-rosbridge test wire (ROS 1 dialect).
+# Only stock packages: the robot's vendor messages are not needed because the fake robot
+# nodes (wire_ros1.py) only advertise stock types, and the vendor-typed endpoints of a
+# profile are exercised by the in-process fake bridge instead.
+FROM ros:noetic-ros-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-noetic-rosbridge-suite ros-noetic-common-msgs ros-noetic-control-msgs \
+      ros-noetic-tf2-msgs ros-noetic-actionlib-msgs ros-noetic-robot-pose-ekf \
+      ros-noetic-move-base-msgs python3-numpy \
+    && rm -rf /var/lib/apt/lists/*

@@ -1,499 +1,1778 @@
-# SO-101 — official ROS 2 interface (community bringup; the manufacturer publishes none).
-#
-# TheRobotStudio/SO-ARM100 ships hardware, URDF and MJCF only. The ROS surface below is what the
-# community bringup ros-physical-ai/ros2_so_arm (so_arm101_description) presents when booted with
-# hardware_type:=real, plus ros-drivers/usb_cam 0.8.1 run in the /wrist namespace for the wrist camera.
-# Interface names come from reading the launch file, ros2_controllers.yaml, the ros2_control xacro,
-# and the Jazzy sources of every node and controller they start (ros2_controllers 4.42.1,
-# ros2_control 4.48.1, robot_state_publisher 3.3.4, usb_cam 0.8.1). ROS runtime names (/rosout,
-# /parameter_events, per-node parameter services, action-internal topics/services) are left out.
-# The launch default namespace is "" (use_namespace:=false), so everything sits at the root.
-dialect: ros2          # ROS 2 Jazzy
+# SO-101 - ROS 2 interface (schema: robots_specs/SCHEMA.md).
+# Approved community interface, not manufacturer-provided: ros-physical-ai/ros2_so_arm real-hardware
+# bringup (hardware_type:=real) + ros-drivers/usb_cam wrist camera, on ROS 2 Jazzy.
+# Generated from the pinned sources listed under `sources`; every row cites its pinned line.
+schema_version: 1
+robot_id: so101
+name: SO-101
+dialect: ros2
+ros_distribution: jazzy
+interface_authority: approved_community
 sources:
-  - https://github.com/ros-physical-ai/ros2_so_arm/tree/e166df9d51f43b24da9b99047c6c51c306bda74f
-  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py
-  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml
-  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/so_arm101.ros2_control.xacro
-  - https://github.com/JafarAbdi/feetech_ros2_driver/tree/18aed7fb26d3e2b4c0b47762f39d8698b7032422   # hardware plugin for hardware_type:=real; the bringup does not pin a revision
-  - https://github.com/ros-controls/ros2_controllers/tree/4.42.1                                        # Jazzy release
-  - https://control.ros.org/jazzy/doc/ros2_controllers/joint_trajectory_controller/doc/userdoc.html
-  - https://control.ros.org/jazzy/doc/ros2_controllers/parallel_gripper_controller/doc/userdoc.html
-  - https://control.ros.org/jazzy/doc/ros2_controllers/joint_state_broadcaster/doc/userdoc.html
-  - https://github.com/ros-controls/ros2_control/tree/4.48.1                                            # Jazzy release (controller_manager)
-  - https://control.ros.org/jazzy/doc/ros2_control/controller_manager/doc/userdoc.html
-  - https://github.com/ros/robot_state_publisher/tree/d1b994d2d2eb19e4d2886be57211114134f25b50         # jazzy, 3.3.4
-  - https://github.com/ros-drivers/usb_cam/tree/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8                # 0.8.1
-  - https://github.com/ros-perception/image_common/tree/f1444cf32ce82672c2b75e1c964a72c4b0245996        # jazzy (camera_info_manager, image_transport)
-boot_launch: >-
-  ros2 launch so_arm101_description controllers_bringup.launch.py hardware_type:=real usb_port:=<device, default /dev/LeRobotFollower>
-  ; ros2 run usb_cam usb_cam_node_exe --ros-args -r __ns:=/wrist
-# Starts: /controller_manager (ros2_control_node, Feetech STS3215 bus via feetech_ros2_driver/FeetechHardwareInterface),
-# /robot_state_publisher, and spawners that load+activate joint_state_broadcaster, joint_trajectory_controller
-# and gripper_controller. forward_position_controller is declared in ros2_controllers.yaml but NOT spawned,
-# so its /forward_position_controller/commands topic does not exist at boot.
-joints: [shoulder_pan_joint, shoulder_lift_joint, elbow_flex_joint, wrist_flex_joint, wrist_roll_joint, gripper_joint]   # as the bringup names them (prefix "" by default)
-
+- id: ros2_so_arm
+  url: https://github.com/ros-physical-ai/ros2_so_arm
+  revision: e166df9d51f43b24da9b99047c6c51c306bda74f
+  branch: main
+  role: approved community real-hardware ROS 2 bringup (so_arm101_description); authoritative boot
+- id: usb_cam
+  url: https://github.com/ros-drivers/usb_cam
+  revision: cb2ae6bc0a312de629f84fef933fb3e07dac1ef8
+  role: wrist-camera driver, release 0.8.1 (also the Jazzy binary release 0.8.1-1); authoritative camera boot
+- id: SO-ARM100
+  url: https://github.com/TheRobotStudio/SO-ARM100
+  revision: aec17bbc256d1a7342d53aaa4950595d4c30b40d
+  role: 'official model source (Simulation/SO101: so101_new_calib.urdf, so101_new_calib.xml, assets/) and wrist-camera
+    mount hardware (Optional/)'
+- id: feetech_ros2_driver
+  url: https://github.com/ros-physical-ai/feetech_ros2_driver
+  revision: e424839f0fb23cc0b0ade8d6e5ea166e30811356
+  role: ros2_control hardware plugin feetech_ros2_driver/FeetechHardwareInterface for hardware_type:=real; release
+    0.2.2 (the Jazzy binary release 0.2.2-1). ros2_so_arm pins no revision; 0.2.2 is the release whose parameter
+    names (offset, p_cofficient) the bringup's ros2_control xacro uses
+- id: ros2_controllers
+  url: https://github.com/ros-controls/ros2_controllers
+  revision: aacd842600a09d556b983ac3d53a0983e9ebcbb1
+  role: 'dependency: joint_trajectory_controller, joint_state_broadcaster, parallel_gripper_controller, release
+    4.42.1 (Jazzy binary 4.42.1-1)'
+- id: ros2_control
+  url: https://github.com/ros-controls/ros2_control
+  revision: b7f1a5d420443c7a079f4c81e80d5e39759acf4c
+  role: 'dependency: controller_manager / ros2_control_node, release 4.48.1 (Jazzy binary 4.48.1-1)'
+- id: robot_state_publisher
+  url: https://github.com/ros/robot_state_publisher
+  revision: d1b994d2d2eb19e4d2886be57211114134f25b50
+  role: 'dependency: robot_state_publisher, release 3.3.4 (Jazzy binary 3.3.4-1)'
+- id: image_common
+  url: https://github.com/ros-perception/image_common
+  revision: f1444cf32ce82672c2b75e1c964a72c4b0245996
+  role: 'dependency: image_transport and camera_info_manager, release 5.1.8 (Jazzy binary 5.1.8-1)'
+- id: image_transport_plugins
+  url: https://github.com/ros-perception/image_transport_plugins
+  revision: bcc913e69d3db54b90b989c6b79c1b22d50e79c8
+  role: 'optional plugins: compressed, compressedDepth, theora, zstd image transports, release 4.0.7 (Jazzy binary
+    4.0.7-1)'
+- id: diagnostics
+  url: https://github.com/ros/diagnostics
+  revision: 809c7da54886cc2cca8923125282e6a73e1fa276
+  role: 'dependency: diagnostic_updater used by controller_manager, release 4.2.7 (Jazzy binary 4.2.7-1)'
+- id: geometry2
+  url: https://github.com/ros2/geometry2
+  revision: f702874b1c8535d6a038230ab2cda0ba5d521ebd
+  role: 'dependency: tf2_ros broadcasters used by robot_state_publisher, release 0.36.23 (Jazzy binary 0.36.23-1)'
+- id: pal_statistics
+  url: https://github.com/pal-robotics/pal_statistics
+  revision: fb01203897860844c038663b813a7ca7de7ba520
+  role: 'dependency: pal_statistics introspection publishers used by controller_manager, release 2.8.2 (Jazzy binary
+    2.8.2-1)'
+boot:
+  summary: 'ros2_so_arm''s so_arm101_description controllers_bringup.launch.py with hardware_type:=real (ros2_control_node
+    as /controller_manager with the Feetech STS3215 bus via feetech_ros2_driver/FeetechHardwareInterface, /robot_state_publisher,
+    and spawners that load and activate joint_state_broadcaster, joint_trajectory_controller and gripper_controller),
+    plus the usb_cam wrist camera started the way the pinned usb_cam README documents first: `ros2 run usb_cam usb_cam_node_exe`
+    with default settings (node /usb_cam, no namespace, no params file). The launch defaults use_namespace:=false
+    and namespace:='''' leave every name at the root. forward_position_controller is declared in ros2_controllers.yaml
+    but not spawned, so its node and topic are optional. The spawner processes exit once their controller is active
+    and are not part of the running graph.'
+  commands:
+  - ros2 launch so_arm101_description controllers_bringup.launch.py hardware_type:=real
+  - ros2 run usb_cam usb_cam_node_exe
+  launch_files:
+  - source: ros2_so_arm
+    path: so_arm101_description/launch/controllers_bringup.launch.py
+    role: authoritative arm boot
+  - source: ros2_so_arm
+    path: so_arm101_description/control/ros2_controllers.yaml
+    role: controller_manager and controller parameters
+  - source: ros2_so_arm
+    path: so_arm101_description/control/so_arm101.ros2_control.xacro
+    role: ros2_control hardware description (servo ids, tick offsets, P gains)
+  - source: ros2_so_arm
+    path: so_arm101_description/urdf/so_arm101.urdf.xacro
+    role: robot_description top-level xacro
+  - source: ros2_so_arm
+    path: so_arm101_description/urdf/so_arm101_macro.xacro
+    role: robot_description links, joints, limits
+  - source: usb_cam
+    path: README.md
+    role: documents `ros2 run usb_cam usb_cam_node_exe` (default settings)
+  - source: usb_cam
+    path: src/ros2/usb_cam_node.cpp
+    role: 'usb_cam node: parameter defaults, publishers, service'
+  data_files: []
+  hardware: 'SO-101 follower arm: six Feetech STS3215 serial-bus servos (ids 1-6: shoulder_pan, shoulder_lift, elbow_flex,
+    wrist_flex, wrist_roll, gripper) on one USB serial adapter at usb_port /dev/LeRobotFollower (launch default);
+    4096 ticks per revolution; joint zero = the per-joint `offset` tick value of the ros2_control xacro (2048, 2125,
+    2080, 3110, 1024, 2070). Wrist camera: a 32x32 mm USB UVC camera module on the SO101 hex-nut wrist-camera mount
+    (SO-ARM100 Optional/SO101_Wrist_Cam_Hex-Nut_Mount_32x32_UVC_Module), at /dev/video0. Host: Ubuntu 24.04 with
+    ROS 2 Jazzy (the lowest distribution in ros2_so_arm''s CI matrix jazzy/kilted/rolling and the one with binary
+    releases of every dependency above).'
+model:
+  urdf: so101_new_calib.urdf
+  urdf_sha256: 3a65d2d35e68a8d2f0c2cc176d19b884506543c93ba72980145b80abe276022c
+  urdf_source:
+    source: SO-ARM100
+    path: Simulation/SO101/so101_new_calib.urdf
+  mjcf: model.xml
+  mjcf_official: false
+  official_mjcf: so101_new_calib.xml
+  robot_description:
+    published_as: /robot_state_publisher parameter robot_description and the transient-local topic /robot_description
+    content:
+      file: boot/robot_description.urdf
+      generated: xacro so_arm101_description/urdf/so_arm101.urdf.xacro with prefix:='' ros2_control_file:=<share>/control/so_arm101.ros2_control.xacro
+        ros2_control_hardware_type:=real usb_port:=/dev/LeRobotFollower (the launch's load_xacro mappings); generated
+        here with xacro 2.1.1. The leading xacro banner comment names the xacro file's absolute install path and
+        varies by installation; everything after it is fixed by the pinned sources.
+      sha256_after_banner: c5ecc5c7424bb675d6ec2772081d6c92ca260bf9e1599aa547f2133e927a5dfc
+    differences_from_model:
+    - 'names: links world, base_link, shoulder_link, upper_arm_link, lower_arm_link, wrist_link, gripper_link, gripper_frame_link,
+      jaw_link and joints shoulder_pan_joint, shoulder_lift_joint, elbow_flex_joint, wrist_flex_joint, wrist_roll_joint,
+      gripper_joint, world_to_base_joint, gripper_frame_joint (official model: base, shoulder, upper_arm, lower_arm,
+      wrist, gripper, moving_jaw_so101_v1; joints shoulder_pan, shoulder_lift, elbow_flex, wrist_flex, wrist_roll,
+      gripper)'
+    - 'limits: elbow_flex_joint [-1.69, 1.54] (official [-1.69, 1.69]); wrist_flex_joint [-1.6, 1.6] (official [-1.65806,
+      1.65806]); wrist_roll_joint [-2.3, 2.3] (official [-2.74385, 2.84121]); gripper_joint [0.0, 1.70] (official
+      [-0.174533, 1.74533]); effort 10, velocity 10 on every joint as in the official URDF'
+    - 'zero offsets (rotation about the joint axis between the boot''s and the official child frame at q=0; q_official
+      = q_boot + delta): wrist_roll_joint delta = +0.04709 rad (boot origin rpy -1.57 3.14 0 vs official 1.5708
+      0.0486795 3.14159); gripper_joint delta = -0.18 rad (boot origin rpy 1.5708 0.18 0 vs official 1.5708 -5.24e-08
+      0); wrist_flex_joint delta = +0.0008 rad (boot rpy yaw -1.57 vs official -1.5708); every other joint identical'
+    - 'axes: identical (0 0 1 in every child frame)'
+    - the boot has a fixed root link world (world_to_base_joint at identity) and no camera link or frame
+nodes:
+- name: /controller_manager
+  package: controller_manager
+  executable: ros2_control_node
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L119
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/ros2_control_node.cpp#L43
+  notes: Hosts the hardware plugin and the controllers; remaps ~/robot_description to /robot_description.
+- name: /so_arm101
+  package: hardware_interface
+  executable: ros2_control_node
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/hardware_interface/src/hardware_component_interface.cpp#L120
+  notes: Per-hardware-component node the controller_manager creates for ros2_control system SO_ARM101 (name lower-cased);
+    it has no topics, services or parameters of its own.
+- name: /joint_state_broadcaster
+  package: joint_state_broadcaster
+  executable: ros2_control_node
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L14
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L8
+  notes: Controller (lifecycle node inside the controller_manager process, lifecycle services disabled), type joint_state_broadcaster/JointStateBroadcaster.
+- name: /joint_trajectory_controller
+  package: joint_trajectory_controller
+  executable: ros2_control_node
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L15
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L6
+  notes: Controller, type joint_trajectory_controller/JointTrajectoryController, position command interface on the
+    five arm joints.
+- name: /gripper_controller
+  package: parallel_gripper_controller
+  executable: ros2_control_node
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L16
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L15
+  notes: Controller, type parallel_gripper_action_controller/GripperActionController on gripper_joint.
+- name: /forward_position_controller
+  package: position_controllers
+  executable: ros2_control_node
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L11
+  optional: true
+  notes: Declared in ros2_controllers.yaml but not in the launch's startup_controllers; exists only if loaded by
+    hand.
+- name: /robot_state_publisher
+  package: robot_state_publisher
+  executable: robot_state_publisher
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L38
+- name: /usb_cam
+  package: usb_cam
+  executable: usb_cam_node_exe
+  source:
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/README.md#L73
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L43
 topics:
-  # --- arm: joint_trajectory_controller (joint_trajectory_controller/JointTrajectoryController) ---
-  - name: /joint_trajectory_controller/joint_trajectory
-    type: trajectory_msgs/msg/JointTrajectory
-    direction: in
-    rate_hz: event
-    node: /joint_trajectory_controller
-    description: Arm trajectory command for the five arm joints (position command interface); replaces the current trajectory, empty-point messages are rejected.
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1003
-  - name: /joint_trajectory_controller/controller_state
-    type: control_msgs/msg/JointTrajectoryControllerState
-    direction: out
-    rate_hz: 50
-    node: /joint_trajectory_controller
-    description: Reference, feedback, error and output of the arm controller, published every controller update (controller_manager update_rate 50 Hz).
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1007
-  - name: /joint_trajectory_controller/speed_scaling_input
-    type: control_msgs/msg/SpeedScalingFactor
-    direction: in
-    rate_hz: event
-    node: /joint_trajectory_controller
-    description: Trajectory execution speed scaling factor (created because the only command interface is position; transient-local QoS).
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1082
-
-  # --- state: joint_state_broadcaster (joint_state_broadcaster/JointStateBroadcaster) ---
-  - name: /joint_states
-    type: sensor_msgs/msg/JointState
-    direction: out
-    rate_hz: 50
-    node: /joint_state_broadcaster
-    description: Position and velocity of all six joints (including gripper_joint), published every controller_manager update.
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L142
-  - name: /dynamic_joint_states
-    type: control_msgs/msg/DynamicJointState
-    direction: out
-    rate_hz: 50
-    node: /joint_state_broadcaster
-    description: All state interfaces of every joint (publish_dynamic_joint_states defaults to true).
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L152
-
-  # --- robot_state_publisher ---
-  - name: /robot_description
-    type: std_msgs/msg/String
-    direction: out
-    rate_hz: latched
-    node: /robot_state_publisher
-    description: URDF expanded from so_arm101.urdf.xacro with the ros2_control block for hardware_type:=real (transient local); controller_manager subscribes to it to start the hardware.
-    source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L132
-  - name: /tf
-    type: tf2_msgs/msg/TFMessage
-    direction: out
-    rate_hz: 20
-    node: /robot_state_publisher
-    description: Moving-joint transforms computed from /joint_states, throttled to publish_frequency (default 20 Hz).
-    source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L129
-  - name: /tf_static
-    type: tf2_msgs/msg/TFMessage
-    direction: out
-    rate_hz: latched
-    node: /robot_state_publisher
-    description: Fixed-joint transforms (world->base_link, gripper_frame_joint).
-    source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L130
-
-  # --- controller_manager (ros2_control_node) ---
-  - name: /controller_manager/activity
-    type: controller_manager_msgs/msg/ControllerManagerActivity
-    direction: out
-    rate_hz: latched
-    node: /controller_manager
-    description: Controller and hardware-component lifecycle state changes (reliable, transient local).
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L659
-  - name: /diagnostics
-    type: diagnostic_msgs/msg/DiagnosticArray
-    direction: out
-    rate_hz: 1
-    node: /controller_manager
-    description: Controllers / hardware components / controller manager activity diagnostics (hardware ID "ros2_control").
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L670
-    unverified: true   # 1 Hz is the diagnostic_updater default period, not stated in the sources read
-  - name: /controller_manager/introspection_data/full
-    type: pal_statistics_msgs/msg/Statistics
-    direction: out
-    rate_hz: 50
-    node: /controller_manager
-    description: Registered controller/hardware introspection variables with names and values; published each update only while subscribed.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/doc/introspection.rst
-  - name: /controller_manager/introspection_data/names
-    type: pal_statistics_msgs/msg/StatisticsNames
-    direction: out
-    rate_hz: event
-    node: /controller_manager
-    description: Names of the registered introspection variables; published when variables are (un)registered.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/doc/introspection.rst
-  - name: /controller_manager/introspection_data/values
-    type: pal_statistics_msgs/msg/StatisticsValues
-    direction: out
-    rate_hz: 50
-    node: /controller_manager
-    description: Values of the registered introspection variables; published each update only while subscribed.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/doc/introspection.rst
-  - name: /controller_manager/statistics/full
-    type: pal_statistics_msgs/msg/Statistics
-    direction: out
-    rate_hz: 50
-    node: /controller_manager
-    description: Execution time and periodicity statistics of hardware read/write and controller updates.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L684
-  - name: /controller_manager/statistics/names
-    type: pal_statistics_msgs/msg/StatisticsNames
-    direction: out
-    rate_hz: event
-    node: /controller_manager
-    description: Names of the realtime-loop statistics variables.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/doc/introspection.rst
-  - name: /controller_manager/statistics/values
-    type: pal_statistics_msgs/msg/StatisticsValues
-    direction: out
-    rate_hz: 50
-    node: /controller_manager
-    description: Values of the realtime-loop statistics variables.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/doc/introspection.rst
-
-  # --- wrist camera: usb_cam 0.8.1, node /wrist/usb_cam ---
-  - name: /wrist/image_raw
-    type: sensor_msgs/msg/Image
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: Wrist camera frames via image_transport CameraPublisher (default 640x480 yuyv, framerate 30).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L37
-  - name: /wrist/camera_info
-    type: sensor_msgs/msg/CameraInfo
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: Camera calibration published alongside each image (from camera_info_url, else an uncalibrated default).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L47
-  - name: /wrist/image_raw/compressed
-    type: sensor_msgs/msg/CompressedImage
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: JPEG image; from the image_transport compressed plugin, or published directly by the node when pixel_format is mjpeg.
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/README.md#L149
-  - name: /wrist/image_raw/compressedDepth
-    type: sensor_msgs/msg/CompressedImage
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: image_transport compressedDepth plugin topic (present only if image_transport_plugins is installed).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/package.xml#L36
-    unverified: true
-  - name: /wrist/image_raw/theora
-    type: theora_image_transport/msg/Packet
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: image_transport theora plugin topic (present only if image_transport_plugins is installed).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/package.xml#L36
-    unverified: true
-  - name: /wrist/image_raw/zstd
-    type: sensor_msgs/msg/CompressedImage
-    direction: out
-    rate_hz: 30
-    node: /wrist/usb_cam
-    description: image_transport zstd plugin topic (Jazzy image_transport_plugins, present only if installed).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/package.xml#L36
-    unverified: true
-
+- name: /joint_trajectory_controller/joint_trajectory
+  type: trajectory_msgs/msg/JointTrajectory
+  direction: in
+  nodes:
+  - /joint_trajectory_controller
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1003
+  notes: Arm trajectory command (joint names must be the five arm joints; positions in rad). A new message replaces
+    the current trajectory.
+- name: /joint_trajectory_controller/controller_state
+  type: control_msgs/msg/JointTrajectoryControllerState
+  direction: out
+  nodes:
+  - /joint_trajectory_controller
+  rate: 50
+  rate_basis: source
+  rate_note: published every controller update; controller update_rate defaults to the controller_manager update_rate
+    50 Hz (ros2_controllers.yaml)
+  source:
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1007
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L580
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L3
+- name: /joint_trajectory_controller/speed_scaling_input
+  type: control_msgs/msg/SpeedScalingFactor
+  direction: in
+  nodes:
+  - /joint_trajectory_controller
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 10
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1082
+  notes: Created because the only command interface is position.
+- name: /joint_states
+  type: sensor_msgs/msg/JointState
+  direction: out
+  nodes:
+  - /joint_state_broadcaster
+  rate: 50
+  rate_basis: source
+  frame_id: base_link
+  rate_note: published every controller update at the 50 Hz controller_manager rate
+  source:
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L142
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L445
+  notes: Position (rad) and velocity (rad/s) of all six joints, names ordered ['elbow_flex_joint', 'gripper_joint',
+    'shoulder_lift_joint', 'shoulder_pan_joint', 'wrist_flex_joint', 'wrist_roll_joint'] (URDF joint map order,
+    use_urdf_to_filter true); header.frame_id base_link (frame_id default); effort empty (no effort state interface).
+- name: /dynamic_joint_states
+  type: control_msgs/msg/DynamicJointState
+  direction: out
+  nodes:
+  - /joint_state_broadcaster
+  rate: 50
+  rate_basis: source
+  frame_id: base_link
+  source:
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L152
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster.cpp#L460
+  notes: All state interfaces (position, velocity) of every joint; publish_dynamic_joint_states defaults to true.
+- name: /robot_description
+  type: std_msgs/msg/String
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L133
+  notes: The boot robot_description (model.robot_description); also subscribed by /controller_manager.
+- name: /tf
+  type: tf2_msgs/msg/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: 16.67
+  rate_basis: source
+  rate_note: robot_state_publisher republishes the moving joints' transforms on a /joint_states message only when
+    its stamp is at least 1/publish_frequency = 50 ms after the last published one; with /joint_states every 20
+    ms that is every third message, 50/3 = 16.67 Hz
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L338
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L118
+  notes: Transforms of the six revolute joints (see tf).
+- name: /tf_static
+  type: tf2_msgs/msg/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L150
+  notes: world->base_link and gripper_link->gripper_frame_link, published once.
+- name: /controller_manager/activity
+  type: controller_manager_msgs/msg/ControllerManagerActivity
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L659
+  notes: Published on every controller or hardware state change.
+- name: /diagnostics
+  type: diagnostic_msgs/msg/DiagnosticArray
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: 1
+  rate_basis: source
+  rate_note: diagnostic_updater period parameter diagnostic_updater.period defaults to 1.0 s
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L543
+  - https://github.com/ros/diagnostics/blob/809c7da54886cc2cca8923125282e6a73e1fa276/diagnostic_updater/src/diagnostic_updater.cpp#L56
+  notes: Controllers Activity, Hardware Components Activity and Controller Manager Activity statuses (hardware id
+    ros2_control).
+- name: /controller_manager/introspection_data/full
+  type: pal_statistics_msgs/msg/Statistics
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: 50
+  rate_basis: source
+  rate_note: filled every controller_manager update (50 Hz) and published only while subscribed
+  qos:
+    reliability: best_effort
+    durability: transient_local
+    depth: 1
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L681
+  - https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L77
+- name: /controller_manager/introspection_data/names
+  type: pal_statistics_msgs/msg/StatisticsNames
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source: https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L80
+  notes: Republished only when the registered names change.
+- name: /controller_manager/introspection_data/values
+  type: pal_statistics_msgs/msg/StatisticsValues
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: 50
+  rate_basis: source
+  rate_note: every controller_manager update while subscribed
+  qos:
+    reliability: best_effort
+    durability: transient_local
+    depth: 1
+  source: https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L82
+- name: /controller_manager/statistics/full
+  type: pal_statistics_msgs/msg/Statistics
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: 50
+  rate_basis: source
+  rate_note: controller_manager execution statistics, filled every update (50 Hz), published only while subscribed
+  qos:
+    reliability: best_effort
+    durability: transient_local
+    depth: 1
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L685
+  - https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L77
+- name: /controller_manager/statistics/names
+  type: pal_statistics_msgs/msg/StatisticsNames
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source: https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L80
+- name: /controller_manager/statistics/values
+  type: pal_statistics_msgs/msg/StatisticsValues
+  direction: out
+  nodes:
+  - /controller_manager
+  rate: 50
+  rate_basis: source
+  qos:
+    reliability: best_effort
+    durability: transient_local
+    depth: 1
+  source: https://github.com/pal-robotics/pal_statistics/blob/fb01203897860844c038663b813a7ca7de7ba520/pal_statistics/src/pal_statistics.cpp#L82
+- name: /forward_position_controller/commands
+  type: std_msgs/msg/Float64MultiArray
+  direction: in
+  nodes:
+  - /forward_position_controller
+  rate: non_periodic
+  optional: true
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L11
+  notes: Exists only if forward_position_controller is loaded and activated by hand (not in the boot).
+- name: /image_raw
+  type: sensor_msgs/msg/Image
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: 30
+  rate_basis: source
+  camera: true
+  frame_id: default_cam
+  rate_note: framerate parameter default 30.0; the capture timer period is int(1000/30) = 33 ms and each tick publishes
+    the frame the V4L2 device delivered at its 30 fps mode
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 100
+  source:
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L37
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L67
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L212
+  notes: 'Wrist camera raw image: 640x480, encoding yuv422_yuy2 (pixel_format default yuyv), published through image_transport::CameraPublisher
+    (sent only while subscribed).'
+- name: /camera_info
+  type: sensor_msgs/msg/CameraInfo
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: 30
+  rate_basis: source
+  frame_id: default_cam
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 100
+  source:
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L380
+  - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L147
+  notes: 'Published with every image. camera_info_url is empty by default, so the camera is uncalibrated: width
+    640, height 480, header.frame_id default_cam, K/D/R/P all zero, distortion_model empty.'
+- name: /image_raw/compressed
+  type: sensor_msgs/msg/CompressedImage
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: 30
+  rate_basis: source
+  optional: true
+  frame_id: default_cam
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/include/compressed_image_transport/compressed_publisher.hpp#L61
+  notes: image_transport compressed plugin (optional plugin); JPEG of each frame while subscribed.
+- name: /image_raw/compressedDepth
+  type: sensor_msgs/msg/CompressedImage
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: non_periodic
+  optional: true
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_depth_image_transport/include/compressed_depth_image_transport/compressed_depth_publisher.hpp#L57
+  notes: compressedDepth plugin (optional plugin); advertises but encodes only depth encodings, so it publishes
+    nothing for this colour stream.
+- name: /image_raw/theora
+  type: theora_image_transport/msg/Packet
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: non_periodic
+  optional: true
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/theora_image_transport/include/theora_image_transport/theora_publisher.hpp#L66
+  notes: theora plugin (optional plugin); packets are emitted by the encoder, not one per frame.
+- name: /image_raw/zstd
+  type: sensor_msgs/msg/CompressedImage
+  direction: out
+  nodes:
+  - /usb_cam
+  rate: 30
+  rate_basis: source
+  optional: true
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/zstd_image_transport/include/zstd_image_transport/zstd_publisher.hpp#L60
+  notes: zstd plugin (optional plugin); one compressed frame per image while subscribed.
 services:
-  # --- controller_manager ---
-  - name: /controller_manager/list_controllers
-    type: controller_manager_msgs/srv/ListControllers
-    node: /controller_manager
-    description: List loaded controllers, their type, state and claimed interfaces.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1172
-  - name: /controller_manager/list_controller_types
-    type: controller_manager_msgs/srv/ListControllerTypes
-    node: /controller_manager
-    description: List controller plugin types available to load.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1176
-  - name: /controller_manager/load_controller
-    type: controller_manager_msgs/srv/LoadController
-    node: /controller_manager
-    description: Load a controller declared in the parameters (e.g. forward_position_controller).
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1180
-  - name: /controller_manager/configure_controller
-    type: controller_manager_msgs/srv/ConfigureController
-    node: /controller_manager
-    description: Configure a loaded controller.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1183
-  - name: /controller_manager/reload_controller_libraries
-    type: controller_manager_msgs/srv/ReloadControllerLibraries
-    node: /controller_manager
-    description: Reload controller plugin libraries.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1188
-  - name: /controller_manager/switch_controller
-    type: controller_manager_msgs/srv/SwitchController
-    node: /controller_manager
-    description: Activate/deactivate controllers (e.g. swap joint_trajectory_controller for forward_position_controller).
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1192
-  - name: /controller_manager/unload_controller
-    type: controller_manager_msgs/srv/UnloadController
-    node: /controller_manager
-    description: Unload a controller.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1196
-  - name: /controller_manager/cleanup_controller
-    type: controller_manager_msgs/srv/CleanupController
-    node: /controller_manager
-    description: Clean up an inactive controller.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1200
-  - name: /controller_manager/list_hardware_components
-    type: controller_manager_msgs/srv/ListHardwareComponents
-    node: /controller_manager
-    description: List hardware components (one system, "SO_ARM101") and their lifecycle state.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1205
-  - name: /controller_manager/list_hardware_interfaces
-    type: controller_manager_msgs/srv/ListHardwareInterfaces
-    node: /controller_manager
-    description: List command (position x6) and state (position, velocity x6) interfaces and whether they are claimed.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1210
-  - name: /controller_manager/set_hardware_component_state
-    type: controller_manager_msgs/srv/SetHardwareComponentState
-    node: /controller_manager
-    description: Change the SO_ARM101 component lifecycle state; deactivating it makes the Feetech driver torque-off all servos.
-    source: https://github.com/ros-controls/ros2_control/blob/4.48.1/controller_manager/src/controller_manager.cpp#L1215
-  # --- joint_trajectory_controller ---
-  - name: /joint_trajectory_controller/query_state
-    type: control_msgs/srv/QueryTrajectoryState
-    node: /joint_trajectory_controller
-    description: Sample the active arm trajectory at a given time.
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1072
-  # --- wrist camera ---
-  - name: /wrist/set_capture
-    type: std_srvs/srv/SetBool
-    node: /wrist/usb_cam
-    description: Start (true) or stop (false) camera capture (relative name, so it resolves in the /wrist namespace).
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L55
-  - name: /wrist/usb_cam/set_camera_info
-    type: sensor_msgs/srv/SetCameraInfo
-    node: /wrist/usb_cam
-    description: Store new camera calibration (camera_info_manager, private "~/set_camera_info").
-    source: https://github.com/ros-perception/image_common/blob/f1444cf32ce82672c2b75e1c964a72c4b0245996/camera_info_manager/src/camera_info_manager.cpp#L110
-
+- name: /controller_manager/list_controllers
+  type: controller_manager_msgs/srv/ListControllers
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1172
+- name: /controller_manager/list_controller_types
+  type: controller_manager_msgs/srv/ListControllerTypes
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1176
+- name: /controller_manager/load_controller
+  type: controller_manager_msgs/srv/LoadController
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1180
+- name: /controller_manager/configure_controller
+  type: controller_manager_msgs/srv/ConfigureController
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1183
+- name: /controller_manager/reload_controller_libraries
+  type: controller_manager_msgs/srv/ReloadControllerLibraries
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1188
+- name: /controller_manager/switch_controller
+  type: controller_manager_msgs/srv/SwitchController
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1192
+- name: /controller_manager/unload_controller
+  type: controller_manager_msgs/srv/UnloadController
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1196
+- name: /controller_manager/cleanup_controller
+  type: controller_manager_msgs/srv/CleanupController
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1200
+- name: /controller_manager/list_hardware_components
+  type: controller_manager_msgs/srv/ListHardwareComponents
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1205
+- name: /controller_manager/list_hardware_interfaces
+  type: controller_manager_msgs/srv/ListHardwareInterfaces
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1210
+- name: /controller_manager/set_hardware_component_state
+  type: controller_manager_msgs/srv/SetHardwareComponentState
+  node: /controller_manager
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1215
+- name: /joint_trajectory_controller/query_state
+  type: control_msgs/srv/QueryTrajectoryState
+  node: /joint_trajectory_controller
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1072
+- name: /set_capture
+  type: std_srvs/srv/SetBool
+  node: /usb_cam
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L56
+  notes: true starts, false stops V4L2 capture.
+- name: /usb_cam/set_camera_info
+  type: sensor_msgs/srv/SetCameraInfo
+  node: /usb_cam
+  source: https://github.com/ros-perception/image_common/blob/f1444cf32ce82672c2b75e1c964a72c4b0245996/camera_info_manager/src/camera_info_manager.cpp#L110
+  notes: 'camera_info_manager: stores a calibration (to camera_info_url, empty by default).'
 actions:
-  - name: /joint_trajectory_controller/follow_joint_trajectory
-    type: control_msgs/action/FollowJointTrajectory
-    node: /joint_trajectory_controller
-    description: Arm trajectory goal with tolerances and result; canceling the active goal makes the controller hold its current position.
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1057
-  - name: /gripper_controller/gripper_cmd
-    type: control_msgs/action/ParallelGripperCommand
-    node: /gripper_controller
-    description: >-
-      Gripper command for gripper_joint (goal is a sensor_msgs/JointState: position in rad, optional
-      velocity/effort). Controller type parallel_gripper_action_controller/GripperActionController writes the
-      position command interface; allow_stalling:=true reports success when the jaw stalls on an object.
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/parallel_gripper_controller/include/parallel_gripper_controller/parallel_gripper_action_controller_impl.hpp#L401
-
+- name: /joint_trajectory_controller/follow_joint_trajectory
+  type: control_msgs/action/FollowJointTrajectory
+  node: /joint_trajectory_controller
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1057
+- name: /gripper_controller/gripper_cmd
+  type: control_msgs/action/ParallelGripperCommand
+  node: /gripper_controller
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/include/parallel_gripper_controller/parallel_gripper_action_controller_impl.hpp#L401
 parameters:
-  # --- /controller_manager (ros2_controllers.yaml) ---
-  - name: update_rate
-    node: /controller_manager
-    type: int
-    value: 50
-    description: Read/update/write loop rate in Hz (sets the rate of /joint_states and controller_state).
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L3
-  - name: use_sim_time
-    node: /controller_manager
-    type: bool
-    value: false
-    description: True only when hardware_type is mujoco.
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L118
-  - name: joint_trajectory_controller.type
-    node: /controller_manager
-    type: string
-    value: joint_trajectory_controller/JointTrajectoryController
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L6
-  - name: joint_state_broadcaster.type
-    node: /controller_manager
-    type: string
-    value: joint_state_broadcaster/JointStateBroadcaster
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L9
-  - name: forward_position_controller.type
-    node: /controller_manager
-    type: string
-    value: position_controllers/JointGroupPositionController
-    description: Declared but not spawned at boot; once loaded and activated it subscribes to /forward_position_controller/commands (std_msgs/msg/Float64MultiArray, five arm joints).
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L12
-  - name: gripper_controller.type
-    node: /controller_manager
-    type: string
-    value: parallel_gripper_action_controller/GripperActionController
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L15
-  # --- /joint_trajectory_controller ---
-  - name: joints
-    node: /joint_trajectory_controller
-    type: string_array
-    value: [shoulder_pan_joint, shoulder_lift_joint, elbow_flex_joint, wrist_flex_joint, wrist_roll_joint]
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L31
-  - name: command_interfaces
-    node: /joint_trajectory_controller
-    type: string_array
-    value: [position]
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L26
-  - name: state_interfaces
-    node: /joint_trajectory_controller
-    type: string_array
-    value: [position, velocity]
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L28
-  - name: allow_partial_joints_goal
-    node: /joint_trajectory_controller
-    type: bool
-    value: false   # library default, not overridden
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L75
-  - name: action_monitor_rate
-    node: /joint_trajectory_controller
-    type: double
-    value: 20.0    # library default, not overridden
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L111
-  - name: constraints.goal_time
-    node: /joint_trajectory_controller
-    type: double
-    value: 0.0     # library default: wait indefinitely for goal tolerance
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L222
-  - name: constraints.decelerate_on_cancel
-    node: /joint_trajectory_controller
-    type: bool
-    value: false   # library default: cancel = hold current position immediately
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L231
-  # --- /gripper_controller ---
-  - name: joint
-    node: /gripper_controller
-    type: string
-    value: gripper_joint
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L20
-  - name: allow_stalling
-    node: /gripper_controller
-    type: bool
-    value: true
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L21
-  - name: goal_tolerance
-    node: /gripper_controller
-    type: double
-    value: 0.01    # library default
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L22
-  - name: stall_velocity_threshold
-    node: /gripper_controller
-    type: double
-    value: 0.001   # library default
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L34
-  - name: stall_timeout
-    node: /gripper_controller
-    type: double
-    value: 1.0     # library default, seconds
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L39
-  - name: max_effort_interface
-    node: /gripper_controller
-    type: string
-    value: ""      # library default: no effort interface claimed, goal effort is ignored by the hardware
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L47
-  # --- /joint_state_broadcaster ---
-  - name: use_local_topics
-    node: /joint_state_broadcaster
-    type: bool
-    value: false   # library default → topics at /joint_states, /dynamic_joint_states
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L2
-  - name: publish_dynamic_joint_states
-    node: /joint_state_broadcaster
-    type: bool
-    value: true    # library default
-    source: https://github.com/ros-controls/ros2_controllers/blob/4.42.1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L67
-  # --- /robot_state_publisher ---
-  - name: robot_description
-    node: /robot_state_publisher
-    type: string
-    value: xacro so_arm101.urdf.xacro prefix:="" ros2_control_hardware_type:=real usb_port:=<usb_port>
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L25
-  - name: publish_frequency
-    node: /robot_state_publisher
-    type: double
-    value: 20.0    # library default
-    source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L118
-  - name: frame_prefix
-    node: /robot_state_publisher
-    type: string
-    value: ""      # library default
-    source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L124
-  # --- ros2_control hardware parameters (inside robot_description, read by FeetechHardwareInterface; not ROS parameters) ---
-  - name: SO_ARM101/usb_port
-    node: /controller_manager
-    type: string
-    value: <usb_port launch arg, default /dev/LeRobotFollower>
-    description: Serial device of the Feetech bus (hardware plugin feetech_ros2_driver/FeetechHardwareInterface; servo ids 1-6 map to the joints in the order listed above).
-    source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/so_arm101.ros2_control.xacro#L14
-  # --- /wrist/usb_cam (all declared with these defaults; none overridden by the boot command) ---
-  - name: video_device
-    node: /wrist/usb_cam
-    type: string
-    value: /dev/video0
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L74
-  - name: framerate
-    node: /wrist/usb_cam
-    type: double
-    value: 30.0
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L67
-  - name: image_width
-    node: /wrist/usb_cam
-    type: int
-    value: 640
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L70
-  - name: image_height
-    node: /wrist/usb_cam
-    type: int
-    value: 480
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L69
-  - name: pixel_format
-    node: /wrist/usb_cam
-    type: string
-    value: yuyv
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L72
-  - name: frame_id
-    node: /wrist/usb_cam
-    type: string
-    value: default_cam
-    description: Header frame_id of images; not a frame in the bringup's TF tree.
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L68
-  - name: camera_name
-    node: /wrist/usb_cam
-    type: string
-    value: default_cam
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L65
-  - name: camera_info_url
-    node: /wrist/usb_cam
-    type: string
-    value: ""
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L66
-  - name: io_method
-    node: /wrist/usb_cam
-    type: string
-    value: mmap
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L71
-  - name: av_device_format
-    node: /wrist/usb_cam
-    type: string
-    value: YUV422P
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L73
-  - name: "brightness, contrast, saturation, sharpness, gain, auto_white_balance, white_balance, autoexposure, exposure, autofocus, focus"
-    node: /wrist/usb_cam
-    type: mixed
-    value: "50, -1, -1, -1, -1, true, 4000, true, 100, false, -1   # -1 = leave device setting alone"
-    source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L75-L85
-
-stop_command: >-
-  No dedicated stop topic or service exists. Per the sources: (1) cancel the active
-  /joint_trajectory_controller/follow_joint_trajectory goal — the controller then holds the current
-  position (decelerate_on_cancel is false) [joint_trajectory_controller.cpp#L1423-L1449]; an empty
-  JointTrajectory on /joint_trajectory_controller/joint_trajectory is rejected by validation in 4.42.1
-  ("Empty trajectory received", #L1695) despite the userdoc saying it overrides the goal, so it is not a
-  stop. (2) cancel the /gripper_controller/gripper_cmd goal — the gripper holds its current position
-  [parallel_gripper_action_controller_impl.hpp#L175-L186]. (3) Torque-off: deactivate the hardware with
-  /controller_manager/set_hardware_component_state {name: SO_ARM101, target_state: {id: 2, label: inactive}};
-  FeetechHardwareInterface::on_deactivate writes TORQUE_ENABLE=0 to all servos
-  [feetech_ros2_driver/src/feetech_ros2_driver.cpp#L316-L327].
+- node: /controller_manager
+  name: update_rate
+  value: 50
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L3
+- node: /controller_manager
+  name: enforce_command_limits
+  value: false
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L12
+- node: /controller_manager
+  name: handle_exceptions
+  value: true
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L19
+- node: /controller_manager
+  name: hardware_components_initial_state.unconfigured
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L27
+- node: /controller_manager
+  name: hardware_components_initial_state.inactive
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L36
+- node: /controller_manager
+  name: hardware_components_initial_state.shutdown_on_initial_state_failure
+  value: true
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L45
+- node: /controller_manager
+  name: defaults.switch_controller.strictness
+  value: best_effort
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L54
+- node: /controller_manager
+  name: defaults.allow_controller_activation_with_inactive_hardware
+  value: false
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L67
+- node: /controller_manager
+  name: defaults.deactivate_controllers_on_hardware_self_deactivate
+  value: true
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L75
+- node: /controller_manager
+  name: diagnostics.threshold.controller_manager.periodicity.mean_error.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controller_manager.periodicity.mean_error.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.controller_manager.periodicity.standard_deviation.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controller_manager.periodicity.standard_deviation.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.periodicity.mean_error.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.periodicity.mean_error.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.periodicity.standard_deviation.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.periodicity.standard_deviation.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.execution_time.mean_error.warn
+  value: 1000.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.execution_time.mean_error.error
+  value: 2000.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.execution_time.standard_deviation.warn
+  value: 100.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.controllers.execution_time.standard_deviation.error
+  value: 200.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.periodicity.mean_error.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.periodicity.mean_error.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.periodicity.standard_deviation.warn
+  value: 5.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.periodicity.standard_deviation.error
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.execution_time.mean_error.warn
+  value: 1000.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.execution_time.mean_error.error
+  value: 2000.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.execution_time.standard_deviation.warn
+  value: 100.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L89
+- node: /controller_manager
+  name: diagnostics.threshold.hardware_components.execution_time.standard_deviation.error
+  value: 200.0
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager_parameters.yaml#L97
+- node: /controller_manager
+  name: overruns.print_warnings
+  value: true
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L730
+  notes: declared by the controller_manager with default !use_sim_time; use_sim_time is false on the real robot
+- node: /controller_manager
+  name: joint_trajectory_controller.type
+  value: joint_trajectory_controller/JointTrajectoryController
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L5
+  notes: declared from the parameter overrides (automatically_declare_parameters_from_overrides)
+- node: /controller_manager
+  name: joint_state_broadcaster.type
+  value: joint_state_broadcaster/JointStateBroadcaster
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L8
+  notes: declared from the parameter overrides (automatically_declare_parameters_from_overrides)
+- node: /controller_manager
+  name: forward_position_controller.type
+  value: position_controllers/JointGroupPositionController
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L11
+  notes: declared from the parameter overrides (automatically_declare_parameters_from_overrides)
+- node: /controller_manager
+  name: gripper_controller.type
+  value: parallel_gripper_action_controller/GripperActionController
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L14
+  notes: declared from the parameter overrides (automatically_declare_parameters_from_overrides)
+- node: /controller_manager
+  name: joint_state_broadcaster.fallback_controllers
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1353
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: joint_state_broadcaster.node_options_args
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1374
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: joint_trajectory_controller.fallback_controllers
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1353
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: joint_trajectory_controller.node_options_args
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1374
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: gripper_controller.fallback_controllers
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1353
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: gripper_controller.node_options_args
+  value: []
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_manager/src/controller_manager.cpp#L1374
+  notes: declared when the controller is loaded
+- node: /controller_manager
+  name: diagnostic_updater.period
+  value: 1.0
+  source: https://github.com/ros/diagnostics/blob/809c7da54886cc2cca8923125282e6a73e1fa276/diagnostic_updater/src/diagnostic_updater.cpp#L62
+- node: /controller_manager
+  name: diagnostic_updater.use_fqn
+  value: false
+  source: https://github.com/ros/diagnostics/blob/809c7da54886cc2cca8923125282e6a73e1fa276/diagnostic_updater/src/diagnostic_updater.cpp#L75
+- node: /joint_trajectory_controller
+  name: joints
+  value:
+  - shoulder_pan_joint
+  - shoulder_lift_joint
+  - elbow_flex_joint
+  - wrist_flex_joint
+  - wrist_roll_joint
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L24
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L2
+- node: /joint_trajectory_controller
+  name: command_joints
+  value: []
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L12
+- node: /joint_trajectory_controller
+  name: command_interfaces
+  value:
+  - position
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L24
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L25
+- node: /joint_trajectory_controller
+  name: state_interfaces
+  value:
+  - position
+  - velocity
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L24
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L37
+- node: /joint_trajectory_controller
+  name: speed_scaling.initial_scaling_factor
+  value: 1.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L51
+- node: /joint_trajectory_controller
+  name: speed_scaling.state_interface
+  value: ''
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L61
+- node: /joint_trajectory_controller
+  name: speed_scaling.command_interface
+  value: ''
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L68
+- node: /joint_trajectory_controller
+  name: allow_partial_joints_goal
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L75
+- node: /joint_trajectory_controller
+  name: open_loop_control
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L80
+- node: /joint_trajectory_controller
+  name: interpolate_from_desired_state
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L86
+- node: /joint_trajectory_controller
+  name: allow_integration_in_goal_trajectories
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L101
+- node: /joint_trajectory_controller
+  name: set_last_command_interface_value_as_state_on_activation
+  value: true
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L106
+- node: /joint_trajectory_controller
+  name: action_monitor_rate
+  value: 20.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L111
+- node: /joint_trajectory_controller
+  name: interpolation_method
+  value: splines
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L120
+- node: /joint_trajectory_controller
+  name: allow_nonzero_velocity_at_trajectory_end
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L129
+- node: /joint_trajectory_controller
+  name: cmd_timeout
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L134
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.p
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L144
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.i
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L149
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.d
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L154
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.i_clamp
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L159
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.i_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L164
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.i_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L169
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.ff_velocity_scale
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L174
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.u_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L179
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.u_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L184
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.antiwindup_strategy
+  value: legacy
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L189
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.tracking_time_constant
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L205
+- node: /joint_trajectory_controller
+  name: gains.shoulder_pan_joint.error_deadband
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L211
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.p
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L144
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.i
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L149
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.d
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L154
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.i_clamp
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L159
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.i_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L164
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.i_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L169
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.ff_velocity_scale
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L174
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.u_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L179
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.u_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L184
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.antiwindup_strategy
+  value: legacy
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L189
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.tracking_time_constant
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L205
+- node: /joint_trajectory_controller
+  name: gains.shoulder_lift_joint.error_deadband
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L211
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.p
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L144
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.i
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L149
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.d
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L154
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.i_clamp
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L159
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.i_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L164
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.i_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L169
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.ff_velocity_scale
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L174
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.u_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L179
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.u_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L184
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.antiwindup_strategy
+  value: legacy
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L189
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.tracking_time_constant
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L205
+- node: /joint_trajectory_controller
+  name: gains.elbow_flex_joint.error_deadband
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L211
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.p
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L144
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.i
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L149
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.d
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L154
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.i_clamp
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L159
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.i_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L164
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.i_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L169
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.ff_velocity_scale
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L174
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.u_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L179
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.u_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L184
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.antiwindup_strategy
+  value: legacy
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L189
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.tracking_time_constant
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L205
+- node: /joint_trajectory_controller
+  name: gains.wrist_flex_joint.error_deadband
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L211
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.p
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L144
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.i
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L149
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.d
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L154
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.i_clamp
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L159
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.i_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L164
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.i_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L169
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.ff_velocity_scale
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L174
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.u_clamp_max
+  value: .inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L179
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.u_clamp_min
+  value: -.inf
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L184
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.antiwindup_strategy
+  value: legacy
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L189
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.tracking_time_constant
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L205
+- node: /joint_trajectory_controller
+  name: gains.wrist_roll_joint.error_deadband
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L211
+- node: /joint_trajectory_controller
+  name: constraints.stopped_velocity_tolerance
+  value: 0.01
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L217
+- node: /joint_trajectory_controller
+  name: constraints.goal_time
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L222
+- node: /joint_trajectory_controller
+  name: constraints.decelerate_on_cancel
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L231
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_pan_joint.trajectory
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L240
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_pan_joint.goal
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L245
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_pan_joint.max_deceleration_on_cancel
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L250
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_lift_joint.trajectory
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L240
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_lift_joint.goal
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L245
+- node: /joint_trajectory_controller
+  name: constraints.shoulder_lift_joint.max_deceleration_on_cancel
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L250
+- node: /joint_trajectory_controller
+  name: constraints.elbow_flex_joint.trajectory
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L240
+- node: /joint_trajectory_controller
+  name: constraints.elbow_flex_joint.goal
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L245
+- node: /joint_trajectory_controller
+  name: constraints.elbow_flex_joint.max_deceleration_on_cancel
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L250
+- node: /joint_trajectory_controller
+  name: constraints.wrist_flex_joint.trajectory
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L240
+- node: /joint_trajectory_controller
+  name: constraints.wrist_flex_joint.goal
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L245
+- node: /joint_trajectory_controller
+  name: constraints.wrist_flex_joint.max_deceleration_on_cancel
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L250
+- node: /joint_trajectory_controller
+  name: constraints.wrist_roll_joint.trajectory
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L240
+- node: /joint_trajectory_controller
+  name: constraints.wrist_roll_joint.goal
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L245
+- node: /joint_trajectory_controller
+  name: constraints.wrist_roll_joint.max_deceleration_on_cancel
+  value: 0.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L250
+- node: /joint_trajectory_controller
+  name: update_rate
+  value: 50
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L100
+  notes: controller base parameter; update_rate defaults to the controller_manager update_rate
+- node: /joint_trajectory_controller
+  name: is_async
+  value: false
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L101
+- node: /joint_trajectory_controller
+  name: thread_priority
+  value: -100
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L102
+- node: /joint_state_broadcaster
+  name: use_local_topics
+  value: false
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L2
+- node: /joint_state_broadcaster
+  name: joints
+  value: []
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L8
+- node: /joint_state_broadcaster
+  name: extra_joints
+  value: []
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L18
+- node: /joint_state_broadcaster
+  name: interfaces
+  value: []
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L24
+- node: /joint_state_broadcaster
+  name: map_interface_to_joint_state.position
+  value: position
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L38
+- node: /joint_state_broadcaster
+  name: map_interface_to_joint_state.velocity
+  value: velocity
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L43
+- node: /joint_state_broadcaster
+  name: map_interface_to_joint_state.effort
+  value: effort
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L48
+- node: /joint_state_broadcaster
+  name: use_urdf_to_filter
+  value: true
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L53
+- node: /joint_state_broadcaster
+  name: frame_id
+  value: base_link
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L61
+- node: /joint_state_broadcaster
+  name: publish_dynamic_joint_states
+  value: true
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_state_broadcaster/src/joint_state_broadcaster_parameters.yaml#L67
+- node: /joint_state_broadcaster
+  name: update_rate
+  value: 50
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L100
+  notes: controller base parameter; update_rate defaults to the controller_manager update_rate
+- node: /joint_state_broadcaster
+  name: is_async
+  value: false
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L101
+- node: /joint_state_broadcaster
+  name: thread_priority
+  value: -100
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L102
+- node: /gripper_controller
+  name: action_monitor_rate
+  value: 20.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L2
+- node: /gripper_controller
+  name: joint
+  value: gripper_joint
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L18
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L11
+- node: /gripper_controller
+  name: state_interfaces
+  value:
+  - position
+  - velocity
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L18
+- node: /gripper_controller
+  name: goal_tolerance
+  value: 0.01
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L22
+- node: /gripper_controller
+  name: allow_stalling
+  value: true
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L18
+  - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L29
+- node: /gripper_controller
+  name: stall_velocity_threshold
+  value: 0.001
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L34
+- node: /gripper_controller
+  name: stall_timeout
+  value: 1.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L39
+- node: /gripper_controller
+  name: max_effort_interface
+  value: ''
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L47
+- node: /gripper_controller
+  name: max_effort
+  value: 10.0
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L52
+- node: /gripper_controller
+  name: max_velocity_interface
+  value: ''
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L60
+- node: /gripper_controller
+  name: max_velocity
+  value: 0.1
+  source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/src/gripper_action_controller_parameters.yaml#L65
+- node: /gripper_controller
+  name: update_rate
+  value: 50
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L100
+  notes: controller base parameter; update_rate defaults to the controller_manager update_rate
+- node: /gripper_controller
+  name: is_async
+  value: false
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L101
+- node: /gripper_controller
+  name: thread_priority
+  value: -100
+  source: https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L102
+- node: /robot_state_publisher
+  name: robot_description
+  value:
+    file: boot/robot_description.urdf
+  source:
+  - https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/launch/controllers_bringup.launch.py#L42
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L81
+  notes: xacro output of the boot (see model.robot_description); the leading banner comment is installation-dependent
+- node: /robot_state_publisher
+  name: publish_frequency
+  value: 20.0
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L118
+- node: /robot_state_publisher
+  name: frame_prefix
+  value: ''
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L124
+- node: /robot_state_publisher
+  name: ignore_timestamp
+  value: false
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L127
+- node: /robot_state_publisher
+  name: qos_overrides./joint_states.subscription.depth
+  value: 5
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./joint_states.subscription.durability
+  value: volatile
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./joint_states.subscription.history
+  value: keep_last
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./joint_states.subscription.reliability
+  value: best_effort
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.depth
+  value: 100
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L69
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.durability
+  value: volatile
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L69
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.history
+  value: keep_last
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L69
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.reliability
+  value: reliable
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L69
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.depth
+  value: 1
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L67
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.history
+  value: keep_last
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L67
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.reliability
+  value: reliable
+  source: https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L67
+  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+- node: /usb_cam
+  name: camera_name
+  value: default_cam
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L65
+- node: /usb_cam
+  name: camera_info_url
+  value: ''
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L66
+- node: /usb_cam
+  name: framerate
+  value: 30.0
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L67
+- node: /usb_cam
+  name: frame_id
+  value: default_cam
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L68
+- node: /usb_cam
+  name: image_height
+  value: 480
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L69
+- node: /usb_cam
+  name: image_width
+  value: 640
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L70
+- node: /usb_cam
+  name: io_method
+  value: mmap
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L71
+- node: /usb_cam
+  name: pixel_format
+  value: yuyv
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L72
+- node: /usb_cam
+  name: av_device_format
+  value: YUV422P
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L73
+- node: /usb_cam
+  name: video_device
+  value: /dev/video0
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L74
+- node: /usb_cam
+  name: brightness
+  value: 50
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L75
+- node: /usb_cam
+  name: contrast
+  value: -1
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L76
+- node: /usb_cam
+  name: saturation
+  value: -1
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L77
+- node: /usb_cam
+  name: sharpness
+  value: -1
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L78
+- node: /usb_cam
+  name: gain
+  value: -1
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L79
+- node: /usb_cam
+  name: auto_white_balance
+  value: true
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L80
+- node: /usb_cam
+  name: white_balance
+  value: 4000
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L81
+- node: /usb_cam
+  name: autoexposure
+  value: true
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L82
+- node: /usb_cam
+  name: exposure
+  value: 100
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L83
+- node: /usb_cam
+  name: autofocus
+  value: false
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L84
+- node: /usb_cam
+  name: focus
+  value: -1
+  source: https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L85
+- node: /usb_cam
+  name: image_raw.enable_pub_plugins
+  value:
+  - image_transport/raw
+  source: https://github.com/ros-perception/image_common/blob/f1444cf32ce82672c2b75e1c964a72c4b0245996/image_transport/src/publisher.cpp#L128
+  notes: 'defaults to every installed publisher transport: [''image_transport/raw''] without the optional image_transport_plugins;
+    with them installed also image_transport/compressed, compressedDepth, theora and zstd (sorted by name)'
+- node: /usb_cam
+  name: image_raw.compressed.format
+  value: jpeg
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L65
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.format
+  value: jpeg
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L65
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.compressed.png_level
+  value: 3
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L74
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.png_level
+  value: 3
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L74
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.compressed.jpeg_quality
+  value: 95
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L87
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.jpeg_quality
+  value: 95
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L87
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.compressed.tiff.res_unit
+  value: inch
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L100
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.tiff.res_unit
+  value: inch
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L100
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.compressed.tiff.xdpi
+  value: -1
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L109
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.tiff.xdpi
+  value: -1
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L109
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.compressed.tiff.ydpi
+  value: -1
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L117
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+- node: /usb_cam
+  name: image_raw.tiff.ydpi
+  value: -1
+  source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_image_transport/src/compressed_publisher.cpp#L117
+  optional: true
+  notes: compressed plugin parameter (optional plugin); image_raw.<name> is the deprecated unscoped alias
+tf:
+- parent: world
+  child: base_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L25
+- parent: gripper_link
+  child: gripper_frame_link
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - -0.0079
+  - -0.000218121
+  - -0.0981274
+  rpy:
+  - 0.0
+  - 3.14159
+  - 0.0
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L662
+- parent: base_link
+  child: shoulder_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L532
+  notes: revolute shoulder_pan_joint, from /joint_states
+- parent: shoulder_link
+  child: upper_arm_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L559
+  notes: revolute shoulder_lift_joint, from /joint_states
+- parent: upper_arm_link
+  child: lower_arm_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L584
+  notes: revolute elbow_flex_joint, from /joint_states
+- parent: lower_arm_link
+  child: wrist_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L611
+  notes: revolute wrist_flex_joint, from /joint_states
+- parent: wrist_link
+  child: gripper_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L638
+  notes: revolute wrist_roll_joint, from /joint_states
+- parent: gripper_link
+  child: jaw_link
+  static: false
+  publisher: /robot_state_publisher
+  rate: 16.67
+  source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L670
+  notes: revolute gripper_joint, from /joint_states
+motions:
+- id: arm
+  velocity_driven: false
+  command:
+    interface: topic
+    name: /joint_trajectory_controller/joint_trajectory
+    type: trajectory_msgs/msg/JointTrajectory
+    fields:
+    - field: points[].positions[0] (shoulder_pan_joint)
+      unit: rad
+      min: -1.91986
+      max: 1.91986
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L532
+    - field: points[].positions[1] (shoulder_lift_joint)
+      unit: rad
+      min: -1.74533
+      max: 1.74533
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L559
+    - field: points[].positions[2] (elbow_flex_joint)
+      unit: rad
+      min: -1.69
+      max: 1.54
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L584
+    - field: points[].positions[3] (wrist_flex_joint)
+      unit: rad
+      min: -1.6
+      max: 1.6
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L611
+    - field: points[].positions[4] (wrist_roll_joint)
+      unit: rad
+      min: -2.3
+      max: 2.3
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L638
+    - field: points[].time_from_start
+      unit: s
+      source: https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller.cpp#L1003
+    also: /joint_trajectory_controller/follow_joint_trajectory (control_msgs/action/FollowJointTrajectory) with
+      the same joint names, units and limits
+    servo_profile:
+      speed_ticks_per_s: 2400
+      speed_rad_per_s: 3.682
+      acceleration_register: 50
+      basis: source
+      source: https://github.com/ros-physical-ai/feetech_ros2_driver/blob/e424839f0fb23cc0b0ade8d6e5ea166e30811356/src/feetech_ros2_driver.cpp#L157
+      notes: the plugin writes every goal with STS speed 2400 ticks/s (4096 ticks/rev) and acceleration register
+        50; the register's physical unit is not stated in the pinned source
+    example:
+      joint_names:
+      - shoulder_pan_joint
+      - shoulder_lift_joint
+      - elbow_flex_joint
+      - wrist_flex_joint
+      - wrist_roll_joint
+      points:
+      - positions:
+        - 0.3
+        - -0.3
+        - 0.3
+        - 0.3
+        - 0.5
+        time_from_start:
+          sec: 2
+          nanosec: 0
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'Derived from the pinned source, not measured on the real robot (the robot specification''s real-hardware
+      measurement is outstanding): joint_trajectory_controller cmd_timeout defaults to 0.0 (disabled) and ros2_controllers.yaml
+      does not set it; the Feetech hardware plugin writes the held position command every 20 ms and has no command
+      timeout; the STS3215 holds its last goal.'
+    date: '2026-09-30'
+    source:
+    - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/joint_trajectory_controller/src/joint_trajectory_controller_parameters.yaml#L134
+    - https://github.com/ros-physical-ai/feetech_ros2_driver/blob/e424839f0fb23cc0b0ade8d6e5ea166e30811356/src/feetech_ros2_driver.cpp#L144
+  feedback:
+  - name: /joint_states
+    field: position (rad) of the five arm joints
+  - name: /joint_trajectory_controller/controller_state
+    field: feedback.positions, error.positions
+  end_state: every arm joint within the arm-joint tolerance of the last trajectory point and at rest (joint velocity
+    below 0.01 rad/s, constraints.stopped_velocity_tolerance)
+- id: gripper
+  velocity_driven: false
+  command:
+    interface: action
+    name: /gripper_controller/gripper_cmd
+    type: control_msgs/action/ParallelGripperCommand
+    fields:
+    - field: command.position[0] (gripper_joint)
+      unit: rad
+      min: 0.0
+      max: 1.7
+      source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/urdf/so_arm101_macro.xacro#L670
+      notes: 0.0 closed, larger opens; command.velocity and command.effort are ignored (max_velocity_interface and
+        max_effort_interface empty)
+    example:
+      command:
+        name:
+        - gripper_joint
+        position:
+        - 1.0
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'Derived from the pinned source, not measured on the real robot (the robot specification''s real-hardware
+      measurement is outstanding): the parallel gripper action controller holds its last position command with no
+      timeout; the Feetech hardware plugin writes the held position command every 20 ms and has no command timeout;
+      the STS3215 holds its last goal.'
+    date: '2026-09-30'
+    source:
+    - https://github.com/ros-controls/ros2_controllers/blob/aacd842600a09d556b983ac3d53a0983e9ebcbb1/parallel_gripper_controller/include/parallel_gripper_controller/parallel_gripper_action_controller_impl.hpp#L86
+    - https://github.com/ros-physical-ai/feetech_ros2_driver/blob/e424839f0fb23cc0b0ade8d6e5ea166e30811356/src/feetech_ros2_driver.cpp#L144
+  feedback:
+  - name: /joint_states
+    field: position of gripper_joint (rad)
+  - name: /gripper_controller/gripper_cmd
+    field: result.state.position, reached_goal, stalled
+  end_state: action succeeds when |command - position| < goal_tolerance 0.01 rad, or when the jaw stalls (|velocity|
+    <= 0.001 rad/s for stall_timeout 1.0 s; allow_stalling true reports success with stalled=true)
+sensors:
+  cameras:
+  - id: wrist
+    image_topic: /image_raw
+    info_topic: /camera_info
+    compressed_topic: /image_raw/compressed
+    frame_id: default_cam
+    width: 640
+    height: 480
+    rate: 30
+    encoding: yuv422_yuy2
+    hfov_deg: 70.0
+    hfov_basis: estimate
+    hfov_note: the boot publishes no calibration; 70 deg horizontal is an estimate for the recommended 32x32 mm
+      UVC module (not a manufacturer figure); the model camera uses fovy 55.4 deg (= 2 atan(tan(35 deg) * 480/640))
+    intrinsics:
+      fx: 0.0
+      fy: 0.0
+      cx: 0.0
+      cy: 0.0
+      distortion_model: ''
+      d: []
+      basis: uncalibrated
+      source:
+      - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L66
+      - https://github.com/ros-drivers/usb_cam/blob/cb2ae6bc0a312de629f84fef933fb3e07dac1ef8/src/ros2/usb_cam_node.cpp#L147
+      notes: camera_info_url is empty, so CameraInfo carries only width/height/frame_id; usb_cam's config/camera_info.yaml
+        belongs to its params_1.yaml example, which this boot does not load
+    mount:
+      parent: gripper_link
+      xyz:
+      - -0.008
+      - 0.045
+      - -0.01
+      rpy:
+      - 2.8797933
+      - 0.0
+      - 0.0
+      basis: estimate
+      source:
+      - https://github.com/TheRobotStudio/SO-ARM100/blob/aec17bbc256d1a7342d53aaa4950595d4c30b40d/Optional/SO101_Wrist_Cam_Hex-Nut_Mount_32x32_UVC_Module/README.md
+      - https://github.com/TheRobotStudio/SO-ARM100/blob/aec17bbc256d1a7342d53aaa4950595d4c30b40d/media/UVC_cam_mount_so101.jpg
+      notes: 'optical frame (z forward, x right, y down) pose in the boot''s gripper_link frame, estimated from
+        the pinned photo media/UVC_cam_mount_so101.jpg of the SO101 hex-nut wrist mount: the lens sits on a plate
+        rising from the Wrist_Roll_Follower on the +y side of gripper_link (moving jaw appears on the observer''s
+        left when viewed from the fingertips), about 4.5 cm off the jaw plane, centred over the jaw gap (x = -0.008,
+        the gripper_frame_link x), near the wrist (z = -0.01), looking along the fingers (-z) and pitched 15 deg
+        toward them. Not measured; the real mount may differ by about 2 cm and 10 deg; no TF for default_cam is
+        published by the boot. Image orientation (derived): jaws at the bottom of the image (as in the pinned photos and
+        recorded SO-101 wrist footage), moving jaw on the right (pinned photo). At home (all joints 0.0) the jaws open in the
+        vertical plane (official model at qpos 0; LeRobot SO-101 calibration video, middle-of-range pose), so the
+        camera is beside the gripper and the image is rolled 90 deg (world up = image right); it is upright at
+        wrist_roll_joint = -pi/2. See import.md, Wrist camera'
+    hardware: 32x32 mm USB UVC camera module (README-recommended innomaker module or equivalent, min 720p/30 fps)
+      on the SO101 hex-nut wrist-camera mount; run at the usb_cam defaults 640x480 YUYV 30 fps
+  lidars: []
+  imus: []
+tolerances:
+- figure: arm joint final position after a trajectory
+  applies_to:
+  - shoulder_pan_joint
+  - shoulder_lift_joint
+  - elbow_flex_joint
+  - wrist_flex_joint
+  - wrist_roll_joint
+  tolerance:
+    absolute: 0.035
+    unit: rad
+  basis: estimate
+  notes: 'about 2 deg: STS3215 resolution is 4096 ticks/rev (0.0015 rad), the official MJCF models +/-0.5 deg backlash
+    and load sag; no manufacturer accuracy figure exists for the SO-101'
+- figure: gripper final position after a free (non-grasping) command
+  applies_to:
+  - gripper_joint
+  tolerance:
+    absolute: 0.05
+    unit: rad
+  basis: estimate
+  notes: the controller itself declares success at 0.01 rad (goal_tolerance) or on stall; 0.05 rad allows for the
+    printed jaw's compliance; not a manufacturer figure
+notes: 'TheRobotStudio publishes no ROS interface for the SO-101; this is the approved community interface (workspace
+  spec §1.3): the pinned ros2_so_arm real-hardware bringup plus the pinned usb_cam boot. Excluded as ROS infrastructure:
+  /rosout, /parameter_events, every node''s parameter, logger and type-description services, ROS 2 action-internal
+  topics and services, and the client-library parameters every rclcpp node declares (use_sim_time: false, start_type_description_service:
+  true). Rates are derived from the pinned source (rate_basis: source), not measured on hardware. The feetech_ros2_driver
+  0.2.2 plugin decodes position as (ticks - offset) * 2 pi / 4096 and writes position commands as offset + rad *
+  4096 / (2 pi); the servos'' own P gains are written from the p_cofficient values (8 for shoulder_pan, 16 for the
+  others).'

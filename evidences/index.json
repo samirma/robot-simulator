@@ -1,0 +1,1195 @@
+{
+ "generated": "2026-10-02T11:48:52+01:00",
+ "generator": "tests/evidence.py",
+ "robots": [
+  "myagv",
+  "so101",
+  "ainex",
+  "mycobot280",
+  "myagv_mycobot280",
+  "rosmaster_x3_plus"
+ ],
+ "engines": [
+  "molmospaces",
+  "robocasa"
+ ],
+ "cases": [
+  {
+   "engine": "molmospaces",
+   "robot": "myagv",
+   "name": "myAGV",
+   "kind": "mobile_base",
+   "scene": "ithor:1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "molmospaces/myagv",
+   "scene_png": "molmospaces/myagv/scene.png",
+   "camera_pngs": [
+    "molmospaces/myagv/cam__usb_cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "molmospaces/myagv/cam__usb_cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "molmospaces/myagv/motion_drive_back_after.png",
+    "molmospaces/myagv/motion_drive_back_before.png",
+    "molmospaces/myagv/motion_drive_forward_after.png",
+    "molmospaces/myagv/motion_drive_forward_before.png",
+    "molmospaces/myagv/motion_drive_left_after.png",
+    "molmospaces/myagv/motion_drive_left_before.png",
+    "molmospaces/myagv/motion_drive_right_after.png",
+    "molmospaces/myagv/motion_drive_right_before.png",
+    "molmospaces/myagv/motion_drive_turn_after.png",
+    "molmospaces/myagv/motion_drive_turn_before.png"
+   ],
+   "smoke": "molmospaces/myagv/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true
+   },
+   "fleet": [
+    {
+     "profile": "myagv",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/myagv/fleet_myagv.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: myagv (myAGV) in molmospaces ithor:1 on the floor; wire(s): myagv ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:20:34+01:00",
+   "finished": "2026-10-02T11:26:38+01:00",
+   "host_load_before": {
+    "load1": 6.87,
+    "load5": 12.11,
+    "load15": 12.06,
+    "ncpu": 14,
+    "waited_s": 300.1
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:26:02+01:00",
+    "to": "2026-10-02T11:26:26+01:00"
+   },
+   "earlier_attempts": [
+    {
+     "dir": "molmospaces/myagv/history/2026-10-02T111839+0100",
+     "started": "2026-10-02T11:18:39+01:00",
+     "pass": false,
+     "checks": {
+      "scene": true,
+      "cameras": true,
+      "fleet": true,
+      "smoke": false,
+      "spawn_clean_exit": true
+     },
+     "rtf_clean": false,
+     "rtf_low_windows": [
+      {
+       "window_end": "2026-10-02T11:19:18+01:00",
+       "rtf": 0.461
+      },
+      {
+       "window_end": "2026-10-02T11:19:29+01:00",
+       "rtf": 0.601
+      },
+      {
+       "window_end": "2026-10-02T11:19:38+01:00",
+       "rtf": 0.55
+      },
+      {
+       "window_end": "2026-10-02T11:19:49+01:00",
+       "rtf": 0.518
+      }
+     ],
+     "error": null,
+     "host_load_before": {
+      "load1": 5.56,
+      "load5": 10.02,
+      "load15": 10.33,
+      "ncpu": 14,
+      "waited_s": 0.0
+     },
+     "rtf_warnings": 7
+    }
+   ]
+  },
+  {
+   "engine": "molmospaces",
+   "robot": "so101",
+   "name": "SO-101",
+   "kind": "arm",
+   "scene": "ithor:1",
+   "placement": "worktop",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true,
+    "worktop_objects": true
+   },
+   "error": null,
+   "dir": "molmospaces/so101",
+   "scene_png": "molmospaces/so101/scene.png",
+   "camera_pngs": [
+    "molmospaces/so101/cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "molmospaces/so101/cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "molmospaces/so101/motion_arm_after.png",
+    "molmospaces/so101/motion_arm_before.png",
+    "molmospaces/so101/motion_gripper_after.png",
+    "molmospaces/so101/motion_gripper_before.png"
+   ],
+   "smoke": "molmospaces/so101/smoke.json",
+   "motions": {
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "so101",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/so101/fleet_so101.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: so101 (SO-101) in molmospaces ithor:1 on the worktop; wire(s): so101 ws://127.0.0.1:9090 [ROS 2 jazzy]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [
+    "apple",
+    "banana",
+    "bowl",
+    "lemon",
+    "mug",
+    "plate"
+   ],
+   "cleared": [
+    "apple_038a0ea9b393da66a161da588e6ecc2a_1_0_0",
+    "bread_5f50f53c9dcfbae4352335033a8b2bb4_1_0_0",
+    "book_be545aaaeb1f643586d7965f7a571f70_1_0_0"
+   ],
+   "started": "2026-10-02T11:27:57+01:00",
+   "finished": "2026-10-02T11:33:01+01:00",
+   "host_load_before": {
+    "load1": 6.31,
+    "load5": 10.08,
+    "load15": 11.17,
+    "ncpu": 14,
+    "waited_s": 260.1
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:32:40+01:00",
+    "to": "2026-10-02T11:32:49+01:00"
+   },
+   "earlier_attempts": [
+    {
+     "dir": "molmospaces/so101/history/2026-10-02T112638+0100",
+     "started": "2026-10-02T11:26:38+01:00",
+     "pass": true,
+     "checks": {
+      "scene": true,
+      "cameras": true,
+      "fleet": true,
+      "smoke": true,
+      "spawn_clean_exit": true,
+      "worktop_objects": true
+     },
+     "rtf_clean": false,
+     "rtf_low_windows": [
+      {
+       "window_end": "2026-10-02T11:27:07+01:00",
+       "rtf": 0.88
+      },
+      {
+       "window_end": "2026-10-02T11:27:17+01:00",
+       "rtf": 0.854
+      }
+     ],
+     "error": null,
+     "host_load_before": {
+      "load1": 5.54,
+      "load5": 10.64,
+      "load15": 11.5,
+      "ncpu": 14,
+      "waited_s": 0.0
+     },
+     "rtf_warnings": 3
+    }
+   ]
+  },
+  {
+   "engine": "molmospaces",
+   "robot": "ainex",
+   "name": "AiNex",
+   "kind": "humanoid",
+   "scene": "ithor:1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "molmospaces/ainex",
+   "scene_png": "molmospaces/ainex/scene.png",
+   "camera_pngs": [
+    "molmospaces/ainex/cam__camera__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "molmospaces/ainex/cam__camera__image_raw.png"
+   ],
+   "motion_pngs": [
+    "molmospaces/ainex/motion_action_group_after.png",
+    "molmospaces/ainex/motion_action_group_before.png",
+    "molmospaces/ainex/motion_head_pan_after.png",
+    "molmospaces/ainex/motion_head_pan_before.png",
+    "molmospaces/ainex/motion_head_tilt_after.png",
+    "molmospaces/ainex/motion_head_tilt_before.png",
+    "molmospaces/ainex/motion_walk_after.png",
+    "molmospaces/ainex/motion_walk_before.png"
+   ],
+   "smoke": "molmospaces/ainex/smoke.json",
+   "motions": {
+    "head_pan": true,
+    "head_tilt": true,
+    "walk": true,
+    "action_group": true
+   },
+   "fleet": [
+    {
+     "profile": "ainex",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/ainex/fleet_ainex.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: ainex (AiNex) in molmospaces ithor:1 on the floor; wire(s): ainex ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:33:01+01:00",
+   "finished": "2026-10-02T11:34:02+01:00",
+   "host_load_before": {
+    "load1": 4.45,
+    "load5": 9.07,
+    "load15": 10.74,
+    "ncpu": 14,
+    "waited_s": 0.0
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:33:25+01:00",
+    "to": "2026-10-02T11:33:50+01:00"
+   },
+   "earlier_attempts": [
+    {
+     "dir": "molmospaces/ainex/history/2026-10-02T105631+0100",
+     "started": "2026-10-02T10:56:31+01:00",
+     "pass": true,
+     "checks": {
+      "scene": true,
+      "cameras": true,
+      "fleet": true,
+      "smoke": true,
+      "spawn_clean_exit": true
+     },
+     "rtf_clean": false,
+     "rtf_low_windows": [
+      {
+       "window_end": "2026-10-02T11:00:10+01:00",
+       "rtf": 0.49
+      },
+      {
+       "window_end": "2026-10-02T11:00:19+01:00",
+       "rtf": 0.888
+      }
+     ],
+     "error": null,
+     "host_load_before": {
+      "load1": 6.69,
+      "load5": 9.4,
+      "load15": 10.29,
+      "ncpu": 14,
+      "waited_s": 180.0
+     },
+     "rtf_warnings": 3
+    },
+    {
+     "dir": "molmospaces/ainex/history/2026-10-02T110109+0100",
+     "started": "2026-10-02T11:01:09+01:00",
+     "pass": false,
+     "checks": {
+      "scene": false,
+      "cameras": true,
+      "fleet": false,
+      "smoke": false,
+      "spawn_clean_exit": false
+     },
+     "rtf_clean": true,
+     "rtf_low_windows": null,
+     "error": "RuntimeError('port 9080 or 9090 is taken')",
+     "host_load_before": {
+      "load1": 6.65,
+      "load5": 9.24,
+      "load15": 10.09,
+      "ncpu": 14,
+      "waited_s": 140.0
+     },
+     "rtf_warnings": 0
+    }
+   ]
+  },
+  {
+   "engine": "molmospaces",
+   "robot": "mycobot280",
+   "name": "myCobot 280",
+   "kind": "arm",
+   "scene": "ithor:1",
+   "placement": "worktop",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true,
+    "worktop_objects": true
+   },
+   "error": null,
+   "dir": "molmospaces/mycobot280",
+   "scene_png": "molmospaces/mycobot280/scene.png",
+   "camera_pngs": [],
+   "required_camera_pngs": [],
+   "motion_pngs": [
+    "molmospaces/mycobot280/motion_arm_after.png",
+    "molmospaces/mycobot280/motion_arm_before.png",
+    "molmospaces/mycobot280/motion_gripper_after.png",
+    "molmospaces/mycobot280/motion_gripper_before.png"
+   ],
+   "smoke": "molmospaces/mycobot280/smoke.json",
+   "motions": {
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "mycobot280",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/mycobot280/fleet_mycobot280.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: mycobot280 (myCobot 280) in molmospaces ithor:1 on the worktop; wire(s): mycobot280 ws://127.0.0.1:9090 [ROS 2 humble]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [
+    "apple",
+    "banana",
+    "bowl",
+    "lemon",
+    "mug",
+    "plate"
+   ],
+   "cleared": [
+    "apple_038a0ea9b393da66a161da588e6ecc2a_1_0_0",
+    "bread_5f50f53c9dcfbae4352335033a8b2bb4_1_0_0",
+    "book_be545aaaeb1f643586d7965f7a571f70_1_0_0"
+   ],
+   "started": "2026-10-02T11:34:03+01:00",
+   "finished": "2026-10-02T11:34:50+01:00",
+   "host_load_before": {
+    "load1": 6.28,
+    "load5": 8.9,
+    "load15": 10.57,
+    "ncpu": 14,
+    "waited_s": 0.0
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:34:29+01:00",
+    "to": "2026-10-02T11:34:38+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "molmospaces",
+   "robot": "myagv_mycobot280",
+   "name": "myAGV + myCobot 280",
+   "kind": "mobile_manipulator",
+   "scene": "ithor:1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "molmospaces/myagv_mycobot280",
+   "scene_png": "molmospaces/myagv_mycobot280/scene.png",
+   "camera_pngs": [
+    "molmospaces/myagv_mycobot280/cam__usb_cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "molmospaces/myagv_mycobot280/cam__usb_cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "molmospaces/myagv_mycobot280/motion_arm_after.png",
+    "molmospaces/myagv_mycobot280/motion_arm_before.png",
+    "molmospaces/myagv_mycobot280/motion_drive_back_after.png",
+    "molmospaces/myagv_mycobot280/motion_drive_back_before.png",
+    "molmospaces/myagv_mycobot280/motion_drive_forward_after.png",
+    "molmospaces/myagv_mycobot280/motion_drive_forward_before.png",
+    "molmospaces/myagv_mycobot280/motion_drive_left_after.png",
+    "molmospaces/myagv_mycobot280/motion_drive_left_before.png",
+    "molmospaces/myagv_mycobot280/motion_drive_right_after.png",
+    "molmospaces/myagv_mycobot280/motion_drive_right_before.png",
+    "molmospaces/myagv_mycobot280/motion_drive_turn_after.png",
+    "molmospaces/myagv_mycobot280/motion_drive_turn_before.png",
+    "molmospaces/myagv_mycobot280/motion_gripper_after.png",
+    "molmospaces/myagv_mycobot280/motion_gripper_before.png"
+   ],
+   "smoke": "molmospaces/myagv_mycobot280/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true,
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "myagv",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/myagv_mycobot280/fleet_myagv.txt"
+    },
+    {
+     "profile": "mycobot280",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/myagv_mycobot280/fleet_mycobot280.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: myagv_mycobot280 (myAGV + myCobot 280) in molmospaces ithor:1 on the floor; wire(s): base (myagv) ws://127.0.0.1:9090 [ROS 1 noetic]; arm (mycobot280) ws://127.0.0.1:9091 [ROS 2 humble]",
+   "ports": {
+    "base": 9090,
+    "arm": 9091,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:34:50+01:00",
+   "finished": "2026-10-02T11:35:59+01:00",
+   "host_load_before": {
+    "load1": 5.34,
+    "load5": 8.31,
+    "load15": 10.27,
+    "ncpu": 14,
+    "waited_s": 0.0
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:35:16+01:00",
+    "to": "2026-10-02T11:35:47+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "molmospaces",
+   "robot": "rosmaster_x3_plus",
+   "name": "ROSMASTER X3 PLUS",
+   "kind": "mobile_manipulator",
+   "scene": "ithor:1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "molmospaces/rosmaster_x3_plus",
+   "scene_png": "molmospaces/rosmaster_x3_plus/scene.png",
+   "camera_pngs": [
+    "molmospaces/rosmaster_x3_plus/cam__camera__rgb__image_raw.png",
+    "molmospaces/rosmaster_x3_plus/cam__camera__depth__image_raw.png",
+    "molmospaces/rosmaster_x3_plus/cam__camera__ir__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "molmospaces/rosmaster_x3_plus/cam__camera__rgb__image_raw.png",
+    "molmospaces/rosmaster_x3_plus/cam__camera__depth__image_raw.png",
+    "molmospaces/rosmaster_x3_plus/cam__camera__ir__image_raw.png"
+   ],
+   "motion_pngs": [
+    "molmospaces/rosmaster_x3_plus/motion_arm_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_arm_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_back_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_back_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_forward_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_forward_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_left_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_left_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_right_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_right_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_turn_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_drive_turn_before.png",
+    "molmospaces/rosmaster_x3_plus/motion_gripper_after.png",
+    "molmospaces/rosmaster_x3_plus/motion_gripper_before.png"
+   ],
+   "smoke": "molmospaces/rosmaster_x3_plus/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true,
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "rosmaster_x3_plus",
+     "exit_code": 0,
+     "pass": true,
+     "file": "molmospaces/rosmaster_x3_plus/fleet_rosmaster_x3_plus.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: rosmaster_x3_plus (ROSMASTER X3 PLUS) in molmospaces ithor:1 on the floor; wire(s): rosmaster_x3_plus ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:38:56+01:00",
+   "finished": "2026-10-02T11:44:54+01:00",
+   "host_load_before": {
+    "load1": 6.91,
+    "load5": 8.51,
+    "load15": 9.52,
+    "ncpu": 14,
+    "waited_s": 280.3
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:44:05+01:00",
+    "to": "2026-10-02T11:44:41+01:00"
+   },
+   "earlier_attempts": [
+    {
+     "dir": "molmospaces/rosmaster_x3_plus/history/2026-10-02T113600+0100",
+     "started": "2026-10-02T11:36:00+01:00",
+     "pass": true,
+     "checks": {
+      "scene": true,
+      "cameras": true,
+      "fleet": true,
+      "smoke": true,
+      "spawn_clean_exit": true
+     },
+     "rtf_clean": false,
+     "rtf_low_windows": [
+      {
+       "window_end": "2026-10-02T11:37:18+01:00",
+       "rtf": 0.466
+      },
+      {
+       "window_end": "2026-10-02T11:37:29+01:00",
+       "rtf": 0.337
+      },
+      {
+       "window_end": "2026-10-02T11:37:39+01:00",
+       "rtf": 0.446
+      },
+      {
+       "window_end": "2026-10-02T11:37:49+01:00",
+       "rtf": 0.61
+      },
+      {
+       "window_end": "2026-10-02T11:37:59+01:00",
+       "rtf": 0.571
+      },
+      {
+       "window_end": "2026-10-02T11:38:09+01:00",
+       "rtf": 0.456
+      }
+     ],
+     "error": null,
+     "host_load_before": {
+      "load1": 5.82,
+      "load5": 7.79,
+      "load15": 9.83,
+      "ncpu": 14,
+      "waited_s": 40.0
+     },
+     "rtf_warnings": 8
+    }
+   ]
+  },
+  {
+   "engine": "robocasa",
+   "robot": "myagv",
+   "name": "myAGV",
+   "kind": "mobile_base",
+   "scene": "robocasa:1-1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "robocasa/myagv",
+   "scene_png": "robocasa/myagv/scene.png",
+   "camera_pngs": [
+    "robocasa/myagv/cam__usb_cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "robocasa/myagv/cam__usb_cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "robocasa/myagv/motion_drive_back_after.png",
+    "robocasa/myagv/motion_drive_back_before.png",
+    "robocasa/myagv/motion_drive_forward_after.png",
+    "robocasa/myagv/motion_drive_forward_before.png",
+    "robocasa/myagv/motion_drive_left_after.png",
+    "robocasa/myagv/motion_drive_left_before.png",
+    "robocasa/myagv/motion_drive_right_after.png",
+    "robocasa/myagv/motion_drive_right_before.png",
+    "robocasa/myagv/motion_drive_turn_after.png",
+    "robocasa/myagv/motion_drive_turn_before.png"
+   ],
+   "smoke": "robocasa/myagv/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true
+   },
+   "fleet": [
+    {
+     "profile": "myagv",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/myagv/fleet_myagv.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: myagv (myAGV) in robocasa robocasa:1-1 on the floor; wire(s): myagv ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:44:54+01:00",
+   "finished": "2026-10-02T11:46:47+01:00",
+   "host_load_before": {
+    "load1": 6.17,
+    "load5": 8.02,
+    "load15": 9.2,
+    "ncpu": 14,
+    "waited_s": 60.0
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:46:14+01:00",
+    "to": "2026-10-02T11:46:35+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "robocasa",
+   "robot": "so101",
+   "name": "SO-101",
+   "kind": "arm",
+   "scene": "robocasa:1-1",
+   "placement": "worktop",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true,
+    "worktop_objects": true
+   },
+   "error": null,
+   "dir": "robocasa/so101",
+   "scene_png": "robocasa/so101/scene.png",
+   "camera_pngs": [
+    "robocasa/so101/cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "robocasa/so101/cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "robocasa/so101/motion_arm_after.png",
+    "robocasa/so101/motion_arm_before.png",
+    "robocasa/so101/motion_gripper_after.png",
+    "robocasa/so101/motion_gripper_before.png"
+   ],
+   "smoke": "robocasa/so101/smoke.json",
+   "motions": {
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "so101",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/so101/fleet_so101.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: so101 (SO-101) in robocasa robocasa:1-1 on the worktop; wire(s): so101 ws://127.0.0.1:9090 [ROS 2 jazzy]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [
+    "apple",
+    "banana",
+    "bowl",
+    "lemon",
+    "mug",
+    "plate"
+   ],
+   "cleared": [
+    "rc_obj_2_main",
+    "rc_obj_3_main",
+    "rc_obj_6_main",
+    "rc_obj_8_main",
+    "rc_obj_9_main",
+    "rc_obj_10_main"
+   ],
+   "started": "2026-10-02T11:46:47+01:00",
+   "finished": "2026-10-02T11:48:52+01:00",
+   "host_load_before": {
+    "load1": 6.32,
+    "load5": 7.87,
+    "load15": 8.98,
+    "ncpu": 14,
+    "waited_s": 80.0
+   },
+   "rtf_warnings": 0,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:48:29+01:00",
+    "to": "2026-10-02T11:48:39+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "robocasa",
+   "robot": "ainex",
+   "name": "AiNex",
+   "kind": "humanoid",
+   "scene": "robocasa:1-1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "robocasa/ainex",
+   "scene_png": "robocasa/ainex/scene.png",
+   "camera_pngs": [
+    "robocasa/ainex/cam__camera__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "robocasa/ainex/cam__camera__image_raw.png"
+   ],
+   "motion_pngs": [
+    "robocasa/ainex/motion_action_group_after.png",
+    "robocasa/ainex/motion_action_group_before.png",
+    "robocasa/ainex/motion_head_pan_after.png",
+    "robocasa/ainex/motion_head_pan_before.png",
+    "robocasa/ainex/motion_head_tilt_after.png",
+    "robocasa/ainex/motion_head_tilt_before.png",
+    "robocasa/ainex/motion_walk_after.png",
+    "robocasa/ainex/motion_walk_before.png"
+   ],
+   "smoke": "robocasa/ainex/smoke.json",
+   "motions": {
+    "head_pan": true,
+    "head_tilt": true,
+    "walk": true,
+    "action_group": true
+   },
+   "fleet": [
+    {
+     "profile": "ainex",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/ainex/fleet_ainex.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: ainex (AiNex) in robocasa robocasa:1-1 on the floor; wire(s): ainex ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-02T11:03:30+01:00",
+   "finished": "2026-10-02T11:05:17+01:00",
+   "host_load_before": {
+    "load1": 5.92,
+    "load5": 8.77,
+    "load15": 9.88,
+    "ncpu": 14,
+    "waited_s": 40.0
+   },
+   "rtf_warnings": 1,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T11:04:30+01:00",
+    "to": "2026-10-02T11:04:56+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "robocasa",
+   "robot": "mycobot280",
+   "name": "myCobot 280",
+   "kind": "arm",
+   "scene": "robocasa:1-1",
+   "placement": "worktop",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true,
+    "worktop_objects": true
+   },
+   "error": null,
+   "dir": "robocasa/mycobot280",
+   "scene_png": "robocasa/mycobot280/scene.png",
+   "camera_pngs": [],
+   "required_camera_pngs": [],
+   "motion_pngs": [
+    "robocasa/mycobot280/motion_arm_after.png",
+    "robocasa/mycobot280/motion_arm_before.png",
+    "robocasa/mycobot280/motion_gripper_after.png",
+    "robocasa/mycobot280/motion_gripper_before.png"
+   ],
+   "smoke": "robocasa/mycobot280/smoke.json",
+   "motions": {
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "mycobot280",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/mycobot280/fleet_mycobot280.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: mycobot280 (myCobot 280) in robocasa robocasa:1-1 on the worktop; wire(s): mycobot280 ws://127.0.0.1:9090 [ROS 2 humble]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [
+    "apple",
+    "banana",
+    "bowl",
+    "lemon",
+    "mug",
+    "plate"
+   ],
+   "cleared": [],
+   "started": "2026-10-02T10:39:08+01:00",
+   "finished": "2026-10-02T10:40:01+01:00",
+   "host_load_before": {
+    "load1": 6.41,
+    "load5": 8.41,
+    "load15": 9.72,
+    "ncpu": 14,
+    "waited_s": 0.0
+   },
+   "rtf_warnings": 1,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-02T10:39:28+01:00",
+    "to": "2026-10-02T10:39:38+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "robocasa",
+   "robot": "myagv_mycobot280",
+   "name": "myAGV + myCobot 280",
+   "kind": "mobile_manipulator",
+   "scene": "robocasa:1-1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "robocasa/myagv_mycobot280",
+   "scene_png": "robocasa/myagv_mycobot280/scene.png",
+   "camera_pngs": [
+    "robocasa/myagv_mycobot280/cam__usb_cam__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "robocasa/myagv_mycobot280/cam__usb_cam__image_raw.png"
+   ],
+   "motion_pngs": [
+    "robocasa/myagv_mycobot280/motion_arm_after.png",
+    "robocasa/myagv_mycobot280/motion_arm_before.png",
+    "robocasa/myagv_mycobot280/motion_drive_back_after.png",
+    "robocasa/myagv_mycobot280/motion_drive_back_before.png",
+    "robocasa/myagv_mycobot280/motion_drive_forward_after.png",
+    "robocasa/myagv_mycobot280/motion_drive_forward_before.png",
+    "robocasa/myagv_mycobot280/motion_drive_left_after.png",
+    "robocasa/myagv_mycobot280/motion_drive_left_before.png",
+    "robocasa/myagv_mycobot280/motion_drive_right_after.png",
+    "robocasa/myagv_mycobot280/motion_drive_right_before.png",
+    "robocasa/myagv_mycobot280/motion_drive_turn_after.png",
+    "robocasa/myagv_mycobot280/motion_drive_turn_before.png",
+    "robocasa/myagv_mycobot280/motion_gripper_after.png",
+    "robocasa/myagv_mycobot280/motion_gripper_before.png"
+   ],
+   "smoke": "robocasa/myagv_mycobot280/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true,
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "myagv",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/myagv_mycobot280/fleet_myagv.txt"
+    },
+    {
+     "profile": "mycobot280",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/myagv_mycobot280/fleet_mycobot280.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: myagv_mycobot280 (myAGV + myCobot 280) in robocasa robocasa:1-1 on the floor; wire(s): base (myagv) ws://127.0.0.1:9090 [ROS 1 noetic]; arm (mycobot280) ws://127.0.0.1:9091 [ROS 2 humble]",
+   "ports": {
+    "base": 9090,
+    "arm": 9091,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-01T23:12:16+01:00",
+   "finished": "2026-10-01T23:13:18+01:00",
+   "host_load_before": {
+    "load1": 5.51,
+    "load5": 4.79,
+    "load15": 4.28,
+    "ncpu": 14,
+    "waited_s": 0.0
+   },
+   "rtf_warnings": 1,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-01T23:12:37+01:00",
+    "to": "2026-10-01T23:13:05+01:00"
+   },
+   "earlier_attempts": []
+  },
+  {
+   "engine": "robocasa",
+   "robot": "rosmaster_x3_plus",
+   "name": "ROSMASTER X3 PLUS",
+   "kind": "mobile_manipulator",
+   "scene": "robocasa:1-1",
+   "placement": "floor",
+   "pass": true,
+   "checks": {
+    "scene": true,
+    "cameras": true,
+    "fleet": true,
+    "smoke": true,
+    "spawn_clean_exit": true
+   },
+   "error": null,
+   "dir": "robocasa/rosmaster_x3_plus",
+   "scene_png": "robocasa/rosmaster_x3_plus/scene.png",
+   "camera_pngs": [
+    "robocasa/rosmaster_x3_plus/cam__camera__rgb__image_raw.png",
+    "robocasa/rosmaster_x3_plus/cam__camera__depth__image_raw.png",
+    "robocasa/rosmaster_x3_plus/cam__camera__ir__image_raw.png"
+   ],
+   "required_camera_pngs": [
+    "robocasa/rosmaster_x3_plus/cam__camera__rgb__image_raw.png",
+    "robocasa/rosmaster_x3_plus/cam__camera__depth__image_raw.png",
+    "robocasa/rosmaster_x3_plus/cam__camera__ir__image_raw.png"
+   ],
+   "motion_pngs": [
+    "robocasa/rosmaster_x3_plus/motion_arm_after.png",
+    "robocasa/rosmaster_x3_plus/motion_arm_before.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_back_after.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_back_before.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_forward_after.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_forward_before.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_left_after.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_left_before.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_right_after.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_right_before.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_turn_after.png",
+    "robocasa/rosmaster_x3_plus/motion_drive_turn_before.png",
+    "robocasa/rosmaster_x3_plus/motion_gripper_after.png",
+    "robocasa/rosmaster_x3_plus/motion_gripper_before.png"
+   ],
+   "smoke": "robocasa/rosmaster_x3_plus/smoke.json",
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true,
+    "arm": true,
+    "gripper": true
+   },
+   "fleet": [
+    {
+     "profile": "rosmaster_x3_plus",
+     "exit_code": 0,
+     "pass": true,
+     "file": "robocasa/rosmaster_x3_plus/fleet_rosmaster_x3_plus.txt"
+    }
+   ],
+   "readiness_line": "spawn ready: rosmaster_x3_plus (ROSMASTER X3 PLUS) in robocasa robocasa:1-1 on the floor; wire(s): rosmaster_x3_plus ws://127.0.0.1:9090 [ROS 1 noetic]",
+   "ports": {
+    "main": 9090,
+    "sim_port": 9080
+   },
+   "staged": [],
+   "cleared": [],
+   "started": "2026-10-01T23:15:12+01:00",
+   "finished": "2026-10-01T23:16:42+01:00",
+   "host_load_before": {
+    "load1": 5.61,
+    "load5": 5.58,
+    "load15": 4.74,
+    "ncpu": 14,
+    "waited_s": 20.0
+   },
+   "rtf_warnings": 1,
+   "rtf_clean": true,
+   "rtf_low_windows": [],
+   "collection": {
+    "from": "2026-10-01T23:15:57+01:00",
+    "to": "2026-10-01T23:16:28+01:00"
+   },
+   "earlier_attempts": [
+    {
+     "dir": "robocasa/rosmaster_x3_plus/history/2026-10-01T231319+0100",
+     "started": "2026-10-01T23:13:19+01:00",
+     "pass": true,
+     "checks": {
+      "scene": true,
+      "cameras": true,
+      "fleet": true,
+      "smoke": true,
+      "spawn_clean_exit": true
+     },
+     "rtf_clean": false,
+     "rtf_low_windows": [
+      {
+       "window_end": "2026-10-01T23:13:57+01:00",
+       "rtf": 0.829
+      }
+     ],
+     "error": null,
+     "host_load_before": {
+      "load1": 6.29,
+      "load5": 5.07,
+      "load15": 4.41,
+      "ncpu": 14,
+      "waited_s": 0.0
+     },
+     "rtf_warnings": 3
+    }
+   ]
+  }
+ ],
+ "all_pass": true
+}

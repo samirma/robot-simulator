@@ -1,0 +1,234 @@
+{
+ "robot": "ainex",
+ "engine": "molmospaces",
+ "scene": "ithor:1",
+ "bounds_note": "Bounds are the tolerances recorded in robots_specs/<id>/ros*.yml; a recorded {relative, absolute} pair bounds |measured - commanded| by max(relative*|commanded|, absolute). Commands are each robot's recorded command (its interface file's motions[].command and example) through the vendor wire; feedback is the recorded feedback, or the simulation's control-port readings where the interface records none.",
+ "motions": [
+  {
+   "name": "head_pan",
+   "renders": {
+    "before": "motion_head_pan_before.png",
+    "after": "motion_head_pan_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/head_pan_controller/command",
+    "type": "ainex_interfaces/HeadState",
+    "message": {
+     "position": 0.5,
+     "duration": 0.5
+    }
+   },
+   "feedback": "/ros_robot_controller/bus_servo/get_position servo 23 (pulses)",
+   "commanded": {
+    "head_pan": 0.5
+   },
+   "before_pulse": 500,
+   "measured_pulse": 618,
+   "measured": {
+    "head_pan": 0.4943
+   },
+   "error": 0.0057,
+   "sim_readings_crosscheck": {
+    "head_pan": 0.4964
+   },
+   "bound": {
+    "figure": "head joint reaching its commanded position",
+    "tolerance": {
+     "absolute": 0.035,
+     "unit": "rad"
+    },
+    "rule": "servo position (pulse-500)*0.24 deg within the absolute tolerance after the move time, then still (<= 1 pulse over 0.25 s)"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "head_tilt",
+   "renders": {
+    "before": "motion_head_tilt_before.png",
+    "after": "motion_head_tilt_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/head_tilt_controller/command",
+    "type": "ainex_interfaces/HeadState",
+    "message": {
+     "position": -0.3,
+     "duration": 0.5
+    }
+   },
+   "feedback": "/ros_robot_controller/bus_servo/get_position servo 24 (pulses)",
+   "commanded": {
+    "head_tilt": -0.3
+   },
+   "before_pulse": 500,
+   "measured_pulse": 428,
+   "measured": {
+    "head_tilt": -0.3016
+   },
+   "error": 0.0016,
+   "sim_readings_crosscheck": {
+    "head_tilt": -0.3001
+   },
+   "bound": {
+    "figure": "head joint reaching its commanded position",
+    "tolerance": {
+     "absolute": 0.035,
+     "unit": "rad"
+    },
+    "rule": "servo position (pulse-500)*0.24 deg within the absolute tolerance after the move time, then still (<= 1 pulse over 0.25 s)"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "walk",
+   "renders": {
+    "before": "motion_walk_before.png",
+    "after": "motion_walk_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "sequence": "get_param -> publish /walking/set_param -> /walking/command start",
+    "topic": "/walking/set_param",
+    "type": "ainex_interfaces/WalkingParam",
+    "set_param": {
+     "init_x_offset": 0.0,
+     "init_y_offset": -0.004999999888241291,
+     "init_z_offset": 0.02500000037252903,
+     "init_roll_offset": 0.0,
+     "init_pitch_offset": 0.0,
+     "init_yaw_offset": 0.0,
+     "period_time": 400.0,
+     "dsp_ratio": 0.20000000298023224,
+     "step_fb_ratio": 0.02800000086426735,
+     "period_times": 0,
+     "x_move_amplitude": 0.013,
+     "y_move_amplitude": 0.0,
+     "z_move_amplitude": 0.019999999552965164,
+     "angle_move_amplitude": 0.0,
+     "move_aim_on": false,
+     "arm_swing_gain": 0.5,
+     "y_swap_amplitude": 0.019999999552965164,
+     "z_swap_amplitude": 0.006000000052154064,
+     "pelvis_offset": 5.0,
+     "hip_pitch_offset": 15.0,
+     "balance_enable": false,
+     "balance_hip_roll_gain": 0.0,
+     "balance_knee_gain": 0.0,
+     "balance_ankle_roll_gain": 0.0,
+     "balance_ankle_pitch_gain": 0.0
+    },
+    "start": {
+     "service": "/walking/command",
+     "request": {
+      "command": "start"
+     }
+    },
+    "walk_s": 4.0
+   },
+   "stop": {
+    "service": "/walking/command",
+    "request": {
+     "command": "stop"
+    },
+    "returned_after_s": 0.91
+   },
+   "feedback": "/walking/is_walking (state) + sim-port base pose (no odometry on the wire)",
+   "is_walking": [
+    [
+     0.012,
+     true
+    ],
+    [
+     4.911,
+     false
+    ]
+   ],
+   "walking_time_s": 4.899,
+   "gait_periods": 12.25,
+   "commanded": {
+    "forward_m": 0.1592,
+    "derivation": "x_move_amplitude 0.013 m per step x 12.25 steps (walking time / period_time 0.4 s)"
+   },
+   "measured": {
+    "forward_m": 0.16,
+    "left_m": -0.0044,
+    "heading_drift_rad": 0.0028,
+    "height_change_m": 0.0002
+   },
+   "rest": {
+    "is_walking_last": false,
+    "travel_1_to_2s_after_stop_m": 0.0,
+    "travel_during_stop_call_m": -0.0004
+   },
+   "bound": {
+    "figure": "walk displacement over a timed straight walk",
+    "tolerance": {
+     "relative": 0.5
+    },
+    "bound": 0.0796,
+    "drift": {
+     "absolute": 0.35,
+     "unit": "rad"
+    },
+    "rule": "forward > 0 and |forward - commanded| <= relative*commanded; |heading drift| <= the drift tolerance; is_walking ends False; still (< 0.01 m over 1 s) after the stop"
+   },
+   "problems": [],
+   "pass": true
+  },
+  {
+   "name": "action_group",
+   "renders": {
+    "before": "motion_action_group_before.png",
+    "after": "motion_action_group_after.png"
+   },
+   "wire": "ws://127.0.0.1:9090",
+   "command": {
+    "topic": "/app/set_action",
+    "type": "std_msgs/String",
+    "message": {
+     "data": "wave"
+    }
+   },
+   "note": "the vendor .d6a files are in no pinned source (robots_specs ainex boot.data_files); 'wave' is one of the groups the simulator ships (simulator/README.md)",
+   "feedback": "none on the wire (interface feedback: []); judged by sim-port joint readings",
+   "peak_excursion_rad": {
+    "r_sho_pitch": 1.1985,
+    "r_sho_roll": 1.2986,
+    "r_el_pitch": 0.5475,
+    "r_el_yaw": 0.0034,
+    "l_sho_pitch": 0.0011,
+    "l_sho_roll": 0.0004,
+    "l_el_pitch": 0.0001,
+    "l_el_yaw": 0.0003,
+    "head_pan": 0.0,
+    "head_tilt": 0.0
+   },
+   "final_error_vs_init_rad": {
+    "r_sho_pitch": 0.0001,
+    "r_sho_roll": 0.0012,
+    "r_el_pitch": 0.0019,
+    "r_el_yaw": 0.0018,
+    "l_sho_pitch": 0.0008,
+    "l_sho_roll": 0.0001,
+    "l_el_pitch": 0.0001,
+    "l_el_yaw": 0.0002,
+    "head_pan": 0.0,
+    "head_tilt": 0.0
+   },
+   "duration_s": 5.06,
+   "bound": {
+    "figure": "joints reaching the final frame of an action group / init pose",
+    "tolerance": {
+     "absolute": 0.05,
+     "unit": "rad"
+    },
+    "rule": "an arm joint moves > 0.2 rad (the group plays), then every arm/head joint returns within the absolute tolerance of the init pose and is still for 1.5 s"
+   },
+   "problems": [],
+   "pass": true
+  }
+ ]
+}

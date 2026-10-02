@@ -1,0 +1,7 @@
+# Stock ROS 2 Jazzy + rosbridge_suite: the console's real-rosbridge test wire for the so101
+# profile, whose pinned ros2_so_arm bringup targets Jazzy (ParallelGripperCommand etc.).
+FROM ros:jazzy-ros-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-jazzy-rosbridge-suite ros-jazzy-control-msgs ros-jazzy-controller-manager-msgs \
+      ros-jazzy-tf2-msgs python3-numpy \
+    && rm -rf /var/lib/apt/lists/*

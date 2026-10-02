@@ -1,0 +1,6 @@
+# Stock ROS 2 Humble + rosbridge_suite: the console's real-rosbridge test wire (ROS 2 dialect).
+FROM ros:humble-ros-base
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ros-humble-rosbridge-suite ros-humble-control-msgs ros-humble-controller-manager-msgs \
+      ros-humble-tf2-msgs python3-numpy \
+    && rm -rf /var/lib/apt/lists/*

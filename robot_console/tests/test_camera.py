@@ -1,208 +1,80 @@
-import base64
-import threading
+"""Raw image decoding and live/stale/failed stream states (console spec §2.3)."""
 
-import cv2
+import base64
+
 import numpy as np
 import pytest
 
-from robot_console.camera import (
-    LatestFrame,
-    compressed_image_bytes,
-    decode_compressed_image,
-    header_seq,
-    is_jpeg,
-)
+from robot_console import camera as cam
 
 
-def jpeg_message(width=64, height=48, fmt="jpeg", seq=7):
-    # A smooth gradient rather than noise: JPEG is a frequency-domain codec, so random
-    # pixels lose ~45 grey levels per channel and would say nothing about correctness.
-    ys, xs = np.mgrid[0:height, 0:width]
-    image = np.stack(
-        [
-            (xs * 255 // max(width - 1, 1)).astype(np.uint8),
-            (ys * 255 // max(height - 1, 1)).astype(np.uint8),
-            np.full((height, width), 128, dtype=np.uint8),
-        ],
-        axis=-1,
-    )
-    ok, buffer = cv2.imencode(".jpg", image)
-    assert ok
-    return image, {
-        "header": {"seq": seq, "stamp": {"secs": 1, "nsecs": 2}, "frame_id": "camera"},
-        "format": fmt,
-        "data": base64.b64encode(buffer.tobytes()).decode("ascii"),
-    }
+def img(enc, data, w=2, h=1, step=None):
+    return {"width": w, "height": h, "encoding": enc, "is_bigendian": 0,
+            "step": step if step is not None else len(data) // h,
+            "data": base64.b64encode(bytes(data)).decode()}
 
 
-@pytest.mark.parametrize(
-    "fmt, expected",
-    [
-        ("jpeg", True),
-        ("JPEG", True),
-        # What a real image_transport republisher emits, as opposed to the simulator.
-        ("rgb8; jpeg compressed bgr8", True),
-        ("bgr8; jpeg compressed bgr8", True),
-        ("png", False),
-        ("", False),
-        (None, False),
-        (123, False),
-    ],
-)
-def test_is_jpeg(fmt, expected):
-    assert is_jpeg(fmt) is expected
+def test_rgb_bgr_mono():
+    assert cam.decode_image(img("rgb8", [10, 20, 30, 40, 50, 60])).tolist() == [[[10, 20, 30], [40, 50, 60]]]
+    assert cam.decode_image(img("bgr8", [10, 20, 30, 40, 50, 60])).tolist() == [[[30, 20, 10], [60, 50, 40]]]
+    assert cam.decode_image(img("mono8", [7, 9])).tolist() == [[[7, 7, 7], [9, 9, 9]]]
+    assert cam.decode_image(img("rgba8", [1, 2, 3, 4, 5, 6, 7, 8])).tolist() == [[[1, 2, 3], [5, 6, 7]]]
+    m16 = cam.decode_image(img("mono16", [0, 0, 0xFF, 0xFF]))
+    assert m16[0, 0, 0] == 0 and m16[0, 1, 0] == 255
 
 
-def test_decode_round_trip():
-    original, message = jpeg_message()
-    frame = decode_compressed_image(message)
-    assert frame is not None
-    assert frame.shape == original.shape
-    assert frame.dtype == np.uint8
-    # JPEG is lossy, so compare loosely rather than exactly.
-    assert np.abs(frame.astype(int) - original.astype(int)).mean() < 12
+def test_row_padding_is_respected():
+    # step 8 > width*3 = 6: two padding bytes per row
+    out = cam.decode_image(img("rgb8", [1, 2, 3, 4, 5, 6, 0, 0, 7, 8, 9, 10, 11, 12, 0, 0], w=2, h=2, step=8))
+    assert out.tolist() == [[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]]
 
 
-def test_decode_accepts_real_hardware_format():
-    _, message = jpeg_message(fmt="rgb8; jpeg compressed bgr8")
-    assert decode_compressed_image(message) is not None
+@pytest.mark.parametrize("enc, data", [("yuv422", [128, 100, 128, 200]), ("yuv422_yuy2", [100, 128, 200, 128])])
+def test_yuv422_grey(enc, data):
+    out = cam.decode_image(img(enc, data))
+    assert out.shape == (1, 2, 3)
+    assert np.all(out[0, 0] == 100) and np.all(out[0, 1] == 200)
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        lambda m: m.update(format="png"),
-        lambda m: m.update(data=""),
-        lambda m: m.update(data="not base64 at all !!!"),
-        lambda m: m.update(data=m["data"][:20]),  # truncated
-        lambda m: m.update(data=[1, 2, 3]),  # int array instead of base64
-        lambda m: m.pop("data"),
-        lambda m: m.pop("format"),
-    ],
-)
-def test_decode_returns_none_on_corruption(mutate):
-    _, message = jpeg_message()
-    mutate(message)
-    # A bad frame must not raise: the loop that decodes it is also the loop that keeps
-    # the robot's command stream alive.
-    assert decode_compressed_image(message) is None
+def test_failures():
+    with pytest.raises(cam.FrameError, match="unsupported encoding"):
+        cam.decode_image(img("bayer_rggb8", [0, 0]))
+    with pytest.raises(cam.FrameError, match="truncated"):
+        cam.decode_image(img("rgb8", [1, 2, 3], w=2, step=6))
+    with pytest.raises(cam.FrameError, match="profile documents rgb8"):
+        cam.decode_image(img("bgr8", [1] * 6), allowed=("rgb8",))
+    with pytest.raises(cam.FrameError):
+        cam.decode_image({"width": 2})
 
 
-def test_decode_rejects_non_mapping():
-    assert decode_compressed_image(None) is None
-    assert decode_compressed_image("nope") is None
+class Clock:
+    t = 100.0
+
+    def __call__(self):
+        return self.t
 
 
-def test_header_seq():
-    _, message = jpeg_message(seq=42)
-    assert header_seq(message) == 42
-    assert header_seq({}) is None
-    assert header_seq({"header": {"seq": "x"}}) is None
-
-
-def test_latest_frame_is_newest_wins():
-    slot = LatestFrame()
-    slot.offer({"n": 1})
-    slot.offer({"n": 2})
-    slot.offer({"n": 3})
-    taken = slot.take()
-    assert taken is not None and taken[0] == {"n": 3}
-    assert slot.dropped == 2
-    assert slot.received == 3
-    assert slot.take() is None
-
-
-def test_latest_frame_starts_empty():
-    slot = LatestFrame()
-    assert slot.take() is None
-    assert slot.rate_hz == 0.0
-    assert slot.last_arrival is None
-
-
-def test_latest_frame_is_thread_safe():
-    slot = LatestFrame()
-    stop = threading.Event()
-
-    def producer(tag):
-        while not stop.is_set():
-            slot.offer({"tag": tag})
-
-    threads = [threading.Thread(target=producer, args=(i,), daemon=True) for i in range(4)]
-    for thread in threads:
-        thread.start()
-    taken = 0
-    for _ in range(2000):
-        if slot.take() is not None:
-            taken += 1
-    stop.set()
-    for thread in threads:
-        thread.join(timeout=2)
-
-    assert taken > 0
-    # Nothing is created or lost: every offer either was taken or was dropped.
-    assert slot.received >= taken + slot.dropped
-
-
-# ------------------------------------------------------------------ raw bytes
-
-
-def test_compressed_image_bytes_returns_a_decodable_jpeg():
-    """The camera mapper forwards these bytes to its engine without re-encoding."""
-    frame = np.zeros((8, 8, 3), np.uint8)
-    frame[2:6, 2:6] = 200
-    ok, buf = cv2.imencode(".jpg", frame)
-    assert ok
-    msg = {"format": "jpeg", "data": base64.b64encode(buf.tobytes()).decode()}
-    raw = compressed_image_bytes(msg)
-    assert isinstance(raw, bytes) and raw
-    assert cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR) is not None
-
-
-@pytest.mark.parametrize("msg", [
-    None, {}, {"format": "png", "data": "x"}, {"format": "jpeg"},
-    {"format": "jpeg", "data": ""}, {"format": "jpeg", "data": "!!!not base64!!!"},
-])
-def test_compressed_image_bytes_never_raises(msg):
-    assert compressed_image_bytes(msg) is None
-
-
-def test_decoding_agrees_with_the_raw_bytes_it_is_built_on():
-    frame = np.full((6, 6, 3), 120, np.uint8)
-    ok, buf = cv2.imencode(".jpg", frame)
-    msg = {"format": "jpeg", "data": base64.b64encode(buf.tobytes()).decode()}
-    assert decode_compressed_image(msg) is not None
-    assert compressed_image_bytes(msg) == buf.tobytes()
-
-
-def test_a_raw_rgb8_image_decodes_to_bgr():
-    """The X3 PLUS's Astra has only a raw sensor_msgs/Image colour stream."""
-    import base64
-
-    import numpy as np
-
-    from robot_console.camera import decode_image
-
-    rgb = np.zeros((4, 6, 3), dtype=np.uint8)
-    rgb[..., 0] = 200  # red
-    msg = {"header": {"seq": 1}, "height": 4, "width": 6, "encoding": "rgb8",
-           "is_bigendian": 0, "step": 18, "data": base64.b64encode(rgb.tobytes()).decode()}
-    frame = decode_image(msg)
-    assert frame.shape == (4, 6, 3)
-    assert (frame[..., 2] == 200).all() and (frame[..., 0] == 0).all(), "BGR order"
-
-
-def test_a_raw_16_bit_depth_image_is_scaled_to_its_range_and_bad_input_is_none():
-    import base64
-
-    import numpy as np
-
-    from robot_console.camera import decode_image
-
-    depth = np.array([[0, 1000], [2000, 4000]], dtype="<u2")
-    msg = {"height": 2, "width": 2, "encoding": "16UC1", "is_bigendian": 0, "step": 4,
-           "data": base64.b64encode(depth.tobytes()).decode()}
-    frame = decode_image(msg)
-    assert frame[1, 1, 0] == 255 and frame[0, 0, 0] == 0
-    assert decode_image({**msg, "step": 1}) is None
-    assert decode_image({**msg, "encoding": "yuv422"}) is None
-    assert decode_image({**msg, "data": 7}) is None
+def test_stream_states():
+    clk = Clock()
+    s = cam.CameraStream(cam.StreamSpec("/c", "sensor_msgs/Image", 1.0, ("rgb8",)), clock=clk)
+    assert s.state() == cam.WAITING
+    clk.t += 1.5
+    assert s.state() == cam.STALE and "no frame within" in s.status_text()
+    s.offer(img("rgb8", [1] * 6))
+    s.poll()
+    assert s.state() == cam.LIVE and s.frame is not None
+    clk.t += 0.9
+    assert s.state() == cam.LIVE
+    clk.t += 0.2
+    assert s.state() == cam.STALE, "a frozen frame is never presented as live"
+    s.offer(img("bgr8", [1] * 6))
+    s.poll()
+    assert s.state() == cam.UNSUPPORTED and s.frame is None
+    s.offer(img("rgb8", [1, 2], step=6))
+    s.poll()
+    assert s.state() == cam.FAILED and "truncated" in s.status_text()
+    s.offer(img("rgb8", [1] * 6))
+    s.poll()
+    assert s.state() == cam.LIVE
+    s.missing = True
+    assert s.state() == cam.MISSING

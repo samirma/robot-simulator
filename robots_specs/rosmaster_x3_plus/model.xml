@@ -1,0 +1,442 @@
+<mujoco model="rosmaster_x3_plus">
+  <!-- DERIVED MODEL - not manufacturer-provided. Converted from Yahboom's yahboomcar_X3plus.urdf (ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip, URDF sha256 17c7c8fa...) by the steps in import.md. Mecanum wheels, rollers, chassis collision boxes, actuators and sensor sites are adaptations/estimates listed there. -->
+  <compiler angle="radian" meshdir="." autolimits="true" inertiafromgeom="false" balanceinertia="true" />
+  <default>
+    <default class="x3plus">
+      <default class="visual">
+        <geom type="mesh" group="2" contype="0" conaffinity="0" density="0" />
+      </default>
+      <default class="collision">
+        <geom group="3" contype="1" conaffinity="0" density="0" condim="3" friction="0.8 0.005 0.0001" rgba="0.8 0.2 0.2 0.4" />
+      </default>
+      <default class="roller">
+        <geom type="capsule" group="3" contype="1" conaffinity="0" density="0" condim="3" friction="1.0 0.005 0.0001" rgba="0.2 0.2 0.2 1" />
+        <joint type="hinge" damping="1e-5" armature="1e-6" />
+      </default>
+      <default class="servo">
+        <joint armature="0.005" damping="0.05" />
+        <position kp="20" dampratio="1" />
+      </default>
+      <default class="wheel">
+        <joint type="hinge" axis="0 1 0" armature="0.001" damping="0.001" />
+        <velocity kv="0.5" ctrlrange="-17.5 17.5" forcerange="-1.0 1.0" />
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="arm_link1_col" file="meshes/X3plus/collision/arm_link1.STL" />
+    <mesh name="arm_link1_vis" file="meshes/X3plus/visual/arm_link1.STL" />
+    <mesh name="arm_link2.STL.part0_vis" file="derived_meshes/meshes/X3plus/visual/arm_link2.STL.part0.stl" />
+    <mesh name="arm_link2.STL.part1_vis" file="derived_meshes/meshes/X3plus/visual/arm_link2.STL.part1.stl" />
+    <mesh name="arm_link2_col" file="meshes/X3plus/collision/arm_link2.STL" />
+    <mesh name="arm_link3.STL.part0_vis" file="derived_meshes/meshes/X3plus/visual/arm_link3.STL.part0.stl" />
+    <mesh name="arm_link3.STL.part1_vis" file="derived_meshes/meshes/X3plus/visual/arm_link3.STL.part1.stl" />
+    <mesh name="arm_link3_col" file="meshes/X3plus/collision/arm_link3.STL" />
+    <mesh name="arm_link4.STL.part0_vis" file="derived_meshes/meshes/X3plus/visual/arm_link4.STL.part0.stl" />
+    <mesh name="arm_link4.STL.part1_vis" file="derived_meshes/meshes/X3plus/visual/arm_link4.STL.part1.stl" />
+    <mesh name="arm_link4_col" file="meshes/X3plus/collision/arm_link4.STL" />
+    <mesh name="arm_link5_col" file="meshes/X3plus/collision/arm_link5.STL" />
+    <mesh name="arm_link5_vis" file="meshes/X3plus/visual/arm_link5.STL" />
+    <mesh name="base_link.STL.part0_vis" file="derived_meshes/meshes/X3plus/visual/base_link.STL.part0.stl" />
+    <mesh name="base_link.STL.part1_vis" file="derived_meshes/meshes/X3plus/visual/base_link.STL.part1.stl" />
+    <mesh name="base_link.STL.part2_vis" file="derived_meshes/meshes/X3plus/visual/base_link.STL.part2.stl" />
+    <mesh name="camera_link_col" file="meshes/sensor/collision/camera_link.STL" />
+    <mesh name="camera_link_vis" file="meshes/sensor/visual/camera_link.STL" />
+    <mesh name="laser_link_col" file="meshes/sensor/collision/laser_link.STL" />
+    <mesh name="laser_link_vis" file="meshes/sensor/visual/laser_link.STL" />
+    <mesh name="llink1_vis" file="meshes/X3plus/visual/llink1.STL" />
+    <mesh name="llink2_vis" file="meshes/X3plus/visual/llink2.STL" />
+    <mesh name="llink3_vis" file="meshes/X3plus/visual/llink3.STL" />
+    <mesh name="mono_link_col" file="meshes/sensor/collision/mono_link.STL" />
+    <mesh name="mono_link_vis" file="meshes/sensor/visual/mono_link.STL" />
+    <mesh name="rlink1_vis" file="meshes/X3plus/visual/rlink1.STL" />
+    <mesh name="rlink2_vis" file="meshes/X3plus/visual/rlink2.STL" />
+    <mesh name="rlink3_vis" file="meshes/X3plus/visual/rlink3.STL" />
+  </asset>
+  <worldbody>
+    <body name="base_footprint" childclass="x3plus">
+      <freejoint name="root" />
+      <body name="base_link" pos="0 0 0.076">
+        <geom class="collision" name="chassis_col" type="box" pos="0 0 0.0175" size="0.142 0.076 0.0625" />
+        <geom class="collision" name="deck_col" type="box" pos="0.04 0 0.115" size="0.097 0.04 0.035" />
+        <geom class="collision" name="tower_post_col" type="box" pos="-0.145 0 0.235" size="0.008 0.083 0.155" />
+        <geom class="collision" name="tower_top_col" type="box" pos="-0.095 0 0.335" size="0.06 0.083 0.055" />
+        <inertial pos="-0.0304417 4.23384e-05 0.0448235" mass="1.0754239466482" fullinertia="0.0208832 0.0265621 0.0129536 2.46181e-06 0.00616019 -1.10079e-06" />
+        <geom class="visual" type="mesh" mesh="base_link.STL.part0_vis" rgba="0 0.7 0 1" />
+        <geom class="visual" type="mesh" mesh="base_link.STL.part1_vis" rgba="0 0.7 0 1" />
+        <geom class="visual" type="mesh" mesh="base_link.STL.part2_vis" rgba="0 0.7 0 1" />
+        <body name="imu_link" pos="0.001 0.017 0.0322" quat="3.27596e-05 -0.707073 0.707141 3.27564e-05">
+          <site name="imu_link" size="0.005" group="4" />
+        </body>
+        <body name="camera_link" pos="-0.043645 0 0.41955">
+          <inertial pos="-0.00227617 -6.0192e-06 -0.00616568" mass="0.224346273348015" fullinertia="0.00042026 7.8905e-05 0.000414417 2.65423e-08 -9.20336e-06 6.08196e-09" />
+          <geom class="visual" type="mesh" mesh="camera_link_vis" rgba="0.7 0.7 0.7 1" />
+          <geom class="collision" type="mesh" mesh="camera_link_col" />
+          <camera name="camera_color_optical_frame" pos="0 0 0" xyaxes="0 -1 0 0 0 1" fovy="40.2" resolution="640 480" />
+        </body>
+        <body name="laser_link" pos="0.10478 0 0.0471">
+          <inertial pos="-0.0193194 0.000338303 -0.0148242" mass="0.0433399617554554" fullinertia="2.03362e-05 4.3754e-05 4.81888e-05 -3.29494e-07 -9.00811e-06 -2.16321e-07" />
+          <geom class="visual" type="mesh" mesh="laser_link_vis" rgba="0.7 0.7 0.7 1" />
+          <geom class="collision" type="mesh" mesh="laser_link_col" />
+          <site name="laser" quat="-0.999999 0 0 0.00159265" size="0.005" group="4" />
+        </body>
+        <body name="arm_link1" pos="0.09825 0 0.102">
+          <joint name="arm_joint1" axis="0 0 -1" range="-1.5708 1.5708" class="servo" />
+          <inertial pos="1.9918e-05 -5.98355e-05 0.0114289" mass="0.0279545499871709" fullinertia="1.19144e-05 1.05643e-05 1.4964e-05 -9.26069e-09 3.16061e-09 2.69674e-08" />
+          <geom class="visual" type="mesh" mesh="arm_link1_vis" rgba="0.7 0.7 0.7 1" />
+          <geom class="collision" type="mesh" mesh="arm_link1_col" />
+          <body name="arm_link2" pos="0 0 0.0405" quat="0.707105 -0.707108 0 0">
+            <joint name="arm_joint2" axis="0 0 -1" range="-1.5708 1.5708" class="servo" />
+            <inertial pos="0.024903 -0.0022632 -0.00066663" mass="0.031605" fullinertia="5.8495e-06 2.667e-05 2.4695e-05 -8.8092e-07 1.5336e-07 7.1365e-09" />
+            <geom class="visual" type="mesh" mesh="arm_link2.STL.part0_vis" rgba="0 0.7 0 1" />
+            <geom class="visual" type="mesh" mesh="arm_link2.STL.part1_vis" rgba="0 0.7 0 1" />
+            <geom class="collision" type="mesh" mesh="arm_link2_col" />
+            <body name="arm_link3" pos="0 -0.0829 0">
+              <joint name="arm_joint3" axis="0 0 -1" range="-1.5708 1.5708" class="servo" />
+              <inertial pos="0.024903 -0.0022634 -0.0013962" mass="0.031605" fullinertia="5.8492e-06 2.667e-05 2.4695e-05 -8.8063e-07 1.4331e-07 8.9675e-09" />
+              <geom class="visual" type="mesh" mesh="arm_link3.STL.part0_vis" rgba="0.7 0.7 0.7 1" />
+              <geom class="visual" type="mesh" mesh="arm_link3.STL.part1_vis" rgba="0.7 0.7 0.7 1" />
+              <geom class="collision" type="mesh" mesh="arm_link3_col" />
+              <body name="arm_link4" pos="0 -0.0829 0">
+                <joint name="arm_joint4" axis="0 0 -1" range="-1.5708 1.5708" class="servo" />
+                <inertial pos="0.036246 0.0023413 -0.0019655" mass="0.049766" fullinertia="1.1857e-05 3.6323e-05 4.1769e-05 -6.5371e-06 -4.1044e-08 -1.2132e-07" />
+                <geom class="visual" type="mesh" mesh="arm_link4.STL.part0_vis" rgba="0 0.7 0 1" />
+                <geom class="visual" type="mesh" mesh="arm_link4.STL.part1_vis" rgba="0 0.7 0 1" />
+                <geom class="collision" type="mesh" mesh="arm_link4_col" />
+                <body name="arm_link5" pos="-0.00215 -0.17455 0" quat="0.707105 0.707108 0 0">
+                  <joint name="arm_joint5" axis="0 0 1" range="-1.5708 3.14159" class="servo" />
+                  <inertial pos="0.0023228 0.018169 0.028684" mass="0.04069" fullinertia="1.0627e-05 9.6306e-06 1.3298e-05 -3.0402e-07 -1.9524e-07 -1.3265e-06" />
+                  <geom class="visual" type="mesh" mesh="arm_link5_vis" rgba="0.7 0.7 0.7 1" />
+                  <geom class="collision" type="mesh" mesh="arm_link5_col" />
+                  <body name="rlink1" pos="-0.0035 -0.012625 -0.0685" quat="0.707105 0 -0.707108 0">
+                    <joint name="grip_joint" axis="0 0 1" range="-1.54 0" class="servo" />
+                    <inertial pos="0.00653227 0.000416768 0.000980984" mass="0.00117883201961805" fullinertia="3.30415e-08 1.67254e-07 1.99277e-07 8.05115e-09 -1.46442e-10 -9.31932e-12" />
+                    <geom class="visual" type="mesh" mesh="rlink1_vis" rgba="0 0.7 0 1" />
+                    <geom class="collision" type="mesh" mesh="rlink1_vis" />
+                    <body name="rlink2" pos="0.03 -0.00075429 0">
+                      <joint name="rlink_joint2" axis="0 0 1" damping="0.001" armature="1e-5" />
+                      <inertial pos="0.021158 0.0063295 -0.0030251" mass="0.0024469" fullinertia="5.188e-08 6.3204e-07 6.6364e-07 -1.2303e-07 -1.2978e-09 -3.8824e-10" />
+                      <geom class="visual" type="mesh" mesh="rlink2_vis" rgba="0 0.7 0 1" />
+                      <geom class="collision" type="mesh" mesh="rlink2_vis" />
+                    </body>
+                  </body>
+                  <body name="rlink3" pos="-0.0035 -0.0045 -0.0505" quat="0.707105 0 -0.707108 0">
+                    <joint name="rlink_joint3" axis="0 0 1" damping="0.001" armature="1e-5" />
+                    <inertial pos="0.014355 1.1499e-05 -0.0033992" mass="0.00087627" fullinertia="2.0534e-08 1.4825e-07 1.3089e-07 -1.0235e-10 1.074e-09 8.7073e-13" />
+                    <geom class="visual" type="mesh" mesh="rlink3_vis" rgba="0 0.7 0 1" />
+                    <geom class="collision" type="mesh" mesh="rlink3_vis" />
+                  </body>
+                  <body name="llink1" pos="-0.0035 0.012375 -0.0685" quat="0.707105 0 -0.707108 0">
+                    <joint name="llink_joint1" axis="0 0 1" damping="0.001" armature="1e-5" />
+                    <inertial pos="0.00628617 -0.00031853 0.001" mass="0.00121010771282268" fullinertia="3.18227e-08 1.69268e-07 2.00284e-07 -8.06236e-09 3.99065e-14 1.8704e-14" />
+                    <geom class="visual" type="mesh" mesh="llink1_vis" rgba="0 0.7 0 1" />
+                    <geom class="collision" type="mesh" mesh="llink1_vis" />
+                    <body name="llink2" pos="0.03 0.00065104 0">
+                      <joint name="llink_joint2" axis="0 0 1" damping="0.001" armature="1e-5" />
+                      <inertial pos="0.021159 -0.0063248 -0.0030251" mass="0.0024469" fullinertia="5.1826e-08 6.321e-07 6.6364e-07 1.229e-07 -1.2979e-09 3.8796e-10" />
+                      <geom class="visual" type="mesh" mesh="llink2_vis" rgba="0 0.7 0 1" />
+                      <geom class="collision" type="mesh" mesh="llink2_vis" />
+                    </body>
+                  </body>
+                  <body name="llink3" pos="-0.0035 0.0045 -0.0505" quat="0.707105 0 -0.707108 0">
+                    <joint name="llink_joint3" axis="0 0 1" damping="0.001" armature="1e-5" />
+                    <inertial pos="0.014354 -7.4795e-05 -0.0033992" mass="0.00087627" fullinertia="2.0537e-08 1.4825e-07 1.3089e-07 6.6549e-10 1.074e-09 -5.5867e-12" />
+                    <geom class="visual" type="mesh" mesh="llink3_vis" rgba="0 0.7 0 1" />
+                    <geom class="collision" type="mesh" mesh="llink3_vis" />
+                  </body>
+                </body>
+                <body name="mono_link" pos="-0.0481 -0.05145 -0.0022" quat="0.707105 0.707108 0 0">
+                  <inertial pos="5.8458e-05 0.0095015 -0.0014824" mass="0.0097589" fullinertia="3.3488e-06 1.8662e-06 2.5696e-06 1.3667e-08 6.4235e-09 -1.0265e-07" />
+                  <geom class="visual" type="mesh" mesh="mono_link_vis" rgba="0.7 0.7 0.7 1" />
+                  <geom class="collision" type="mesh" mesh="mono_link_col" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="front_left_wheel" pos="0.1053 0.1042 -0.0389">
+          <joint class="wheel" name="front_left_joint" />
+          <inertial pos="0 0 0" mass="0.08" diaginertia="2.464e-05 3.2e-05 2.464e-05" />
+          <geom class="visual" type="cylinder" size="0.02 0.018" zaxis="0 1 0" rgba="0.15 0.15 0.15 1" />
+          <body name="front_left_roller0" pos="0 0 -0.029">
+            <joint class="roller" name="front_left_roller0_joint" axis="0.707107 -0.707107 0" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00671751 0.00671751 0 0.00671751 -0.00671751 0" />
+          </body>
+          <body name="front_left_roller1" pos="0.0145 0 -0.0251147">
+            <joint class="roller" name="front_left_roller1_joint" axis="0.612372 -0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 0.00671751 -0.00335876 0.00581754 -0.00671751 0.00335876" />
+          </body>
+          <body name="front_left_roller2" pos="0.0251147 0 -0.0145">
+            <joint class="roller" name="front_left_roller2_joint" axis="0.353553 -0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 0.00671751 -0.00581754 0.00335876 -0.00671751 0.00581754" />
+          </body>
+          <body name="front_left_roller3" pos="0.029 0 -1.77574e-18">
+            <joint class="roller" name="front_left_roller3_joint" axis="4.32978e-17 -0.707107 0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-4.11329e-19 0.00671751 -0.00671751 4.11329e-19 -0.00671751 0.00671751" />
+          </body>
+          <body name="front_left_roller4" pos="0.0251147 0 0.0145">
+            <joint class="roller" name="front_left_roller4_joint" axis="-0.353553 -0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 0.00671751 -0.00581754 -0.00335876 -0.00671751 0.00581754" />
+          </body>
+          <body name="front_left_roller5" pos="0.0145 0 0.0251147">
+            <joint class="roller" name="front_left_roller5_joint" axis="-0.612372 -0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 0.00671751 -0.00335876 -0.00581754 -0.00671751 0.00335876" />
+          </body>
+          <body name="front_left_roller6" pos="3.55148e-18 0 0.029">
+            <joint class="roller" name="front_left_roller6_joint" axis="-0.707107 -0.707107 8.65956e-17" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00671751 0.00671751 -8.22658e-19 -0.00671751 -0.00671751 8.22658e-19" />
+          </body>
+          <body name="front_left_roller7" pos="-0.0145 0 0.0251147">
+            <joint class="roller" name="front_left_roller7_joint" axis="-0.612372 -0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 0.00671751 0.00335876 -0.00581754 -0.00671751 -0.00335876" />
+          </body>
+          <body name="front_left_roller8" pos="-0.0251147 0 0.0145">
+            <joint class="roller" name="front_left_roller8_joint" axis="-0.353553 -0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 0.00671751 0.00581754 -0.00335876 -0.00671751 -0.00581754" />
+          </body>
+          <body name="front_left_roller9" pos="-0.029 0 5.32721e-18">
+            <joint class="roller" name="front_left_roller9_joint" axis="-1.29893e-16 -0.707107 -0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="1.23399e-18 0.00671751 0.00671751 -1.23399e-18 -0.00671751 -0.00671751" />
+          </body>
+          <body name="front_left_roller10" pos="-0.0251147 0 -0.0145">
+            <joint class="roller" name="front_left_roller10_joint" axis="0.353553 -0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 0.00671751 0.00581754 0.00335876 -0.00671751 -0.00581754" />
+          </body>
+          <body name="front_left_roller11" pos="-0.0145 0 -0.0251147">
+            <joint class="roller" name="front_left_roller11_joint" axis="0.612372 -0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 0.00671751 0.00335876 0.00581754 -0.00671751 -0.00335876" />
+          </body>
+        </body>
+        <body name="front_right_wheel" pos="0.1053 -0.1042 -0.0389">
+          <joint class="wheel" name="front_right_joint" />
+          <inertial pos="0 0 0" mass="0.08" diaginertia="2.464e-05 3.2e-05 2.464e-05" />
+          <geom class="visual" type="cylinder" size="0.02 0.018" zaxis="0 1 0" rgba="0.15 0.15 0.15 1" />
+          <body name="front_right_roller0" pos="0 0 -0.029">
+            <joint class="roller" name="front_right_roller0_joint" axis="0.707107 0.707107 0" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00671751 -0.00671751 0 0.00671751 0.00671751 0" />
+          </body>
+          <body name="front_right_roller1" pos="0.0145 0 -0.0251147">
+            <joint class="roller" name="front_right_roller1_joint" axis="0.612372 0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 -0.00671751 -0.00335876 0.00581754 0.00671751 0.00335876" />
+          </body>
+          <body name="front_right_roller2" pos="0.0251147 0 -0.0145">
+            <joint class="roller" name="front_right_roller2_joint" axis="0.353553 0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 -0.00671751 -0.00581754 0.00335876 0.00671751 0.00581754" />
+          </body>
+          <body name="front_right_roller3" pos="0.029 0 -1.77574e-18">
+            <joint class="roller" name="front_right_roller3_joint" axis="4.32978e-17 0.707107 0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-4.11329e-19 -0.00671751 -0.00671751 4.11329e-19 0.00671751 0.00671751" />
+          </body>
+          <body name="front_right_roller4" pos="0.0251147 0 0.0145">
+            <joint class="roller" name="front_right_roller4_joint" axis="-0.353553 0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 -0.00671751 -0.00581754 -0.00335876 0.00671751 0.00581754" />
+          </body>
+          <body name="front_right_roller5" pos="0.0145 0 0.0251147">
+            <joint class="roller" name="front_right_roller5_joint" axis="-0.612372 0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 -0.00671751 -0.00335876 -0.00581754 0.00671751 0.00335876" />
+          </body>
+          <body name="front_right_roller6" pos="3.55148e-18 0 0.029">
+            <joint class="roller" name="front_right_roller6_joint" axis="-0.707107 0.707107 8.65956e-17" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00671751 -0.00671751 -8.22658e-19 -0.00671751 0.00671751 8.22658e-19" />
+          </body>
+          <body name="front_right_roller7" pos="-0.0145 0 0.0251147">
+            <joint class="roller" name="front_right_roller7_joint" axis="-0.612372 0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 -0.00671751 0.00335876 -0.00581754 0.00671751 -0.00335876" />
+          </body>
+          <body name="front_right_roller8" pos="-0.0251147 0 0.0145">
+            <joint class="roller" name="front_right_roller8_joint" axis="-0.353553 0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 -0.00671751 0.00581754 -0.00335876 0.00671751 -0.00581754" />
+          </body>
+          <body name="front_right_roller9" pos="-0.029 0 5.32721e-18">
+            <joint class="roller" name="front_right_roller9_joint" axis="-1.29893e-16 0.707107 -0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="1.23399e-18 -0.00671751 0.00671751 -1.23399e-18 0.00671751 -0.00671751" />
+          </body>
+          <body name="front_right_roller10" pos="-0.0251147 0 -0.0145">
+            <joint class="roller" name="front_right_roller10_joint" axis="0.353553 0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 -0.00671751 0.00581754 0.00335876 0.00671751 -0.00581754" />
+          </body>
+          <body name="front_right_roller11" pos="-0.0145 0 -0.0251147">
+            <joint class="roller" name="front_right_roller11_joint" axis="0.612372 0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 -0.00671751 0.00335876 0.00581754 0.00671751 -0.00335876" />
+          </body>
+        </body>
+        <body name="back_left_wheel" pos="-0.1146 0.1042 -0.0393">
+          <joint class="wheel" name="back_left_joint" />
+          <inertial pos="0 0 0" mass="0.08" diaginertia="2.464e-05 3.2e-05 2.464e-05" />
+          <geom class="visual" type="cylinder" size="0.02 0.018" zaxis="0 1 0" rgba="0.15 0.15 0.15 1" />
+          <body name="back_left_roller0" pos="0 0 -0.029">
+            <joint class="roller" name="back_left_roller0_joint" axis="0.707107 0.707107 0" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00671751 -0.00671751 0 0.00671751 0.00671751 0" />
+          </body>
+          <body name="back_left_roller1" pos="0.0145 0 -0.0251147">
+            <joint class="roller" name="back_left_roller1_joint" axis="0.612372 0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 -0.00671751 -0.00335876 0.00581754 0.00671751 0.00335876" />
+          </body>
+          <body name="back_left_roller2" pos="0.0251147 0 -0.0145">
+            <joint class="roller" name="back_left_roller2_joint" axis="0.353553 0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 -0.00671751 -0.00581754 0.00335876 0.00671751 0.00581754" />
+          </body>
+          <body name="back_left_roller3" pos="0.029 0 -1.77574e-18">
+            <joint class="roller" name="back_left_roller3_joint" axis="4.32978e-17 0.707107 0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-4.11329e-19 -0.00671751 -0.00671751 4.11329e-19 0.00671751 0.00671751" />
+          </body>
+          <body name="back_left_roller4" pos="0.0251147 0 0.0145">
+            <joint class="roller" name="back_left_roller4_joint" axis="-0.353553 0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 -0.00671751 -0.00581754 -0.00335876 0.00671751 0.00581754" />
+          </body>
+          <body name="back_left_roller5" pos="0.0145 0 0.0251147">
+            <joint class="roller" name="back_left_roller5_joint" axis="-0.612372 0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 -0.00671751 -0.00335876 -0.00581754 0.00671751 0.00335876" />
+          </body>
+          <body name="back_left_roller6" pos="3.55148e-18 0 0.029">
+            <joint class="roller" name="back_left_roller6_joint" axis="-0.707107 0.707107 8.65956e-17" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00671751 -0.00671751 -8.22658e-19 -0.00671751 0.00671751 8.22658e-19" />
+          </body>
+          <body name="back_left_roller7" pos="-0.0145 0 0.0251147">
+            <joint class="roller" name="back_left_roller7_joint" axis="-0.612372 0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 -0.00671751 0.00335876 -0.00581754 0.00671751 -0.00335876" />
+          </body>
+          <body name="back_left_roller8" pos="-0.0251147 0 0.0145">
+            <joint class="roller" name="back_left_roller8_joint" axis="-0.353553 0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 -0.00671751 0.00581754 -0.00335876 0.00671751 -0.00581754" />
+          </body>
+          <body name="back_left_roller9" pos="-0.029 0 5.32721e-18">
+            <joint class="roller" name="back_left_roller9_joint" axis="-1.29893e-16 0.707107 -0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="1.23399e-18 -0.00671751 0.00671751 -1.23399e-18 0.00671751 -0.00671751" />
+          </body>
+          <body name="back_left_roller10" pos="-0.0251147 0 -0.0145">
+            <joint class="roller" name="back_left_roller10_joint" axis="0.353553 0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 -0.00671751 0.00581754 0.00335876 0.00671751 -0.00581754" />
+          </body>
+          <body name="back_left_roller11" pos="-0.0145 0 -0.0251147">
+            <joint class="roller" name="back_left_roller11_joint" axis="0.612372 0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 -0.00671751 0.00335876 0.00581754 0.00671751 -0.00335876" />
+          </body>
+        </body>
+        <body name="back_right_wheel" pos="-0.1146 -0.1042 -0.0393">
+          <joint class="wheel" name="back_right_joint" />
+          <inertial pos="0 0 0" mass="0.08" diaginertia="2.464e-05 3.2e-05 2.464e-05" />
+          <geom class="visual" type="cylinder" size="0.02 0.018" zaxis="0 1 0" rgba="0.15 0.15 0.15 1" />
+          <body name="back_right_roller0" pos="0 0 -0.029">
+            <joint class="roller" name="back_right_roller0_joint" axis="0.707107 -0.707107 0" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00671751 0.00671751 0 0.00671751 -0.00671751 0" />
+          </body>
+          <body name="back_right_roller1" pos="0.0145 0 -0.0251147">
+            <joint class="roller" name="back_right_roller1_joint" axis="0.612372 -0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 0.00671751 -0.00335876 0.00581754 -0.00671751 0.00335876" />
+          </body>
+          <body name="back_right_roller2" pos="0.0251147 0 -0.0145">
+            <joint class="roller" name="back_right_roller2_joint" axis="0.353553 -0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 0.00671751 -0.00581754 0.00335876 -0.00671751 0.00581754" />
+          </body>
+          <body name="back_right_roller3" pos="0.029 0 -1.77574e-18">
+            <joint class="roller" name="back_right_roller3_joint" axis="4.32978e-17 -0.707107 0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-4.11329e-19 0.00671751 -0.00671751 4.11329e-19 -0.00671751 0.00671751" />
+          </body>
+          <body name="back_right_roller4" pos="0.0251147 0 0.0145">
+            <joint class="roller" name="back_right_roller4_joint" axis="-0.353553 -0.707107 0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 0.00671751 -0.00581754 -0.00335876 -0.00671751 0.00581754" />
+          </body>
+          <body name="back_right_roller5" pos="0.0145 0 0.0251147">
+            <joint class="roller" name="back_right_roller5_joint" axis="-0.612372 -0.707107 0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 0.00671751 -0.00335876 -0.00581754 -0.00671751 0.00335876" />
+          </body>
+          <body name="back_right_roller6" pos="3.55148e-18 0 0.029">
+            <joint class="roller" name="back_right_roller6_joint" axis="-0.707107 -0.707107 8.65956e-17" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00671751 0.00671751 -8.22658e-19 -0.00671751 -0.00671751 8.22658e-19" />
+          </body>
+          <body name="back_right_roller7" pos="-0.0145 0 0.0251147">
+            <joint class="roller" name="back_right_roller7_joint" axis="-0.612372 -0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00581754 0.00671751 0.00335876 -0.00581754 -0.00671751 -0.00335876" />
+          </body>
+          <body name="back_right_roller8" pos="-0.0251147 0 0.0145">
+            <joint class="roller" name="back_right_roller8_joint" axis="-0.353553 -0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="0.00335876 0.00671751 0.00581754 -0.00335876 -0.00671751 -0.00581754" />
+          </body>
+          <body name="back_right_roller9" pos="-0.029 0 5.32721e-18">
+            <joint class="roller" name="back_right_roller9_joint" axis="-1.29893e-16 -0.707107 -0.707107" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="1.23399e-18 0.00671751 0.00671751 -1.23399e-18 -0.00671751 -0.00671751" />
+          </body>
+          <body name="back_right_roller10" pos="-0.0251147 0 -0.0145">
+            <joint class="roller" name="back_right_roller10_joint" axis="0.353553 -0.707107 -0.612372" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00335876 0.00671751 0.00581754 0.00335876 -0.00671751 -0.00581754" />
+          </body>
+          <body name="back_right_roller11" pos="-0.0145 0 -0.0251147">
+            <joint class="roller" name="back_right_roller11_joint" axis="0.612372 -0.707107 -0.353553" />
+            <inertial pos="0 0 0" mass="0.004" diaginertia="2.42e-07 2.42e-07 2.42e-07" />
+            <geom class="roller" size="0.011" fromto="-0.00581754 0.00671751 0.00335876 0.00581754 -0.00671751 -0.00335876" />
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <joint joint1="rlink_joint2" joint2="grip_joint" polycoef="0 -1 0 0 0" solref="0.005 1" />
+    <joint joint1="rlink_joint3" joint2="grip_joint" polycoef="0 1 0 0 0" solref="0.005 1" />
+    <joint joint1="llink_joint1" joint2="grip_joint" polycoef="0 -1 0 0 0" solref="0.005 1" />
+    <joint joint1="llink_joint2" joint2="grip_joint" polycoef="0 1 0 0 0" solref="0.005 1" />
+    <joint joint1="llink_joint3" joint2="grip_joint" polycoef="0 -1 0 0 0" solref="0.005 1" />
+  </equality>
+  <actuator>
+    <position class="servo" name="arm_joint1" joint="arm_joint1" ctrlrange="-1.5708 1.5708" forcerange="-100 100" />
+    <position class="servo" name="arm_joint2" joint="arm_joint2" ctrlrange="-1.5708 1.5708" forcerange="-100 100" />
+    <position class="servo" name="arm_joint3" joint="arm_joint3" ctrlrange="-1.5708 1.5708" forcerange="-100 100" />
+    <position class="servo" name="arm_joint4" joint="arm_joint4" ctrlrange="-1.5708 1.5708" forcerange="-100 100" />
+    <position class="servo" name="arm_joint5" joint="arm_joint5" ctrlrange="-1.5708 3.14159" forcerange="-100 100" />
+    <position class="servo" name="grip_joint" joint="grip_joint" ctrlrange="-1.54 0" forcerange="-100 100" />
+    <velocity class="wheel" name="front_left_joint" joint="front_left_joint" />
+    <velocity class="wheel" name="front_right_joint" joint="front_right_joint" />
+    <velocity class="wheel" name="back_left_joint" joint="back_left_joint" />
+    <velocity class="wheel" name="back_right_joint" joint="back_right_joint" />
+  </actuator>
+  <keyframe>
+    <key name="home" qpos="0 0 0.0029 1 0 0 0 0 0.959931 -1.5708 -0.785398 0 -1.54 1.54 -1.54 1.54 -1.54 1.54 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0" ctrl="0 0.959931 -1.5708 -0.785398 0 -1.54 0 0 0 0" />
+  </keyframe>
+</mujoco>

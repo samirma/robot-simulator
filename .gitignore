@@ -45,18 +45,9 @@ simulator/shared/robots/rosmaster_x3_plus/assets/
 simulator/robocasa/assets/
 simulator/robocasa/data/
 
-# Scratch run output (keep the committed evidence videos, drop scratch runs).
+# Scratch run output, not evidence: the committed evidence is under evidences/.
 simulator/*/outputs/
-simulator/*/runs/
-# `kitchen.sh inspect` used to write here (`run_task.sh` now writes under
-# `robot_console/runs/task/`): one directory per episode, holding the eval log,
-# the preflight's JSON and the recorded actions. Evidence of a particular run against a
-# particular revision, never a fixture -- re-run rather than trusting a stale one.
-simulator/runs/
 simulator/*/logs/
-
-# Screenshots written by kitchen.sh; regenerate with `./kitchen.sh shot`.
-simulator/shots/
 
 # Profiling output from the upstream test suites.
 simulator/**/mlspaces_tests/**/profiling_results.txt
@@ -66,13 +57,24 @@ simulator/**/mlspaces_tests/**/profiling_results.txt
 # MuJoCo drops this wherever it is run from, including the repo root.
 MUJOCO_LOG.TXT
 
-# The plan and the target spec are working documents regenerated per run;
-# specs.json describes the delivered state and IS tracked.
-implementation_plan.json
-target_specs.json
-
-# Official robot meshes — restored with ./fetch_robot_assets.sh, verified against
+# Official robot meshes — fetched by simulator/<engine>/run.sh setup, verified against
 # robots_specs/meshes.sha256 (~220 MB, fetched from each robot's pinned upstream).
 robots_specs/**/*.stl
 robots_specs/**/*.STL
 robots_specs/**/*.dae
+# The fetched folders themselves (robots_specs/tools/fetch_meshes.py; every file in them
+# is listed in robots_specs/meshes.sha256), the STLs it derives from COLLADA, and its
+# staging directory.
+robots_specs/so101/assets/
+robots_specs/myagv/urdf/
+robots_specs/ainex/meshes/
+robots_specs/mycobot280/urdf/
+robots_specs/rosmaster_x3_plus/meshes/
+robots_specs/*/derived_meshes/
+robots_specs/.fetch-*/
+
+# The worktop objects' YCB meshes -- fetched by simulator/<engine>/run.sh setup from
+# elpis-lab/YCB_Dataset at a pinned commit (simulator/shared/tools/fetch_objects.py),
+# verified against simulator/shared/objects/ycb.sha256 -- and its staging directory.
+simulator/shared/objects/ycb/
+simulator/shared/objects/.fetch-objects-*/

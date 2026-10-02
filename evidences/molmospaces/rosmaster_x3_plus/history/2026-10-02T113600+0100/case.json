@@ -1,0 +1,620 @@
+{
+ "robot": "rosmaster_x3_plus",
+ "name": "ROSMASTER X3 PLUS",
+ "kind": "mobile_manipulator",
+ "engine": "molmospaces",
+ "placement": "floor",
+ "started": "2026-10-02T11:36:00+01:00",
+ "items": {
+  "scene": {
+   "file": "scene.png",
+   "view": {
+    "lookat": [
+     1.413128993725439,
+     1.515484420424936,
+     0.2508694573265844
+    ],
+    "distance": 1.7335389132481265,
+    "azimuth": -29.999989589671884,
+    "elevation": -28.0
+   },
+   "sim_time": 23.765999999997707,
+   "width": 1280,
+   "height": 720,
+   "std": 70.37,
+   "pass": true
+  },
+  "cameras": [
+   {
+    "wire": "ws://127.0.0.1:9090",
+    "owner": "rosmaster_x3_plus",
+    "camera": "astra_color",
+    "topic": "/camera/rgb/image_raw",
+    "recorded": {
+     "encoding": "rgb8",
+     "width": 640,
+     "height": 480,
+     "frame_id": "camera_color_optical_frame"
+    },
+    "file": "cam__camera__rgb__image_raw.png",
+    "frames_seen": 2,
+    "message": {
+     "width": 640,
+     "height": 480,
+     "encoding": "rgb8",
+     "step": 1920,
+     "nbytes": 921600,
+     "frame_id": "camera_color_optical_frame",
+     "mean_rgb": [
+      114.0,
+      99.2,
+      80.3
+     ],
+     "std": 81.28
+    },
+    "pass": true,
+    "problems": []
+   },
+   {
+    "wire": "ws://127.0.0.1:9090",
+    "owner": "rosmaster_x3_plus",
+    "camera": "astra_depth",
+    "topic": "/camera/depth/image_raw",
+    "recorded": {
+     "encoding": "16UC1",
+     "width": 640,
+     "height": 480,
+     "frame_id": "camera_color_optical_frame"
+    },
+    "file": "cam__camera__depth__image_raw.png",
+    "frames_seen": 2,
+    "message": {
+     "width": 640,
+     "height": 480,
+     "encoding": "16UC1",
+     "step": 1280,
+     "nbytes": 614400,
+     "frame_id": "camera_color_optical_frame",
+     "min": 0.0,
+     "max": 3714.0,
+     "valid_fraction": 0.9996940104166666,
+     "mean_rgb": [
+      136.2,
+      131.5,
+      108.2
+     ],
+     "std": 87.32
+    },
+    "pass": true,
+    "problems": []
+   },
+   {
+    "wire": "ws://127.0.0.1:9090",
+    "owner": "rosmaster_x3_plus",
+    "camera": "astra_ir",
+    "topic": "/camera/ir/image_raw",
+    "recorded": {
+     "encoding": "mono16",
+     "width": 640,
+     "height": 480,
+     "frame_id": "camera_color_optical_frame"
+    },
+    "file": "cam__camera__ir__image_raw.png",
+    "frames_seen": 2,
+    "message": {
+     "width": 640,
+     "height": 480,
+     "encoding": "mono16",
+     "step": 1280,
+     "nbytes": 614400,
+     "frame_id": "camera_color_optical_frame",
+     "min": 0.0,
+     "max": 1023.0,
+     "mean_rgb": [
+      100.8,
+      100.8,
+      100.8
+     ],
+     "std": 79.36
+    },
+    "pass": true,
+    "problems": []
+   }
+  ],
+  "fleet": [
+   {
+    "profile": "rosmaster_x3_plus",
+    "wire": "ws://127.0.0.1:9090",
+    "command": "robot_console/python.sh -m robot_console.fleet --url ws://127.0.0.1:9090 --expect rosmaster_x3_plus",
+    "exit_code": 0,
+    "file": "fleet_rosmaster_x3_plus.txt",
+    "pass": true,
+    "summary": "PASS"
+   }
+  ],
+  "smoke": {
+   "file": "smoke.json",
+   "pass": true,
+   "motions": {
+    "drive_forward": true,
+    "drive_back": true,
+    "drive_left": true,
+    "drive_right": true,
+    "drive_turn": true,
+    "arm": true,
+    "gripper": true
+   }
+  }
+ },
+ "notes": [],
+ "host_load_before": {
+  "load1": 5.82,
+  "load5": 7.79,
+  "load15": 9.83,
+  "ncpu": 14,
+  "waited_s": 40.0
+ },
+ "simulation_ready_line": "simulation ready: engine molmospaces, scene ithor:1, sim-port 9080, headless",
+ "simulation_command": "simulator/kitchen.sh start --engine molmospaces --sim-port 9080",
+ "scene": "ithor:1",
+ "engine_reported": "molmospaces",
+ "spawn_command": "simulator/spawn.sh rosmaster_x3_plus --placement floor --sim-port 9080 --port 9090",
+ "readiness_line": "spawn ready: rosmaster_x3_plus (ROSMASTER X3 PLUS) in molmospaces ithor:1 on the floor; wire(s): rosmaster_x3_plus ws://127.0.0.1:9090 [ROS 1 noetic]",
+ "ready_at": "2026-10-02T11:37:03+01:00",
+ "wires": [
+  {
+   "role": "main",
+   "owner": "rosmaster_x3_plus",
+   "host": "127.0.0.1",
+   "port": 9090,
+   "ros": "ROS 1 noetic",
+   "url": "ws://127.0.0.1:9090"
+  }
+ ],
+ "ports": {
+  "main": 9090,
+  "sim_port": 9080
+ },
+ "spawned": {
+  "state": "running",
+  "placement": "floor",
+  "xyz": [
+   1.4666,
+   1.5155,
+   0.0078
+  ],
+  "yaw": 3.1416,
+  "ports": [
+   9090
+  ],
+  "staged": {},
+  "cleared": []
+ },
+ "rtf_at_start": 0.666,
+ "view": {
+  "lookat": [
+   1.413128993725439,
+   1.515484420424936,
+   0.2508694573265844
+  ],
+  "distance": 1.7335389132481265,
+  "azimuth": -29.999989589671884,
+  "elevation": -28.0,
+  "_clear_fraction": 1.0,
+  "_context_m": 1.99
+ },
+ "host_load_fleet": {
+  "load1": 10.64,
+  "load5": 8.51,
+  "load15": 9.95,
+  "ncpu": 14
+ },
+ "host_load_smoke": {
+  "load1": 10.64,
+  "load5": 8.51,
+  "load15": 9.95,
+  "ncpu": 14
+ },
+ "rtf_at_end": 0.456,
+ "collection": {
+  "from": "2026-10-02T11:37:15+01:00",
+  "to": "2026-10-02T11:38:11+01:00"
+ },
+ "rtf_low_windows_during_collection": [
+  {
+   "window_end": "2026-10-02T11:37:18+01:00",
+   "rtf": 0.466
+  },
+  {
+   "window_end": "2026-10-02T11:37:29+01:00",
+   "rtf": 0.337
+  },
+  {
+   "window_end": "2026-10-02T11:37:39+01:00",
+   "rtf": 0.446
+  },
+  {
+   "window_end": "2026-10-02T11:37:49+01:00",
+   "rtf": 0.61
+  },
+  {
+   "window_end": "2026-10-02T11:37:59+01:00",
+   "rtf": 0.571
+  },
+  {
+   "window_end": "2026-10-02T11:38:09+01:00",
+   "rtf": 0.456
+  }
+ ],
+ "rtf_samples": [
+  [
+   0.0,
+   1.0
+  ],
+  [
+   1.1,
+   1.0
+  ],
+  [
+   2.6,
+   1.0
+  ],
+  [
+   5.4,
+   1.0
+  ],
+  [
+   8.4,
+   1.0
+  ],
+  [
+   9.5,
+   1.0
+  ],
+  [
+   11.1,
+   0.887
+  ],
+  [
+   12.1,
+   0.887
+  ],
+  [
+   13.1,
+   0.887
+  ],
+  [
+   14.4,
+   0.887
+  ],
+  [
+   15.5,
+   0.887
+  ],
+  [
+   16.5,
+   0.887
+  ],
+  [
+   17.6,
+   0.887
+  ],
+  [
+   18.6,
+   0.887
+  ],
+  [
+   19.6,
+   0.887
+  ],
+  [
+   20.6,
+   0.666
+  ],
+  [
+   21.6,
+   0.666
+  ],
+  [
+   22.7,
+   0.666
+  ],
+  [
+   23.7,
+   0.666
+  ],
+  [
+   24.7,
+   0.666
+  ],
+  [
+   25.7,
+   0.666
+  ],
+  [
+   26.7,
+   0.666
+  ],
+  [
+   27.8,
+   0.666
+  ],
+  [
+   30.2,
+   0.466
+  ],
+  [
+   31.7,
+   0.466
+  ],
+  [
+   32.7,
+   0.466
+  ],
+  [
+   33.7,
+   0.466
+  ],
+  [
+   34.7,
+   0.466
+  ],
+  [
+   35.8,
+   0.466
+  ],
+  [
+   36.8,
+   0.466
+  ],
+  [
+   38.0,
+   0.466
+  ],
+  [
+   39.0,
+   0.466
+  ],
+  [
+   40.1,
+   0.466
+  ],
+  [
+   41.1,
+   0.337
+  ],
+  [
+   42.1,
+   0.337
+  ],
+  [
+   43.2,
+   0.337
+  ],
+  [
+   44.2,
+   0.337
+  ],
+  [
+   45.3,
+   0.337
+  ],
+  [
+   46.3,
+   0.337
+  ],
+  [
+   47.3,
+   0.337
+  ],
+  [
+   48.3,
+   0.337
+  ],
+  [
+   49.3,
+   0.337
+  ],
+  [
+   50.4,
+   0.446
+  ],
+  [
+   51.4,
+   0.446
+  ],
+  [
+   52.4,
+   0.446
+  ],
+  [
+   53.4,
+   0.446
+  ],
+  [
+   54.5,
+   0.446
+  ],
+  [
+   55.5,
+   0.446
+  ],
+  [
+   56.5,
+   0.446
+  ],
+  [
+   57.5,
+   0.446
+  ],
+  [
+   58.5,
+   0.446
+  ],
+  [
+   59.5,
+   0.446
+  ],
+  [
+   60.6,
+   0.61
+  ],
+  [
+   61.6,
+   0.61
+  ],
+  [
+   62.6,
+   0.61
+  ],
+  [
+   63.6,
+   0.61
+  ],
+  [
+   64.7,
+   0.61
+  ],
+  [
+   65.7,
+   0.61
+  ],
+  [
+   66.7,
+   0.61
+  ],
+  [
+   67.7,
+   0.61
+  ],
+  [
+   68.7,
+   0.61
+  ],
+  [
+   69.8,
+   0.61
+  ],
+  [
+   70.8,
+   0.571
+  ],
+  [
+   71.8,
+   0.571
+  ],
+  [
+   72.8,
+   0.571
+  ],
+  [
+   73.9,
+   0.571
+  ],
+  [
+   74.9,
+   0.571
+  ],
+  [
+   75.9,
+   0.571
+  ],
+  [
+   76.9,
+   0.571
+  ],
+  [
+   78.1,
+   0.571
+  ],
+  [
+   79.1,
+   0.571
+  ],
+  [
+   80.1,
+   0.571
+  ],
+  [
+   81.1,
+   0.456
+  ],
+  [
+   82.2,
+   0.456
+  ],
+  [
+   83.2,
+   0.456
+  ],
+  [
+   84.2,
+   0.456
+  ],
+  [
+   85.2,
+   0.456
+  ],
+  [
+   86.2,
+   0.456
+  ],
+  [
+   87.2,
+   0.456
+  ],
+  [
+   88.2,
+   0.456
+  ],
+  [
+   89.3,
+   0.456
+  ],
+  [
+   90.3,
+   0.456
+  ],
+  [
+   91.3,
+   0.903
+  ],
+  [
+   92.3,
+   0.903
+  ],
+  [
+   93.3,
+   0.903
+  ]
+ ],
+ "spawn_exit_code": 0,
+ "simulation_exit_code": 0,
+ "containers_left": [],
+ "rtf_warnings": [
+  "warning: real-time factor 0.89 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.67 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.47 over the last 11 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.34 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.45 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.61 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.57 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval",
+  "warning: real-time factor 0.46 over the last 10 s is below 0.90; rates and physical bounds are not met for this interval"
+ ],
+ "host_load_after": {
+  "load1": 10.16,
+  "load5": 8.63,
+  "load15": 9.91,
+  "ncpu": 14
+ },
+ "finished": "2026-10-02T11:38:26+01:00",
+ "checks": {
+  "scene": true,
+  "cameras": true,
+  "fleet": true,
+  "smoke": true,
+  "spawn_clean_exit": true
+ },
+ "pass": true,
+ "rtf_clean": false
+}

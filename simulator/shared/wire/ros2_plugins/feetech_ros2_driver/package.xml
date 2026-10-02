@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>feetech_ros2_driver</name>
+  <version>0.2.2</version>
+  <description>Simulator stand-in for the feetech_ros2_driver ros2_control plugin: the same
+    plugin name, backed by the simulated STS3215 servo bus instead of a serial port.</description>
+  <maintainer email="noreply@example.com">robot-simulator</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>hardware_interface</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

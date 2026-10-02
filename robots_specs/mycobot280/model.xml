@@ -1,0 +1,211 @@
+<mujoco model="mycobot280">
+  <!-- DERIVED MODEL - not manufacturer-provided. Converted from the official myCobot 280 Pi +
+       adaptive gripper URDF (elephantrobotics/mycobot_ros2 d42ff61a, branch humble,
+       mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf).
+       Conversion steps, estimates and adaptations: import.md in this folder. -->
+  <compiler angle="radian" meshdir="." autolimits="true" />
+  <default>
+    <default class="mycobot280">
+      <joint armature="0.005" damping="0.05" frictionloss="0.01" />
+      <position kp="80" dampratio="1" />
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" />
+      </default>
+      <default class="collision">
+        <geom type="mesh" group="3" condim="3" density="0" friction="0.8 0.005 0.0001" />
+      </default>
+      <default class="gripper_visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" density="0" />
+      </default>
+      <default class="gripper_collision">
+        <geom type="mesh" group="3" condim="4" density="0" friction="1.0 0.01 0.0001" priority="1" />
+      </default>
+      <default class="gripper">
+        <position kp="5" dampratio="1" />
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="G_base_m0" file="derived_meshes/urdf/mycobot_280_pi/G_base.dae.m0.obj" />
+    <material name="G_base_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="G_base" file="derived_meshes/urdf/mycobot_280_pi/G_base.stl" />
+    <mesh name="joint1_pi_m0" file="derived_meshes/urdf/mycobot_280_pi/joint1_pi.dae.m0.obj" />
+    <material name="joint1_pi_m0" rgba="0.6 0.6 0.6 1" />
+    <mesh name="joint1_pi" file="derived_meshes/urdf/mycobot_280_pi/joint1_pi.stl" />
+    <mesh name="joint2_m0" file="derived_meshes/urdf/mycobot_280_pi/joint2.dae.m0.obj" />
+    <texture name="joint2_m0" type="2d" file="urdf/mycobot_280_pi/joint2.png" />
+    <material name="joint2_m0" rgba="1 1 1 1" texture="joint2_m0" />
+    <mesh name="joint2" file="derived_meshes/urdf/mycobot_280_pi/joint2.stl" />
+    <mesh name="joint3_m0" file="derived_meshes/urdf/mycobot_280_pi/joint3.dae.m0.obj" />
+    <texture name="joint3_m0" type="2d" file="urdf/mycobot_280_pi/joint3.png" />
+    <material name="joint3_m0" rgba="1 1 1 1" texture="joint3_m0" />
+    <mesh name="joint3" file="derived_meshes/urdf/mycobot_280_pi/joint3.stl" />
+    <mesh name="joint4_m0" file="derived_meshes/urdf/mycobot_280_pi/joint4.dae.m0.obj" />
+    <texture name="joint4_m0" type="2d" file="urdf/mycobot_280_pi/joint4.png" />
+    <material name="joint4_m0" rgba="1 1 1 1" texture="joint4_m0" />
+    <mesh name="joint4" file="derived_meshes/urdf/mycobot_280_pi/joint4.stl" />
+    <mesh name="joint5_m0" file="derived_meshes/urdf/mycobot_280_pi/joint5.dae.m0.obj" />
+    <material name="joint5_m0" rgba="1 1 1 1" />
+    <mesh name="joint5" file="derived_meshes/urdf/mycobot_280_pi/joint5.stl" />
+    <mesh name="joint6_m0" file="derived_meshes/urdf/mycobot_280_pi/joint6.dae.m0.obj" />
+    <texture name="joint6_m0" type="2d" file="urdf/mycobot_280_pi/joint6.png" />
+    <material name="joint6_m0" rgba="1 1 1 1" texture="joint6_m0" />
+    <mesh name="joint6" file="derived_meshes/urdf/mycobot_280_pi/joint6.stl" />
+    <mesh name="joint7_m0" file="derived_meshes/urdf/mycobot_280_pi/joint7.dae.m0.obj" />
+    <texture name="joint7_m0" type="2d" file="urdf/mycobot_280_pi/joint7.png" />
+    <material name="joint7_m0" rgba="1 1 1 1" texture="joint7_m0" />
+    <mesh name="joint7" file="derived_meshes/urdf/mycobot_280_pi/joint7.stl" />
+    <mesh name="gripper_base_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_base.dae.m0.obj" />
+    <material name="gripper_base_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_base" file="derived_meshes/urdf/adaptive_gripper/gripper_base.stl" />
+    <mesh name="gripper_left3_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_left3.dae.m0.obj" />
+    <material name="gripper_left3_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_left3" file="derived_meshes/urdf/adaptive_gripper/gripper_left3.stl" />
+    <mesh name="gripper_left1_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_left1.dae.m0.obj" />
+    <material name="gripper_left1_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_left1" file="derived_meshes/urdf/adaptive_gripper/gripper_left1.stl" />
+    <mesh name="gripper_left2_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_left2.dae.m0.obj" />
+    <material name="gripper_left2_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_left2" file="derived_meshes/urdf/adaptive_gripper/gripper_left2.stl" />
+    <mesh name="gripper_right3_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_right3.dae.m0.obj" />
+    <material name="gripper_right3_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_right3" file="derived_meshes/urdf/adaptive_gripper/gripper_right3.stl" />
+    <mesh name="gripper_right1_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_right1.dae.m0.obj" />
+    <material name="gripper_right1_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_right1" file="derived_meshes/urdf/adaptive_gripper/gripper_right1.stl" />
+    <mesh name="gripper_right2_m0" file="derived_meshes/urdf/adaptive_gripper/gripper_right2.dae.m0.obj" />
+    <material name="gripper_right2_m0" rgba="0.980392 0.980392 0.980392 1" />
+    <mesh name="gripper_right2" file="derived_meshes/urdf/adaptive_gripper/gripper_right2.stl" />
+  </asset>
+  <worldbody>
+    <body name="g_base" childclass="mycobot280">
+      <geom class="visual" name="g_base_visual" mesh="G_base_m0" material="G_base_m0" pos="0 0 -0.03" quat="0.707105 0 0 0.707108" />
+      <geom class="collision" name="g_base_collision" mesh="G_base" pos="0 0 -0.03" quat="0.707105 0 0 0.707108" mass="0.1" />
+      <body name="joint1">
+        <geom class="visual" name="joint1_visual" mesh="joint1_pi_m0" material="joint1_pi_m0" />
+        <geom class="collision" name="joint1_collision" mesh="joint1_pi" mass="0.25" />
+        <body name="joint2" pos="0 0 0.13956">
+          <joint name="joint2_to_joint1" axis="0 0 1" range="-2.9321 2.9321" />
+          <inertial pos="-4.46252e-07 -0.0048982 -0.0203936" quat="0.988685 0.150004 1.75753e-05 -6.19332e-05" mass="0.153266" diaginertia="0.00010997 0.000104609 4.89092e-05" />
+          <geom class="visual" name="joint2_visual" mesh="joint2_m0" material="joint2_m0" pos="0 0 -0.06096" quat="0.707105 0 0 -0.707108" />
+          <geom class="collision" name="joint2_collision" mesh="joint2" pos="0 0 -0.06096" quat="0.707105 0 0 -0.707108" />
+          <body name="joint3" pos="0 0 -0.001" quat="0.499998 0.500002 0.5 -0.5">
+            <joint name="joint3_to_joint2" axis="0 0 1" range="-2.4434 2.4434" />
+            <inertial pos="-0.0548658 -3.79418e-06 0.0581352" quat="0.50338 0.49662 0.497294 0.502669" mass="0.4" diaginertia="0.000569683 0.000554829 8.82752e-05" />
+            <geom class="visual" name="joint3_visual" mesh="joint3_m0" material="joint3_m0" pos="0 0 0.03256" quat="0.707105 0 -0.707108 0" />
+            <geom class="collision" name="joint3_collision" mesh="joint3" pos="0 0 0.03256" quat="0.707105 0 -0.707108 0" />
+            <body name="joint4" pos="-0.1104 0 0">
+              <joint name="joint4_to_joint3" axis="0 0 1" range="-2.6179 2.6179" />
+              <inertial pos="-0.0454441 4.51021e-07 0.00478273" quat="0.508392 0.491471 0.491339 0.508508" mass="0.219069" diaginertia="0.000359328 0.000340078 6.35956e-05" />
+              <geom class="visual" name="joint4_visual" mesh="joint4_m0" material="joint4_m0" pos="0 0 0.03056" quat="0.707105 0 -0.707108 0" />
+              <geom class="collision" name="joint4_collision" mesh="joint4" pos="0 0 0.03056" quat="0.707105 0 -0.707108 0" />
+              <body name="joint5" pos="-0.096 0 0.06462" quat="0.707105 0 0 -0.707108">
+                <joint name="joint5_to_joint4" axis="0 0 1" range="-2.6179 2.6179" />
+                <inertial pos="1.49997e-05 -0.00761485 -0.00688111" quat="0.903244 0.429125 -0.00118023 0.00112811" mass="0.0576212" diaginertia="1.88765e-05 1.81573e-05 1.0565e-05" />
+                <geom class="visual" name="joint5_visual" mesh="joint5_m0" material="joint5_m0" pos="0 -0.001 -0.0345" quat="0.499998 0.500002 -0.5 0.5" />
+                <geom class="collision" name="joint5_collision" mesh="joint5" pos="0 -0.001 -0.0345" quat="0.499998 0.500002 -0.5 0.5" />
+                <body name="joint6" pos="0 -0.07318 -0.001" quat="0.499998 0.5 -0.5 0.500002">
+                  <joint name="joint6_to_joint5" axis="0 0 1" range="-2.7052 2.7925" />
+                  <inertial pos="-3.34552e-08 0.00487808 -0.00751659" quat="0.395895 0.918296 6.92557e-06 2.44425e-06" mass="0.0904837" diaginertia="4.06947e-05 3.23387e-05 2.57661e-05" />
+                  <geom class="visual" name="joint6_visual" mesh="joint6_m0" material="joint6_m0" pos="0 0 -0.038" />
+                  <geom class="collision" name="joint6_collision" mesh="joint6" pos="0 0 -0.038" />
+                  <body name="joint6_flange" pos="0 0.0456 0" quat="0.707105 -0.707108 0 0">
+                    <joint name="joint6output_to_joint6" axis="0 0 1" range="-3.14159 3.14159" />
+                    <inertial pos="-6.68861e-07 -1.54403e-07 -0.00514555" quat="0.276336 0.650875 -0.27633 0.650877" mass="0.0121397" diaginertia="1.94827e-06 1.13494e-06 1.13491e-06" />
+                    <geom class="visual" name="joint6_flange_visual" mesh="joint7_m0" material="joint7_m0" pos="0 0 -0.012" />
+                    <geom class="collision" name="joint6_flange_collision" mesh="joint7" pos="0 0 -0.012" />
+                    <body name="gripper_base" pos="0 0 0.034" quat="0.7042 0.710001 0 0">
+                      <geom class="gripper_visual" name="gripper_base_visual" mesh="gripper_base_m0" material="gripper_base_m0" pos="0 0 -0.012" />
+                      <geom class="gripper_collision" name="gripper_base_collision" mesh="gripper_base" pos="0 0 -0.012" mass="0.072" />
+                      <body name="gripper_left3" pos="-0.012 0.005 0">
+                        <joint name="gripper_controller" axis="0 0 1" range="-0.74 0.15" />
+                        <geom class="gripper_visual" name="gripper_left3_visual" mesh="gripper_left3_m0" material="gripper_left3_m0" pos="0.012 0.0025 -0.012" />
+                        <geom class="gripper_collision" name="gripper_left3_collision" mesh="gripper_left3" pos="0.012 0.0025 -0.012" mass="0.01" />
+                        <body name="gripper_left1" pos="-0.027 0.016 0">
+                          <joint name="gripper_left3_to_gripper_left1" axis="0 0 1" />
+                          <geom class="gripper_visual" name="gripper_left1_visual" mesh="gripper_left1_m0" material="gripper_left1_m0" pos="0.039 -0.0133 -0.012" />
+                          <geom class="gripper_collision" name="gripper_left1_collision" mesh="gripper_left1" pos="0.039 -0.0133 -0.012" mass="0.005" />
+                        </body>
+                      </body>
+                      <body name="gripper_left2" pos="-0.005 0.027 0">
+                        <joint name="gripper_base_to_gripper_left2" axis="0 0 1" />
+                        <geom class="gripper_visual" name="gripper_left2_visual" mesh="gripper_left2_m0" material="gripper_left2_m0" pos="0.005 -0.0195 -0.012" />
+                        <geom class="gripper_collision" name="gripper_left2_collision" mesh="gripper_left2" pos="0.005 -0.0195 -0.012" mass="0.004" />
+                      </body>
+                      <body name="gripper_right3" pos="0.012 0.005 0">
+                        <joint name="gripper_base_to_gripper_right3" axis="0 0 1" />
+                        <geom class="gripper_visual" name="gripper_right3_visual" mesh="gripper_right3_m0" material="gripper_right3_m0" pos="-0.012 0.0025 -0.012" />
+                        <geom class="gripper_collision" name="gripper_right3_collision" mesh="gripper_right3" pos="-0.012 0.0025 -0.012" mass="0.01" />
+                        <body name="gripper_right1" pos="0.027 0.016 0">
+                          <joint name="gripper_right3_to_gripper_right1" axis="0 0 1" />
+                          <geom class="gripper_visual" name="gripper_right1_visual" mesh="gripper_right1_m0" material="gripper_right1_m0" pos="-0.039 -0.0133 -0.012" />
+                          <geom class="gripper_collision" name="gripper_right1_collision" mesh="gripper_right1" pos="-0.039 -0.0133 -0.012" mass="0.005" />
+                        </body>
+                      </body>
+                      <body name="gripper_right2" pos="0.005 0.027 0">
+                        <joint name="gripper_base_to_gripper_right2" axis="0 0 1" />
+                        <geom class="gripper_visual" name="gripper_right2_visual" mesh="gripper_right2_m0" material="gripper_right2_m0" pos="-0.005 -0.0195 -0.012" />
+                        <geom class="gripper_collision" name="gripper_right2_collision" mesh="gripper_right2" pos="-0.005 -0.0195 -0.012" mass="0.004" />
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="gripper_base" body2="gripper_left1" />
+    <exclude body1="gripper_base" body2="gripper_left2" />
+    <exclude body1="gripper_base" body2="gripper_left3" />
+    <exclude body1="gripper_base" body2="gripper_right1" />
+    <exclude body1="gripper_base" body2="gripper_right2" />
+    <exclude body1="gripper_base" body2="gripper_right3" />
+    <exclude body1="gripper_left1" body2="gripper_left2" />
+    <exclude body1="gripper_left1" body2="gripper_left3" />
+    <exclude body1="gripper_left1" body2="gripper_right1" />
+    <exclude body1="gripper_left1" body2="gripper_right2" />
+    <exclude body1="gripper_left1" body2="gripper_right3" />
+    <exclude body1="gripper_left2" body2="gripper_left3" />
+    <exclude body1="gripper_left2" body2="gripper_right1" />
+    <exclude body1="gripper_left2" body2="gripper_right2" />
+    <exclude body1="gripper_left2" body2="gripper_right3" />
+    <exclude body1="gripper_left3" body2="gripper_right1" />
+    <exclude body1="gripper_left3" body2="gripper_right2" />
+    <exclude body1="gripper_left3" body2="gripper_right3" />
+    <exclude body1="gripper_right1" body2="gripper_right2" />
+    <exclude body1="gripper_right1" body2="gripper_right3" />
+    <exclude body1="gripper_right2" body2="gripper_right3" />
+    <exclude body1="g_base" body2="joint2" />
+    <exclude body1="joint1" body2="joint2" />
+    <exclude body1="joint1" body2="joint3" />
+    <exclude body1="joint2" body2="joint4" />
+    <exclude body1="joint3" body2="joint5" />
+    <exclude body1="joint4" body2="joint6" />
+    <exclude body1="joint5" body2="joint6_flange" />
+    <exclude body1="joint6" body2="gripper_base" />
+    <exclude body1="joint6_flange" body2="gripper_base" />
+  </contact>
+  <equality>
+    <joint name="gripper_base_to_gripper_left2" joint1="gripper_base_to_gripper_left2" joint2="gripper_controller" polycoef="0 1 0 0 0" solref="0.005 1" />
+    <joint name="gripper_left3_to_gripper_left1" joint1="gripper_left3_to_gripper_left1" joint2="gripper_controller" polycoef="0 -1 0 0 0" solref="0.005 1" />
+    <joint name="gripper_base_to_gripper_right3" joint1="gripper_base_to_gripper_right3" joint2="gripper_controller" polycoef="0 -1 0 0 0" solref="0.005 1" />
+    <joint name="gripper_base_to_gripper_right2" joint1="gripper_base_to_gripper_right2" joint2="gripper_controller" polycoef="0 -1 0 0 0" solref="0.005 1" />
+    <joint name="gripper_right3_to_gripper_right1" joint1="gripper_right3_to_gripper_right1" joint2="gripper_controller" polycoef="0 1 0 0 0" solref="0.005 1" />
+  </equality>
+  <actuator>
+    <position name="joint2_to_joint1" joint="joint2_to_joint1" class="mycobot280" ctrlrange="-2.9321 2.9321" forcerange="-2 2" />
+    <position name="joint3_to_joint2" joint="joint3_to_joint2" class="mycobot280" ctrlrange="-2.4434 2.4434" forcerange="-3 3" />
+    <position name="joint4_to_joint3" joint="joint4_to_joint3" class="mycobot280" ctrlrange="-2.6179 2.6179" forcerange="-3 3" />
+    <position name="joint5_to_joint4" joint="joint5_to_joint4" class="mycobot280" ctrlrange="-2.6179 2.6179" forcerange="-1.5 1.5" />
+    <position name="joint6_to_joint5" joint="joint6_to_joint5" class="mycobot280" ctrlrange="-2.7052 2.7925" forcerange="-1 1" />
+    <position name="joint6output_to_joint6" joint="joint6output_to_joint6" class="mycobot280" ctrlrange="-3.14159 3.14159" forcerange="-1 1" />
+    <position name="gripper_controller" joint="gripper_controller" class="gripper" ctrlrange="-0.74 0.15" forcerange="-0.3 0.3" />
+  </actuator>
+  <keyframe>
+    <key name="home" qpos="0 0 -1.2 0 0 0 0 0 0 0 0 0" ctrl="0 0 -1.2 0 0 0 0" />
+  </keyframe>
+</mujoco>

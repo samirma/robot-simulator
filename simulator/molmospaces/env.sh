@@ -1,47 +1,43 @@
-# Environment for the MolmoSpaces simulator.
-# Sourced by run.sh; can also be sourced directly into an interactive shell.
-
-# Resolve this file's directory WITHOUT cd'ing: an interactive shell may have a
-# chpwd/precmd hook that writes a terminal-title escape sequence to stdout, and
-# `$(cd ... && pwd)` would capture that junk into the path.
+# Environment for the MolmoSpaces engine. Sourced by run.sh.
+#
+# Resolved without cd: an interactive shell may have a chpwd/precmd hook that writes a
+# terminal-title escape sequence to stdout, and `$(cd ... && pwd)` would capture it.
 _env_src="${BASH_SOURCE[0]:-$0}"
 case "$_env_src" in
   /*) ;;
   *) _env_src="$PWD/$_env_src" ;;
 esac
-SIM_ROOT="$(dirname "$_env_src")"
-# realpath is an external binary, so it also cannot trigger a shell hook.
-SIM_ROOT="$(realpath "$SIM_ROOT" 2>/dev/null || echo "${SIM_ROOT%/.}")"
+ENGINE_ROOT="$(dirname "$_env_src")"
+ENGINE_ROOT="$(realpath "$ENGINE_ROOT" 2>/dev/null || echo "${ENGINE_ROOT%/.}")"
 unset _env_src
-export SIM_ROOT
-# The upstream allenai/molmospaces clone, fetched by `run.sh setup`.
-export MOLMOSPACES_DIR="$SIM_ROOT/upstream"
-# Cross-engine resources (the wire bridge and robot spec files), shared by every
-# simulator engine. Resolved without cd; realpath is an external binary.
-export SHARED_ROOT="$(realpath "$SIM_ROOT/../shared" 2>/dev/null || echo "$SIM_ROOT/../shared")"
-export VENV_DIR="$SIM_ROOT/.venv"
+export ENGINE_ROOT
+export ENGINE_NAME=molmospaces
+# The upstream allenai/molmospaces clone, fetched by `run.sh setup` at a pinned revision.
+export MOLMOSPACES_DIR="$ENGINE_ROOT/upstream"
+export MOLMOSPACES_REV="713fd12ab593c3bbb4abfaa76622e14249aa36b3"
+export SIMULATOR_ROOT="$(realpath "$ENGINE_ROOT/.." 2>/dev/null || echo "$ENGINE_ROOT/..")"
+export SHARED_ROOT="$SIMULATOR_ROOT/shared"
+export VENV_DIR="$ENGINE_ROOT/.venv"
 
 # --- Asset storage -----------------------------------------------------------
-# DATA_ROOT is what scripts/assets/hf_download.py extracts into; it creates a
-# "mujoco/" subdirectory, which is exactly what MLSPACES_CACHE_DIR must point at.
-export DATA_ROOT="$SIM_ROOT/data"
+# DATA_ROOT is what scripts/assets/hf_download.py extracts into; it creates a "mujoco/"
+# subdirectory, which is exactly what MLSPACES_CACHE_DIR must point at.
+export DATA_ROOT="$ENGINE_ROOT/data"
 export MLSPACES_CACHE_DIR="$DATA_ROOT/mujoco"
-export MLSPACES_ASSETS_DIR="$SIM_ROOT/assets"
+export MLSPACES_ASSETS_DIR="$ENGINE_ROOT/assets"
 export MLSPACES_FORCE_INSTALL=True
 
 # --- Rendering ---------------------------------------------------------------
-# macOS has no EGL/OSMesa. glfw drives both the on-screen viewer and offscreen
-# rendering (via a hidden window). Set MUJOCO_GL=cgl for pure headless offscreen.
+# macOS has no EGL/OSMesa. CGL renders offscreen from any thread without a window; the
+# MuJoCo window (mjpython + mujoco.viewer) brings its own GLFW context.
 if [ "$(uname -s)" = "Darwin" ]; then
-  export MUJOCO_GL="${MUJOCO_GL:-glfw}"
+  export MUJOCO_GL="${MUJOCO_GL:-cgl}"
 else
   export MUJOCO_GL="${MUJOCO_GL:-egl}"
   export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
 fi
 
-export PYTHONPATH="$MOLMOSPACES_DIR:$SIM_ROOT:$SHARED_ROOT:${PYTHONPATH:-}"
-
-# Quieter, more deterministic runs.
+export PYTHONPATH="$MOLMOSPACES_DIR:$ENGINE_ROOT:$SHARED_ROOT:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 

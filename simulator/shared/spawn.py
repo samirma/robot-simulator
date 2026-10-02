@@ -1,558 +1,533 @@
-"""The spawn tool both engines run: parse, place, stage, compile, then serve.
+"""spawn.sh: add one robot to a running simulation and serve its vendor interface.
 
-Each engine's `tools/spawn_robot.py` is an `Engine` -- how its scene is loaded, where
-its worktop and its open floor are, how a robot is grafted into it -- handed to `main`
-here. Everything else is one implementation (spec §4, "shared logic exists once"): the
-command line, which namespaces and what staging a fleet gets (`serve_args`), where each
-robot stands (`placement.stand_fleet`), the task (`tasks/apple_on_plate`), binding each
-robot's joints after the compile, the start-up reports, the ROS fleet, the viewer and the
-loop. Two copies of any of those were two chances for the engines to drift apart in a
-way a client could see.
+The only entry point that serves a wire. It asks the simulation on `--sim-port` to add the
+robot (admission and placement happen there), starts one Docker container per wire (ROS
+graph + rosbridge_suite, the simulator code mounted read-only), waits until every wire
+serves its recorded interface, prints one readiness line and stays in the foreground
+watching the simulation, the containers and the wires. Ending it removes the robot and
+its containers; the simulation also removes the robot if this process dies (even by
+SIGKILL), and the containers then exit by themselves when their link to the simulation
+closes.
 
-    python <engine>/tools/spawn_robot.py so101,myagv <scene flags> [--headless] [...]
+Exit status: 0 when ended by SIGINT/SIGTERM; non-zero for every refusal, failed startup,
+wire failure, or when the simulation ends.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
-import math
+import hashlib
+import json
+import os
+import signal
+import socket
+import subprocess
 import sys
-from dataclasses import dataclass
-from types import SimpleNamespace
+import threading
+import time
+from pathlib import Path
 
-import mujoco
-import numpy as np
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
 
-import ainex_model
-import placement
-import reach
-import robots_spec
-import serve_args
-from mujoco_bridge import PlanarJointBase
-from placement import Instance, SurfaceMap, Worktop
+import protocol  # noqa: E402
+import registry  # noqa: E402
+from rosbridge_client import Rosbridge, WebSocketClosed, wait_for  # noqa: E402
 
-#: Where the wire is, when nobody says otherwise: `contracts.rosbridge_server.DEFAULT_PORT`,
-#: named here so `--help` works before the contracts package is imported.
-DEFAULT_ROS_PORT = 9090
-#: The interface the rosbridge server binds: all of them, as the real robots' bridges do.
-ROS_HOST = "0.0.0.0"
-#: The loop's tick for a member with no periodic rate of its own (the AiNex controller);
-#: every published rate is its robot's own, from its ROS file.
-CONTROL_HZ = 10.0
-#: JPEG quality of every compressed camera image the fleet publishes.
-JPEG_QUALITY = 70
+SIM_ROOT = HERE.parent
+REPO_ROOT = SIM_ROOT.parent
+DOCKER_DIR = HERE / "wire" / "docker"
+# rosbridge listens inside the container on the same port number it is published on: the
+# ROS 1 server (autobahn) refuses a handshake whose Host header names another port.
+READY_TIMEOUT = float(os.environ.get("RSIM_READY_TIMEOUT", "180"))
+READY_MARK = "RSIM-WIRE-READY"
+WIRE_SILENCE = float(os.environ.get("RSIM_WIRE_SILENCE", "30"))
 
-#: The task every worktop fleet is staged with (spec §2.3).
-TASK = "apple_on_plate"
-
-#: name -> (module, function) presenting that robot's vendor ROS interface. All of them
-#: are shared: an engine supplies the robot, never its interface.
-ROS_SURFACES = {
-    "so101": ("ros_surfaces.so101", "attach_ros"),
-    "myagv": ("ros_surfaces.myagv", "attach_ros"),
-    "ainex": ("ros_surfaces.ainex", "attach_ros"),
-    "myagv_mycobot280": ("ros_surfaces.myagv_mycobot280", "attach_ros"),
-    "rosmaster_x3_plus": ("ros_surfaces.rosmaster_x3_plus", "attach_ros"),
-}
-
-#: The SO-101's arm joints and gripper in MJCF order, and the upright rest pose with the
-#: jaw near open that both engines start it in.
-SO101_ARM_JOINTS = ("shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll")
-SO101_GRIPPER_JOINTS = ("gripper",)
-SO101_REST_QPOS = (0.0, 0.0, -1.5708, 1.0008, -1.5221)
-SO101_REST_GRIPPER = (1.2,)
+EXIT_REFUSED = 2
+EXIT_FAILED = 1
 
 
-def build_parser(engine) -> argparse.ArgumentParser:
+class Refusal(Exception):
+    pass
+
+
+def log(msg: str) -> None:
+    print(f"spawn: {msg}", file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------- arguments
+
+
+def build_parser() -> argparse.ArgumentParser:
+    try:
+        ids = registry.listing("    ")
+    except registry.RegistryError as exc:
+        ids = f"    ({exc})"
     ap = argparse.ArgumentParser(
-        prog=f"{engine.name}/tools/spawn_robot.py",
-        description=f"Spawn robots into a {engine.name} scene and serve them.",
-        formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument(
-        "robot",
-        help="comma-separated ids of simulated robots in robots_specs/robots.yml, as read "
-             "from it now; they share one scene, one port and one ROS graph, each under "
-             "its own namespace:\n" + robots_spec.describe_simulated("  "))
-    ap.add_argument(
-        "--ros-namespace", default=None, dest="ros_namespace", metavar="NS",
-        help="put a lone robot under NS instead of its id; '' serves the bare vendor "
-             "interface")
-    engine.add_scene_args(ap)
-    ap.add_argument("--ros-port", type=int, default=DEFAULT_ROS_PORT, dest="ros_port",
-                    metavar="PORT", help="serve the fleet on rosbridge at PORT (default "
-                                         "%(default)s; 0 serves nothing)")
-    ap.add_argument("--headless", action="store_true",
-                    help="run the loop without a window")
+        prog="spawn.sh", allow_abbrev=False, formatter_class=argparse.RawTextHelpFormatter,
+        description="Spawn one robot by id into the running simulation and serve its vendor "
+                    "interface on its own rosbridge websocket (one per component for a "
+                    "composite robot). Runs in the foreground; Ctrl-C removes the robot.",
+        epilog="accepted robot ids (robots_specs/high_level_spec.md):\n" + ids)
+    ap.add_argument("robot", metavar="<id>", help="robot id (listed below)")
+    ap.add_argument("--placement", choices=("worktop", "floor"), default="worktop",
+                    help="stand the robot on the worktop (default) or on the floor")
+    ap.add_argument("--sim-port", type=int, default=protocol.DEFAULT_SIM_PORT,
+                    help="the simulation's control port (default %(default)s)")
+    ap.add_argument("--port", type=int, default=9090,
+                    help="rosbridge websocket port of the robot (a composite's base) "
+                         "(default %(default)s)")
+    ap.add_argument("--arm-port", type=int, default=None,
+                    help="rosbridge port of a composite robot's arm interface "
+                         "(default --port + 1); refused for a robot without one")
     return ap
 
 
-# ---------------------------------------------------------------- the robots, once compiled
+def port_taken(port: int) -> bool:
+    """Something listens on the port (connections left in TIME_WAIT do not count)."""
+    for host in ("0.0.0.0", "127.0.0.1"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind((host, port))
+        except OSError:
+            return True
+        finally:
+            s.close()
+    return False
 
 
-class JointGroup:
-    """One move group of an arm, straight off a raw MuJoCo model: what the SO-101's
-    shared ROS surface reads (`joint_pos`, `joint_vel`) and writes (`ctrl`)."""
-
-    def __init__(self, model, data, prefix: str, joints) -> None:
-        self._data = data
-        self._qpos, self._qvel, self._act = [], [], []
-        for name in joints:
-            jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, f"{prefix}{name}")
-            aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{prefix}{name}")
-            if jid < 0 or aid < 0:
-                raise SystemExit(f"joint/actuator {prefix}{name!r} missing from the model")
-            self._qpos.append(int(model.jnt_qposadr[jid]))
-            self._qvel.append(int(model.jnt_dofadr[jid]))
-            self._act.append(aid)
-
-    @property
-    def joint_pos(self) -> np.ndarray:
-        return self._data.qpos[self._qpos].copy()
-
-    @joint_pos.setter
-    def joint_pos(self, value) -> None:
-        self._data.qpos[self._qpos] = np.asarray(value, dtype=np.float64)
-
-    @property
-    def joint_vel(self) -> np.ndarray:
-        return self._data.qvel[self._qvel].copy()
-
-    @property
-    def ctrl(self) -> np.ndarray:
-        return self._data.ctrl[self._act].copy()
-
-    @ctrl.setter
-    def ctrl(self, value) -> None:
-        self._data.ctrl[self._act] = np.asarray(value, dtype=np.float64)
+# ---------------------------------------------------------------- docker
 
 
-def root_body(name: str) -> str:
-    """The robot's root body: the AiNex roots at the torso its vendor URDF does."""
-    return ainex_model.robot_model_root_name() if name == "ainex" else "base"
+def docker(*args, check=True, capture=True, timeout=None) -> subprocess.CompletedProcess:
+    return subprocess.run(["docker", *args], check=check, timeout=timeout,
+                          stdout=subprocess.PIPE if capture else None,
+                          stderr=subprocess.PIPE if capture else None, text=True)
 
 
-def rest_positions(name: str) -> dict[str, float]:
-    """A mobile robot's arm and gripper joints at the pose it stands in: its contract
-    module's `REST_POSITIONS` (joint -> rad), where it has an arm the base carries."""
-    module = importlib.import_module(ROS_SURFACES[name][0])
-    return dict(getattr(module, "REST_POSITIONS", {}))
+def docker_running() -> bool:
+    try:
+        return docker("info", "--format", "{{.ServerVersion}}", check=False,
+                      timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
-def hold(model, data, prefix: str, positions: dict[str, float]) -> None:
-    """Put each named joint at its position, with its position servo's target there too,
-    and every joint an equality couples to one (a URDF `<mimic>`) where the coupling says."""
-    for name, q in positions.items():
-        jid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, prefix + name)
-        aid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, prefix + name)
-        if jid < 0 or aid < 0:
-            raise SystemExit(f"joint/actuator {prefix}{name!r} missing from the model")
-        data.qpos[model.jnt_qposadr[jid]] = q
-        data.ctrl[aid] = q
-    for e in range(model.neq):
-        if model.eq_type[e] != mujoco.mjtEq.mjEQ_JOINT or model.eq_obj2id[e] < 0:
-            continue
-        j1, j2 = int(model.eq_obj1id[e]), int(model.eq_obj2id[e])
-        if not (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, j1) or "").startswith(prefix):
-            continue
-        c = model.eq_data[e]
-        x = float(data.qpos[model.jnt_qposadr[j2]])
-        data.qpos[model.jnt_qposadr[j1]] = c[0] + c[1] * x + c[2] * x ** 2 + c[3] * x ** 3 \
-            + c[4] * x ** 4
+def _hash_dir(path: Path, extra: str = "") -> str:
+    h = hashlib.sha256(extra.encode())
+    for p in sorted(path.rglob("*")):
+        if p.is_file():
+            h.update(str(p.relative_to(path)).encode())
+            h.update(p.read_bytes())
+    return h.hexdigest()[:12]
 
 
-def bind(model, data, instances) -> None:
-    """Give each robot its engine-neutral handles and put it in its rest pose.
+def distro_of(robot: registry.Robot) -> str:
+    import yaml
 
-    Both joint state and actuator target: these are position actuators, so a ctrl left
-    at 0 would drive every robot out of its pose on the first step.
-    """
-    for inst in instances:
-        if inst.holonomic:
-            inst.base = PlanarJointBase(
-                model, data, inst.mjcf,
-                body=root_body(inst.name) if inst.name == "ainex" else None)
-            inst.base.teleport(float(inst.xy[0]), float(inst.xy[1]), float(inst.yaw))
-            if inst.name == "ainex":
+    with open(robot.path(robot.ros_file), encoding="utf-8") as fh:
+        return yaml.safe_load(fh)["ros_distribution"]
+
+
+def ensure_image(robot: registry.Robot) -> str:
+    """The wire image for this interface owner, built (from pinned sources) if missing:
+    the distribution's base image, and the robot's own layer when it has one."""
+    distro = distro_of(robot)
+    base_dir = DOCKER_DIR / distro
+    if not (base_dir / "Dockerfile").is_file():
+        raise Refusal(f"no wire image definition for ROS {distro} ({base_dir})")
+    base_tag = f"rsim-wire/{distro}:{_hash_dir(base_dir)}"
+    _build(base_tag, base_dir, {})
+    rdir = DOCKER_DIR / robot.id
+    if not (rdir / "Dockerfile").is_file():
+        return base_tag
+    tag = f"rsim-wire/{robot.id}:{_hash_dir(rdir, base_tag)}"
+    if docker("image", "inspect", tag, check=False).returncode == 0:
+        return tag
+    import shutil
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="rsim-ctx-") as tmp:
+        ctx = Path(tmp) / "ctx"
+        shutil.copytree(rdir, ctx)
+        spec = ctx / "context.json"
+        if spec.is_file():
+            _vendor_files(json.loads(spec.read_text()), ctx)
+        _build(tag, ctx, {"BASE": base_tag})
+    return tag
+
+
+def _vendor_files(spec: dict, ctx: Path) -> None:
+    """Extract pinned vendor files into a build context from their verified archive (in
+    the robots_specs fetch cache; fetched there first when missing)."""
+    import zipfile
+
+    cache = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    for item in spec.get("extract", []):
+        archive = cache / item["archive"]
+        if not archive.is_file() and item.get("fetch"):
+            subprocess.run(item["fetch"], cwd=str(REPO_ROOT), check=False)
+        if not archive.is_file():
+            raise Refusal(f"the pinned archive {archive.name} is not available (run "
+                          "simulator/<engine>/run.sh setup, which fetches it)")
+        h = hashlib.sha256()
+        with open(archive, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != item["sha256"]:
+            raise Refusal(f"{archive} does not match its pinned sha256; refusing to use it")
+        dest = ctx / item["dest"]
+        with zipfile.ZipFile(archive) as z:
+            for name in z.namelist():
+                if name.startswith(item["prefix"]) and not name.endswith("/"):
+                    out = dest / name[len(item["prefix"]):]
+                    out.parent.mkdir(parents=True, exist_ok=True)
+                    out.write_bytes(z.read(name))
+
+
+def _build(tag: str, context: Path, args: dict) -> None:
+    if docker("image", "inspect", tag, check=False).returncode == 0:
+        return
+    log(f"building wire image {tag} (first use; this can take several minutes)")
+    cmd = ["build", "-t", tag]
+    for k, v in args.items():
+        cmd += ["--build-arg", f"{k}={v}"]
+    res = docker(*cmd, str(context), check=False, capture=True)
+    if res.returncode != 0:
+        tail = "\n".join((res.stderr or res.stdout or "").splitlines()[-25:])
+        raise Refusal(f"building the wire image {tag} failed:\n{tail}")
+
+
+# ---------------------------------------------------------------- the spawn
+
+
+class Wire:
+    def __init__(self, role: str, owner: registry.Robot, port: int, name: str):
+        self.role, self.owner, self.port, self.name = role, owner, port, name
+        self.image = None
+        self.rb: Rosbridge | None = None
+        self.required_nodes: list = []
+        self.dialect = owner.dialect
+        self.distro = None
+
+    def describe(self) -> str:
+        label = f"ROS {'1' if self.dialect == 'ros1' else '2'} {self.distro}"
+        who = self.owner.id if self.role == "main" else f"{self.role} ({self.owner.id})"
+        return f"{who} ws://127.0.0.1:{self.port} [{label}]"
+
+
+def required_nodes(owner: registry.Robot) -> list:
+    import yaml
+
+    with open(owner.path(owner.ros_file), encoding="utf-8") as fh:
+        iface = yaml.safe_load(fh)
+    return sorted(n["name"] for n in iface.get("nodes", []) if not n.get("optional"))
+
+
+class Spawn:
+    def __init__(self, args):
+        self.args = args
+        self.robot = None
+        self.client: protocol.Client | None = None
+        self.wires: list[Wire] = []
+        self.done = threading.Event()
+        self.exit_code = 0
+        self.reason = ""
+        self.cleaned = False
+        self.started_containers: list[str] = []
+        self.sim_ended = False
+
+    # -------------------------------------------------------------- checks
+
+    def check(self):
+        a = self.args
+        try:
+            self.robot = registry.get(a.robot)
+        except registry.RegistryError as exc:
+            raise Refusal(str(exc))
+        missing = registry.missing_files(self.robot)
+        if missing:
+            raise Refusal(f"{a.robot}: required files are missing "
+                          f"({', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}); "
+                          "run simulator/<engine>/run.sh setup")
+        roles = registry.wires(self.robot)
+        if a.arm_port is not None and len(roles) < 2:
+            raise Refusal(f"--arm-port: {a.robot} has no separate arm interface")
+        ports = [a.port] + ([a.arm_port if a.arm_port is not None else a.port + 1]
+                            if len(roles) > 1 else [])
+        if len(set(ports)) != len(ports):
+            raise Refusal("--port and --arm-port must differ")
+        for p in ports:
+            if not 1 <= p <= 65535:
+                raise Refusal(f"port {p} is out of range")
+        for (role, owner), port in zip(roles, ports):
+            self.wires.append(Wire(role, owner, port,
+                                   f"rsim-{a.sim_port}-{a.robot}-{role}"))
+        if not docker_running():
+            raise Refusal("Docker is not running; start Docker Desktop and try again")
+        for w in self.wires:
+            if port_taken(w.port):
+                raise Refusal(f"port {w.port} is already in use; pick another with "
+                              f"{'--port' if w is self.wires[0] else '--arm-port'}")
+            w.required_nodes = required_nodes(w.owner)
+            w.distro = distro_of(w.owner)
+
+    def connect(self):
+        try:
+            self.client = protocol.Client("127.0.0.1", self.args.sim_port,
+                                          on_event=self._event, on_close=self._sim_closed)
+        except OSError:
+            raise Refusal(f"no simulation is running on --sim-port {self.args.sim_port}; "
+                          "start one with simulator/kitchen.sh start")
+        hello = self.client.call("hello", role="spawn")
+        self.hello = hello
+        self.client.call("precheck", robot=self.robot.id, placement=self.args.placement,
+                         ports=[w.port for w in self.wires])
+
+    def _event(self, header, payload):
+        if header.get("event") == "shutdown":
+            self.sim_ended = True
+            self.finish(EXIT_FAILED, f"the simulation ended ({header.get('reason', '')})")
+
+    def _sim_closed(self):
+        if not self.done.is_set():
+            self.sim_ended = True
+            self.finish(EXIT_FAILED, "the simulation ended (its control port closed)")
+
+    def finish(self, code: int, reason: str):
+        if self.done.is_set():
+            return
+        self.exit_code, self.reason = code, reason
+        self.done.set()
+
+    # -------------------------------------------------------------- startup
+
+    def start(self):
+        for w in self.wires:
+            w.image = ensure_image(w.owner)
+        # Re-check the port after a possibly long build.
+        for w in self.wires:
+            if port_taken(w.port):
+                raise Refusal(f"port {w.port} is already in use")
+        try:
+            res = self.client.call("spawn", robot=self.robot.id, placement=self.args.placement,
+                                   ports=[w.port for w in self.wires], timeout=600)
+        except protocol.RemoteError as exc:
+            raise Refusal(str(exc))
+        self.spawned = res
+        log(f"{self.robot.id} placed on the {res['placement']} at "
+            f"({res['xyz'][0]:.3f}, {res['xyz'][1]:.3f}, {res['xyz'][2]:.3f}), heading "
+            f"{res['yaw'] * 57.29578:.1f} deg")
+        if res.get("staged"):
+            cleared = res.get("cleared") or []
+            log(f"worktop objects staged: {', '.join(res['staged'])}; scene objects cleared "
+                f"from the working area: {', '.join(cleared) if cleared else 'none'}")
+        for w in self.wires:
+            self._run_container(w, res["token"])
+        deadline = time.monotonic() + READY_TIMEOUT
+        for w in self.wires:
+            self._wait_ready(w, deadline)
+        self.client.call("commit")
+
+    def _run_container(self, w: Wire, token: str):
+        docker("rm", "-f", w.name, check=False)
+        env = {"RSIM_SIM_HOST": "host.docker.internal", "RSIM_SIM_PORT": str(self.args.sim_port),
+               "RSIM_TOKEN": token, "RSIM_ROLE": w.role, "RSIM_WIRE_PORT": str(w.port), "RSIM_ROBOT": w.owner.id,
+               "RSIM_SPAWN_ID": self.robot.id, "ROS_DOMAIN_ID": str(7 + (w.port % 90)),
+               "ROS_LOCALHOST_ONLY": "1", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
+        for k in ("RSIM_PROFILE", "RSIM_TEST_FAIL_ROLE"):   # diagnostics and test hooks
+            if os.environ.get(k):
+                env[k] = os.environ[k]
+        cmd = ["run", "-d", "--rm", "--name", w.name,
+               "--label", "rsim.wire=1", "--label", f"rsim.sim_port={self.args.sim_port}",
+               "--label", f"rsim.robot={self.robot.id}", "--label", f"rsim.role={w.role}",
+               "--label", f"rsim.spawn_pid={os.getpid()}",
+               "-p", f"{w.port}:{w.port}",
+               # ROS 1's roslaunch/rosmaster crawl through every possible descriptor when
+               # they fork; Docker's default of 1M open files makes that take minutes.
+               "--ulimit", "nofile=1024:524288",
+               "--add-host", "host.docker.internal:host-gateway",
+               "-v", f"{SIM_ROOT}:/opt/rsim/simulator:ro",
+               "-v", f"{REPO_ROOT / 'robots_specs'}:/opt/rsim/robots_specs:ro",
+               # compiled output of the simulator's ROS packages, built once per revision
+               # from the read-only mount (never a copy of the code in the image)
+               "-v", "rsim-wire-build:/opt/rsim_build"]
+        for k, v in env.items():
+            cmd += ["-e", f"{k}={v}"]
+        cmd += [w.image, "python3", "-u", "/opt/rsim/simulator/shared/wire/supervisor.py"]
+        res = docker(*cmd, check=False)
+        if res.returncode != 0:
+            raise Refusal(f"could not start the {w.role} wire container: {res.stderr.strip()}")
+        self.started_containers.append(w.name)
+        # The container removes itself when it exits (--rm); keep its log for diagnostics.
+        import tempfile
+
+        w.logfile = Path(tempfile.gettempdir()) / f"{w.name}.log"
+        w.logproc = subprocess.Popen(["docker", "logs", "-f", w.name],
+                                     stdout=open(w.logfile, "w"), stderr=subprocess.STDOUT)
+
+    def _container_running(self, name: str) -> bool:
+        res = docker("inspect", "-f", "{{.State.Running}}", name, check=False)
+        return res.returncode == 0 and res.stdout.strip() == "true"
+
+    def _logs(self, name: str, n: int = 30) -> str:
+        w = next((w for w in self.wires if w.name == name), None)
+        if w is not None and getattr(w, "logfile", None) and w.logfile.exists():
+            time.sleep(0.3)
+            lines = w.logfile.read_text(errors="replace").splitlines()
+            return "\n".join(lines[-n:])
+        res = docker("logs", "--tail", str(n), name, check=False)
+        return (res.stdout or "") + (res.stderr or "")
+
+    def _wait_ready(self, w: Wire, deadline: float):
+        while time.monotonic() < deadline:
+            if self.done.is_set():
+                raise Refusal(self.reason)
+            if not self._container_running(w.name):
+                raise Refusal(f"the {w.role} wire container exited during startup:\n"
+                              + self._logs(w.name))
+            if READY_MARK in self._logs(w.name, 200):
+                break
+            time.sleep(0.5)
+        else:
+            raise Refusal(f"the {w.role} wire did not become ready within "
+                          f"{READY_TIMEOUT:.0f} s:\n" + self._logs(w.name))
+        # Confirm from outside, over rosbridge: every required node is on the graph.
+        w.rb = wait_for("127.0.0.1", w.port, max(5.0, deadline - time.monotonic()))
+        missing = self._missing_nodes(w)
+        if missing:
+            raise Refusal(f"the {w.role} wire is up but lacks node(s) {', '.join(missing)}")
+
+    def _missing_nodes(self, w: Wire) -> list:
+        nodes = set(w.rb.call("/rosapi/nodes", timeout=10).get("nodes", []))
+        return [n for n in w.required_nodes if n not in nodes]
+
+    # -------------------------------------------------------------- foreground
+
+    def watch(self):
+        last_probe = 0.0
+        while not self.done.wait(1.0):
+            for w in self.wires:
+                if not self._container_running(w.name):
+                    self.finish(EXIT_FAILED, self._wire_reason(w, "container exited"))
+                    return
+            if time.monotonic() - last_probe >= 2.0:
+                last_probe = time.monotonic()
+                for w in self.wires:
+                    try:
+                        if w.rb is None or w.rb.closed.is_set():
+                            w.rb = Rosbridge("127.0.0.1", w.port, timeout=3.0)
+                        missing = self._missing_nodes(w)
+                        w.unanswered_since = None
+                    except TimeoutError as exc:
+                        # rosapi answers one request at a time and a client may keep it
+                        # busy; only a silence of RSIM_WIRE_SILENCE s is a failure
+                        now = time.monotonic()
+                        w.unanswered_since = getattr(w, "unanswered_since", None) or now
+                        if now - w.unanswered_since >= WIRE_SILENCE:
+                            self.finish(EXIT_FAILED, f"the {w.role} wire stopped serving "
+                                                     f"(rosapi silent for {WIRE_SILENCE:.0f} s)")
+                            return
+                        continue
+                    except (OSError, WebSocketClosed, RuntimeError) as exc:
+                        self.finish(EXIT_FAILED, self._wire_reason(
+                            w, f"stopped serving (rosbridge: {exc})"))
+                        return
+                    if missing:
+                        self.finish(EXIT_FAILED, f"the {w.role} wire lost node(s) "
+                                                 f"{', '.join(missing)}")
+                        return
+
+    def _wire_reason(self, w: Wire, default: str) -> str:
+        """Why a wire ended: the wire's own report (a lost node) when it gave one --
+        waiting briefly, since rosbridge goes down a moment before the report lands --
+        else `default`."""
+        deadline = time.monotonic() + 3.0
+        while True:
+            why = [l for l in self._logs(w.name, 400).splitlines()
+                   if l.startswith("[wire] lost node(s)")]
+            if why:
+                return f"the {w.role} wire {why[-1][len('[wire] '):]}"
+            if time.monotonic() > deadline:
+                return f"the {w.role} wire {default}"
+            time.sleep(0.3)
+
+    def cleanup(self):
+        if self.cleaned:
+            return
+        self.cleaned = True
+        for w in self.wires:
+            if w.rb is not None:
                 try:
-                    # The vendor's init pose, torso leaning -- the one function both
-                    # engines stand this robot up with.
-                    ainex_model.stand(model, data, inst.mjcf)
-                except ValueError as exc:
-                    raise SystemExit(str(exc)) from exc
-                # ...and its feet meet what lies on the surface it stands on.
-                ainex_model.enable_foot_contacts(model, inst.mjcf)
-            else:
-                hold(model, data, inst.mjcf, rest_positions(inst.name))
-        elif inst.name == "so101":
-            inst.view = {"arm": JointGroup(model, data, inst.mjcf, SO101_ARM_JOINTS),
-                         "gripper": JointGroup(model, data, inst.mjcf, SO101_GRIPPER_JOINTS)}
-            for gid, rest in (("arm", SO101_REST_QPOS), ("gripper", SO101_REST_GRIPPER)):
-                inst.view[gid].joint_pos = rest
-                inst.view[gid].ctrl = rest
-        else:
-            raise SystemExit(f"no binding for {inst.name!r}")
+                    w.rb.close()
+                except Exception:
+                    pass
+        if self.client is not None and not self.client.closed.is_set():
+            try:
+                self.client.call("remove", reason=self.reason or "its spawn ended", timeout=10)
+            except Exception:
+                pass
+            self.client.close()
+        names = [w.name for w in self.wires]
+        if names:
+            docker("rm", "-f", *names, check=False)
+        deadline = time.monotonic() + 15
+        for w in self.wires:
+            while port_taken(w.port) and time.monotonic() < deadline:
+                time.sleep(0.2)
 
 
-# ---------------------------------------------------------------- start-up checks
+def main(argv=None) -> int:
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    sp = Spawn(args)
 
+    def on_signal(signum, frame):
+        sp.finish(0, f"ended by {signal.Signals(signum).name}")
 
-def gripper_bodies(robot: str) -> tuple[str, ...]:
-    """The bodies carrying a robot's gripper geoms: the AiNex's hands. Empty for the
-    SO-101, whose jaw geoms are found by their MJCF names instead."""
-    return tuple(sorted(ainex_model.HAND_BODIES)) if robot == "ainex" else ()
-
-
-def check_task_contacts(model, namespace: str, task, hand_bodies=()) -> None:
-    """Refuse to serve a task whose objects the gripper cannot physically touch.
-
-    MuJoCo pairs two geoms only if `(contype_a & conaffinity_b) or (contype_b &
-    conaffinity_a)`, and a loader that rewrites those bitmasks can leave the jaws and the
-    apple on disjoint masks. The failure is silent: the jaw closes straight through the
-    object and the episode scores zero looking like a near miss.
-    """
-    if hand_bodies:
-        wanted = {f"{namespace}{b}" for b in hand_bodies}
-        jaw = [g for g in range(model.ngeom)
-               if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY,
-                                     model.geom_bodyid[g]) or "") in wanted]
-    else:
-        prefixes = (f"{namespace}fixed_jaw", f"{namespace}moving_jaw")
-        jaw = [g for g in range(model.ngeom)
-               if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, g) or "").startswith(prefixes)]
-    objects = [g for g in range(model.ngeom)
-               if model.geom_bodyid[g] in task.contact_bodies()
-               and (model.geom_contype[g] or model.geom_conaffinity[g])]
-    if not jaw or not objects:
-        raise SystemExit(f"task contact check: found {len(jaw)} gripper geoms and "
-                         f"{len(objects)} collidable task geoms; expected both non-empty")
-
-    def pairs(a: int, b: int) -> bool:
-        return bool((model.geom_contype[a] & model.geom_conaffinity[b])
-                    or (model.geom_contype[b] & model.geom_conaffinity[a]))
-
-    touchable = sum(1 for j in jaw for o in objects if pairs(j, o))
-    print(f"task contacts: {len(jaw)} gripper geoms x {len(objects)} task geoms, "
-          f"{touchable} pairs collide", file=sys.stderr)
-    if touchable == 0:
-        raise SystemExit("task contact check FAILED: no gripper geom can collide with any "
-                         "task object; the gripper would close straight through the apple")
-
-
-def penetrations(model, data, prefix: str, depth: float = -0.001) -> list[str]:
-    """Contacts at least 1 mm deep between this robot and anything that is not it."""
-    def is_robot(geom_id: int) -> bool:
-        body = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[geom_id]) or ""
-        return body.startswith(prefix)
-
-    found = []
-    for c in range(data.ncon):
-        con = data.contact[c]
-        if con.dist > depth:
-            continue
-        g1, g2 = int(con.geom1), int(con.geom2)
-        if is_robot(g1) == is_robot(g2):
-            continue
-        other = g2 if is_robot(g1) else g1
-        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, other) or f"geom {other}"
-        found.append(f"intersects {name} by {-con.dist * 1000:.0f} mm")
-    return found
-
-
-def report_sole_contact(model, data, instances) -> list[str]:
-    """Where a legged robot's soles are against the surface it stands on.
-
-    The feet do not collide with the world, on purpose (colliding feet fight the planar
-    actuators), so a graft that leaves the robot hovering produces no fall and no
-    warning: it simply looks like a robot in the air. Returns the problems found.
-    """
-    problems = []
-    for inst in instances:
-        if inst.name != "ainex":
-            continue
-        gap = ainex_model.sole_z(model, data, inst.mjcf) - inst.surface_z
-        if abs(gap) <= ainex_model.SOLE_TOLERANCE:
-            print(f"{inst.name}: soles on the {inst.on} at z {inst.surface_z:.4f} "
-                  f"(gap {gap * 1000:+.2f} mm)", file=sys.stderr)
-        else:
-            problems.append(f"{inst.name} soles are {gap * 1000:+.1f} mm from the {inst.on} "
-                            f"at z {inst.surface_z:.4f}")
-    return problems
-
-
-# ---------------------------------------------------------------- the world
-
-
-@dataclass
-class World:
-    """A compiled scene with its fleet placed and the task (if any) staged."""
-
-    model: object
-    data: object
-    instances: list
-    staging: serve_args.Staging
-    task: object          # the arbiter, or None
-    scene: object         # the engine's bare scene: its compiled model before any robot
-    worktop: Worktop | None
-    scene_option: object
-    problems: list        # placement and start-up problems found; empty when correct
-
-
-def build_world(engine, args) -> World:
     try:
-        names = robots_spec.check_simulated(args.robot)
-        namespaces = serve_args.fleet_namespaces(names, args.ros_namespace)
-    except ValueError as exc:
-        raise SystemExit(f"error: {exc}") from None
-    plan = serve_args.staging(names)
-    # `robot_N/` prefixes bodies inside the compiled model; the namespace prefixes names
-    # on the wire. Keeping the `robot_N/` shape also keeps the task's "never clear a body
-    # called robot_*" rule working.
-    instances = [Instance(n, f"robot_{i}/", namespaces[i]) for i, n in enumerate(names)]
-    by_name = {i.name: i for i in instances}
-
-    scene = engine.load_scene(args)
-    task_mod = importlib.import_module(f"tasks.{TASK}") if plan.task else None
-
-    def task_objects(lead: Instance):
-        """All six task objects' footprints in the world: what every other worktop robot
-        stands clear of, so the task is always staged whole (spec §2.3)."""
-        transform = task_mod.base_frame([lead.xy[0], lead.xy[1], lead.mount_z], lead.yaw)
-        return {name: (np.asarray(task_mod._apply(transform, task_mod.OBJECT_POSES[name])[:2]),
-                       task_mod.FOOTPRINT_RADIUS[name])
-                for name in task_mod.TASK_OBJECTS}
-
-    def sightlines(lead: Instance):
-        """Each rig camera to the apple and the plate: what a second worktop robot must
-        not stand in, or the rig films its back instead of the task."""
-        transform = task_mod.base_frame([lead.xy[0], lead.xy[1], lead.mount_z], lead.yaw)
-        return [(task_mod._apply(transform, cam[1]),
-                 task_mod._apply(transform, task_mod.OBJECT_POSES[obj]))
-                for cam in task_mod.SCENE_CAMERAS for obj in ("apple", "plate")]
-
-    worktop = placement.stand_fleet(
-        instances, task_robot=plan.task_robot,
-        find_worktop=lambda robot: engine.find_worktop(scene, robot),
-        floor_spot=lambda inst, keep_out: engine.floor_spot(scene, inst, keep_out),
-        surface_map=lambda w: SurfaceMap(scene.model, scene.data, w),
-        task_objects=task_objects, sightlines=sightlines,
-    )
-    problems = placement.overlaps(instances)
-
-    import robot_models
-
-    for inst in instances:
-        # A model built from COLLADA or oversized meshes needs its converted meshes on
-        # disk first; a checkout that has not run setup since gets them here, once.
-        robot_models.ensure(inst.name)
-        engine.attach(scene, inst)
-    # The AiNex's actuator gains assume an implicit integrator; with Euler its 24 servos
-    # on ~1e-4 kg.m^2 links go NaN. Set only when it is present, because it changes the
-    # physics of everything else in the scene.
-    if "ainex" in by_name:
-        scene.spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-
-    lead = by_name.get(plan.task_robot) if plan.task else None
-    if lead is not None:
-        # The task's frame is the task robot's base body, with the worktop at z = 0.
-        # The other worktop robots already stand clear of all six task objects; loose
-        # scene objects around them are cleared as they are in the working area.
-        cleared = task_mod.stage(
-            scene.spec, [float(lead.xy[0]), float(lead.xy[1]), lead.mount_z], lead.yaw,
-            keep_clear=[(i.xy, i.radius) for i in instances
-                        if i.on == "worktop" and i is not lead],
-        )
-        if cleared:
-            print(f"task {TASK}: cleared {len(cleared)} scene object(s) from the working "
-                  f"area: {', '.join(n.split('_')[0] for n in cleared)}", file=sys.stderr)
-
-    model = scene.spec.compile()
-    data = mujoco.MjData(model)
-    bind(model, data, instances)
-    mujoco.mj_forward(model, data)
-    for inst in instances:
-        for found in penetrations(model, data, inst.mjcf):
-            problems.append(f"{inst.name} {found} at its spawn pose")
-
-    arbiter = None
-    if lead is not None:
-        # After the rest pose: the arbiter snapshots this state as the one /reset
-        # restores. The prefix and root are passed rather than inferred -- several
-        # robots root at a body called `base`.
-        arbiter = task_mod.AppleOnPlate(model, data, prefix=lead.mjcf,
-                                        root=root_body(lead.name),
-                                        start_pose=lead.name == "so101")
-        placed, reason = arbiter.instantaneous(data)
-        print(f"task {TASK}: staged in front of {lead.name}; success predicate reads "
-              f"{'TRUE (!)' if placed else reason} at spawn", file=sys.stderr)
-        print(f"task {TASK}: {arbiter.layout_report(data)}", file=sys.stderr)
-        check_task_contacts(model, lead.mjcf, arbiter, hand_bodies=gripper_bodies(lead.name))
-        report_reach(model, data, instances, arbiter, scene, worktop)
-    problems += report_sole_contact(model, data, instances)
-    for problem in problems:
-        print(f"warning: {problem}", file=sys.stderr)
-    print(f"{','.join(names)} in {engine.name} scene: {model.nbody} bodies, "
-          f"{model.ngeom} geoms, {model.nu} actuators", file=sys.stderr)
-    return World(model, data, instances, plan, arbiter, scene, worktop,
-                 engine.scene_option(), problems)
-
-
-def report_reach(model, data, instances, arbiter, scene, worktop) -> None:
-    """Whether each worktop robot can get at the apple and the plate (spec §2.3).
-
-    The SO-101 by solving a top grasp at each on the compiled model. A robot that walks
-    (the AiNex) by whether it can walk over the worktop to each.
-    """
-    objects = arbiter.object_positions(data)
-    task_mod = importlib.import_module(f"tasks.{TASK}")
-    radii = {"apple": task_mod.APPLE_RADIUS, "plate": task_mod.PLATE_RADIUS}
-    walkers = [i for i in instances if i.on == "worktop" and i.name != "so101"]
-    surface = SurfaceMap(scene.model, scene.data, worktop) if walkers else None
-    for inst in instances:
-        if inst.on != "worktop":
-            continue
-        if inst.name == "so101":
-            for line in reach.report(model, data, inst.mjcf, objects):
-                print(f"reach so101 {line}", file=sys.stderr)
-            continue
-        for name, xyz in objects.items():
-            d = float(np.linalg.norm(np.asarray(xyz[:2]) - inst.xy))
-            ok = placement.walkable(surface, inst.xy, xyz[:2],
-                                    radii[name] + placement.WALK_STOP_SHORT)
-            print(f"reach {inst.name} {name}: {'in reach' if ok else 'OUT of reach'} -- "
-                  f"{d:.2f} m away, {'a walk over the worktop' if ok else 'no clear walk'}",
-                  file=sys.stderr)
-
-
-# ---------------------------------------------------------------- serving and viewing
-
-
-def pick_camera(model, prefix: str) -> str | None:
-    """A robot's own camera, resolved against its own MJCF prefix."""
-    for candidate in (f"{prefix}front_camera", f"{prefix}wrist_cam", f"{prefix}rgb_camera"):
-        if mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_CAMERA, candidate) >= 0:
-            return candidate
-    return None
-
-
-def surface_kwargs(inst, world) -> dict:
-    """Everything one robot's surface needs, by which interface it presents."""
-    model, prefix = world.model, inst.mjcf
-    if inst.name == "so101":
-        return {"view": inst.view, "model": model, "task": world.task, "wrist": True,
-                "jpeg_quality": JPEG_QUALITY, "control_hz": CONTROL_HZ,
-                "scene_option": world.scene_option, "prefix": prefix}
-    camera = pick_camera(model, prefix)
-    if inst.holonomic and inst.name != "ainex":
-        # The planar-base robots: the myAGV, and the two mobile manipulators that ride
-        # the same base. Each surface resolves its own cameras against `prefix`.
-        return {
-            "base": inst.base, "model": model, "camera": camera,
-            "jpeg_quality": JPEG_QUALITY, "scene_option": world.scene_option,
-            "lidar": {
-                # Rays start at the robot's own root and range nothing of its own; a
-                # neighbour is something to see.
-                "body": f"{prefix}base",
-                "exclude_bodies": frozenset(
-                    i for i in range(model.nbody)
-                    if (n := mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, i))
-                    and n.startswith(prefix)),
-            },
-            "prefix": prefix,
-        }
-    if inst.name == "ainex":
-        return {"base": inst.base, "model": model, "camera": camera,
-                "jpeg_quality": JPEG_QUALITY, "control_hz": CONTROL_HZ,
-                "scene_option": world.scene_option, "prefix": prefix}
-    raise SystemExit(f"no ROS surface arguments for {inst.name!r}")
-
-
-def build_fleet(args, world):
-    """One server, one port, one graph -- and a namespace per robot."""
-    from ros_surfaces import RobotFleet
-    from ros_surfaces.scene import (
-        SCENE_CAMERA_TOPICS, SCENE_NAMESPACE, attach_scene_rig, probe_scene_cameras,
-    )
-
-    fleet = RobotFleet(port=args.ros_port, host=ROS_HOST, default_hz=CONTROL_HZ)
-    for inst in world.instances:
-        module_name, func_name = ROS_SURFACES[inst.name]
-        attach = getattr(importlib.import_module(module_name), func_name)
-        fleet.attach(inst.ns, attach, **surface_kwargs(inst, world))
-    if world.staging.rig:
-        # The worktop's rig, under its own namespace and after the robots so they step
-        # first: it watches the task, not any robot.
-        rig = probe_scene_cameras(world.model, SCENE_CAMERA_TOPICS)
-        if not rig:
-            raise SystemExit("the task is staged but its rig cameras are not in the model")
-        # The truth the console's offline audit reads, to a local file and only when
-        # SIMULATOR_TRUTH_LOG asks (tasks/truth_log.py); nothing of it reaches the wire.
-        from tasks.truth_log import from_environment
-
-        arm = next((inst.mjcf for inst in world.instances if inst.name == "so101"), None)
-        truth = from_environment(world.model, world.task, arm_prefix=arm)
-        if truth is not None:
-            fleet.world_reset.on_observed(truth.reset)
-        fleet.attach(SCENE_NAMESPACE, attach_scene_rig, model=world.model, cameras=rig,
-                     jpeg_quality=JPEG_QUALITY, scene_option=world.scene_option,
-                     truth=truth)
-    fleet.start()
-    return fleet
-
-
-def framing(world):
-    """(lookat, distance, azimuth) of a free camera on the first robot."""
-    model, data = world.model, world.data
-    first = world.instances[0]
-    points = np.array([
-        data.geom_xpos[g] for g in range(model.ngeom)
-        if (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, model.geom_bodyid[g]) or ""
-            ).startswith(first.mjcf)])
-    if len(points):
-        lookat = (points.min(axis=0) + points.max(axis=0)) / 2
-        radius = max(float(np.linalg.norm(points.max(axis=0) - points.min(axis=0))) / 2, 0.2)
-    else:
-        lookat = np.array([first.xy[0], first.xy[1], first.surface_z + 0.3])
-        radius = 0.5
-    return lookat, radius * 4.0, math.degrees(first.yaw) + 180.0
-
-
-def run(args, world) -> int:
-    from mujoco_bridge import run_sim_loop
-
-    controller = build_fleet(args, world) if args.ros_port else None
-    loop_hz = (controller.rate_hz if controller is not None else None) or CONTROL_HZ
+        sp.check()
+        sp.connect()
+    except Refusal as exc:
+        print(f"spawn.sh: refused: {exc}", file=sys.stderr)
+        if sp.client is not None:
+            sp.client.close()
+        return EXIT_REFUSED
+    except protocol.RemoteError as exc:
+        print(f"spawn.sh: refused: {exc}", file=sys.stderr)
+        sp.client.close()
+        return EXIT_REFUSED
+    signal.signal(signal.SIGINT, on_signal)
+    signal.signal(signal.SIGTERM, on_signal)
+    signal.signal(signal.SIGHUP, on_signal)
     try:
-        if args.headless:
-            run_sim_loop(world.model, world.data, controller, control_hz=loop_hz,
-                         label="headless loop")
-        else:
-            # Bound as a separate name: `import mujoco.viewer` here would make `mujoco` a
-            # function-local and shadow the module import.
-            from mujoco import viewer as mj_viewer
-
-            lookat, distance, azimuth = framing(world)
-            with mj_viewer.launch_passive(world.model, world.data) as viewer:
-                if world.scene_option is not None:
-                    viewer.opt.geomgroup[:] = world.scene_option.geomgroup
-                viewer.cam.lookat[:] = lookat
-                viewer.cam.distance = distance
-                viewer.cam.azimuth = azimuth
-                viewer.cam.elevation = -20.0
-                run_sim_loop(world.model, world.data, controller, control_hz=loop_hz,
-                             viewer=viewer, label="viewer loop")
+        sp.start()
+    except (Refusal, protocol.RemoteError, TimeoutError, ConnectionError, OSError) as exc:
+        if sp.done.is_set() and sp.exit_code == 0:
+            log(f"interrupted during startup; cleaning up")
+            sp.cleanup()
+            return 0
+        print(f"spawn.sh: {sp.robot.id} failed to start: {exc}", file=sys.stderr)
+        sp.reason = f"startup failed: {exc}"
+        sp.cleanup()
+        return EXIT_FAILED
+    if sp.done.is_set():
+        sp.cleanup()
+        print(f"spawn.sh: {sp.robot.id} ended: {sp.reason}", file=sys.stderr)
+        return sp.exit_code
+    print(f"spawn ready: {sp.robot.id} ({sp.robot.name}) in {sp.hello['engine']} "
+          f"{sp.hello['scene']} on the {args.placement}; wire(s): "
+          + "; ".join(w.describe() for w in sp.wires), flush=True)
+    try:
+        sp.watch()
     finally:
-        if controller is not None:
-            controller(None)
-    return 0
+        if sp.exit_code != 0:
+            print(f"spawn.sh: {sp.robot.id}: {sp.reason}; removing it", file=sys.stderr)
+        sp.cleanup()
+    log(f"{sp.robot.id} removed ({sp.reason})")
+    return sp.exit_code
 
 
-def main(engine, argv=None) -> int:
-    args = build_parser(engine).parse_args(argv)
-    return run(args, build_world(engine, args))
-
-
-def scene(spec, model, data, **extra) -> SimpleNamespace:
-    """What `Engine.load_scene` returns: the spec robots are grafted into, and that spec
-    compiled bare (no robot, no task) with its data, which placement searches."""
-    return SimpleNamespace(spec=spec, model=model, data=data, **extra)
+if __name__ == "__main__":
+    raise SystemExit(main())

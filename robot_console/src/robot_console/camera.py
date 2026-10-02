@@ -1,187 +1,225 @@
-"""Decoding `sensor_msgs/CompressedImage`, and the hand-off to the render loop.
+"""Live camera streams: raw ``sensor_msgs/Image`` decoding and live/stale/failed state.
 
-rosbridge transports a `uint8[]` field base64-encoded, so `data` arrives as an ASCII
-string rather than a JSON array of integers. Decoding it as an array produces a message
-that looks valid and renders as garbage.
+rosbridge carries ``uint8[] data`` base64-encoded. Frames are decoded to an RGB numpy array
+(H, W, 3). A stream is *live* only while its newest decodable frame is younger than its
+stale threshold; a frozen frame is never presented as live.
 """
 
 from __future__ import annotations
 
 import base64
 import binascii
+import dataclasses
 import threading
 import time
-from typing import Mapping, Optional, Tuple
+from typing import Callable, Dict, Optional, Sequence, Tuple
 
-import cv2
 import numpy as np
 
+#: Raw encodings the console can display.
+SUPPORTED_ENCODINGS = ("rgb8", "bgr8", "rgba8", "bgra8", "mono8", "mono16", "8uc1", "16uc1",
+                       "8uc3", "yuv422", "uyvy", "yuv422_yuy2", "yuyv")
 
-def is_jpeg(fmt: object) -> bool:
-    """Whether a CompressedImage `format` field describes JPEG.
-
-    The simulator sends the bare string `"jpeg"`; a real `image_transport` republisher
-    sends `"rgb8; jpeg compressed bgr8"`. Both are JPEG.
-    """
-    return isinstance(fmt, str) and "jpeg" in fmt.lower()
+#: Console policy for streams not tied to a profile (no documented rate).
+UNTIED_STALE_AFTER_S = 2.0
 
 
-def compressed_image_bytes(msg: Mapping) -> Optional[bytes]:
-    """The raw JPEG bytes of a CompressedImage message, or None.
+class FrameError(ValueError):
+    """A frame that cannot be shown: carries the visible reason."""
 
-    Split out from `decode_compressed_image` because a consumer that is going to send the
-    image somewhere else wants the bytes it already has, not a decoded array it would have
-    to re-encode. The visual mapper puts these straight on the wire to its engine, and a
-    decode/re-encode round trip there would cost time and a generation of JPEG artefacts
-    for nothing.
-    """
-    if not isinstance(msg, Mapping):
-        return None
-    if not is_jpeg(msg.get("format")):
-        return None
-    data = msg.get("data")
-    if not isinstance(data, str) or not data:
-        return None
+
+def _yuv_to_rgb(y: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
+    y = y.astype(np.float32)
+    u = u.astype(np.float32) - 128.0
+    v = v.astype(np.float32) - 128.0
+    r = y + 1.402 * v
+    g = y - 0.344136 * u - 0.714136 * v
+    b = y + 1.772 * u
+    return np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
+
+
+def decode_image(msg: dict, allowed: Optional[Sequence[str]] = None) -> np.ndarray:
+    """A ``sensor_msgs/Image`` dict -> RGB uint8 array (H, W, 3); raises FrameError."""
     try:
-        raw = base64.b64decode(data, validate=False)
-    except (binascii.Error, ValueError):
-        return None
-    return raw or None
-
-
-def decode_compressed_image(msg: Mapping) -> Optional[np.ndarray]:
-    """Decode a CompressedImage message to a BGR ndarray, or None.
-
-    Returns None rather than raising for every malformed input: one corrupt frame in a
-    20 Hz stream must not take the teleop loop -- and therefore the watchdog feed --
-    down with it.
-    """
-    raw = compressed_image_bytes(msg)
-    if raw is None:
-        return None
-    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
-    if frame is None or frame.size == 0:
-        return None
-    return frame
-
-
-def decode_raw_image(msg: Mapping) -> Optional[np.ndarray]:
-    """Decode a raw `sensor_msgs/Image` to a BGR ndarray, or None.
-
-    The ROSMASTER X3 PLUS's Astra publishes its colour stream only raw (rgb8), with no
-    compressed companion. `rgb8`, `bgr8` and `mono8` are shown as they are; a 16-bit image
-    (`mono16`, `16UC1`) is scaled to its own range, which is what a person looking at a
-    depth or IR view needs. Malformed input gives None, as `decode_compressed_image` does.
-    """
-    if not isinstance(msg, Mapping):
-        return None
-    data, encoding = msg.get("data"), str(msg.get("encoding", "")).lower()
-    try:
-        width, height = int(msg.get("width", 0)), int(msg.get("height", 0))
-        step = int(msg.get("step", 0))
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, str) or width <= 0 or height <= 0:
-        return None
-    try:
-        raw = np.frombuffer(base64.b64decode(data, validate=False), dtype=np.uint8)
-    except (binascii.Error, ValueError):
-        return None
-    channels = {"rgb8": 3, "bgr8": 3, "mono8": 1, "mono16": 2, "16uc1": 2}.get(encoding)
-    if channels is None or step < width * channels or raw.size < step * height:
-        return None
-    rows = raw[: step * height].reshape(height, step)[:, : width * channels]
-    if encoding in ("rgb8", "bgr8"):
-        frame = rows.reshape(height, width, 3)
-        return cv2.cvtColor(frame, cv2.COLOR_RGB2BGR) if encoding == "rgb8" else frame.copy()
-    if encoding == "mono8":
-        return cv2.cvtColor(rows.copy(), cv2.COLOR_GRAY2BGR)
-    big = bool(msg.get("is_bigendian"))
-    values = rows.copy().view(">u2" if big else "<u2").reshape(height, width).astype(np.float32)
-    top = float(values.max()) or 1.0
-    grey = np.clip(values * (255.0 / top), 0, 255).astype(np.uint8)
-    return cv2.cvtColor(grey, cv2.COLOR_GRAY2BGR)
-
-
-def decode_image(msg: Mapping) -> Optional[np.ndarray]:
-    """A camera message of either kind -- `CompressedImage` (it has `format`) or a raw
-    `Image` (it has `encoding`) -- as a BGR ndarray, or None."""
-    if isinstance(msg, Mapping) and "encoding" in msg and "format" not in msg:
-        return decode_raw_image(msg)
-    return decode_compressed_image(msg)
-
-
-def header_seq(msg: Mapping) -> Optional[int]:
-    """The `header.seq` counter, if present. Used to align video with the command log."""
-    try:
-        return int(msg["header"]["seq"])
+        w, h, step = int(msg["width"]), int(msg["height"]), int(msg["step"])
+        enc = str(msg["encoding"]).lower()
+        data = msg["data"]
     except (KeyError, TypeError, ValueError):
-        return None
+        raise FrameError("malformed image message") from None
+    if allowed is not None and enc not in [a.lower() for a in allowed]:
+        raise FrameError(f"unsupported encoding '{enc}' (profile documents {', '.join(allowed)})")
+    if enc not in SUPPORTED_ENCODINGS:
+        raise FrameError(f"unsupported encoding '{enc}'")
+    if isinstance(data, str):
+        try:
+            raw = base64.b64decode(data, validate=False)
+        except (binascii.Error, ValueError):
+            raise FrameError("undecodable image data") from None
+    elif isinstance(data, list):
+        raw = bytes(data)
+    else:
+        raise FrameError("undecodable image data")
+    if w <= 0 or h <= 0:
+        raise FrameError("empty image")
+    bpp = {"rgb8": 3, "bgr8": 3, "8uc3": 3, "rgba8": 4, "bgra8": 4, "mono8": 1, "8uc1": 1,
+           "mono16": 2, "16uc1": 2}.get(enc, 2)
+    if step < w * bpp:
+        raise FrameError(f"row step {step} shorter than {w} pixels of {enc}")
+    buf = np.frombuffer(raw, dtype=np.uint8)
+    if buf.size < step * h:
+        raise FrameError(f"truncated image ({buf.size} of {step * h} bytes)")
+    rows = buf[: step * h].reshape(h, step)
+    big = bool(msg.get("is_bigendian"))
+    if enc in ("rgb8", "bgr8", "8uc3"):
+        img = rows[:, : w * 3].reshape(h, w, 3)
+        return img[:, :, ::-1].copy() if enc == "bgr8" else img.copy()
+    if enc in ("rgba8", "bgra8"):
+        img = rows[:, : w * 4].reshape(h, w, 4)[:, :, :3]
+        return img[:, :, ::-1].copy() if enc == "bgra8" else img.copy()
+    if enc in ("mono8", "8uc1"):
+        g = rows[:, :w]
+        return np.repeat(g[:, :, None], 3, axis=2).copy()
+    if enc in ("mono16", "16uc1"):
+        vals = rows[:, : w * 2].copy().view(">u2" if big else "<u2").reshape(h, w).astype(np.float32)
+        top = float(vals.max()) or 1.0
+        g = np.clip(vals * (255.0 / top), 0, 255).astype(np.uint8)
+        return np.repeat(g[:, :, None], 3, axis=2)
+    # 4:2:2 packed: yuv422/uyvy = U Y0 V Y1 ; yuv422_yuy2/yuyv = Y0 U Y1 V
+    if w % 2:
+        raise FrameError("odd width for a 4:2:2 image")
+    px = rows[:, : w * 2].reshape(h, w // 2, 4)
+    if enc in ("yuv422", "uyvy"):
+        u, y0, v, y1 = px[..., 0], px[..., 1], px[..., 2], px[..., 3]
+    else:
+        y0, u, y1, v = px[..., 0], px[..., 1], px[..., 2], px[..., 3]
+    y = np.stack([y0, y1], axis=-1).reshape(h, w)
+    u = np.repeat(u, 2, axis=1)
+    v = np.repeat(v, 2, axis=1)
+    return _yuv_to_rgb(y, u, v)
 
 
-class LatestFrame:
-    """A single-slot, newest-wins mailbox between the roslibpy thread and the loop.
+# ------------------------------------------------------------------ stream state
 
-    Deliberately not a Queue: if the render loop falls behind -- a window drag, a heavy
-    scene -- a queue grows without bound and the operator ends up steering by video that
-    is seconds old. Dropping stale frames keeps the feed honest, and `dropped` makes the
-    drops visible instead of silent.
+WAITING, LIVE, STALE, FAILED, UNSUPPORTED, MISSING = (
+    "waiting", "live", "stale", "failed", "unsupported", "missing")
 
-    `offer` is called on roslibpy's reactor thread and must stay O(1): no base64, no
-    imdecode. Blocking that thread stalls `/odom` delivery and `/cmd_vel` egress too.
+
+@dataclasses.dataclass
+class StreamSpec:
+    topic: str
+    type: str
+    stale_after_s: float
+    encodings: Optional[Tuple[str, ...]] = None   # None: any supported (untied stream)
+    tied: bool = True
+    optional: bool = False
+
+
+class CameraStream:
+    """Latest frame of one subscribed stream, with its visible state.
+
+    ``offer`` runs on the transport reader thread and only stores the message; decoding
+    happens in ``poll`` on the consumer's thread.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, spec: StreamSpec, clock: Callable[[], float] = time.monotonic) -> None:
+        self.spec = spec
+        self._clock = clock
         self._lock = threading.Lock()
-        self._msg: Optional[dict] = None
-        self._at: float = 0.0
-        self._dropped = 0
-        self._received = 0
-        self._last_arrival: Optional[float] = None
-        self._interval: Optional[float] = None
+        self._pending: Optional[dict] = None
+        self._pending_at = 0.0
+        self.frame: Optional[np.ndarray] = None
+        self.frame_at: Optional[float] = None     # arrival time of the shown frame
+        self.frames = 0
+        self.error: Optional[str] = None
+        self.unsupported = False
+        self.missing = False
+        self.sid: Optional[str] = None
+        self.started = clock()
 
     def offer(self, msg: dict) -> None:
-        now = time.monotonic()
         with self._lock:
-            if self._msg is not None:
-                self._dropped += 1
-            self._msg = msg
-            self._at = now
-            self._received += 1
-            if self._last_arrival is not None:
-                dt = now - self._last_arrival
-                if dt > 0:
-                    # EMA, so the reported rate settles quickly but survives one hiccup.
-                    self._interval = dt if self._interval is None else 0.8 * self._interval + 0.2 * dt
-            self._last_arrival = now
+            self._pending = msg
+            self._pending_at = self._clock()
 
-    def take(self) -> Optional[Tuple[dict, float]]:
-        """Pop the pending message and its arrival time, or None if nothing is new."""
+    def poll(self) -> None:
         with self._lock:
-            if self._msg is None:
-                return None
-            msg, at = self._msg, self._at
-            self._msg = None
-            return msg, at
+            msg, at = self._pending, self._pending_at
+            self._pending = None
+        if msg is None:
+            return
+        try:
+            self.frame = decode_image(msg, self.spec.encodings)
+            self.frame_at = at
+            self.frames += 1
+            self.error = None
+            self.unsupported = False
+        except FrameError as exc:
+            self.error = str(exc)
+            self.unsupported = "unsupported encoding" in str(exc)
+            self.frame = None      # never keep showing an older frame as current
 
-    @property
-    def rate_hz(self) -> float:
-        with self._lock:
-            if not self._interval:
-                return 0.0
-            return 1.0 / self._interval
+    def state(self, now: Optional[float] = None) -> str:
+        now = self._clock() if now is None else now
+        if self.missing:
+            return MISSING
+        if self.unsupported:
+            return UNSUPPORTED
+        if self.error:
+            return FAILED
+        if self.frame_at is None:
+            return STALE if now - self.started > self.spec.stale_after_s else WAITING
+        return LIVE if now - self.frame_at <= self.spec.stale_after_s else STALE
 
-    @property
-    def dropped(self) -> int:
-        with self._lock:
-            return self._dropped
+    def status_text(self, now: Optional[float] = None) -> str:
+        now = self._clock() if now is None else now
+        st = self.state(now)
+        if st == LIVE:
+            return "live"
+        if st == STALE:
+            if self.frame_at is None:
+                return f"stale: no frame within {self.spec.stale_after_s:g} s"
+            return f"stale: last frame {now - self.frame_at:.1f} s ago"
+        if st == MISSING:
+            return "missing: topic not on the wire"
+        if st in (FAILED, UNSUPPORTED):
+            return f"{st}: {self.error}"
+        return "waiting for the first frame"
 
-    @property
-    def received(self) -> int:
-        with self._lock:
-            return self._received
 
-    @property
-    def last_arrival(self) -> Optional[float]:
-        with self._lock:
-            return self._last_arrival
+class CameraSet:
+    """Subscribe to a set of streams on one connection; poll and close together."""
+
+    def __init__(self, rb, specs: Sequence[StreamSpec], *, throttle_ms: int = 0,
+                 present: Optional[Dict[str, str]] = None) -> None:
+        self.rb = rb
+        self.streams: Dict[str, CameraStream] = {}
+        for s in specs:
+            cs = CameraStream(s)
+            self.streams[s.topic] = cs
+            if present is not None and s.topic not in present:
+                cs.missing = True
+                continue
+            cs.sid = rb.subscribe(s.topic, s.type, cs.offer, throttle_rate=throttle_ms, queue_length=1)
+
+    def poll(self) -> None:
+        for s in self.streams.values():
+            s.poll()
+
+    def close(self) -> None:
+        for s in self.streams.values():
+            if s.sid:
+                self.rb.unsubscribe(s.sid)
+                s.sid = None
+
+
+def target_specs(target) -> list:
+    """Stream specs of a validated target's profile cameras (resolved names)."""
+    return [StreamSpec(topic=target.wire(c.topic), type=c.type, stale_after_s=c.stale_after_s,
+                       encodings=c.encodings or None, tied=True, optional=c.optional)
+            for c in target.profile.cameras]
+
+
+def untied_specs(graph) -> list:
+    """Every supported raw image stream on the wire, not tied to any target."""
+    return [StreamSpec(topic=n, type=t, stale_after_s=UNTIED_STALE_AFTER_S, encodings=None, tied=False)
+            for n, t in sorted(graph.cameras().items())]

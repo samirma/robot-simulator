@@ -1,0 +1,280 @@
+<mujoco model="myagv">
+<!--
+  DERIVED MODEL - not manufacturer-provided. Converted from the official myAGV.urdf
+  (elephantrobotics/myagv_ros @ c71f3cc574e5ed1973a925238eabe88662cfa701, myagv_urdf/urdf/myAGV.urdf)
+  with the adaptations listed in import.md: mecanum wheels with explicit passive rollers,
+  sensor mounts from the boot launch, masses and collision geometry (estimates).
+  Generated deterministically by the procedure in import.md; do not edit by hand.
+-->
+  <compiler angle="radian" meshdir="." autolimits="true"/>
+
+  <default>
+    <default class="myagv">
+      <default class="visual">
+        <geom type="mesh" group="2" contype="0" conaffinity="0" density="0"/>
+      </default>
+      <default class="collision">
+        <geom group="3" contype="1" conaffinity="0" condim="3" friction="0.8 0.005 0.0001" density="0"/>
+      </default>
+      <default class="roller">
+        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3" friction="1.0 0.005 0.0001"/>
+        <joint type="hinge" damping="1e-5" armature="1e-6" frictionloss="0"/>
+      </default>
+      <default class="wheel">
+        <joint type="hinge" axis="0 1 0" damping="0.001" armature="1e-4"/>
+        <velocity kv="0.3" ctrlrange="-22.5 22.5" forcerange="-1.5 1.5"/>
+      </default>
+    </default>
+  </default>
+
+  <asset>
+    <mesh name="myagv_base_m0" file="derived_meshes/urdf/myagv_base.dae.m0.obj"/>
+    <material name="myagv_base_m0" rgba="0.980392 0.980392 0.980392 1"/>
+    <mesh name="myagv_up_m0" file="derived_meshes/urdf/myagv_up.dae.m0.obj"/>
+    <material name="myagv_up_m0" rgba="0.980392 0.980392 0.980392 1"/>
+  </asset>
+
+  <worldbody>
+    <body name="base_footprint" childclass="myagv">
+      <freejoint name="root"/>
+      <inertial pos="0.0055 -0.0042 0.055" mass="3.388" diaginertia="0.0131003 0.0289392 0.0384256"/>
+      <geom class="visual" mesh="myagv_base_m0" material="myagv_base_m0"/>
+      <geom class="collision" name="chassis" type="box" pos="0.0065 -0.004 0.0555" size="0.155 0.08 0.0355"/>
+      <site name="laser_frame" pos="0.065 0 0.08" euler="0 0 3.14159265" size="0.01" group="4"/>
+      <site name="imu_link" pos="0 0 0" euler="3.14159 3.14159 0" size="0.01" group="4"/>
+      <body name="camera_link" pos="0.13 0 0.131">
+        <camera name="camera_link" xyaxes="0 -1 0 0 0 1" fovy="41.83" resolution="640 480"/>
+      </body>
+      <body name="base_up">
+        <joint name="base_up" type="hinge" axis="0 0 1"/>
+        <inertial pos="0.0065 -0.004 0.11" mass="0.3" diaginertia="0.00104 0.0024425 0.0034025"/>
+        <geom class="visual" mesh="myagv_up_m0" material="myagv_up_m0"/>
+        <geom class="collision" name="top_plate" type="box" pos="0.0065 -0.004 0.1115" size="0.155 0.1 0.0205"/>
+      </body>
+      <body name="front_left_wheel" pos="0.1124 0.09455 0.04">
+        <joint name="front_left_wheel_joint" class="wheel"/>
+        <inertial pos="0 0 0" mass="0.07" diaginertia="2.15381e-05 3.15e-05 2.15381e-05"/>
+        <body name="front_left_wheel_roller_0" pos="0 0 -0.028">
+          <joint name="front_left_wheel_roller_0" class="roller" axis="0.707107 -0.707107 0"/>
+          <geom class="roller" size="0.012" fromto="-0.00368627 0.00368627 0 0.00368627 -0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_1" pos="-0.014 0 -0.0242487">
+          <joint name="front_left_wheel_roller_1" class="roller" axis="0.612372 -0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 0.00368627 0.00184313 0.0031924 -0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_2" pos="-0.0242487 0 -0.014">
+          <joint name="front_left_wheel_roller_2" class="roller" axis="0.353553 -0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 0.00368627 0.0031924 0.00184313 -0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_3" pos="-0.028 0 -1.71451e-18">
+          <joint name="front_left_wheel_roller_3" class="roller" axis="4.32978e-17 -0.707107 -0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 0.00368627 0.00368627 0 -0.00368627 -0.00368627" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_4" pos="-0.0242487 0 0.014">
+          <joint name="front_left_wheel_roller_4" class="roller" axis="-0.353553 -0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 0.00368627 0.0031924 -0.00184313 -0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_5" pos="-0.014 0 0.0242487">
+          <joint name="front_left_wheel_roller_5" class="roller" axis="-0.612372 -0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 0.00368627 0.00184313 -0.0031924 -0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_6" pos="-3.42901e-18 0 0.028">
+          <joint name="front_left_wheel_roller_6" class="roller" axis="-0.707107 -0.707107 -8.65956e-17"/>
+          <geom class="roller" size="0.012" fromto="0.00368627 0.00368627 0 -0.00368627 -0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_7" pos="0.014 0 0.0242487">
+          <joint name="front_left_wheel_roller_7" class="roller" axis="-0.612372 -0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 0.00368627 -0.00184313 -0.0031924 -0.00368627 0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_8" pos="0.0242487 0 0.014">
+          <joint name="front_left_wheel_roller_8" class="roller" axis="-0.353553 -0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 0.00368627 -0.0031924 -0.00184313 -0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_9" pos="0.028 0 5.14352e-18">
+          <joint name="front_left_wheel_roller_9" class="roller" axis="-1.29893e-16 -0.707107 0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 0.00368627 -0.00368627 0 -0.00368627 0.00368627" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_10" pos="0.0242487 0 -0.014">
+          <joint name="front_left_wheel_roller_10" class="roller" axis="0.353553 -0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 0.00368627 -0.0031924 0.00184313 -0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_left_wheel_roller_11" pos="0.014 0 -0.0242487">
+          <joint name="front_left_wheel_roller_11" class="roller" axis="0.612372 -0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 0.00368627 -0.00184313 0.0031924 -0.00368627 0.00184313" mass="0.004"/>
+        </body>
+      </body>
+      <body name="front_right_wheel" pos="0.1124 -0.10295 0.04">
+        <joint name="front_right_wheel_joint" class="wheel"/>
+        <inertial pos="0 0 0" mass="0.07" diaginertia="2.15381e-05 3.15e-05 2.15381e-05"/>
+        <body name="front_right_wheel_roller_0" pos="0 0 -0.028">
+          <joint name="front_right_wheel_roller_0" class="roller" axis="0.707107 0.707107 0"/>
+          <geom class="roller" size="0.012" fromto="-0.00368627 -0.00368627 0 0.00368627 0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_1" pos="-0.014 0 -0.0242487">
+          <joint name="front_right_wheel_roller_1" class="roller" axis="0.612372 0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 -0.00368627 0.00184313 0.0031924 0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_2" pos="-0.0242487 0 -0.014">
+          <joint name="front_right_wheel_roller_2" class="roller" axis="0.353553 0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 -0.00368627 0.0031924 0.00184313 0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_3" pos="-0.028 0 -1.71451e-18">
+          <joint name="front_right_wheel_roller_3" class="roller" axis="4.32978e-17 0.707107 -0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 -0.00368627 0.00368627 0 0.00368627 -0.00368627" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_4" pos="-0.0242487 0 0.014">
+          <joint name="front_right_wheel_roller_4" class="roller" axis="-0.353553 0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 -0.00368627 0.0031924 -0.00184313 0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_5" pos="-0.014 0 0.0242487">
+          <joint name="front_right_wheel_roller_5" class="roller" axis="-0.612372 0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 -0.00368627 0.00184313 -0.0031924 0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_6" pos="-3.42901e-18 0 0.028">
+          <joint name="front_right_wheel_roller_6" class="roller" axis="-0.707107 0.707107 -8.65956e-17"/>
+          <geom class="roller" size="0.012" fromto="0.00368627 -0.00368627 0 -0.00368627 0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_7" pos="0.014 0 0.0242487">
+          <joint name="front_right_wheel_roller_7" class="roller" axis="-0.612372 0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 -0.00368627 -0.00184313 -0.0031924 0.00368627 0.00184313" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_8" pos="0.0242487 0 0.014">
+          <joint name="front_right_wheel_roller_8" class="roller" axis="-0.353553 0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 -0.00368627 -0.0031924 -0.00184313 0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_9" pos="0.028 0 5.14352e-18">
+          <joint name="front_right_wheel_roller_9" class="roller" axis="-1.29893e-16 0.707107 0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 -0.00368627 -0.00368627 0 0.00368627 0.00368627" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_10" pos="0.0242487 0 -0.014">
+          <joint name="front_right_wheel_roller_10" class="roller" axis="0.353553 0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 -0.00368627 -0.0031924 0.00184313 0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="front_right_wheel_roller_11" pos="0.014 0 -0.0242487">
+          <joint name="front_right_wheel_roller_11" class="roller" axis="0.612372 0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 -0.00368627 -0.00184313 0.0031924 0.00368627 0.00184313" mass="0.004"/>
+        </body>
+      </body>
+      <body name="rear_left_wheel" pos="-0.1014 0.09455 0.04">
+        <joint name="rear_left_wheel_joint" class="wheel"/>
+        <inertial pos="0 0 0" mass="0.07" diaginertia="2.15381e-05 3.15e-05 2.15381e-05"/>
+        <body name="rear_left_wheel_roller_0" pos="0 0 -0.028">
+          <joint name="rear_left_wheel_roller_0" class="roller" axis="0.707107 0.707107 0"/>
+          <geom class="roller" size="0.012" fromto="-0.00368627 -0.00368627 0 0.00368627 0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_1" pos="-0.014 0 -0.0242487">
+          <joint name="rear_left_wheel_roller_1" class="roller" axis="0.612372 0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 -0.00368627 0.00184313 0.0031924 0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_2" pos="-0.0242487 0 -0.014">
+          <joint name="rear_left_wheel_roller_2" class="roller" axis="0.353553 0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 -0.00368627 0.0031924 0.00184313 0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_3" pos="-0.028 0 -1.71451e-18">
+          <joint name="rear_left_wheel_roller_3" class="roller" axis="4.32978e-17 0.707107 -0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 -0.00368627 0.00368627 0 0.00368627 -0.00368627" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_4" pos="-0.0242487 0 0.014">
+          <joint name="rear_left_wheel_roller_4" class="roller" axis="-0.353553 0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 -0.00368627 0.0031924 -0.00184313 0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_5" pos="-0.014 0 0.0242487">
+          <joint name="rear_left_wheel_roller_5" class="roller" axis="-0.612372 0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 -0.00368627 0.00184313 -0.0031924 0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_6" pos="-3.42901e-18 0 0.028">
+          <joint name="rear_left_wheel_roller_6" class="roller" axis="-0.707107 0.707107 -8.65956e-17"/>
+          <geom class="roller" size="0.012" fromto="0.00368627 -0.00368627 0 -0.00368627 0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_7" pos="0.014 0 0.0242487">
+          <joint name="rear_left_wheel_roller_7" class="roller" axis="-0.612372 0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 -0.00368627 -0.00184313 -0.0031924 0.00368627 0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_8" pos="0.0242487 0 0.014">
+          <joint name="rear_left_wheel_roller_8" class="roller" axis="-0.353553 0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 -0.00368627 -0.0031924 -0.00184313 0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_9" pos="0.028 0 5.14352e-18">
+          <joint name="rear_left_wheel_roller_9" class="roller" axis="-1.29893e-16 0.707107 0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 -0.00368627 -0.00368627 0 0.00368627 0.00368627" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_10" pos="0.0242487 0 -0.014">
+          <joint name="rear_left_wheel_roller_10" class="roller" axis="0.353553 0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 -0.00368627 -0.0031924 0.00184313 0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_left_wheel_roller_11" pos="0.014 0 -0.0242487">
+          <joint name="rear_left_wheel_roller_11" class="roller" axis="0.612372 0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 -0.00368627 -0.00184313 0.0031924 0.00368627 0.00184313" mass="0.004"/>
+        </body>
+      </body>
+      <body name="rear_right_wheel" pos="-0.1014 -0.10295 0.04">
+        <joint name="rear_right_wheel_joint" class="wheel"/>
+        <inertial pos="0 0 0" mass="0.07" diaginertia="2.15381e-05 3.15e-05 2.15381e-05"/>
+        <body name="rear_right_wheel_roller_0" pos="0 0 -0.028">
+          <joint name="rear_right_wheel_roller_0" class="roller" axis="0.707107 -0.707107 0"/>
+          <geom class="roller" size="0.012" fromto="-0.00368627 0.00368627 0 0.00368627 -0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_1" pos="-0.014 0 -0.0242487">
+          <joint name="rear_right_wheel_roller_1" class="roller" axis="0.612372 -0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 0.00368627 0.00184313 0.0031924 -0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_2" pos="-0.0242487 0 -0.014">
+          <joint name="rear_right_wheel_roller_2" class="roller" axis="0.353553 -0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 0.00368627 0.0031924 0.00184313 -0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_3" pos="-0.028 0 -1.71451e-18">
+          <joint name="rear_right_wheel_roller_3" class="roller" axis="4.32978e-17 -0.707107 -0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 0.00368627 0.00368627 0 -0.00368627 -0.00368627" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_4" pos="-0.0242487 0 0.014">
+          <joint name="rear_right_wheel_roller_4" class="roller" axis="-0.353553 -0.707107 -0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 0.00368627 0.0031924 -0.00184313 -0.00368627 -0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_5" pos="-0.014 0 0.0242487">
+          <joint name="rear_right_wheel_roller_5" class="roller" axis="-0.612372 -0.707107 -0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 0.00368627 0.00184313 -0.0031924 -0.00368627 -0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_6" pos="-3.42901e-18 0 0.028">
+          <joint name="rear_right_wheel_roller_6" class="roller" axis="-0.707107 -0.707107 -8.65956e-17"/>
+          <geom class="roller" size="0.012" fromto="0.00368627 0.00368627 0 -0.00368627 -0.00368627 0" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_7" pos="0.014 0 0.0242487">
+          <joint name="rear_right_wheel_roller_7" class="roller" axis="-0.612372 -0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="0.0031924 0.00368627 -0.00184313 -0.0031924 -0.00368627 0.00184313" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_8" pos="0.0242487 0 0.014">
+          <joint name="rear_right_wheel_roller_8" class="roller" axis="-0.353553 -0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="0.00184313 0.00368627 -0.0031924 -0.00184313 -0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_9" pos="0.028 0 5.14352e-18">
+          <joint name="rear_right_wheel_roller_9" class="roller" axis="-1.29893e-16 -0.707107 0.707107"/>
+          <geom class="roller" size="0.012" fromto="0 0.00368627 -0.00368627 0 -0.00368627 0.00368627" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_10" pos="0.0242487 0 -0.014">
+          <joint name="rear_right_wheel_roller_10" class="roller" axis="0.353553 -0.707107 0.612372"/>
+          <geom class="roller" size="0.012" fromto="-0.00184313 0.00368627 -0.0031924 0.00184313 -0.00368627 0.0031924" mass="0.004"/>
+        </body>
+        <body name="rear_right_wheel_roller_11" pos="0.014 0 -0.0242487">
+          <joint name="rear_right_wheel_roller_11" class="roller" axis="0.612372 -0.707107 0.353553"/>
+          <geom class="roller" size="0.012" fromto="-0.0031924 0.00368627 -0.00184313 0.0031924 -0.00368627 0.00184313" mass="0.004"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <equality>
+    <!-- base_up is a continuous joint in the URDF; the real top plate is rigid (import.md). -->
+    <joint name="base_up_locked" joint1="base_up" polycoef="0 0 0 0 0"/>
+  </equality>
+
+  <actuator>
+    <velocity name="front_left_wheel_joint" joint="front_left_wheel_joint" class="wheel"/>
+    <velocity name="front_right_wheel_joint" joint="front_right_wheel_joint" class="wheel"/>
+    <velocity name="rear_left_wheel_joint" joint="rear_left_wheel_joint" class="wheel"/>
+    <velocity name="rear_right_wheel_joint" joint="rear_right_wheel_joint" class="wheel"/>
+  </actuator>
+
+  <keyframe>
+    <key name="home" qpos="0 0 0 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"/>
+  </keyframe>
+</mujoco>

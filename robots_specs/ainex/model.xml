@@ -1,0 +1,266 @@
+<!--
+  DERIVED MuJoCo model of the Hiwonder AiNex - NOT manufacturer-provided.
+  Converted from robots_specs/ainex/ainex.urdf (expansion of the official xacro in
+  https://github.com/Hiwonder/ainex @ e8fe2a816797cf83054135160df5a82ec3596a69).
+  Adaptations and estimates (freejoint, foot soles, servo actuators, head camera, IMU site,
+  home keyframe) are listed in import.md. Meshes: robots_specs/tools/fetch_meshes.py.
+-->
+<mujoco model="ainex">
+  <compiler angle="radian" meshdir="." autolimits="true" />
+  <default>
+    <default class="ainex">
+      <joint damping="0.1" armature="0.005" frictionloss="0.02" />
+      <default class="visual">
+        <geom type="mesh" contype="0" conaffinity="0" group="2" />
+      </default>
+      <default class="collision">
+        <geom group="3" condim="3" friction="1.0 0.005 0.0001" />
+      </default>
+      <default class="sole">
+        <geom type="box" group="3" condim="4" friction="1.5 0.02 0.0001" priority="1" solref="0.004 1" />
+      </default>
+      <default class="servo35">
+        <position kp="30" dampratio="1" forcerange="-3.43 3.43" />
+      </default>
+      <default class="servo12">
+        <position kp="10" dampratio="1" forcerange="-1.18 1.18" />
+      </default>
+    </default>
+  </default>
+  <asset>
+    <mesh name="body_link" file="meshes/body_link.STL" />
+    <mesh name="r_hip_yaw_link" file="meshes/r_hip_yaw_link.STL" />
+    <mesh name="r_hip_roll_link" file="meshes/r_hip_roll_link.STL" />
+    <mesh name="r_hip_pitch_link" file="meshes/r_hip_pitch_link.STL" />
+    <mesh name="r_knee_link" file="meshes/r_knee_link.STL" />
+    <mesh name="r_ank_pitch_link" file="meshes/r_ank_pitch_link.STL" />
+    <mesh name="r_ank_roll_link" file="meshes/r_ank_roll_link.STL" />
+    <mesh name="l_hip_yaw_link" file="meshes/l_hip_yaw_link.STL" />
+    <mesh name="l_hip_roll_link" file="meshes/l_hip_roll_link.STL" />
+    <mesh name="l_hip_pitch_link" file="meshes/l_hip_pitch_link.STL" />
+    <mesh name="l_knee_link" file="meshes/l_knee_link.STL" />
+    <mesh name="l_ank_pitch_link" file="meshes/l_ank_pitch_link.STL" />
+    <mesh name="l_ank_roll_link" file="meshes/l_ank_roll_link.STL" />
+    <mesh name="head_pan_link" file="meshes/head_pan_link.STL" />
+    <mesh name="head_tilt_link" file="meshes/head_tilt_link.STL" />
+    <mesh name="r_sho_pitch_link" file="meshes/r_sho_pitch_link.STL" />
+    <mesh name="r_sho_roll_link" file="meshes/r_sho_roll_link.STL" />
+    <mesh name="r_el_pitch_link" file="meshes/r_el_pitch_link.STL" />
+    <mesh name="r_el_yaw_link" file="meshes/r_el_yaw_link.STL" />
+    <mesh name="r_gripper_link" file="meshes/r_gripper_link.STL" />
+    <mesh name="l_sho_pitch_link" file="meshes/l_sho_pitch_link.STL" />
+    <mesh name="l_sho_roll_link" file="meshes/l_sho_roll_link.STL" />
+    <mesh name="l_el_pitch_link" file="meshes/l_el_pitch_link.STL" />
+    <mesh name="l_el_yaw_link" file="meshes/l_el_yaw_link.STL" />
+    <mesh name="l_gripper_link" file="meshes/l_gripper_link.STL" />
+    <material name="black" rgba="0.1 0.1 0.1 1.0" />
+    <material name="blue" rgba="0.0 0.0 0.8 1.0" />
+    <material name="green" rgba="0.4 0.9 0.4 1.0" />
+    <material name="gray" rgba="0.7 0.7 0.7 1.0" />
+    <material name="darkgray" rgba="0.3 0.3 0.3 1.0" />
+    <material name="red" rgba="0.8 0.0 0.0 1.0" />
+    <material name="white" rgba="1.0 1.0 1.0 1.0" />
+    <material name="yellow" rgba="0.8 0.8 0.0 1.0" />
+  </asset>
+  <worldbody>
+    <body name="base_link" childclass="ainex" pos="0 0 0.2029" quat="0.991499174 0 0.130112979 0">
+      <freejoint name="root" />
+      <body name="body_link">
+        <inertial pos="0.00394313683 -7.92910841e-05 0.0504544953" mass="0.743" fullinertia="0.00121619 0.00104402 0.00108564 2.48e-06 -5.348e-05 -2e-06" />
+        <geom class="visual" type="mesh" mesh="body_link" material="black" />
+        <geom class="collision" type="mesh" mesh="body_link" name="body_link_collision" />
+        <body name="r_hip_yaw_link" pos="0 -0.029 0">
+          <joint name="r_hip_yaw" axis="0 0 -1" range="-2.09 2.09" />
+          <inertial pos="-3.08089322e-05 0.00125727462 -0.00137106654" mass="0.032" fullinertia="1.756e-05 2.27e-05 9.05e-06 -2.8e-07 -3.3e-07 9.2e-07" />
+          <geom class="visual" type="mesh" mesh="r_hip_yaw_link" material="black" />
+          <geom class="collision" type="mesh" mesh="r_hip_yaw_link" name="r_hip_yaw_link_collision" />
+          <body name="r_hip_roll_link" pos="-0.01955 0 -0.0255">
+            <joint name="r_hip_roll" axis="-1 0 0" range="-2.09 2.09" />
+            <inertial pos="0.00136240189 -0.000566876192 -0.0134186815" mass="0.12" fullinertia="2.918e-05 7.31e-05 6.05e-05 -9e-07 -4.5e-07 0" />
+            <geom class="visual" type="mesh" mesh="r_hip_roll_link" material="black" />
+            <geom class="collision" type="mesh" mesh="r_hip_roll_link" name="r_hip_roll_link_collision" />
+            <body name="r_hip_pitch_link" pos="0.0190366012 -0.02 0">
+              <joint name="r_hip_pitch" axis="0 -1 0" range="-2.09 2.09" />
+              <inertial pos="0.013594423 0.0193812365 -0.0727053786" mass="0.1065" fullinertia="0.00011009 0.00011292 4.163e-05 2.5e-07 -8.22e-06 5.8e-07" />
+              <geom class="visual" type="mesh" mesh="r_hip_pitch_link" material="black" />
+              <geom class="collision" type="mesh" mesh="r_hip_pitch_link" name="r_hip_pitch_link_collision" />
+              <body name="r_knee_link" pos="-0.000372039419 5e-05 -0.0968862318">
+                <joint name="r_knee" axis="0 -1 0" range="-2.09 2.09" />
+                <inertial pos="0.00334266052 0.0196473708 -0.0425048961" mass="0.045" fullinertia="6.733e-05 5.5e-05 2.073e-05 5e-08 2.85e-06 0" />
+                <geom class="visual" type="mesh" mesh="r_knee_link" material="black" />
+                <geom class="collision" type="mesh" mesh="r_knee_link" name="r_knee_link_collision" />
+                <body name="r_ank_pitch_link" pos="0.0010369887 0 -0.089076564">
+                  <joint name="r_ank_pitch" axis="0 1 0" range="-2.09 2.09" />
+                  <inertial pos="-0.0175439565 0.0195631981 0.0134182146" mass="0.12" fullinertia="2.92e-05 7.365e-05 6.107e-05 -1.22e-06 4.7e-07 2e-08" />
+                  <geom class="visual" type="mesh" mesh="r_ank_pitch_link" material="black" />
+                  <geom class="collision" type="mesh" mesh="r_ank_pitch_link" name="r_ank_pitch_link_collision" />
+                  <body name="r_ank_roll_link" pos="-0.0190366012 0.02 0">
+                    <joint name="r_ank_roll" axis="1 0 0" range="-2.09 2.09" />
+                    <inertial pos="0.028508475 -0.0128728704 -0.0176710108" mass="0.0675" fullinertia="4.217e-05 9.246e-05 0.00012567 -1.08e-06 -2.26e-06 3.04e-06" />
+                    <geom class="visual" type="mesh" mesh="r_ank_roll_link" material="black" />
+                    <geom class="collision" type="mesh" mesh="r_ank_roll_link" name="r_ank_roll_link_collision" />
+                    <geom name="r_sole" class="sole" pos="0.02965 -0.01395 -0.0211" size="0.06755 0.038 0.002" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="l_hip_yaw_link" pos="0 0.029 0">
+          <joint name="l_hip_yaw" axis="0 0 -1" range="-2.09 2.09" />
+          <inertial pos="-3.11405684e-05 -0.00125722453 -0.00137130107" mass="0.032" fullinertia="1.756e-05 2.27e-05 9.05e-06 2.88e-07 -3.3e-07 -9.2e-07" />
+          <geom class="visual" type="mesh" mesh="l_hip_yaw_link" material="black" />
+          <geom class="collision" type="mesh" mesh="l_hip_yaw_link" name="l_hip_yaw_link_collision" />
+          <body name="l_hip_roll_link" pos="-0.01955 0 -0.0255">
+            <joint name="l_hip_roll" axis="-1 0 0" range="-2.09 2.09" />
+            <inertial pos="0.0013623869 0.00056686127 -0.0134186827" mass="0.12" fullinertia="2.918e-05 7.31e-05 6.05e-05 9e-07 -4.5e-07 0" />
+            <geom class="visual" type="mesh" mesh="l_hip_roll_link" material="black" />
+            <geom class="collision" type="mesh" mesh="l_hip_roll_link" name="l_hip_roll_link_collision" />
+            <body name="l_hip_pitch_link" pos="0.019037 0.02 0">
+              <joint name="l_hip_pitch" axis="0 1 0" range="-2.09 2.09" />
+              <inertial pos="0.0135944003 -0.0193811742 -0.0727051304" mass="0.1065" fullinertia="0.00011009 0.00011292 4.163e-05 -2.5e-07 -8.22e-06 -5.8e-07" />
+              <geom class="visual" type="mesh" mesh="l_hip_pitch_link" material="black" />
+              <geom class="collision" type="mesh" mesh="l_hip_pitch_link" name="l_hip_pitch_link_collision" />
+              <body name="l_knee_link" pos="-0.00037204 -5e-05 -0.096886">
+                <joint name="l_knee" axis="0 1 0" range="-2.09 2.09" />
+                <inertial pos="0.00334255586 -0.0196465201 -0.0425052793" mass="0.045" fullinertia="6.733e-05 5.5e-05 2.073e-05 -4e-08 2.85e-06 0" />
+                <geom class="visual" type="mesh" mesh="l_knee_link" material="black" />
+                <geom class="collision" type="mesh" mesh="l_knee_link" name="l_knee_link_collision" />
+                <body name="l_ank_pitch_link" pos="0.001037 0 -0.089077">
+                  <joint name="l_ank_pitch" axis="0 -1 0" range="-2.09 2.09" />
+                  <inertial pos="-0.0175439606 -0.0195632128 0.0134182214" mass="0.12" fullinertia="2.92e-05 7.365e-05 6.107e-05 1.22e-06 4.7e-07 -2e-08" />
+                  <geom class="visual" type="mesh" mesh="l_ank_pitch_link" material="black" />
+                  <geom class="collision" type="mesh" mesh="l_ank_pitch_link" name="l_ank_pitch_link_collision" />
+                  <body name="l_ank_roll_link" pos="-0.019037 -0.02 0">
+                    <joint name="l_ank_roll" axis="1 0 0" range="-2.09 2.09" />
+                    <inertial pos="0.028508 0.012873 -0.017671" mass="0.0675" fullinertia="4.217e-05 9.246e-05 0.00012567 1.08e-06 -2.26e-06 -3.04e-06" />
+                    <geom class="visual" type="mesh" mesh="l_ank_roll_link" material="black" />
+                    <geom class="collision" type="mesh" mesh="l_ank_roll_link" name="l_ank_roll_link_collision" />
+                    <geom name="l_sole" class="sole" pos="0.02965 0.014 -0.0211" size="0.06755 0.038 0.002" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="head_pan_link" pos="-0.00410029363 0 0.1078">
+          <joint name="head_pan" axis="0 0 -1" range="-2.09 2.09" />
+          <inertial pos="0.00549413615 0.000156599066 0.0141339257" mass="0.00767349444" fullinertia="2.11767311e-06 9.86662752e-07 1.83521063e-06 1.34870613e-11 -1.44377899e-07 4.73071759e-11" />
+          <geom class="visual" type="mesh" mesh="head_pan_link" material="black" />
+          <geom class="collision" type="mesh" mesh="head_pan_link" name="head_pan_link_collision" />
+          <body name="head_tilt_link" pos="0.00904594549 -0.0185733521 0.0281579438">
+            <joint name="head_tilt" axis="0 -1 0" range="-2.09 2.09" />
+            <inertial pos="0.0113381466 0.0189172537 0.0221227281" mass="0.0262249163" fullinertia="6.19728231e-06 6.32347396e-06 6.9014123e-06 5.21591431e-09 8.03962377e-07 -2.06067171e-08" />
+            <geom class="visual" type="mesh" mesh="head_tilt_link" material="black" />
+            <geom class="collision" type="mesh" mesh="head_tilt_link" name="head_tilt_link_collision" />
+            <camera name="camera" pos="0.038068384 0.0185733521 0.0163981771" xyaxes="0 -1 0 0 0 1" fovy="83.2670787" resolution="640 480" />
+          </body>
+        </body>
+        <body name="camera_link" pos="0.0430140359 0 0.152356121" />
+        <body name="imu_link" pos="-0.0459897868 -0.0101 0.070299921" quat="0.5 0.5 -0.5 -0.5">
+          <site name="imu_link" size="0.005" group="4" />
+        </body>
+        <body name="r_sho_pitch_link" pos="-5.46273714e-05 -0.0524909514 0.0874480464">
+          <joint name="r_sho_pitch" axis="0 -1 0" range="-2.09 2.09" />
+          <inertial pos="0.000375793264 -0.0113306723 2.09985517e-06" mass="0.0128" fullinertia="2.05e-06 3.9e-06 5.03e-06 -5e-08 0 0" />
+          <geom class="visual" type="mesh" mesh="r_sho_pitch_link" material="black" />
+          <geom class="collision" type="mesh" mesh="r_sho_pitch_link" name="r_sho_pitch_link_collision" />
+          <body name="r_sho_roll_link" pos="0.0200034998 -0.0215059613 0">
+            <joint name="r_sho_roll" axis="1 0 0" range="-2.09 2.09" />
+            <inertial pos="-0.0205037633 -0.027838791 -6.10732338e-05" mass="0.121" fullinertia="7.3e-05 2.527e-05 7.539e-05 8.68e-06 -5e-08 -1.8e-07" />
+            <geom class="visual" type="mesh" mesh="r_sho_roll_link" material="black" />
+            <geom class="collision" type="mesh" mesh="r_sho_roll_link" name="r_sho_roll_link_collision" />
+            <body name="r_el_pitch_link" pos="-0.0200034998 -0.0741099368 0">
+              <joint name="r_el_pitch" axis="0 -1 0" range="-2.09 2.09" />
+              <inertial pos="-0.00697552928 -0.0128963887 0.00020517064" mass="0.045" fullinertia="7.97e-06 8.3e-06 1.053e-05 6.5e-07 -1.5e-07 -5e-08" />
+              <geom class="visual" type="mesh" mesh="r_el_pitch_link" material="black" />
+              <geom class="collision" type="mesh" mesh="r_el_pitch_link" name="r_el_pitch_link_collision" />
+              <body name="r_el_yaw_link" pos="0.000397813054 -0.0170183163 0.0190701824">
+                <joint name="r_el_yaw" axis="0 0 1" range="-2.09 2.09" />
+                <inertial pos="-0.000228558887 -0.0572724286 -0.0138716339" mass="0.102" fullinertia="0.0001432 3.101e-05 0.00014052 3e-07 -3e-08 -1.329e-05" />
+                <geom class="visual" type="mesh" mesh="r_el_yaw_link" material="black" />
+                <geom class="collision" type="mesh" mesh="r_el_yaw_link" name="r_el_yaw_link_collision" />
+                <body name="r_gripper_link" pos="0.0198901818 -0.0892355538 -0.0190701819">
+                  <joint name="r_gripper" axis="1 0 0" range="-2.09 2.09" />
+                  <inertial pos="-0.0193851146 -0.00931114583 -0.00543047682" mass="0.0135" fullinertia="3.28e-06 4.51e-06 5.97e-06 -3e-08 -2e-08 1.05e-06" />
+                  <geom class="visual" type="mesh" mesh="r_gripper_link" material="black" />
+                  <geom class="collision" type="mesh" mesh="r_gripper_link" name="r_gripper_link_collision" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+        <body name="l_sho_pitch_link" pos="-5.4627e-05 0.052491 0.087448">
+          <joint name="l_sho_pitch" axis="0 -1 0" range="-2.09 2.09" />
+          <inertial pos="0.000375774141 0.0113303353 1.9633684e-06" mass="0.0128" fullinertia="2.05e-06 3.9e-06 5.03e-06 5e-08 0 0" />
+          <geom class="visual" type="mesh" mesh="l_sho_pitch_link" material="black" />
+          <geom class="collision" type="mesh" mesh="l_sho_pitch_link" name="l_sho_pitch_link_collision" />
+          <body name="l_sho_roll_link" pos="0.020003 0.021507 0">
+            <joint name="l_sho_roll" axis="1 0 0" range="-2.09 2.09" />
+            <inertial pos="-0.020504 0.027838 -6.0431e-05" mass="0.121" fullinertia="7.3e-05 2.527e-05 7.539e-05 -8.68e-06 -5e-08 1.8e-07" />
+            <geom class="visual" type="mesh" mesh="l_sho_roll_link" material="black" />
+            <geom class="collision" type="mesh" mesh="l_sho_roll_link" name="l_sho_roll_link_collision" />
+            <body name="l_el_pitch_link" pos="-0.020003 0.074109 0">
+              <joint name="l_el_pitch" axis="0 -1 0" range="-2.09 2.09" />
+              <inertial pos="-0.0069756 0.012896 0.0002073" mass="0.045" fullinertia="7.97e-06 8.3e-06 1.053e-05 -6.5e-07 -1.5e-07 5e-08" />
+              <geom class="visual" type="mesh" mesh="l_el_pitch_link" material="black" />
+              <geom class="collision" type="mesh" mesh="l_el_pitch_link" name="l_el_pitch_link_collision" />
+              <body name="l_el_yaw_link" pos="0.00039506 0.017019 0.019072">
+                <joint name="l_el_yaw" axis="0 0 1" range="-2.09 2.09" />
+                <inertial pos="-0.000225830045 0.0572711815 -0.0138702956" mass="0.102" fullinertia="0.0001432 3.101e-05 0.00014052 -3e-07 -3e-08 1.329e-05" />
+                <geom class="visual" type="mesh" mesh="l_el_yaw_link" material="black" />
+                <geom class="collision" type="mesh" mesh="l_el_yaw_link" name="l_el_yaw_link_collision" />
+                <body name="l_gripper_link" pos="0.019893 0.089232 -0.019072">
+                  <joint name="l_gripper" axis="1 0 0" range="-2.09 2.09" />
+                  <inertial pos="-0.019384 0.0093137 -0.005426" mass="0.0135" fullinertia="3.28e-06 4.51e-06 5.97e-06 3e-08 -2e-08 -1.05e-06" />
+                  <geom class="visual" type="mesh" mesh="l_gripper_link" material="black" />
+                  <geom class="collision" type="mesh" mesh="l_gripper_link" name="l_gripper_link_collision" />
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <contact>
+    <exclude body1="r_hip_yaw_link" body2="r_hip_pitch_link" />
+    <exclude body1="l_hip_yaw_link" body2="l_hip_pitch_link" />
+    <exclude body1="r_knee_link" body2="r_ank_roll_link" />
+    <exclude body1="l_knee_link" body2="l_ank_roll_link" />
+  </contact>
+  <actuator>
+    <position name="r_hip_yaw" joint="r_hip_yaw" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_hip_roll" joint="r_hip_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_hip_pitch" joint="r_hip_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_knee" joint="r_knee" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_ank_pitch" joint="r_ank_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_ank_roll" joint="r_ank_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_hip_yaw" joint="l_hip_yaw" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_hip_roll" joint="l_hip_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_hip_pitch" joint="l_hip_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_knee" joint="l_knee" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_ank_pitch" joint="l_ank_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_ank_roll" joint="l_ank_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="head_pan" joint="head_pan" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="head_tilt" joint="head_tilt" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="r_sho_pitch" joint="r_sho_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_sho_roll" joint="r_sho_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="r_el_pitch" joint="r_el_pitch" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="r_el_yaw" joint="r_el_yaw" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="r_gripper" joint="r_gripper" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="l_sho_pitch" joint="l_sho_pitch" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_sho_roll" joint="l_sho_roll" class="servo35" ctrlrange="-2.09 2.09" />
+    <position name="l_el_pitch" joint="l_el_pitch" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="l_el_yaw" joint="l_el_yaw" class="servo12" ctrlrange="-2.09 2.09" />
+    <position name="l_gripper" joint="l_gripper" class="servo12" ctrlrange="-2.09 2.09" />
+  </actuator>
+  <sensor>
+    <accelerometer name="imu_accel" site="imu_link" />
+    <gyro name="imu_gyro" site="imu_link" />
+    <magnetometer name="imu_mag" site="imu_link" />
+  </sensor>
+  <keyframe>
+    <key name="home" qpos="0 0 0.2029 0.991499174 0 0.130112979 0 0 -0.016 0.828 -1.192 -0.625 -0.016 0 0.016 -0.828 1.192 0.625 0.016 0 0 0 1.45 0 0 0 0 -1.45 0 0 0" ctrl="0 -0.016 0.828 -1.192 -0.625 -0.016 0 0.016 -0.828 1.192 0.625 0.016 0 0 0 1.45 0 0 0 0 -1.45 0 0 0" />
+  </keyframe>
+</mujoco>

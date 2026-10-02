@@ -1,375 +1,318 @@
-"""Keymap, speed model, and latched command state.
+"""``teleop.sh``: keyboard teleoperation of a supported mobile robot, cameras shown live.
 
-Pure: stdlib only, no OpenCV, no network. Everything here is directly unit-testable,
-which is why the interesting behaviour of the console lives in this module rather than
-in the render loop.
+    teleop.sh [--robot <id>] [--namespace <name>] [--url ws://host:port]
 
-Hold-to-drive, without a key-up event: OpenCV's `waitKey` reports key-down only, and a
-real key-up would mean the global keyboard hook the spec rules out. What it does give
-is OS key auto-repeat -- holding `W` delivers `w` over and over. So motion is armed by a
-key and expires `hold_timeout` seconds after the last one, which makes releasing the key
-stop the robot.
+A local pygame window owns keyboard focus. Held/released keys come from SDL key-down and
+key-up events (key repeat is disabled and ignored), so a held key is known to be held.
 
-The timeout has to clear the OS's *initial* repeat delay, or a held key would stutter:
-move, expire, then resume once repeat kicks in. macOS defaults to 375 ms before the
-first repeat and 90 ms between them, so 0.6 s leaves margin without making the robot
-coast noticeably. The vendor's own teleop makes the same trade at 0.52 s.
+Exit status: 0 ordinary exit (Esc or closing the window); 1 no validated target; 2 refused
+(unknown id, arm, assembly, namespace override); 3 wire unreachable; 4 connection lost;
+5 keyboard input lost; 130/143 after SIGINT/SIGTERM.
 """
 
 from __future__ import annotations
 
-import dataclasses
-import enum
-import math
+import argparse
+import os
+import signal
+import sys
 import time
-from typing import Optional
+from typing import Callable, List, Optional
 
-# The real myAGV tops out around 0.28 m/s. The simulator applies no velocity limit of
-# its own -- it only saturates through a 0.12 m setpoint-lead clamp -- so an uncapped
-# console would let you command speeds that behave one way in sim and another on
-# hardware. Capping at the hardware limit makes the sim an honest rehearsal.
-SPEED_MIN = 0.05
-SPEED_MAX = 0.28
-SPEED_STEP = 0.05
-SPEED_DEFAULT = 0.15
+os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
 
-# One knob scales the whole motion envelope: two independent speeds on a six-key layout
-# with no modifiers is a UI you would have to explain.
-#
-# The ratio and the cap come from the vendor's own teleop
-# (myagv_ros/myagv_teleop/scripts/myagv_teleop.py), which defaults to speed 0.25 m/s
-# with turn 0.5 rad/s -- a ratio of 2 -- and a turn_limit of 1.0 rad/s. Driving the
-# same envelope means a drive rehearsed in the simulator behaves the same on hardware.
-TURN_RATIO = 2.0
-TURN_MAX = 1.00
-
-KEY_ESC = 27
-KEY_SPACE = 32
-
-# Long enough to bridge the OS initial key-repeat delay (375 ms on a stock macOS), short
-# enough that the robot does not coast far after a release: 0.6 s at the 0.15 m/s
-# default is about 9 cm.
-HOLD_TIMEOUT = 0.6
-
-
-class Action(enum.Enum):
-    NONE = "NONE"
-    FORWARD = "FORWARD"
-    BACK = "BACK"
-    STRAFE_LEFT = "STRAFE_LEFT"
-    STRAFE_RIGHT = "STRAFE_RIGHT"
-    ROT_LEFT = "ROT_LEFT"
-    ROT_RIGHT = "ROT_RIGHT"
-    STOP = "STOP"
-    FASTER = "FASTER"
-    SLOWER = "SLOWER"
-    HELP = "HELP"
-    QUIT = "QUIT"
-    # The head, on a robot that has one. Not motion: these move a pan/tilt pair rather
-    # than the base, so they are held and integrated rather than armed and expired.
-    HEAD_UP = "HEAD_UP"
-    HEAD_DOWN = "HEAD_DOWN"
-    HEAD_LEFT = "HEAD_LEFT"
-    HEAD_RIGHT = "HEAD_RIGHT"
-    HEAD_CENTRE = "HEAD_CENTRE"
-
-
-# Unit body-frame direction for each motion action: (forward, left, ccw).
-# myAGV/ROS convention: +x forward, +y left, +z yaw counter-clockwise.
-_AXES = {
-    Action.FORWARD: (1.0, 0.0, 0.0),
-    Action.BACK: (-1.0, 0.0, 0.0),
-    Action.STRAFE_LEFT: (0.0, 1.0, 0.0),
-    Action.STRAFE_RIGHT: (0.0, -1.0, 0.0),
-    Action.ROT_LEFT: (0.0, 0.0, 1.0),
-    Action.ROT_RIGHT: (0.0, 0.0, -1.0),
-}
-
-KEYMAP = {
-    ord("w"): Action.FORWARD,
-    ord("s"): Action.BACK,
-    ord("a"): Action.STRAFE_LEFT,
-    ord("d"): Action.STRAFE_RIGHT,
-    ord("q"): Action.ROT_LEFT,
-    ord("e"): Action.ROT_RIGHT,
-    KEY_SPACE: Action.STOP,
-    KEY_ESC: Action.QUIT,
-    # '+' needs shift on most layouts, so accept the unshifted '=' too. Same for '_'.
-    ord("+"): Action.FASTER,
-    ord("="): Action.FASTER,
-    ord("-"): Action.SLOWER,
-    ord("_"): Action.SLOWER,
-    ord("h"): Action.HELP,
-    ord("?"): Action.HELP,
-    ord("0"): Action.HEAD_CENTRE,
-}
-
-# The arrows, matched on the **whole** key code and never through `KEYMAP`'s low byte.
-#
-# `action_for_key` masks to the low byte because that is the portable part of an ASCII
-# key, and that is exactly what makes an arrow dangerous: GTK/Qt reports Left as 0xFF51,
-# whose low byte is 0x51, which normalises to `q` -- so a left-arrow press would arrive as
-# ROT_LEFT and turn the robot. Cocoa's 0xF702 would land on 0x02, unmapped today but
-# nothing says it stays that way. So the full value is looked up first, and `app.py` reads
-# keys with `cv2.waitKeyEx`, which returns it untruncated (and is identical for ASCII).
-#
-# Three backends, because opencv-python is built against whichever the platform has:
-# Cocoa on macOS, GTK/Qt on Linux, and the Win32 HighGUI on Windows.
-KEYMAP_EXTENDED = {
-    63232: Action.HEAD_UP, 63233: Action.HEAD_DOWN,        # Cocoa (NS*ArrowFunctionKey)
-    63234: Action.HEAD_LEFT, 63235: Action.HEAD_RIGHT,
-    65362: Action.HEAD_UP, 65364: Action.HEAD_DOWN,        # GTK / Qt (XK_Up ...)
-    65361: Action.HEAD_LEFT, 65363: Action.HEAD_RIGHT,
-    2490368: Action.HEAD_UP, 2621440: Action.HEAD_DOWN,    # Win32 HighGUI
-    2424832: Action.HEAD_LEFT, 2555904: Action.HEAD_RIGHT,
-}
-
-#: The most one arrow press may turn the head, as a time budget. macOS repeats at 90 ms
-#: after a 375 ms initial delay, so this covers the first press of a hold without letting
-#: a key tapped after a long pause jump the view.
-HEAD_STEP_MAX_S = 0.2
-
-#: Holding one of these keeps the head turning; `HEAD_CENTRE` is a one-shot.
-HEAD_ACTIONS = frozenset(
-    {Action.HEAD_UP, Action.HEAD_DOWN, Action.HEAD_LEFT, Action.HEAD_RIGHT,
-     Action.HEAD_CENTRE}
+from robot_console import camera as cam  # noqa: E402
+from robot_console.discovery import (  # noqa: E402
+    DiscoveryError, SelectionError, fetch_graph, select_target,
+)
+from robot_console.profiles import (  # noqa: E402
+    ProfileError, check_namespace_allowed, refuse_arm, select_id, teleop_ids,
+)
+from robot_console.rosbridge import DEFAULT_URL, Rosbridge, TransportError, check_url  # noqa: E402
+from robot_console.teleop_core import (  # noqa: E402
+    REENABLE_LIMITATION, Sender, TeleopCore, no_delivery_statement,
 )
 
-# Holding one of these is what keeps the robot moving; everything else is a one-shot.
-MOTION_ACTIONS = frozenset(
-    {
-        Action.FORWARD,
-        Action.BACK,
-        Action.STRAFE_LEFT,
-        Action.STRAFE_RIGHT,
-        Action.ROT_LEFT,
-        Action.ROT_RIGHT,
-    }
-)
+EXIT_OK, EXIT_NO_TARGET, EXIT_REFUSED, EXIT_UNREACHABLE, EXIT_CONN_LOST, EXIT_INPUT_LOST = 0, 1, 2, 3, 4, 5
+ADVERTISE_SETTLE_S = 0.6     # let a fresh ROS 1 publisher connect before the start-up stop
+
+HELP = ("W/S forward/back  A/D strafe  Q/E rotate  Space stop  Enter re-enable  Esc quit")
+HEAD_HELP = "Arrows: head (Left/Right pan, Up/Down tilt)"
 
 
-def action_for_key(key: int) -> Action:
-    """Map a `cv2.waitKey` return value to an `Action`.
-
-    `waitKey` returns -1 on timeout and, on some platforms, sets high bits above the
-    ASCII code, so the low byte is the only portable part.
-    """
-    if key is None or key < 0:
-        return Action.NONE
-    # The full value first: an arrow's low byte collides with a letter (see KEYMAP_EXTENDED).
-    if key in KEYMAP_EXTENDED:
-        return KEYMAP_EXTENDED[key]
-    code = key & 0xFF
-    if 65 <= code <= 90:  # normalise upper case; W and w mean the same thing
-        code += 32
-    return KEYMAP.get(code, Action.NONE)
-
-
-def key_label(key: int) -> str | None:
-    """A human-readable name for a key, for the command log. None if unmapped."""
-    if key is None or key < 0:
-        return None
-    if key in KEYMAP_EXTENDED:
-        return KEYMAP_EXTENDED[key].value.removeprefix("HEAD_").lower()
-    code = key & 0xFF
-    if 65 <= code <= 90:
-        code += 32
-    if code == KEY_SPACE:
-        return "space"
-    if code == KEY_ESC:
-        return "esc"
-    if code == ord("?"):
-        return "?"
-    if code in KEYMAP:
-        return chr(code)
-    return None
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(
+        prog="teleop.sh",
+        description="Keyboard teleoperation of a supported mobile robot over rosbridge, with its "
+                    "cameras shown live. Motion is hold-to-move: releasing the last motion key, "
+                    "Space, focus loss, input loss and exit request the robot's documented stop.",
+        epilog=f"Teleoperable ids: {', '.join(teleop_ids())}. Keys: {HELP}. AiNex: {HEAD_HELP}. "
+               "After validation teleop sends the documented stop once and, if it was delivered, "
+               "enables commands at once. A failed stop (at start-up or later) disables commands "
+               "until Enter and a fresh key press. If teleop is killed (e.g. SIGKILL) or the connection breaks, no "
+               "stop can be sent and stopping is not guaranteed; none of the supported profiles "
+               "documents a command watchdog. A lost connection ends teleop (status 4).")
+    ap.add_argument("--robot", metavar="ID", help="robot profile (default: identify from the wire)")
+    ap.add_argument("--namespace", metavar="NAME",
+                    help="only for profiles whose hardware interface documents namespaces")
+    ap.add_argument("--url", default=DEFAULT_URL, help=f"rosbridge websocket (default {DEFAULT_URL})")
+    return ap
 
 
-def clamp_speed(value: float) -> float:
-    """Clamp a linear speed into the supported range."""
-    return min(SPEED_MAX, max(SPEED_MIN, float(value)))
+def _key_name(pg, key: int) -> Optional[str]:
+    table = {pg.K_w: "w", pg.K_s: "s", pg.K_a: "a", pg.K_d: "d", pg.K_q: "q", pg.K_e: "e",
+             pg.K_SPACE: "space", pg.K_RETURN: "enter", pg.K_KP_ENTER: "enter",
+             pg.K_ESCAPE: "esc", pg.K_LEFT: "left", pg.K_RIGHT: "right", pg.K_UP: "up",
+             pg.K_DOWN: "down"}
+    return table.get(key)
 
 
-@dataclasses.dataclass(frozen=True)
-class Command:
-    """A body-frame velocity command. vx forward, vy left, wz counter-clockwise."""
+class TeleopApp:
+    def __init__(self, url: str, profile, namespace: Optional[str],
+                 events: Optional[Callable[[], list]] = None, max_seconds: Optional[float] = None,
+                 err=sys.stderr) -> None:
+        self.url = url
+        self.profile = profile
+        self.namespace = namespace
+        self._events = events
+        self.max_seconds = max_seconds
+        self.err = err
+        self.signal: Optional[int] = None
+        self.lost: Optional[str] = None
+        self.core: Optional[TeleopCore] = None
+        self.target = None
+        self.reason = ""
+        self.cams: Optional[cam.CameraSet] = None
+        self.lines: List[str] = []
 
-    vx: float = 0.0
-    vy: float = 0.0
-    wz: float = 0.0
+    def say(self, text: str) -> None:
+        self.lines.append(text)
+        del self.lines[:-8]
+        print(f"teleop: {text}", file=self.err, flush=True)
 
-    def is_zero(self, eps: float = 1e-9) -> bool:
-        return abs(self.vx) < eps and abs(self.vy) < eps and abs(self.wz) < eps
+    # ------------------------------------------------------------ main
+    def run(self) -> int:
+        for s in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(s, self._on_signal)
+        rb = Rosbridge(self.url)
+        try:
+            rb.connect(5.0)
+        except TransportError as exc:
+            self.say(f"wire unreachable: {exc}")
+            return EXIT_UNREACHABLE
+        rb.on_close(self._on_close)
+        import pygame as pg
+        self.pg = pg
+        pg.display.init()
+        pg.font.init()
+        self.screen = pg.display.set_mode((1000, 640), pg.RESIZABLE)
+        pg.display.set_caption(f"robot console teleop - {self.url}")
+        pg.key.set_repeat()           # disabled: only real key-down/key-up events
+        self.font = pg.font.Font(None, 20)
+        self.big = pg.font.Font(None, 26)
+        code = EXIT_OK
+        try:
+            code = self._session(rb)
+        finally:
+            if self.cams:
+                self.cams.close()
+            rb.close()
+            pg.quit()
+        return code
 
-    def to_twist(self) -> dict:
-        """A complete `geometry_msgs/Twist`.
+    def _on_signal(self, signum, _frame) -> None:
+        self.signal = signum
 
-        The bridge reads only linear.x/linear.y/angular.z, but a real ROS subscriber
-        deserialises the whole message, so every field is present.
-        """
-        return {
-            "linear": {"x": float(self.vx), "y": float(self.vy), "z": 0.0},
-            "angular": {"x": 0.0, "y": 0.0, "z": float(self.wz)},
-        }
+    def _on_close(self, reason: str) -> None:
+        self.lost = reason
 
+    def _events_now(self) -> list:
+        if self._events is not None:
+            return self._events()
+        return self.pg.event.get()
 
-def within_caps(command: Command, speed_max: float, turn_max: float) -> Command:
-    """`command` with its translation scaled into `speed_max` (direction kept) and its
-    rotation clipped to `turn_max`: the supervisor's last line of defence for the caps."""
-    magnitude = math.hypot(command.vx, command.vy)
-    k = speed_max / magnitude if magnitude > speed_max else 1.0
-    return Command(command.vx * k, command.vy * k, max(-turn_max, min(turn_max, command.wz)))
+    def _session(self, rb: Rosbridge) -> int:
+        pg = self.pg
+        try:
+            graph = fetch_graph(rb)
+        except DiscoveryError as exc:
+            self.say(f"cannot read the wire: {exc}")
+            return EXIT_UNREACHABLE
+        self.cams = cam.CameraSet(rb, cam.untied_specs(graph))
+        try:
+            self.target = select_target(graph, self.profile, self.namespace)
+        except ProfileError as exc:
+            self.say(f"refused: {exc}")
+            return EXIT_REFUSED
+        except SelectionError as exc:
+            self.reason = exc.reason
+            self.say(f"no validated target, commands refused: {exc.reason}. Select one explicitly "
+                     f"with --robot ({', '.join(teleop_ids())}).")
+        if self.target is not None and self.target.profile.is_arm:
+            self.say("refused: " + refuse_arm(self.target.profile.id) + " (identified automatically)")
+            return EXIT_REFUSED
+        if self.target is not None:
+            self.cams.close()
+            self.cams = cam.CameraSet(rb, cam.target_specs(self.target), present=graph.topics)
+            self.core = TeleopCore(self.target, Sender(rb), log=self.say)
+            for topic, typ in self.core.command_topics():
+                rb.advertise(topic, typ)
+            self.say(f"target {self.target.label} validated; stop command: "
+                     f"{self.target.profile.stop_description()}")
+            self.say("if this process is killed (SIGKILL, power loss) or the connection breaks, no "
+                     "stop can be sent: " + no_delivery_statement(self.target.profile))
+            settle = time.monotonic() + ADVERTISE_SETTLE_S
+            while time.monotonic() < settle and self.signal is None and self.lost is None:
+                self._pump_display()
+                time.sleep(0.02)
+            if self.lost is None and self.signal is None:
+                if self.core.startup_stop().ok:   # logs its outcome
+                    self.core.enable()            # no Enter needed after a delivered stop
+                else:
+                    self.say("press Enter to enable commands")
+        started = time.monotonic()
+        clock = pg.time.Clock()
+        code = EXIT_OK if self.target is not None else EXIT_NO_TARGET
+        end_reason = "exit"
+        while True:
+            if self.signal is not None:
+                code = 128 + int(self.signal)
+                end_reason = f"signal {signal.Signals(self.signal).name}"
+                break
+            if self.lost is not None:
+                if self.core:
+                    self.core.connection_lost(self.lost)
+                else:
+                    self.say(f"connection lost ({self.lost})")
+                self.say("teleop ends; relaunch to reconnect")
+                self._draw()
+                return EXIT_CONN_LOST
+            if self.max_seconds is not None and time.monotonic() - started > self.max_seconds:
+                end_reason = "time limit"
+                break
+            try:
+                events = self._events_now()
+            except Exception as exc:  # noqa: BLE001 - the key-event source failed
+                if self.core:
+                    self.core.input_lost(str(exc))
+                else:
+                    self.say(f"keyboard input lost: {exc}")
+                return EXIT_INPUT_LOST
+            if events is None:            # the key-event source ended
+                if self.core:
+                    self.core.input_lost("event source ended")
+                return EXIT_INPUT_LOST
+            quit_now = False
+            for ev in events:
+                if ev.type == pg.QUIT:
+                    quit_now, end_reason = True, "window closed"
+                elif ev.type == pg.KEYDOWN:
+                    k = _key_name(pg, ev.key)
+                    if k == "esc":
+                        quit_now, end_reason = True, "Esc"
+                    elif k and self.core:
+                        self.core.key_down(k)
+                    elif k:
+                        self.say("commands refused: no validated target")
+                elif ev.type == pg.KEYUP:
+                    k = _key_name(pg, ev.key)
+                    if k and self.core:
+                        self.core.key_up(k)
+                elif ev.type == getattr(pg, "WINDOWFOCUSLOST", -1) or (
+                        ev.type == getattr(pg, "ACTIVEEVENT", -2) and getattr(ev, "gain", 1) == 0
+                        and getattr(ev, "state", 0) & 2):
+                    if self.core and (self.core.held or self.core.held_head or self.core.enabled):
+                        self.core.focus_lost()
+            if quit_now:
+                break
+            if self.core:
+                self.core.tick()
+            self._pump_display()
+            clock.tick(30)
+        if self.core:
+            out = self.core.shutdown(f"teleop ending ({end_reason})")
+            if not out.ok:
+                self.say(REENABLE_LIMITATION)
+        return code
 
+    # ------------------------------------------------------------ drawing
+    def _pump_display(self) -> None:
+        if self.cams:
+            self.cams.poll()
+        self._draw()
 
-@dataclasses.dataclass
-class HeadPose:
-    """Where a pan/tilt head is pointed, and what the arrow keys do to it.
-
-    A position, not a velocity: unlike the base there is no watchdog and nothing to keep
-    alive, so the console publishes only when this changes. Holding an arrow turns the
-    head at `rate` through the OS's key repeat, exactly as holding `W` drives the base --
-    which is why a step is `rate * dt` and not a fixed nudge per keypress: on a machine
-    with a slower repeat the head would otherwise creep.
-
-    Limits are the robot's, passed in rather than assumed, so this module keeps knowing
-    nothing about any particular robot's contract.
-    """
-
-    pan: float = 0.0
-    tilt: float = 0.0
-    pan_limit: float = 1.0
-    tilt_limit: float = 1.0
-    rate: float = 1.0  # rad/s while a key is held
-
-    def apply(self, action: Action, dt: float) -> bool:
-        """Fold one key action in. Returns True if the pose moved and needs publishing."""
-        if action is Action.HEAD_CENTRE:
-            moved = bool(self.pan or self.tilt)
-            self.pan = self.tilt = 0.0
-            return moved
-        if action not in HEAD_ACTIONS:
-            return False
-        # `dt` is the gap since the last arrow, so the first press after a pause -- or
-        # after the initial repeat delay -- would otherwise swing the head through
-        # whatever the operator spent thinking. Capped at a couple of repeat intervals.
-        step = self.rate * min(max(dt, 0.0), HEAD_STEP_MAX_S)
-        # These are the **joint angles** the vendor's per-joint controllers take, which is
-        # also what `/joint_states` reads back, so the signs are the vendor's and not this
-        # module's to choose. Measured off the compiled model rather than assumed:
-        #
-        #   head_pan  axis [0, 0, -1]  ->  +pan looks RIGHT (yaw -29.5 deg at +0.5 rad)
-        #   head_tilt axis [0, -1, 0]  ->  +tilt looks UP   (pitch -15.0 -> +13.7 deg)
-        #
-        # Pan is therefore the *opposite* sign to the base's `+z` counter-clockwise yaw,
-        # and writing it the intuitive way round -- left is positive, like `Q` -- pointed
-        # the camera the other way from the key that was pressed.
-        if action is Action.HEAD_LEFT:
-            pan, tilt = self.pan - step, self.tilt
-        elif action is Action.HEAD_RIGHT:
-            pan, tilt = self.pan + step, self.tilt
-        elif action is Action.HEAD_UP:
-            pan, tilt = self.pan, self.tilt + step
+    def _draw(self) -> None:
+        pg = self.pg
+        scr = self.screen
+        W, H = scr.get_size()
+        scr.fill((18, 20, 24))
+        streams = list(self.cams.streams.values()) if self.cams else []
+        hud_h = 190
+        area_h = H - hud_h
+        now = time.monotonic()
+        if not streams:
+            msg = "No cameras" + (" for this robot's profile" if self.target else " discovered on the wire")
+            scr.blit(self.big.render(msg, True, (200, 200, 200)), (20, 20))
         else:
-            pan, tilt = self.pan, self.tilt - step
-        pan = min(self.pan_limit, max(-self.pan_limit, pan))
-        tilt = min(self.tilt_limit, max(-self.tilt_limit, tilt))
-        moved = (pan, tilt) != (self.pan, self.tilt)
-        self.pan, self.tilt = pan, tilt
-        return moved
+            n = len(streams)
+            cols = 1 if n == 1 else 2
+            rows = (n + cols - 1) // cols
+            tw, th = W // cols, area_h // rows
+            for i, s in enumerate(streams):
+                x, y = (i % cols) * tw, (i // cols) * th
+                st = s.state(now)
+                if s.frame is not None and st == cam.LIVE:
+                    surf = pg.surfarray.make_surface(s.frame.swapaxes(0, 1))
+                    fh, fw = s.frame.shape[:2]
+                    scale = min((tw - 8) / fw, (th - 30) / fh)
+                    surf = pg.transform.smoothscale(surf, (max(1, int(fw * scale)), max(1, int(fh * scale))))
+                    scr.blit(surf, (x + 4, y + 26))
+                else:
+                    pg.draw.rect(scr, (40, 40, 44), (x + 4, y + 26, tw - 8, th - 30))
+                    txt = s.status_text(now).upper() if st != cam.WAITING else "WAITING FOR FRAMES"
+                    scr.blit(self.big.render(txt, True, (240, 160, 60)), (x + 14, y + th // 2))
+                colour = (120, 220, 120) if st == cam.LIVE else (240, 160, 60)
+                tag = "" if s.spec.tied else "  [not tied to a target]"
+                scr.blit(self.font.render(f"{s.spec.topic}: {s.status_text(now)}{tag}", True, colour),
+                         (x + 6, y + 6))
+        y = area_h + 6
+        if self.target is not None:
+            core = self.core
+            state = "ENABLED" if core and core.enabled else "DISABLED (press Enter)"
+            if core and not core.connected:
+                state = "DISCONNECTED"
+            head = f"{self.target.label} on {self.url}   commands: {state}"
+        else:
+            head = f"NO VALIDATED TARGET - commands refused: {self.reason}"
+        scr.blit(self.big.render(head[:140], True, (255, 255, 255)), (10, y))
+        y += 26
+        help_line = HELP + ("   " + HEAD_HELP if self.target is not None and self.target.profile.head else "")
+        scr.blit(self.font.render(help_line, True, (170, 170, 190)), (10, y))
+        y += 22
+        if self.core and self.core.held:
+            a = self.core.axes()
+            scr.blit(self.font.render(f"held {''.join(self.core.held).upper()}  x={a['x']:+.3f} "
+                                      f"y={a['y']:+.3f} yaw={a['yaw']:+.3f}", True, (120, 220, 120)), (10, y))
+        y += 20
+        for line in self.lines[-6:]:
+            colour = (255, 110, 110) if ("FAIL" in line or "LOST" in line or "NOT" in line) else (210, 210, 210)
+            scr.blit(self.font.render(line[:170], True, colour), (10, y))
+            y += 19
+        pg.display.flip()
 
 
-@dataclasses.dataclass
-class TeleopState:
-    """The direction currently being held, plus the speed setting.
+def main(argv: Optional[List[str]] = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        check_url(args.url)
+        profile = select_id(args.robot, teleop=True)
+        if profile is not None:
+            check_namespace_allowed(profile, args.namespace)
+    except (ProfileError, ValueError) as exc:
+        print(f"teleop: refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    return TeleopApp(args.url, profile, args.namespace).run()
 
-    `hold_timeout` is how long a motion survives without another key event. Set it to
-    None to latch instead -- motion then persists until another direction, `Space`, or
-    `Esc`, which is useful over a link too laggy to deliver key repeat reliably.
-    """
 
-    speed: float = SPEED_DEFAULT
-    speed_max: float = SPEED_MAX
-    hold_timeout: Optional[float] = HOLD_TIMEOUT
-    # The rest of the speed envelope, per instance because it belongs to the robot rather
-    # than to this module. The defaults are the myAGV's, so a caller that says nothing
-    # behaves exactly as it did when there was only one robot.
-    speed_min: float = SPEED_MIN
-    speed_step: float = SPEED_STEP
-    turn_ratio: float = TURN_RATIO
-    turn_max: float = TURN_MAX
-    axis: tuple = (0.0, 0.0, 0.0)
-    last_action: Action = Action.NONE
-    running: bool = True
-    show_help: bool = True
-    held_since: Optional[float] = None
-    _armed_at: Optional[float] = None
-
-    def apply(self, action: Action, now: Optional[float] = None) -> Action:
-        """Fold a key action into the state. Returns the action, for logging."""
-        self.last_action = action
-        if action is Action.NONE:
-            return action
-        if action is Action.QUIT:
-            self._disarm()
-            self.running = False
-        elif action is Action.STOP:
-            self._disarm()
-        elif action is Action.FASTER:
-            self.speed = self._clamp(self.speed + self.speed_step)
-        elif action is Action.SLOWER:
-            self.speed = self._clamp(self.speed - self.speed_step)
-        elif action is Action.HELP:
-            self.show_help = not self.show_help
-        elif action in MOTION_ACTIONS:
-            stamp = time.monotonic() if now is None else now
-            if self.axis != _AXES[action]:
-                # A new direction replaces the old rather than combining, so W then D
-                # strafes instead of driving diagonally.
-                self.held_since = stamp
-            # Every repeat of the held key re-arms the motion; when the key comes up the
-            # repeats stop and `expire` takes it away.
-            self.axis = _AXES[action]
-            self._armed_at = stamp
-        return action
-
-    def expire(self, now: Optional[float] = None) -> bool:
-        """Zero the motion if the key that armed it has stopped repeating.
-
-        Called every tick. Returns True on the tick where the motion was dropped, so the
-        caller can log a release.
-        """
-        if self.hold_timeout is None or self._armed_at is None:
-            return False
-        stamp = time.monotonic() if now is None else now
-        if stamp - self._armed_at <= self.hold_timeout:
-            return False
-        self._disarm()
-        return True
-
-    def _disarm(self) -> None:
-        self.axis = (0.0, 0.0, 0.0)
-        self._armed_at = None
-        self.held_since = None
-
-    @property
-    def is_moving(self) -> bool:
-        return self.axis != (0.0, 0.0, 0.0)
-
-    def _clamp(self, value: float) -> float:
-        return min(self.speed_max, max(self.speed_min, float(value)))
-
-    def command(self) -> Command:
-        fx, fy, fw = self.axis
-        return Command(
-            vx=fx * self.speed,
-            vy=fy * self.speed,
-            wz=fw * min(self.speed * self.turn_ratio, self.turn_max),
-        )
-
-    @property
-    def at_max_speed(self) -> bool:
-        return self.speed >= self.speed_max - 1e-9
-
-    @property
-    def at_min_speed(self) -> bool:
-        return self.speed <= self.speed_min + 1e-9
+if __name__ == "__main__":
+    sys.exit(main())
