@@ -90,18 +90,18 @@ def ros2_action_from_send_goal(service: str, t: str) -> Tuple[str, str] | None:
 
 
 # ------------------------------------------------------------------ ROS infrastructure
-# Workspace spec §1.3: rosbridge_websocket and rosapi and their stock endpoints and
-# parameters, /rosout, /rosout_agg, /parameter_events, the ROS master's own parameters and
-# each node's client-library services (logger, parameter, type-description). Never part of
-# a robot's vendor interface; may appear on any wire.
+# Workspace spec §1.3: rosbridge_websocket and rosapi and their stock endpoints, /rosout,
+# /rosout_agg, /parameter_events and each node's client-library services (logger, parameter,
+# type-description). Never part of a robot's vendor interface; may appear on any wire. (The
+# console checks no parameters, so the parameter rules of §1.3 have no counterpart here.)
 
 INFRA_TOPICS = {
     "/rosout", "/rosout_agg", "/parameter_events",
     "/client_count", "/connected_clients",
 }
 INFRA_PREFIXES = ("/rosapi/", "/rosbridge_websocket/", "/rosapi_params/", "/rosapi_node/")
-INFRA_PARAMS = {"/rosdistro", "/rosversion", "/run_id"}
-INFRA_PARAM_PREFIXES = ("/roslaunch/", "/rosapi/", "/rosbridge_websocket/")
+#: The rosbridge and rosapi nodes themselves (a rosbridge client's publications appear as theirs).
+INFRA_NODES = ("/rosbridge_websocket", "/rosapi", "/rosapi_params")
 
 # Per-node client-library services.
 _NODE_SERVICE_SUFFIXES = (
@@ -116,21 +116,12 @@ _NODE_SERVICE_SUFFIXES = (
 
 
 def is_infrastructure(name: str, kind: str = "topic") -> bool:
-    """Whether ``name`` (a topic, service or parameter) is ROS infrastructure."""
-    if kind == "param":
-        return name in INFRA_PARAMS or name.startswith(INFRA_PARAM_PREFIXES)
+    """Whether ``name`` (a topic, service or action) is ROS infrastructure."""
     if name in INFRA_TOPICS or name.startswith(INFRA_PREFIXES):
         return True
-    if name in ("/rosapi", "/rosbridge_websocket"):
+    if name in INFRA_NODES:
         return True
     if kind == "service" and name.endswith(_NODE_SERVICE_SUFFIXES):
         return True
     return False
 
-
-# ------------------------------------------------------------------ durations
-def duration(dialect: str, seconds: float) -> dict:
-    """A ``builtin_interfaces/Duration`` (ROS 2) or ROS 1 duration dict."""
-    sec = int(seconds)
-    nsec = int(round((seconds - sec) * 1e9))
-    return {"sec": sec, "nanosec": nsec} if dialect == ROS2 else {"secs": sec, "nsecs": nsec}

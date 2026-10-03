@@ -12,8 +12,11 @@ to the simulation:
   own `servo_controller.yaml` (the /ainex_controller/controllers parameter): radian =
   (pulse - init) / (+-1000 / 240 deg), the sign flipped where min > max. Position reads
   return the simulated joint in pulses.
-* the IMU reports at 100 Hz from the IMU site: acceleration in g, rates in deg/s, and a
-  magnetometer (a fixed local field, estimate); battery 11.1 V as millivolts every second
+* the IMU reports from the IMU site at 200 Hz (estimate: the firmware's report rate is in
+  no pinned source; the record takes the node's 100 Hz loop cap as the published rate, so
+  the board reports faster than the loop polls and every cycle finds the newest sample):
+  acceleration in g, rates in deg/s, and a magnetometer (a fixed local field, estimate);
+  battery 11.1 V as millivolts every second
   (estimate: the pack is not simulated). No gamepad receiver, SBUS or button events.
 """
 
@@ -37,7 +40,7 @@ TICKS_PER_RAD = 180 / 3.1415926 / 240 * 1000     # ainex_controller's ENCODER_TI
 SERVO_SPEED = math.radians(60) / 0.2               # rad/s: 0.2 s per 60 deg
 RATE = 200.0
 GRAVITY = 9.80665
-MAG_WORLD = (0.22, 0.0, -0.42)                     # gauss, estimate
+IMU_REPORT_HZ = 200.0     # estimate, faster than the node's 100 Hz loop (module docstring)
 
 
 class Board:
@@ -57,9 +60,12 @@ class Board:
         common.exit_when_lost(self.link)
         self.lock = threading.Lock()
         self.state = {}
-        self.imu_q: queue.Queue = queue.Queue(maxsize=2)
+        # the board's IMU report is a queue of 1, polled once per node cycle: the pending
+        # sample is replaced by each newer one, so the node never takes a stale sample
+        self.imu_q: queue.Queue = queue.Queue(maxsize=1)
         self.have = threading.Event()
-        self.link.subscribe("state", 100.0, self._on_state, joints=True, imu_sites=["imu_link"])
+        self.link.subscribe("state", IMU_REPORT_HZ, self._on_state, joints=True,
+                            imu_sites=["imu_link"])
         self.have.wait(10)
         with self.lock:
             self.cmd = {sid: self.state[j][0] for sid, (j, _, _) in self.joint.items()
@@ -80,11 +86,7 @@ class Board:
             return
         ax, ay, az = (a / GRAVITY for a in imu["accel"])
         gx, gy, gz = (math.degrees(g) for g in imu["gyro"])
-        w, x, y, z = imu["quat"]
-        R = [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
-        mx, my, mz = (sum(R[r][c] * MAG_WORLD[r] for r in range(3)) for c in range(3))
+        mx, my, mz = common.world_to_sensor(imu["quat"], common.MAG_FIELD_WORLD)
         try:
             self.imu_q.put_nowait((ax, ay, az, gx, gy, gz, mx, my, mz))
         except queue.Full:
@@ -162,11 +164,11 @@ class Board:
     def bus_servo_read_offset(self, servo_id):
         return [0]
 
-    def bus_servo_read_vin(self, servo_id):
-        return [11100]
-
-    def bus_servo_read_voltage(self, servo_id):
-        return [11100]
+    # The pinned node's get_state also asks for `bus_servo_read_voltage` and
+    # `bus_servo_read_torque`, which the pinned SDK does not have (its names are
+    # bus_servo_read_vin / bus_servo_read_torque_state): as on the robot, those requests
+    # raise in the node. The fake has the SDK methods the node calls, under the SDK's own
+    # names -- nothing the SDK lacks.
 
     def bus_servo_read_temp(self, servo_id):
         return [35]
@@ -179,11 +181,6 @@ class Board:
 
     def bus_servo_read_vin_limit(self, servo_id):
         return [4500, 14000]
-
-    def bus_servo_read_torque_state(self, servo_id):
-        return [1]
-
-    bus_servo_read_torque = bus_servo_read_torque_state
 
     def bus_servo_enable_torque(self, servo_id, enable):
         pass

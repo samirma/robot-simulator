@@ -24,6 +24,7 @@ from robot_console.profiles import SUPPORTED_IDS, ProfileError, select_id
 from robot_console.rosbridge import DEFAULT_URL, Rosbridge, TransportError, check_url
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_UNREACHABLE = 0, 1, 2, 3
+ROSAPI_TIMEOUT_S = 5.0
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -34,15 +35,16 @@ def _parser() -> argparse.ArgumentParser:
         epilog=f"Supported robot ids: {', '.join(SUPPORTED_IDS)}")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"rosbridge websocket (default {DEFAULT_URL})")
     ap.add_argument("--expect", metavar="ID", help="require exactly this robot's whole typed interface")
-    ap.add_argument("--timeout", type=float, default=5.0, help="rosapi call timeout, s (default 5)")
     return ap
 
 
 def check_cameras(rb: Rosbridge, targets: List[Target], graph, out) -> bool:
     """Sample every profile camera; True when every non-optional one is live."""
-    specs = []
+    by_topic = {}
     for t in targets:
-        specs += cam.target_specs(t)
+        for s in cam.target_specs(t):
+            by_topic.setdefault(s.topic, s)  # candidates may share a camera: one stream per topic
+    specs = list(by_topic.values())
     if not specs:
         for t in targets:
             print(f"  cameras: none in profile '{t.profile.id}'", file=out)
@@ -85,7 +87,8 @@ def report_target(t: Target, out) -> None:
         print(f"  note: {k} {n} present; type not verifiable ({why})", file=out)
 
 
-def run(url: str, expect: Optional[str], timeout: float = 5.0, out=sys.stdout) -> int:
+def run(url: str, expect: Optional[str]) -> int:
+    out = sys.stdout
     try:
         check_url(url)
     except ValueError as exc:
@@ -98,13 +101,13 @@ def run(url: str, expect: Optional[str], timeout: float = 5.0, out=sys.stdout) -
         return EXIT_USAGE
     rb = Rosbridge(url)
     try:
-        rb.connect(timeout)
+        rb.connect(ROSAPI_TIMEOUT_S)
     except TransportError as exc:
         print(f"FAIL: wire unreachable: {exc}", file=out)
         return EXIT_UNREACHABLE
     try:
         try:
-            g = fetch_graph(rb, timeout)
+            g = fetch_graph(rb, ROSAPI_TIMEOUT_S)
         except DiscoveryError as exc:
             print(f"FAIL: cannot read the wire: {exc}", file=out)
             return EXIT_UNREACHABLE if not rb.connected else EXIT_FAIL
@@ -143,8 +146,9 @@ def run(url: str, expect: Optional[str], timeout: float = 5.0, out=sys.stdout) -
         for t in disc.targets:
             report_target(t, out)
             failed |= not t.validation.ok
-        valid = [t for t in disc.targets if t.validation.ok]
-        if valid and not check_cameras(rb, valid, g, out):
+        # every discovered robot's cameras, whether or not it passed typed validation
+        found = disc.targets + [t for grp in disc.ambiguous for t in grp]
+        if found and not check_cameras(rb, found, g, out):
             failed = True
         print("FAIL" if failed else "PASS", file=out)
         return EXIT_FAIL if failed else EXIT_OK
@@ -154,7 +158,7 @@ def run(url: str, expect: Optional[str], timeout: float = 5.0, out=sys.stdout) -
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = _parser().parse_args(argv)
-    return run(args.url, args.expect, args.timeout)
+    return run(args.url, args.expect)
 
 
 if __name__ == "__main__":

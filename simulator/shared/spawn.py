@@ -1,13 +1,12 @@
 """spawn.sh: add one robot to a running simulation and serve its vendor interface.
 
 The only entry point that serves a wire. It asks the simulation on `--sim-port` to add the
-robot (admission and placement happen there), starts one Docker container per wire (ROS
-graph + rosbridge_suite, the simulator code mounted read-only), waits until every wire
-serves its recorded interface, prints one readiness line and stays in the foreground
-watching the simulation, the containers and the wires. Ending it removes the robot and
-its containers; the simulation also removes the robot if this process dies (even by
-SIGKILL), and the containers then exit by themselves when their link to the simulation
-closes.
+robot (admission and placement happen there), starts the robot's one wire, a Docker
+container (ROS graph + rosbridge_suite, the simulator code mounted read-only), waits until
+it serves the recorded interface, prints one readiness line and stays in the foreground
+watching the simulation, the container and the wire. Ending it removes the robot and its
+container; the simulation also removes the robot if this process dies (even by SIGKILL),
+and the container then exits by itself when its link to the simulation closes.
 
 Exit status: 0 when ended by SIGINT/SIGTERM; non-zero for every refusal, failed startup,
 wire failure, or when the simulation ends.
@@ -37,11 +36,12 @@ from rosbridge_client import Rosbridge, WebSocketClosed, wait_for  # noqa: E402
 SIM_ROOT = HERE.parent
 REPO_ROOT = SIM_ROOT.parent
 DOCKER_DIR = HERE / "wire" / "docker"
-# rosbridge listens inside the container on the same port number it is published on: the
-# ROS 1 server (autobahn) refuses a handshake whose Host header names another port.
-READY_TIMEOUT = float(os.environ.get("RSIM_READY_TIMEOUT", "180"))
+#: from the container's start to RSIM-WIRE-READY: a first use's overlay build, the graph (the
+#: supervisor waits up to 150 s) and the first samples of the periodic outputs
+READY_TIMEOUT = 300.0
 READY_MARK = "RSIM-WIRE-READY"
-WIRE_SILENCE = float(os.environ.get("RSIM_WIRE_SILENCE", "30"))
+#: a wire whose rosapi stays silent this long has stopped serving
+WIRE_SILENCE = 30.0
 
 EXIT_REFUSED = 2
 EXIT_FAILED = 1
@@ -66,20 +66,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="spawn.sh", allow_abbrev=False, formatter_class=argparse.RawTextHelpFormatter,
         description="Spawn one robot by id into the running simulation and serve its vendor "
-                    "interface on its own rosbridge websocket (one per component for a "
-                    "composite robot). Runs in the foreground; Ctrl-C removes the robot.",
-        epilog="accepted robot ids (robots_specs/high_level_spec.md):\n" + ids)
+                    "interface on its own rosbridge websocket. Runs in the foreground; "
+                    "Ctrl-C removes the robot.",
+        epilog="accepted robot ids (robots_specs/<id>.md):\n" + ids)
     ap.add_argument("robot", metavar="<id>", help="robot id (listed below)")
     ap.add_argument("--placement", choices=("worktop", "floor"), default="worktop",
                     help="stand the robot on the worktop (default) or on the floor")
     ap.add_argument("--sim-port", type=int, default=protocol.DEFAULT_SIM_PORT,
                     help="the simulation's control port (default %(default)s)")
     ap.add_argument("--port", type=int, default=9090,
-                    help="rosbridge websocket port of the robot (a composite's base) "
-                         "(default %(default)s)")
-    ap.add_argument("--arm-port", type=int, default=None,
-                    help="rosbridge port of a composite robot's arm interface "
-                         "(default --port + 1); refused for a robot without one")
+                    help="rosbridge websocket port of the robot (default %(default)s)")
     return ap
 
 
@@ -123,15 +119,23 @@ def _hash_dir(path: Path, extra: str = "") -> str:
     return h.hexdigest()[:12]
 
 
-def distro_of(robot: registry.Robot) -> str:
-    import yaml
-
+def _interface(robot: registry.Robot) -> dict:
+    """The robot's recorded interface file (PyYAML comes with an engine's venv)."""
+    try:
+        import yaml
+    except ImportError:
+        raise Refusal("PyYAML is not available to this python; run "
+                      "simulator/<engine>/run.sh setup")
     with open(robot.path(robot.ros_file), encoding="utf-8") as fh:
-        return yaml.safe_load(fh)["ros_distribution"]
+        return yaml.safe_load(fh)
+
+
+def distro_of(robot: registry.Robot) -> str:
+    return _interface(robot)["ros_distribution"]
 
 
 def ensure_image(robot: registry.Robot) -> str:
-    """The wire image for this interface owner, built (from pinned sources) if missing:
+    """The robot's wire image, built (from pinned sources) if missing:
     the distribution's base image, and the robot's own layer when it has one."""
     distro = distro_of(robot)
     base_dir = DOCKER_DIR / distro
@@ -203,25 +207,23 @@ def _build(tag: str, context: Path, args: dict) -> None:
 
 
 class Wire:
-    def __init__(self, role: str, owner: registry.Robot, port: int, name: str):
-        self.role, self.owner, self.port, self.name = role, owner, port, name
+    """The robot's one wire: the container serving its interface on `port`."""
+
+    def __init__(self, robot: registry.Robot, port: int, name: str):
+        self.robot, self.port, self.name = robot, port, name
         self.image = None
         self.rb: Rosbridge | None = None
         self.required_nodes: list = []
-        self.dialect = owner.dialect
         self.distro = None
+        self.logfile: Path | None = None
 
     def describe(self) -> str:
-        label = f"ROS {'1' if self.dialect == 'ros1' else '2'} {self.distro}"
-        who = self.owner.id if self.role == "main" else f"{self.role} ({self.owner.id})"
-        return f"{who} ws://127.0.0.1:{self.port} [{label}]"
+        label = f"ROS {'1' if self.robot.dialect == 'ros1' else '2'} {self.distro}"
+        return f"{self.robot.id} ws://127.0.0.1:{self.port} [{label}]"
 
 
-def required_nodes(owner: registry.Robot) -> list:
-    import yaml
-
-    with open(owner.path(owner.ros_file), encoding="utf-8") as fh:
-        iface = yaml.safe_load(fh)
+def required_nodes(robot: registry.Robot) -> list:
+    iface = _interface(robot)
     return sorted(n["name"] for n in iface.get("nodes", []) if not n.get("optional"))
 
 
@@ -230,12 +232,14 @@ class Spawn:
         self.args = args
         self.robot = None
         self.client: protocol.Client | None = None
-        self.wires: list[Wire] = []
+        self.wire: Wire | None = None
         self.done = threading.Event()
         self.exit_code = 0
         self.reason = ""
         self.cleaned = False
-        self.started_containers: list[str] = []
+        #: the wire container is this attempt's to remove (set once the simulation admitted
+        #: it, just before the container is created)
+        self.container_started = False
         self.sim_ended = False
 
     # -------------------------------------------------------------- checks
@@ -251,39 +255,31 @@ class Spawn:
             raise Refusal(f"{a.robot}: required files are missing "
                           f"({', '.join(missing[:5])}{' ...' if len(missing) > 5 else ''}); "
                           "run simulator/<engine>/run.sh setup")
-        roles = registry.wires(self.robot)
-        if a.arm_port is not None and len(roles) < 2:
-            raise Refusal(f"--arm-port: {a.robot} has no separate arm interface")
-        ports = [a.port] + ([a.arm_port if a.arm_port is not None else a.port + 1]
-                            if len(roles) > 1 else [])
-        if len(set(ports)) != len(ports):
-            raise Refusal("--port and --arm-port must differ")
-        for p in ports:
-            if not 1 <= p <= 65535:
-                raise Refusal(f"port {p} is out of range")
-        for (role, owner), port in zip(roles, ports):
-            self.wires.append(Wire(role, owner, port,
-                                   f"rsim-{a.sim_port}-{a.robot}-{role}"))
+        if not 1 <= a.port <= 65535:
+            raise Refusal(f"port {a.port} is out of range")
+        w = self.wire = Wire(self.robot, a.port, f"rsim-{a.sim_port}-{a.robot}-main")
         if not docker_running():
             raise Refusal("Docker is not running; start Docker Desktop and try again")
-        for w in self.wires:
-            if port_taken(w.port):
-                raise Refusal(f"port {w.port} is already in use; pick another with "
-                              f"{'--port' if w is self.wires[0] else '--arm-port'}")
-            w.required_nodes = required_nodes(w.owner)
-            w.distro = distro_of(w.owner)
+        if port_taken(w.port):
+            raise Refusal(f"port {w.port} is already in use; pick another with --port")
+        w.required_nodes = required_nodes(self.robot)
+        w.distro = distro_of(self.robot)
 
     def connect(self):
+        p = self.args.sim_port
         try:
-            self.client = protocol.Client("127.0.0.1", self.args.sim_port,
-                                          on_event=self._event, on_close=self._sim_closed)
+            self.client = protocol.Client("127.0.0.1", p, on_event=self._event,
+                                          on_close=self._sim_closed)
         except OSError:
-            raise Refusal(f"no simulation is running on --sim-port {self.args.sim_port}; "
+            raise Refusal(f"no simulation is running on --sim-port {p}; "
                           "start one with simulator/kitchen.sh start")
-        hello = self.client.call("hello", role="spawn")
-        self.hello = hello
-        self.client.call("precheck", robot=self.robot.id, placement=self.args.placement,
-                         ports=[w.port for w in self.wires])
+        try:
+            self.hello = self.client.call("hello")
+            self.client.call("precheck", robot=self.robot.id, placement=self.args.placement,
+                             ports=[self.wire.port])
+        except (TimeoutError, OSError) as exc:   # OSError: ConnectionError included
+            raise Refusal(f"no simulation is answering on --sim-port {p} ({exc}); "
+                          "start one with simulator/kitchen.sh start")
 
     def _event(self, header, payload):
         if header.get("event") == "shutdown":
@@ -304,15 +300,18 @@ class Spawn:
     # -------------------------------------------------------------- startup
 
     def start(self):
-        for w in self.wires:
-            w.image = ensure_image(w.owner)
+        w = self.wire
+        w.image = ensure_image(self.robot)
+        # Ended (a signal, the simulation gone) during a possibly long build: nothing was
+        # admitted yet, so nothing is asked of the simulation.
+        if self.done.is_set():
+            raise Refusal(self.reason)
         # Re-check the port after a possibly long build.
-        for w in self.wires:
-            if port_taken(w.port):
-                raise Refusal(f"port {w.port} is already in use")
+        if port_taken(w.port):
+            raise Refusal(f"port {w.port} is already in use")
         try:
             res = self.client.call("spawn", robot=self.robot.id, placement=self.args.placement,
-                                   ports=[w.port for w in self.wires], timeout=600)
+                                   ports=[w.port], timeout=600)
         except protocol.RemoteError as exc:
             raise Refusal(str(exc))
         self.spawned = res
@@ -323,26 +322,28 @@ class Spawn:
             cleared = res.get("cleared") or []
             log(f"worktop objects staged: {', '.join(res['staged'])}; scene objects cleared "
                 f"from the working area: {', '.join(cleared) if cleared else 'none'}")
-        for w in self.wires:
-            self._run_container(w, res["token"])
-        deadline = time.monotonic() + READY_TIMEOUT
-        for w in self.wires:
-            self._wait_ready(w, deadline)
+        self._run_container(w, res["token"])
+        self._wait_ready(w, time.monotonic() + READY_TIMEOUT)
         self.client.call("commit")
 
     def _run_container(self, w: Wire, token: str):
+        # The simulation admitted this attempt, so a container under its name is a
+        # leftover; from here on the container is this attempt's to remove (cleanup),
+        # even one `docker run` creates but fails to start.
         docker("rm", "-f", w.name, check=False)
+        self.container_started = True
         env = {"RSIM_SIM_HOST": "host.docker.internal", "RSIM_SIM_PORT": str(self.args.sim_port),
-               "RSIM_TOKEN": token, "RSIM_ROLE": w.role, "RSIM_WIRE_PORT": str(w.port), "RSIM_ROBOT": w.owner.id,
-               "RSIM_SPAWN_ID": self.robot.id, "ROS_DOMAIN_ID": str(7 + (w.port % 90)),
+               "RSIM_TOKEN": token, "RSIM_WIRE_PORT": str(w.port), "RSIM_ROBOT": self.robot.id,
+               "ROS_DOMAIN_ID": str(7 + (w.port % 90)),
                "ROS_LOCALHOST_ONLY": "1", "ROS_AUTOMATIC_DISCOVERY_RANGE": "LOCALHOST"}
-        for k in ("RSIM_PROFILE", "RSIM_TEST_FAIL_ROLE"):   # diagnostics and test hooks
-            if os.environ.get(k):
-                env[k] = os.environ[k]
+        if os.environ.get("RSIM_TEST_FAIL_WIRE"):   # test hook (e2e/test_lifecycle.py)
+            env["RSIM_TEST_FAIL_WIRE"] = os.environ["RSIM_TEST_FAIL_WIRE"]
         cmd = ["run", "-d", "--rm", "--name", w.name,
                "--label", "rsim.wire=1", "--label", f"rsim.sim_port={self.args.sim_port}",
-               "--label", f"rsim.robot={self.robot.id}", "--label", f"rsim.role={w.role}",
+               "--label", f"rsim.robot={self.robot.id}",
                "--label", f"rsim.spawn_pid={os.getpid()}",
+               # rosbridge listens inside on the port number it is published on: the ROS 1
+               # server (autobahn) refuses a handshake whose Host header names another port
                "-p", f"{w.port}:{w.port}",
                # ROS 1's roslaunch/rosmaster crawl through every possible descriptor when
                # they fork; Docker's default of 1M open files makes that take minutes.
@@ -358,8 +359,7 @@ class Spawn:
         cmd += [w.image, "python3", "-u", "/opt/rsim/simulator/shared/wire/supervisor.py"]
         res = docker(*cmd, check=False)
         if res.returncode != 0:
-            raise Refusal(f"could not start the {w.role} wire container: {res.stderr.strip()}")
-        self.started_containers.append(w.name)
+            raise Refusal(f"could not start the wire container: {res.stderr.strip()}")
         # The container removes itself when it exits (--rm); keep its log for diagnostics.
         import tempfile
 
@@ -371,13 +371,12 @@ class Spawn:
         res = docker("inspect", "-f", "{{.State.Running}}", name, check=False)
         return res.returncode == 0 and res.stdout.strip() == "true"
 
-    def _logs(self, name: str, n: int = 30) -> str:
-        w = next((w for w in self.wires if w.name == name), None)
-        if w is not None and getattr(w, "logfile", None) and w.logfile.exists():
+    def _logs(self, w: Wire, n: int = 30) -> str:
+        if w.logfile is not None and w.logfile.exists():
             time.sleep(0.3)
             lines = w.logfile.read_text(errors="replace").splitlines()
             return "\n".join(lines[-n:])
-        res = docker("logs", "--tail", str(n), name, check=False)
+        res = docker("logs", "--tail", str(n), w.name, check=False)
         return (res.stdout or "") + (res.stderr or "")
 
     def _wait_ready(self, w: Wire, deadline: float):
@@ -385,19 +384,18 @@ class Spawn:
             if self.done.is_set():
                 raise Refusal(self.reason)
             if not self._container_running(w.name):
-                raise Refusal(f"the {w.role} wire container exited during startup:\n"
-                              + self._logs(w.name))
-            if READY_MARK in self._logs(w.name, 200):
+                raise Refusal("the wire container exited during startup:\n" + self._logs(w))
+            if READY_MARK in self._logs(w, 200):
                 break
             time.sleep(0.5)
         else:
-            raise Refusal(f"the {w.role} wire did not become ready within "
-                          f"{READY_TIMEOUT:.0f} s:\n" + self._logs(w.name))
+            raise Refusal(f"the wire did not become ready within {READY_TIMEOUT:.0f} s:\n"
+                          + self._logs(w))
         # Confirm from outside, over rosbridge: every required node is on the graph.
         w.rb = wait_for("127.0.0.1", w.port, max(5.0, deadline - time.monotonic()))
         missing = self._missing_nodes(w)
         if missing:
-            raise Refusal(f"the {w.role} wire is up but lacks node(s) {', '.join(missing)}")
+            raise Refusal(f"the wire is up but lacks node(s) {', '.join(missing)}")
 
     def _missing_nodes(self, w: Wire) -> list:
         nodes = set(w.rb.call("/rosapi/nodes", timeout=10).get("nodes", []))
@@ -406,74 +404,74 @@ class Spawn:
     # -------------------------------------------------------------- foreground
 
     def watch(self):
+        w = self.wire
         last_probe = 0.0
+        unanswered_since = None
         while not self.done.wait(1.0):
-            for w in self.wires:
-                if not self._container_running(w.name):
-                    self.finish(EXIT_FAILED, self._wire_reason(w, "container exited"))
+            if not self._container_running(w.name):
+                self.finish(EXIT_FAILED, self._wire_reason(w, "container exited"))
+                return
+            if time.monotonic() - last_probe < 2.0:
+                continue
+            last_probe = time.monotonic()
+            try:
+                if w.rb is None or w.rb.closed.is_set():
+                    w.rb = Rosbridge("127.0.0.1", w.port, timeout=3.0)
+                missing = self._missing_nodes(w)
+                unanswered_since = None
+            except TimeoutError:
+                # rosapi answers one request at a time and a client may keep it busy;
+                # only a silence of WIRE_SILENCE s is a failure
+                now = time.monotonic()
+                unanswered_since = unanswered_since or now
+                if now - unanswered_since >= WIRE_SILENCE:
+                    self.finish(EXIT_FAILED, "the wire stopped serving (rosapi silent for "
+                                             f"{WIRE_SILENCE:.0f} s)")
                     return
-            if time.monotonic() - last_probe >= 2.0:
-                last_probe = time.monotonic()
-                for w in self.wires:
-                    try:
-                        if w.rb is None or w.rb.closed.is_set():
-                            w.rb = Rosbridge("127.0.0.1", w.port, timeout=3.0)
-                        missing = self._missing_nodes(w)
-                        w.unanswered_since = None
-                    except TimeoutError as exc:
-                        # rosapi answers one request at a time and a client may keep it
-                        # busy; only a silence of RSIM_WIRE_SILENCE s is a failure
-                        now = time.monotonic()
-                        w.unanswered_since = getattr(w, "unanswered_since", None) or now
-                        if now - w.unanswered_since >= WIRE_SILENCE:
-                            self.finish(EXIT_FAILED, f"the {w.role} wire stopped serving "
-                                                     f"(rosapi silent for {WIRE_SILENCE:.0f} s)")
-                            return
-                        continue
-                    except (OSError, WebSocketClosed, RuntimeError) as exc:
-                        self.finish(EXIT_FAILED, self._wire_reason(
-                            w, f"stopped serving (rosbridge: {exc})"))
-                        return
-                    if missing:
-                        self.finish(EXIT_FAILED, f"the {w.role} wire lost node(s) "
-                                                 f"{', '.join(missing)}")
-                        return
+                continue
+            except (OSError, WebSocketClosed, RuntimeError) as exc:
+                self.finish(EXIT_FAILED, self._wire_reason(
+                    w, f"stopped serving (rosbridge: {exc})"))
+                return
+            if missing:
+                self.finish(EXIT_FAILED, f"the wire lost node(s) {', '.join(missing)}")
+                return
 
     def _wire_reason(self, w: Wire, default: str) -> str:
-        """Why a wire ended: the wire's own report (a lost node) when it gave one --
-        waiting briefly, since rosbridge goes down a moment before the report lands --
-        else `default`."""
+        """Why the wire ended: its own report (a lost node) when it gave one -- waiting
+        briefly, since rosbridge goes down a moment before the report lands -- else
+        `default`."""
         deadline = time.monotonic() + 3.0
         while True:
-            why = [l for l in self._logs(w.name, 400).splitlines()
+            why = [l for l in self._logs(w, 400).splitlines()
                    if l.startswith("[wire] lost node(s)")]
             if why:
-                return f"the {w.role} wire {why[-1][len('[wire] '):]}"
+                return f"the wire {why[-1][len('[wire] '):]}"
             if time.monotonic() > deadline:
-                return f"the {w.role} wire {default}"
+                return f"the wire {default}"
             time.sleep(0.3)
 
     def cleanup(self):
+        """Remove what this attempt created -- its robot and, once admitted, its wire
+        container and port -- and nothing of another spawn's."""
         if self.cleaned:
             return
         self.cleaned = True
-        for w in self.wires:
-            if w.rb is not None:
-                try:
-                    w.rb.close()
-                except Exception:
-                    pass
+        w = self.wire
+        if w is not None and w.rb is not None:
+            try:
+                w.rb.close()
+            except Exception:
+                pass
         if self.client is not None and not self.client.closed.is_set():
             try:
                 self.client.call("remove", reason=self.reason or "its spawn ended", timeout=10)
             except Exception:
                 pass
             self.client.close()
-        names = [w.name for w in self.wires]
-        if names:
-            docker("rm", "-f", *names, check=False)
-        deadline = time.monotonic() + 15
-        for w in self.wires:
+        if self.container_started:
+            docker("rm", "-f", w.name, check=False)
+            deadline = time.monotonic() + 15
             while port_taken(w.port) and time.monotonic() < deadline:
                 time.sleep(0.2)
 
@@ -486,26 +484,33 @@ def main(argv=None) -> int:
     def on_signal(signum, frame):
         sp.finish(0, f"ended by {signal.Signals(signum).name}")
 
-    try:
-        sp.check()
-        sp.connect()
-    except Refusal as exc:
-        print(f"spawn.sh: refused: {exc}", file=sys.stderr)
-        if sp.client is not None:
-            sp.client.close()
-        return EXIT_REFUSED
-    except protocol.RemoteError as exc:
-        print(f"spawn.sh: refused: {exc}", file=sys.stderr)
-        sp.client.close()
-        return EXIT_REFUSED
+    # From the start: a spawn ended by SIGINT or SIGTERM exits with status zero, even
+    # while it is still checking (a terminal's Ctrl-C also ends `docker info`, whose
+    # failure then reads as Docker not running).
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGHUP, on_signal)
+    interrupted = lambda: sp.done.is_set() and sp.exit_code == 0
+    try:
+        sp.check()
+        sp.connect()
+    except (Refusal, protocol.RemoteError) as exc:
+        if sp.client is not None:
+            sp.client.close()
+        if interrupted():
+            log(f"{sp.reason} before startup")
+            return 0
+        print(f"spawn.sh: refused: {exc}", file=sys.stderr)
+        return EXIT_REFUSED
+    if interrupted():
+        sp.client.close()
+        log(f"{sp.reason} before startup")
+        return 0
     try:
         sp.start()
-    except (Refusal, protocol.RemoteError, TimeoutError, ConnectionError, OSError) as exc:
-        if sp.done.is_set() and sp.exit_code == 0:
-            log(f"interrupted during startup; cleaning up")
+    except Exception as exc:   # every startup failure is reported and cleaned up
+        if interrupted():
+            log("interrupted during startup; cleaning up")
             sp.cleanup()
             return 0
         print(f"spawn.sh: {sp.robot.id} failed to start: {exc}", file=sys.stderr)
@@ -518,7 +523,7 @@ def main(argv=None) -> int:
         return sp.exit_code
     print(f"spawn ready: {sp.robot.id} ({sp.robot.name}) in {sp.hello['engine']} "
           f"{sp.hello['scene']} on the {args.placement}; wire(s): "
-          + "; ".join(w.describe() for w in sp.wires), flush=True)
+          + sp.wire.describe(), flush=True)
     try:
         sp.watch()
     finally:

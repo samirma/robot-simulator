@@ -4,7 +4,6 @@
 # (its SHA-256 is kept in the venv; a mismatch reinstalls). Uses uv when available, else
 # python3 -m venv + pip. Sets CONSOLE_PY to the venv's python.
 #
-#   ROBOT_CONSOLE_VENV   venv location (default: <console>/.venv)
 #   ROBOT_CONSOLE_EXTRAS extras to install (default: dev, so the tests run from the same venv)
 
 _rc_die() { echo "error: $*" >&2; exit 2; }
@@ -15,7 +14,7 @@ _rc_sha() {
 }
 
 CONSOLE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)"
-VENV_DIR="${ROBOT_CONSOLE_VENV:-$CONSOLE_ROOT/.venv}"
+VENV_DIR="$CONSOLE_ROOT/.venv"
 CONSOLE_PY="$VENV_DIR/bin/python"
 _rc_stamp="$VENV_DIR/.pyproject.sha256"
 _rc_extras="${ROBOT_CONSOLE_EXTRAS-dev}"

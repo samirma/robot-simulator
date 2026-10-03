@@ -10,7 +10,7 @@ estimate.
 
 | What | Source | Revision |
 | --- | --- | --- |
-| URDF `myAGV.urdf` (sha256 `afdac8fa…43e7`) and COLLADA meshes `urdf/myagv_base.dae`, `urdf/myagv_up.dae` (`urdf/myagv_all.dae` is referenced only inside a commented-out block) | <https://github.com/elephantrobotics/myagv_ros> `myagv_urdf/urdf/` | `c71f3cc574e5ed1973a925238eabe88662cfa701` (branch `myagv_ros_2023Pi`) |
+| URDF `myAGV.urdf` (sha256 `afdac8fa…43e7`) and COLLADA meshes `urdf/myagv_base.dae`, `urdf/myagv_up.dae` (`urdf/myagv_all.dae` is referenced only inside a commented-out block, so it is not fetched) | <https://github.com/elephantrobotics/myagv_ros> `myagv_urdf/urdf/` | `c71f3cc574e5ed1973a925238eabe88662cfa701` (branch `myagv_ros_2023Pi`) |
 | Sensor mounts (camera, IMU, laser) | same repo, `myagv_odometry/launch/myagv_active.launch` L9-11 | same |
 | Weight 4.16 kg, max speed 0.9 m/s, mecanum wheels, camera 5 MP / 65°, dimensions 331.15 × 230 mm | <https://github.com/elephantrobotics/myAGV-docs> `MYAGV_PI_2023_EN/2-ProductFeature/2.1-MachineSpecification.md`, `2.3-MechanicalStructureParameter.md` (drawing `resources/2-ProductFeature/2.3/structure_param.png`) | `2510f8a3bd399823dd82088a92b1b2ee62d6d130` |
 | Lidar YDLIDAR X2L figures | same docs repo, `3-UserNotes/3_hardware.md` L3-9 and `resources/3-UserNotes/FAQ/hardware_1.png` | same |
@@ -23,9 +23,8 @@ files are in inches, `<unit meter="0.0254">`, `Z_UP`; every node transform compo
 * `myagv_base.dae.m<k>.obj` / `myagv_up.dae.m<k>.obj` + `*.dae.mtl` — the **visual** meshes,
   one OBJ per COLLADA material with the file's own normals and texture coordinates, and an MTL
   with each material's own diffuse colour, opacity and texture (derived adaptation: MuJoCo
-  applies one material per mesh geom, so a multi-material mesh becomes one geom per material);
-* `myagv_base.stl` / `myagv_up.stl` — every triangle as one STL (not used by this model,
-  whose collision geometry is boxes).
+  applies one material per mesh geom, so a multi-material mesh becomes one geom per material).
+  No collision STL is derived: this model's collision geometry is boxes.
 
 All are hashed in `robots_specs/meshes.sha256`.
 
@@ -144,12 +143,21 @@ scene but never with each other (no roller–roller or roller–chassis contact)
   The mesh's lidar head centre (x ≈ 0.071, z ≈ 0.105 top) agrees within a few mm in x.
 * **IMU** site `imu_link`: `base2imu_link` (origin, roll π, pitch π; launch L10).
 
-## Estimates vs manufacturer figures
+## Model figures: manufacturer versus estimate
 
 Manufacturer: total mass 4.16 kg, max speed 0.9 m/s, mecanum wheels, 65° camera, X2L lidar
 figures, overall dimensions. Source (exact): URDF joint/visuals, sensor mount poses. Estimates:
 wheel radius/positions (from the official mesh), mixing, masses split, inertias, collision
 boxes, actuator gains and limits, camera field-of-view axis, roller geometry.
+
+## Estimates (not manufacturer data)
+
+Interface values the pinned sources leave to the hardware (added 2026-10-03):
+
+* **`/Voltage` = 12.0 V**: the battery level is not modelled; a nominal 12 V pack is taken.
+* **`/voltage_backup` = 0.0**: no backup battery is modelled.
+* The units of the raw MCU IMU values are those `ros.yml` records as estimates (deg/s,
+  m/s²).
 
 ## Drive check (scratch scene: this model + a floor plane, friction 1.0, implicitfast)
 

@@ -56,6 +56,25 @@ def test_hello_and_scene(sim):
     c.close()
 
 
+def test_rtf_windows_say_which_intervals_ran_in_real_time(sim):
+    """Spec §3 Timing: the real-time factor of every completed 10 s window, in wall time,
+    for a check to claim no rate or bound for an interval that ran below 0.90."""
+    from conftest import real_time_problems
+
+    t0 = time.time()
+    problems = real_time_problems(sim.port, t0)        # waits for the window covering now
+    c = client()
+    res = c.call("rtf", since=t0)
+    c.close()
+    assert res["window_s"] == 10.0 and res["warn_below"] == 0.9
+    assert res["windows"] and all(s < e and e >= t0 for s, e, _ in res["windows"])
+    # the window the measurement fell in is judged: one below 0.90 (a loaded host) is
+    # reported, never passed over
+    covering = [r for s, e, r in res["windows"] if s <= t0 + 0.2]
+    assert covering and bool(problems) == any(r < 0.9 for r in covering), (covering, problems)
+    assert all("real-time factor" in p and "not claimed" in p for p in problems)
+
+
 def test_worktop_staging_and_its_removal(sim):
     """The six objects and the cleared loose objects are the scene's, there before a robot
     is; an arm stands among them and, when it goes, nothing of them has changed."""
@@ -72,6 +91,11 @@ def test_worktop_staging_and_its_removal(sim):
     assert res["staged"] == scene["staged"] and res["cleared"] == scene["cleared"]
     row = robots(c)["so101"]
     assert row["staged"] == res["staged"] and row["cleared"] == res["cleared"]
+    # `scene` names the objects the arm stands among as well (spec §2.3)
+    assert c.call("scene")["staging"]["so101"] == {"staged": res["staged"],
+                                                   "cleared": res["cleared"]}
+    # one body, one wire: no components in any answer
+    assert "components" not in res and "components" not in row
     # the arm stands at the scene's objects: they have not moved
     mid = c.call("bodies", names=names)["bodies"]
     for n in names:
@@ -167,7 +191,7 @@ def test_readings_ctrl_and_state_preserved_across_spawn_and_removal(sim):
     res = owner.call("spawn", robot="myagv", placement="floor", ports=[])
     owner.call("commit")
     wire = client()
-    desc = wire.call("wire", token=res["token"], role="main")["describe"]
+    desc = wire.call("wire", token=res["token"])["describe"]
     wheels = [a["name"] for a in desc["actuators"] if a["kind"] == "velocity"]
     assert len(wheels) == 4
     wire.call("ctrl", values={w: 5.0 for w in wheels})       # the myAGV drives forward

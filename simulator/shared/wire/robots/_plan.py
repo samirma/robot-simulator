@@ -3,8 +3,6 @@ recorded boot runs them and they need no hardware; simulated drivers for the res
 
 from __future__ import annotations
 
-import math
-import sys
 from pathlib import Path
 
 WIRE = Path(__file__).resolve().parents[1]
@@ -13,6 +11,8 @@ WIRE = Path(__file__).resolve().parents[1]
 class Plan:
     def __init__(self):
         self.procs = []     # (label, command)
+        self.oneshots = []  # (label, command): boot steps the wire is ready only once they
+        #                     have exited with status 0 (a controller spawner)
         self.params = {}    # ROS 1 parameter name -> value, overriding / supplying ros.yml values
         self.prepare = []   # shell commands run (in order, to completion) before the graph
         self.overlays = []  # setup.bash files sourced for every process
@@ -20,6 +20,9 @@ class Plan:
 
     def add(self, label, cmd):
         self.procs.append((label, [str(c) for c in cmd]))
+
+    def add_oneshot(self, label, cmd):
+        self.oneshots.append((label, [str(c) for c in cmd]))
 
 
 def build_overlay(plan: Plan, pkg_dirs, distro: str):
@@ -86,35 +89,34 @@ def ros1_static_tf(plan: Plan, iface: dict, package: str = "tf"):
         plan.add(node["name"], cmd + ros1_name(node["name"]))
 
 
-def warn(msg):
-    print(f"[wire] {msg}", file=sys.stderr, flush=True)
+def _lx_plus_ly(k: dict) -> float:
+    """lx + ly of the interface file's `kinematics` row: its own `lx_plus_ly` where it
+    records one (a firmware constant), else the sum."""
+    return float(k.get("lx_plus_ly") or float(k["lx"]) + float(k["ly"]))
+
+
+def mecanum_rim(k: dict, vx, vy, wz):
+    """Rim speeds (m/s, positive rolling forward) of a mecanum base for a chassis twist,
+    from the interface file's `kinematics` row, in fl, fr, rl, rr order."""
+    s = _lx_plus_ly(k)
+    return [vx - vy - s * wz, vx + vy + s * wz, vx + vy - s * wz, vx - vy + s * wz]
 
 
 def mecanum_ik(k: dict, vx, vy, wz):
-    """Wheel speeds (rad/s, positive rolling forward) of a mecanum base for a chassis
-    twist, from the interface file's `kinematics` row (fl, fr, rl, rr order)."""
-    r, lx, ly = float(k["wheel_radius"]), float(k["lx"]), float(k["ly"])
-    s = lx + ly
-    return [(vx - vy - s * wz) / r, (vx + vy + s * wz) / r,
-            (vx + vy - s * wz) / r, (vx - vy + s * wz) / r]
+    """Wheel speeds (rad/s) for a chassis twist (`mecanum_rim` over the wheel radius)."""
+    r = float(k["wheel_radius"])
+    return [v / r for v in mecanum_rim(k, vx, vy, wz)]
 
 
 def mecanum_fk(k: dict, w):
-    r, lx, ly = float(k["wheel_radius"]), float(k["lx"]), float(k["ly"])
+    """The chassis twist (vx, vy, wz) of wheel speeds w (rad/s, fl, fr, rl, rr)."""
+    r = float(k["wheel_radius"])
     fl, fr, rl, rr = w
     vx = r * (fl + fr + rl + rr) / 4.0
     vy = r * (-fl + fr + rl - rr) / 4.0
-    wz = r * (-fl + fr - rl + rr) / (4.0 * (lx + ly))
+    wz = r * (-fl + fr - rl + rr) / (4.0 * _lx_plus_ly(k))
     return vx, vy, wz
 
 
 def wrap_deg(a):
     return (a + 180.0) % 360.0 - 180.0
-
-
-def quat_to_rpy(q_wxyz):
-    w, x, y, z = q_wxyz
-    roll = math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))
-    pitch = math.asin(max(-1.0, min(1.0, 2 * (w * y - z * x))))
-    yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
-    return roll, pitch, yaw

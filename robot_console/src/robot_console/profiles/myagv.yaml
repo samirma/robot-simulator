@@ -1,7 +1,6 @@
 id: myagv
 name: "Elephant Robotics myAGV (2023, Pi)"
 dialect: ros1
-kind: mobile_base
 teleop: base
 
 sources:
@@ -449,3 +448,25 @@ controls_note: >-
   (myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L157-L160), which the
   vendor docs do not present as a user control; stopping the lidar would
   starve navigation/mapping, so they are not exposed as page controls.
+
+model:
+  source: "myagv_ros:myagv_urdf/urdf/myAGV.urdf"
+  note: >-
+    Embodiment for the page's 3D model: the pinned vendor URDF (base_footprint with the continuous base_up joint, meshes only,
+    drawn as boxes bounding the meshes) and the boot's static camera and laser frames (myagv_active.launch#L9, #L11). No joint is
+    commanded by a page control.
+  root: base_footprint
+  feedback:
+    topic: /joint_states
+    type: sensor_msgs/JointState
+    measured: false
+    source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L6"
+    note: >-
+      Stock joint_state_publisher of the boot publishes the URDF's one movable joint base_up (no encoder behind it).
+  joints:
+    - {name: base_up, type: continuous, parent: base_footprint, child: base_up, xyz: [0, 0, 0], rpy: [0, 0, 0], axis: [0, 0, 1], reported: "base_up", source: "myagv_ros:myagv_urdf/urdf/myAGV.urdf#L28-L33"}
+    - {name: base2camera_link, type: fixed, parent: base_footprint, child: camera_link, xyz: [0.13, 0, 0.131], rpy: [0, 0, 0], source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L9"}
+    - {name: base2laser_link, type: fixed, parent: base_footprint, child: laser_frame, xyz: [0.065, 0, 0.08], rpy: [0, 0, 3.14159], source: "myagv_ros:myagv_odometry/launch/myagv_active.launch#L11"}
+  boxes:
+    - {link: base_footprint, min: [-0.149669, -0.11869, 0], max: [0.163658, 0.11031, 0.114056], source: "myagv_ros:myagv_urdf/urdf/myAGV.urdf#L16-L26 (box = vertex bounds of myagv_ros:myagv_urdf/urdf/myagv_base.dae, unit 0.0254 m)"}
+    - {link: base_up, min: [-0.149119, -0.104164, 0.0912913], max: [0.162245, 0.0958355, 0.132222], source: "myagv_ros:myagv_urdf/urdf/myAGV.urdf#L35-L45 (box = vertex bounds of myagv_ros:myagv_urdf/urdf/myagv_up.dae, unit 0.0254 m)"}

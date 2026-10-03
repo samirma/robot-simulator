@@ -1,6 +1,8 @@
-"""Each engine's default scene loads exactly as the reference project loaded it (model
-counts recorded from the reference loader), alone, with the reference survey's worktop;
-the worktop robots stand at their recorded spots with the six objects around them."""
+"""Each engine's default scene loads as the reference project loaded it (model counts
+recorded from the reference loader, plus the six worktop objects the scene holds), with no
+robot and the reference survey's worktop; both worktop robots stand at the scene's spot,
+among its six objects. (`test_reference_parity.py` compares the scene with the reference's
+own, body by body and render by render, when a reference checkout is at hand.)"""
 
 import math
 
@@ -82,6 +84,7 @@ def test_default_scene_matches_reference_and_has_a_worktop(engine, scene, logdir
         png = c.call("render", view={"lookat": h["worktop"]["centroid"] + [h["worktop"]["z"]],
                                      "distance": 2.5, "azimuth": 45, "elevation": -35},
                      width=640, height=360)["_payload"]
+        assert png[:8] == b"\x89PNG\r\n\x1a\n"
         (tmp_path / f"{engine}.png").write_bytes(png)
         # each worktop robot at its golden spot with the six objects around it; removing
         # it leaves the scene as it was loaded

@@ -4,10 +4,12 @@
 Stock, unchanged: robot_state_publisher with the boot's robot_description, ros2_control's
 ros2_control_node as /controller_manager with the recorded parameters, and the spawner
 that loads and activates joint_state_broadcaster, joint_trajectory_controller and
-gripper_controller (it exits once they are active, as on the robot). The hardware plugin
-the boot names, feetech_ros2_driver/FeetechHardwareInterface, is the simulator's stand-in
-of that name (wire/ros2_plugins/feetech_ros2_driver), which talks to the simulated STS3215
-bus (`so101_bus.py`) instead of a serial port. Simulated: /usb_cam, the wrist camera.
+gripper_controller (it exits once they are active, as on the robot; the wire is ready only
+after it has exited with status 0, so the controllers' action servers accept goals). The
+hardware plugin the boot names, feetech_ros2_driver/FeetechHardwareInterface, is the
+simulator's stand-in of that name (wire/ros2_plugins/feetech_ros2_driver), which talks to
+the simulated STS3215 bus (`so101_bus.py`) instead of a serial port. Simulated: /usb_cam,
+the wrist camera.
 """
 
 from __future__ import annotations
@@ -56,9 +58,9 @@ def plan(robot, iface, describe):
                                   "--ros-args", "-r", "__node:=controller_manager",
                                   "-r", "~/robot_description:=/robot_description",
                                   "--params-file", controllers_file(robot, iface)])
-    p.add("spawner", ["ros2", "run", "controller_manager", "spawner",
-                      "joint_state_broadcaster", "joint_trajectory_controller",
-                      "gripper_controller", "--controller-manager", "/controller_manager"])
+    p.add_oneshot("spawner", ["ros2", "run", "controller_manager", "spawner",
+                              "joint_state_broadcaster", "joint_trajectory_controller",
+                              "gripper_controller", "--controller-manager", "/controller_manager"])
     _plan.ros2_emulated(p, ["/usb_cam"])
     return p
 

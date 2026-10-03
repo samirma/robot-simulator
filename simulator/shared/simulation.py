@@ -32,6 +32,7 @@ import traceback
 import mujoco
 import numpy as np
 
+import mjutil
 import placement as placement_mod
 import protocol
 import registry
@@ -61,10 +62,8 @@ class Conn:
         self.sock = sock
         self.addr = addr
         self.id = next(server.conn_ids)
-        self.role = "client"
         self.instance: Instance | None = None      # the robot this conn leases (spawn)
         self.wire_of: Instance | None = None       # the robot this wire serves
-        self.component = None
         self.outq: queue.Queue = queue.Queue()
         self.pending_samples: dict[int, int] = {}
         self.plock = threading.Lock()
@@ -113,6 +112,16 @@ class Conn:
         except OSError:
             pass
         self.outq.put(None)
+
+
+def _staging_row(st) -> dict:
+    """A staging (`worktop_objects.Staging`) as the control port names it: `staged` {name:
+    {body, pos, quat}} and `cleared` (body names); empty for none."""
+    if st is None:
+        return {"staged": {}, "cleared": []}
+    return {"staged": {n: {"body": worktop_objects.BODIES[n], "pos": p, "quat": q}
+                       for n, (p, q) in st.poses().items()},
+            "cleared": list(st.cleared)}
 
 
 # ---------------------------------------------------------------- the server
@@ -180,8 +189,7 @@ class Simulation:
         log(f"floor at z {self.surfaces.floor_z:.3f}; worktop: "
             + (json.dumps(wt.describe()) if wt else "none") + f" ({time.time() - t1:.1f} s)")
         self._stage_worktop_objects(wt)
-        self.renders = sensors.RenderPool(self.world, threads=int(os.environ.get(
-            "RSIM_RENDER_THREADS", "3")))
+        self.renders = sensors.RenderPool(self.world, threads=3)
         self.world.start()
         threading.Thread(target=self._accept, daemon=True, name="accept").start()
         threading.Thread(target=self._sampler, daemon=True, name="sampler").start()
@@ -190,7 +198,9 @@ class Simulation:
         """The six worktop objects are part of the scene (spec §2.2), whatever robots come:
         staged around the spot the SO-101 -- the reference's own arm -- is placed at on
         the worktop, with the loose scene objects in their working area cleared. A scene
-        with no worktop has none."""
+        with no worktop has none. One with a worktop does not start when their meshes or
+        the SO-101's files are missing (the message names `run.sh setup`); a worktop with
+        no spot for them, which the spec leaves open, starts without them, saying so."""
         if wt is None:
             return
         t0 = time.time()
@@ -198,8 +208,10 @@ class Simulation:
             rm = robot_model.load(registry.get("so101"))
             pl = placement_mod.place(self.world, self.surfaces, rm, "worktop", False, "so101/")
             self.world.stage_scene(pl.staging)
-        except (placement_mod.Refused, robot_model.ModelError, registry.RegistryError,
+        except (robot_model.ModelError, registry.RegistryError,
                 worktop_objects.AssetsMissing) as exc:
+            raise SystemExit(f"error: the worktop objects cannot be staged: {exc}")
+        except placement_mod.Refused as exc:
             log(f"no worktop objects staged: {exc}")
             return
         log(f"worktop objects staged: {', '.join(worktop_objects.OBJECTS)}; scene objects "
@@ -296,7 +308,6 @@ class Simulation:
             log(f"robot {inst.id} removed ({reason})")
 
     def op_hello(self, conn, h, p):
-        conn.role = h.get("role", "client")
         wt = self.surfaces.worktop
         with self.world.lock:
             t = float(self.world.data.time)
@@ -313,10 +324,7 @@ class Simulation:
             rows.append({"id": inst.id, "state": inst.state, "placement": inst.placement,
                          "xyz": [round(float(v), 4) for v in inst.xyz],
                          "yaw": round(float(inst.yaw), 4), "ports": list(inst.ports),
-                         "prefix": inst.prefix,
-                         "components": [{"role": c.role, "robot": c.robot.id,
-                                         "prefix": c.prefix} for c in inst.rm.components],
-                         **self._staging_of(inst)})
+                         "prefix": inst.prefix, **self._staging_of(inst)})
         return rows
 
     def _staging_of(self, inst) -> dict:
@@ -325,14 +333,23 @@ class Simulation:
         st = inst.staging
         if st is None and inst.info.get("at_scene_objects"):
             st = self.world.scene_staging
-        if st is None:
-            return {"staged": {}, "cleared": []}
-        return {"staged": {n: {"body": worktop_objects.BODIES[n], "pos": p, "quat": q}
-                           for n, (p, q) in st.poses().items()},
-                "cleared": list(st.cleared)}
+        return _staging_row(st)
 
     def op_robots(self, conn, h, p):
         return {"robots": self._robot_rows(), "starting": self.starting}
+
+    def op_rtf(self, conn, h, p):
+        """The real-time factor of every completed 10 s window that ended at or after
+        `since` (epoch seconds): `windows` [[wall start, wall end, rtf], ...], oldest first,
+        and `window_s`. A check of rates or physical bounds over an interval asks this, and
+        claims nothing for an interval a window below 0.90 overlaps (spec §3 Timing)."""
+        since = float(h.get("since", 0.0))
+        import world as world_mod
+
+        return {"rtf": round(self.world.rtf, 3), "window_s": world_mod.RTF_WINDOW_S,
+                "warn_below": world_mod.RTF_WARN,
+                "windows": [[t0, t1, round(r, 3)] for t0, t1, r in list(self.world.rtf_windows)
+                            if t1 >= since]}
 
     def _admission(self, rid, where, ports):
         """Refusals that need no model: duplicate id, busy startup, reserved ports and an
@@ -389,8 +406,7 @@ class Simulation:
             t0 = time.time()
             pl = placement_mod.place(self.world, self.surfaces, rm, where, robot.mobile, prefix)
             inst = Instance(id=rid, rm=rm, prefix=prefix, placement=where, xyz=pl.xyz,
-                            yaw=pl.yaw, support_geoms=pl.support_geoms, ports=ports,
-                            token=secrets.token_hex(8), lease=conn)
+                            yaw=pl.yaw, ports=ports, token=secrets.token_hex(8))
             inst.info["at_scene_objects"] = pl.at_scene_objects
             with self.clock:
                 if conn.closed.is_set():
@@ -405,10 +421,7 @@ class Simulation:
             raise
         return {"robot": rid, "token": inst.token, "prefix": prefix,
                 "xyz": [float(v) for v in inst.xyz], "yaw": float(inst.yaw),
-                "surface_z": pl.surface_z, "placement": where,
-                "components": [{"role": c.role, "robot": c.robot.id, "prefix": c.prefix}
-                               for c in rm.components],
-                **self._staging_of(inst)}
+                "surface_z": pl.surface_z, "placement": where, **self._staging_of(inst)}
 
     def op_commit(self, conn, h, p):
         inst = conn.instance
@@ -434,34 +447,24 @@ class Simulation:
         tok = h.get("token")
         for inst in list(self.world.robots.values()):
             if inst.token == tok:
-                role = h.get("role", "main")
-                comp = next((c for c in inst.rm.components if c.role == role), None)
-                if comp is None:
-                    raise ValueError(f"{inst.id} has no {role!r} component")
-                conn.role, conn.wire_of, conn.component = "wire", inst, comp
+                conn.wire_of = inst
                 with self.clock:
                     inst.wires.append(conn)
-                return {"robot": inst.id, "component": comp.robot.id,
-                        "describe": self._describe(inst, comp)}
+                return {"robot": inst.id, "describe": self._describe(inst)}
         raise ValueError("unknown spawn token (the robot is gone)")
 
     # -------------------------------------------------------------- model facts
 
-    def _describe(self, inst, comp) -> dict:
+    def _describe(self, inst) -> dict:
         w = self.world
         m = w.model
-        p = comp.prefix
         joints, acts, cams, sites = [], [], [], []
         with w.lock:
-            for name, j in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_JOINT, p):
-                if comp.role == "base" and name.startswith(robot_model.ARM_PREFIX):
-                    continue
+            for name, j in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_JOINT):
                 joints.append({"name": name, "type": int(m.jnt_type[j]),
                                "range": [float(x) for x in m.jnt_range[j]],
                                "limited": bool(m.jnt_limited[j])})
-            for name, a in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_ACTUATOR, p):
-                if comp.role == "base" and name.startswith(robot_model.ARM_PREFIX):
-                    continue
+            for name, a in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_ACTUATOR):
                 kind = "position" if m.actuator_biastype[a] == mujoco.mjtBias.mjBIAS_AFFINE \
                     and m.actuator_biasprm[a][1] != 0 else \
                     ("velocity" if m.actuator_biastype[a] == mujoco.mjtBias.mjBIAS_AFFINE
@@ -469,24 +472,17 @@ class Simulation:
                 acts.append({"name": name, "kind": kind,
                              "ctrlrange": [float(x) for x in m.actuator_ctrlrange[a]],
                              "limited": bool(m.actuator_ctrllimited[a])})
-            for name, c in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_CAMERA, p):
-                if comp.role == "base" and name.startswith(robot_model.ARM_PREFIX):
-                    continue
+            for name, c in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_CAMERA):
                 res = [int(x) for x in m.cam_resolution[c]] if hasattr(m, "cam_resolution") else [0, 0]
                 cams.append({"name": name, "fovy": float(m.cam_fovy[c]), "resolution": res})
-            for name, s in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_SITE, p):
-                if comp.role == "base" and name.startswith(robot_model.ARM_PREFIX):
-                    continue
+            for name, s in w.robot_elements(inst, mujoco.mjtObj.mjOBJ_SITE):
                 sites.append(name)
         return {"joints": joints, "actuators": acts, "cameras": cams, "sites": sites,
-                "root": inst.rm.root if comp.prefix == "" else None,
-                "floating": inst.rm.floating, "timestep": float(m.opt.timestep)}
+                "root": inst.rm.root, "floating": inst.rm.floating,
+                "timestep": float(m.opt.timestep)}
 
     def op_describe(self, conn, h, p):
-        inst = self._instance(h["robot"])
-        role = h.get("component", inst.rm.components[0].role)
-        comp = next(c for c in inst.rm.components if c.role == role)
-        return self._describe(inst, comp)
+        return self._describe(self._instance(h["robot"]))
 
     # -------------------------------------------------------------- readings, render
 
@@ -520,10 +516,7 @@ class Simulation:
                 if b >= 0:
                     out[name] = sensors.body_pose(w, b)
             t = float(w.data.time)
-            state = None
-            if h.get("state"):
-                state = {"qpos_sha": hash(w.data.qpos.tobytes()), "nq": int(w.model.nq)}
-        return {"bodies": out, "sim_time": t, "state": state}
+        return {"bodies": out, "sim_time": t}
 
     def op_scene(self, conn, h, p):
         """Scene facts: model counts, the scene-only portion, bodies with free joints."""
@@ -538,12 +531,9 @@ class Simulation:
                     if not any(name.startswith(r.prefix) for r in w.robots.values()):
                         free.append(name)
             staging = {r.id: self._staging_of(r) for r in w.robots.values()
-                       if r.staging is not None}
+                       if r.staging is not None or r.info.get("at_scene_objects")}
             if w.scene_staging is not None:
-                staging["scene"] = {"staged": {n: {"body": worktop_objects.BODIES[n], "pos": p,
-                                                   "quat": q}
-                                               for n, (p, q) in w.scene_staging.poses().items()},
-                                    "cleared": list(w.scene_staging.cleared)}
+                staging["scene"] = _staging_row(w.scene_staging)
             return {"nbody": m.nbody, "ngeom": m.ngeom, "nmesh": m.nmesh, "nq": m.nq,
                     "nu": m.nu, "ncam": m.ncam, "nlight": m.nlight,
                     "scene_nbody": w.scene_nbody, "scene_ngeom": w.scene_ngeom,
@@ -618,16 +608,9 @@ class Simulation:
         """An offscreen render of the scene from a viewpoint (simulator-private)."""
         width, height = int(h.get("width", 1280)), int(h.get("height", 720))
         fmt = h.get("format", "png")
-        view = h.get("view") or {k: h[k] for k in ("camera", "lookat", "distance", "azimuth",
-                                                   "elevation", "pos", "target", "fovy")
-                                 if k in h}
-        if view.get("frame_robot") or ("robot" in h and not view):
-            view = self._frame_robot(view.get("frame_robot") or h["robot"],
-                                     float(view.get("elevation", -30.0)))
-        if "robot_camera" in h:
-            view = {"camera": f"{h['robot']}/{h['robot_camera']}"}
-        if "camera" in view and "/" not in view["camera"] and h.get("robot"):
-            view = {"camera": f"{h['robot']}/{view['camera']}"}
+        view = h.get("view") or {}
+        if view.get("frame_robot"):
+            view = self._frame_robot(view["frame_robot"], float(view.get("elevation", -30.0)))
         job = sensors.RenderJob(view, width, height, rgb=fmt in ("png", "rgb"),
                                 depth=fmt == "depth")
         res = self.renders.render_sync(job)
@@ -651,7 +634,7 @@ class Simulation:
         names are refused at once; the targets reach the physics before its next step
         (World.set_ctrl), without this connection waiting for the world lock."""
         inst = self._wire(conn)
-        pre = inst.prefix + conn.component.prefix
+        pre = inst.prefix
         m = self.world.model
         values = {}
         for name, v in (h.get("values") or {}).items():
@@ -669,10 +652,9 @@ class Simulation:
         if rate <= 0:
             raise ValueError("rate must be positive")
         sub = {"kind": kind, "period": 1.0 / rate, "next": time.monotonic(), "inst": inst,
-               "conn": conn, "params": h, "busy": 0, "last": 0.0,
-               "prefix": conn.component.prefix if conn.component else ""}
+               "conn": conn, "params": h, "busy": 0, "last": 0.0}
         if kind == "camera":
-            cam = f"{inst.prefix}{sub['prefix']}{h['camera']}"
+            cam = f"{inst.prefix}{h['camera']}"
             if mujoco.mj_name2id(self.world.model, mujoco.mjtObj.mjOBJ_CAMERA, cam) < 0:
                 raise KeyError(f"no camera {h['camera']!r} on {inst.id}")
             # Each camera stream renders on its own pair of threads with a buffer of its
@@ -712,7 +694,7 @@ class Simulation:
                 time.sleep(min(delay, 0.01))
 
     def _fire(self, sid, s):
-        conn, inst, prm, pre = s["conn"], s["inst"], s["params"], s["prefix"]
+        conn, inst, prm = s["conn"], s["inst"], s["params"]
         w = self.world
         if inst.id not in w.robots:
             return
@@ -722,20 +704,13 @@ class Simulation:
                 out = {"event": "sample", "sub": sid, "stamp": time.time(),
                        "sim_time": float(w.data.time)}
                 if prm.get("joints", True):
-                    j = sensors.joint_readings(w, inst, pre)
-                    if pre == "":
-                        j = {k: v for k, v in j.items()
-                             if not k.startswith(robot_model.ARM_PREFIX)}
-                    out["joints"] = j
-                if prm.get("base", False) and pre == "":
+                    out["joints"] = sensors.joint_readings(w, inst)
+                if prm.get("base", False):
                     out["base"] = sensors.base_reading(w, inst)
-                strip = lambda d: {k[len(pre):]: v for k, v in d.items()}
                 if prm.get("sites"):
-                    out["sites"] = strip(sensors.site_readings(
-                        w, inst, [pre + n for n in prm["sites"]]))
+                    out["sites"] = sensors.site_readings(w, inst, prm["sites"])
                 if prm.get("imu_sites"):
-                    out["imu"] = strip(sensors.site_readings(
-                        w, inst, [pre + n for n in prm["imu_sites"]], imu=True))
+                    out["imu"] = sensors.site_readings(w, inst, prm["imu_sites"], imu=True)
                 return out
 
             conn.send(w.call(sample), sub=sid)
@@ -752,9 +727,10 @@ class Simulation:
                     mirror = s.setdefault("mirror", Mirror())
                     m, d = mirror.update(snap)
                     if s.get("own_version") != snap["version"]:
-                        s["own"] = sensors.subtree(m, inst.prefix + inst.rm.root)
+                        s["own"] = mjutil.subtree(m, mujoco.mj_name2id(
+                            m, mujoco.mjtObj.mjOBJ_BODY, inst.prefix + inst.rm.root))
                         s["own_version"] = snap["version"]
-                    r = sensors.lidar_scan(m, d, inst, pre + prm["site"],
+                    r = sensors.lidar_scan(m, d, inst, prm["site"],
                                            float(prm["angle_min"]), float(prm["angle_max"]),
                                            int(prm["samples"]), float(prm["range_min"]),
                                            float(prm["range_max"]), own=s["own"])
@@ -790,7 +766,7 @@ class Simulation:
                            "rgb": want_rgb, "depth": want_depth}, b"".join(parts), sub=sid)
 
             s["pool"].submit(sensors.RenderJob(
-                {"camera": f"{inst.prefix}{pre}{prm['camera']}"}, width, height,
+                {"camera": f"{inst.prefix}{prm['camera']}"}, width, height,
                 rgb=want_rgb, depth=want_depth, callback=done))
 
     # -------------------------------------------------------------- shutdown

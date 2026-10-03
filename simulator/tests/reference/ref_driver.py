@@ -3,7 +3,7 @@
 default scene, and print what it chose as JSON (for `integration/test_reference_parity.py`).
 
     RSIM_REF_DIR=<checkout of github.com/samirma/robot-simulator rev 34547ae> \\
-        <engine venv python> ref_driver.py molmospaces|robocasa [--robot so101]
+        <engine venv python> ref_driver.py molmospaces|robocasa [--robot so101] [--views DIR]
 
 Run it in the engine's environment (`simulator/<engine>/env.sh`). Only the reference's
 code runs here -- `tools/spawn_robot.py`'s `find_worktop` (MolmoSpaces:
@@ -13,6 +13,9 @@ project's modules are taken off the import path first, since both have a `placem
 
 Output: {"surface", "xy", "z", "yaw", "mount_z", "cleared": [body names],
 "objects": {name: {"pos", "quat"}}} -- the objects' poses as compiled, before any step.
+With `--views DIR`, also "scene": the staged scene (the reference's default scene with its
+robot left out, its apple-on-plate staging included) as `scene_views.describe` reads it,
+and its renders from `scene_views.VIEWS`, saved in DIR.
 """
 
 from __future__ import annotations
@@ -29,12 +32,16 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve()
 SIM = HERE.parents[2]                     # simulator/
+sys.path.insert(0, str(HERE.parent))
+
+import scene_views  # noqa: E402  (before the reference's modules take the import path)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("engine", choices=("molmospaces", "robocasa"))
     ap.add_argument("--robot", default="so101")
+    ap.add_argument("--views", type=Path, default=None)
     args = ap.parse_args()
     ref = Path(os.environ["RSIM_REF_DIR"]).resolve()
     ours = {str(SIM / "shared"), str(SIM / args.engine)}
@@ -66,13 +73,17 @@ def main() -> int:
         m = scene.spec.compile()
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
+        extra = {}
+        if args.views is not None:
+            extra["scene"] = scene_views.describe(m, d)
+            extra["scene"]["views"] = scene_views.render(m, d, args.engine, args.views)
     objects = {}
     for name in task.TASK_OBJECTS:
         b = m.body(f"task_{name}").id
         objects[name] = {"pos": d.xpos[b].tolist(), "quat": d.xquat[b].tolist()}
     print(json.dumps({"surface": wt.name, "xy": [float(v) for v in wt.xy], "z": float(wt.z),
                       "yaw": float(wt.yaw), "mount_z": mount_z, "cleared": list(cleared),
-                      "objects": objects}))
+                      "objects": objects, **extra}))
     return 0
 
 

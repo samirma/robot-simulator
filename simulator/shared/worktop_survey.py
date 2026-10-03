@@ -12,14 +12,15 @@ reference stood it:
   surfaces holding the task's own pair of categories (`TARGET`) rank first, and the arm
   stands at the rim of the chosen surface, looking in, with as much of its forward
   workspace over the worktop as any heading gives. A scene with no graspable objects (the
-  `test` scene, and RoboCasa's fallback below) is surveyed against `N_SPAWN` predicted
-  stand-in objects on its largest table-height top, exactly as REF did.
+  `test` scene) is surveyed against `N_SPAWN` predicted stand-in objects on its largest
+  table-height top, exactly as REF did.
 * **RoboCasa** -- `simulator/robocasa/tools/spawn_robot.py:104-279` (`world_boxes`,
   `clearance_field`, `counter_regions`, `outward_direction`, `find_counter_mount`): the
   arm stands against the back edge of the roomiest counter region RoboCasa itself
   reports, facing the room. After that spot come REF's tabletop coverage candidates over
-  the counter tops (what the myCobot 280 stands on: on RoboCasa its back-edge spot
-  intersects the wall cabinet above the counter).
+  the counter tops, then the front-edge spots (`front_edge_candidates`). A kitchen whose
+  counters report no region has no worktop and no spots (REF refused it: "this kitchen
+  has no counter with a free worktop region").
 
 What a scene knows and this module cannot -- the THOR metadata, occupancy map and type
 sets, RoboCasa's counter regions -- comes in as `Facts` (`scenes.Scene.survey_facts`). The
@@ -804,8 +805,11 @@ def counter_candidates(facts: Facts, mount: Mount) -> list[Spot]:
 def worktop(facts: Facts) -> Surface | None:
     """The scene's worktop: the surface the survey ranks first, whatever robot stands on
     it (REF: the support of the first grasp target after the `TARGET` ranking; with nothing
-    graspable, the biggest table-height top; on RoboCasa, the roomiest counter region)."""
-    if facts.kind == "robocasa" and facts.regions:
+    graspable, the biggest table-height top; on RoboCasa, the roomiest counter region,
+    and none without one)."""
+    if facts.kind == "robocasa":
+        if not facts.regions:
+            return None
         region = _usable_region(facts.regions, MOUNT["so101"].radius, MOUNT["so101"].reach)
         return Surface(region["name"], float(region["top_z"]), region_rect(region))
     targets = _ranked_targets(facts)
@@ -825,6 +829,6 @@ def candidates(facts: Facts, robot_id: str) -> list[Spot]:
     mount = MOUNT.get(robot_id)
     if mount is None:
         return []
-    if facts.kind == "robocasa" and facts.regions:
-        return counter_candidates(facts, mount)
+    if facts.kind == "robocasa":
+        return counter_candidates(facts, mount) if facts.regions else []
     return tabletop_candidates(facts, mount)

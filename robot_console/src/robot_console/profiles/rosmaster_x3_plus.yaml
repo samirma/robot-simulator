@@ -1,7 +1,6 @@
 id: rosmaster_x3_plus
 name: "Yahboom ROSMASTER X3 PLUS (ROS 1)"
 dialect: ros1
-kind: mobile_manipulator
 teleop: base
 
 sources:
@@ -462,3 +461,70 @@ controls:
 controls_note: >-
   Buzzer (/Buzzer) and light strip (/RGBLight) are documented driver inputs but are deliberately not
   exposed as page controls (only arm and gripper). No base-drive controls here (teleop_base covers it).
+
+reads:
+  - id: current_angle
+    service: /CurrentAngle
+    type: yahboomcar_msgs/RobotArmArray
+    request: {apply: GetArmJoints}
+    invalid: [-1]
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L129-L138"
+    note: >-
+      The driver answers with the six servo angles read back from the servo bus
+      (Rosmaster.get_uart_servo_angle_array, #L134-L136), in degrees and servo order 1..6, the units of the arm
+      controls; -1 marks an angle that could not be read. The request is the one the vendor gamepad node sends
+      (yahboomcar_ws:src/yahboomcar_ctrl/scripts/yahboom_joy.py#L46-L63, which also treats -1 as unread). Unlike
+      /joint_states (the echo of the last command), this is a measurement. Called only when the user clicks the read
+      button.
+    values:
+      - {control: arm_pose, field: j1, path: angles.0, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: arm_pose, field: j2, path: angles.1, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: arm_pose, field: j3, path: angles.2, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: arm_pose, field: j4, path: angles.3, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: arm_pose, field: j5, path: angles.4, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: arm_pose, field: gripper, path: angles.5, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+      - {control: gripper, field: angle, path: angles.5, source: "yahboomcar_ws:src/yahboomcar_msgs/srv/RobotArmArray.srv#L5"}
+reads_note: >-
+  A read maps each answered value to a control field as field = (raw - offset) / scale (offset 0, scale 1 when not
+  given). The page calls a read service only when the user clicks its button; it is never called on load.
+
+model:
+  source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf"
+  note: >-
+    Kinematic description for the page's 3D model, taken from the pinned vendor URDF the boot's robot_state_publisher loads:
+    joint origins, axes, limits and the gripper's mimic joints as written there; links are drawn as sticks between joint origins,
+    the chassis as boxes bounding its mesh. The imu frame is not drawn. Servo degrees map to the URDF joint angles exactly as
+    the driver's joint_states does (#L205-L209): rad = (deg - 90) * pi/180 (scale pi/180, offset -pi/2); gripper
+    rad = ((deg - 30) * 0.6 - 90) * pi/180 (scale 0.6 * pi/180, offset -108 * pi/180).
+  root: base_footprint
+  feedback:
+    topic: /joint_states
+    type: sensor_msgs/JointState
+    measured: false
+    source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L194-L211"
+    note: >-
+      The driver's echo of the last commanded servo angles (not a servo readback): rad = (deg - 90) * pi/180, the gripper's 30..180 deg first mapped to 0..90 (#L205-L209); published every pub_data loop (<= 20 Hz) and after each arm command.
+  joints:
+    - {name: base_joint, type: fixed, parent: base_footprint, child: base_link, xyz: [0, 0, 0.076], rpy: [0, 0, 0], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L33-L37"}
+    - {name: astra_joint, type: fixed, parent: base_link, child: camera_link, xyz: [-0.043645, 0, 0.41955], rpy: [0, 0, 0], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L71-L75"}
+    - {name: laser_joint, type: fixed, parent: base_link, child: laser_link, xyz: [0.10478, 0, 0.0471], rpy: [0, 0, 0], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L104-L108"}
+    - {name: arm_joint1, type: revolute, parent: base_link, child: arm_link1, xyz: [0.09825, 0, 0.102], rpy: [0, 0, 0], axis: [0, 0, -1], min: -1.5708, max: 1.5708, reported: "arm_joint1", command: [{control: arm_pose, field: j1, scale: 0.0174532925, offset: -1.57079633, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L138-L144"}
+    - {name: arm_joint2, type: revolute, parent: arm_link1, child: arm_link2, xyz: [0, 0, 0.0405], rpy: [-1.5708, 0, 0], axis: [0, 0, -1], min: -1.5708, max: 1.5708, reported: "arm_joint2", command: [{control: arm_pose, field: j2, scale: 0.0174532925, offset: -1.57079633, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L173-L179"}
+    - {name: arm_joint3, type: revolute, parent: arm_link2, child: arm_link3, xyz: [0, -0.0829, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -1.5708, max: 1.5708, reported: "arm_joint3", command: [{control: arm_pose, field: j3, scale: 0.0174532925, offset: -1.57079633, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L208-L214"}
+    - {name: arm_joint4, type: revolute, parent: arm_link3, child: arm_link4, xyz: [0, -0.0829, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -1.5708, max: 1.5708, reported: "arm_joint4", command: [{control: arm_pose, field: j4, scale: 0.0174532925, offset: -1.57079633, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L243-L249"}
+    - {name: arm_joint5, type: revolute, parent: arm_link4, child: arm_link5, xyz: [-0.00215, -0.17455, 0], rpy: [1.5708, 0, 0], axis: [0, 0, 1], min: -1.5708, max: 3.14159, reported: "arm_joint5", command: [{control: arm_pose, field: j5, scale: 0.0174532925, offset: -1.57079633, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L278-L284"}
+    - {name: grip_joint, type: revolute, parent: arm_link5, child: rlink1, xyz: [-0.0035, -0.012625, -0.0685], rpy: [0, -1.5708, 0], axis: [0, 0, 1], min: -1.54, max: 0, reported: "grip_joint", command: [{control: arm_pose, field: gripper, scale: 0.0104719755, offset: -1.88495559, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}, {control: gripper, field: angle, scale: 0.0104719755, offset: -1.88495559, source: "yahboomcar_ws:src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L205-L209"}], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L314-L320"}
+    - {name: rlink_joint2, type: continuous, parent: rlink1, child: rlink2, xyz: [0.03, -0.00075429, 0], rpy: [0, 0, 0], axis: [0, 0, 1], mimic: {joint: grip_joint, multiplier: -1, offset: 0}, source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L349-L355"}
+    - {name: rlink_joint3, type: continuous, parent: arm_link5, child: rlink3, xyz: [-0.0035, -0.0045, -0.0505], rpy: [0, -1.5708, 0], axis: [0, 0, 1], mimic: {joint: grip_joint, multiplier: 1, offset: 0}, source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L384-L390"}
+    - {name: llink_joint1, type: continuous, parent: arm_link5, child: llink1, xyz: [-0.0035, 0.012375, -0.0685], rpy: [0, -1.5708, 0], axis: [0, 0, 1], mimic: {joint: grip_joint, multiplier: -1, offset: 0}, source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L419-L425"}
+    - {name: llink_joint2, type: continuous, parent: llink1, child: llink2, xyz: [0.03, 0.00065104, 0], rpy: [0, 0, 0], axis: [0, 0, 1], mimic: {joint: grip_joint, multiplier: 1, offset: 0}, source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L449-L455"}
+    - {name: llink_joint3, type: continuous, parent: arm_link5, child: llink3, xyz: [-0.0035, 0.0045, -0.0505], rpy: [0, -1.5708, 0], axis: [0, 0, 1], mimic: {joint: grip_joint, multiplier: -1, offset: 0}, source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L479-L485"}
+    - {name: mono_joint, type: fixed, parent: arm_link4, child: mono_link, xyz: [-0.0481, -0.05145, -0.0022], rpy: [1.5708, 0, 0], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L510-L514"}
+  tips:
+    - {link: rlink2, xyz: [0.021158, 0.0063295, -0.0030251], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L322-L323 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: rlink3, xyz: [0.014355, 1.1499e-05, -0.0033992], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L357-L358 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: llink2, xyz: [0.021159, -0.0063248, -0.0030251], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L427-L428 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: llink3, xyz: [0.014354, -7.4795e-05, -0.0033992], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L457-L458 (inertial origin: the link is drawn to its centre of mass)"}
+  boxes:
+    - {link: base_link, min: [-0.154631, -0.1228, -0.0795652], max: [0.1454, 0.1228, 0.1158], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L17-L25 (chassis: vertex bounds of meshes/X3plus/visual/base_link.STL below the empty band z 0.117..0.235 m)"}
+    - {link: base_link, min: [-0.152441, -0.0825, 0.247942], max: [-0.03475, 0.0825, 0.392], source: "yahboomcar_ws:src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L17-L25 (camera bracket: vertex bounds of the same mesh above that band)"}

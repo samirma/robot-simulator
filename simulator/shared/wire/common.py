@@ -65,13 +65,34 @@ def services_of(iface: dict, node: str):
     return [s for s in served(iface.get("services")) if s.get("node") == node]
 
 
-def actions_of(iface: dict, node: str):
-    return [s for s in served(iface.get("actions")) if s.get("node") == node]
-
-
 def params_of(iface: dict, node: str = None):
     rows = served(iface.get("parameters"))
     return [p for p in rows if node is None or p.get("node") == node]
+
+
+def motion_row(iface: dict, mid: str) -> dict:
+    """The interface file's `motions` row with this id."""
+    return next(m for m in iface.get("motions") or [] if m["id"] == mid)
+
+
+def param(iface: dict, name: str, default=None):
+    """The recorded literal value of a parameter, or `default` when it is not recorded."""
+    return next((p.get("value") for p in iface.get("parameters") or [] if p.get("name") == name),
+                default)
+
+
+#: the local geomagnetic field (gauss, world frame: 0.22 north, 0.42 down) the simulated
+#: magnetometers read -- the estimate each robot's import.md records ("Estimates")
+MAG_FIELD_WORLD = (0.22, 0.0, -0.42)
+
+
+def world_to_sensor(q_wxyz, v):
+    """A world-frame vector in the frame of a sensor whose orientation is q (w, x, y, z)."""
+    w, x, y, z = q_wxyz
+    R = [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+         [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+         [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
+    return tuple(sum(R[r][c] * v[r] for r in range(3)) for c in range(3))
 
 
 def topic_row(iface: dict, name: str):
@@ -111,8 +132,7 @@ def yaw_of(q_wxyz):
 class SimLink:
     """One wire process's link to the simulation."""
 
-    def __init__(self, role: str = None, on_lost=None):
-        self.role = role or env("RSIM_ROLE", "main")
+    def __init__(self, on_lost=None):
         self.lost = threading.Event()
         self._on_lost = on_lost
         self._subs = {}
@@ -129,7 +149,7 @@ class SimLink:
                 time.sleep(0.25)
         else:
             raise SystemExit(f"cannot reach the simulation at {host}:{port}: {last}")
-        res = self.client.call("wire", token=env("RSIM_TOKEN"), role=self.role)
+        res = self.client.call("wire", token=env("RSIM_TOKEN"))
         self.robot_id = res["robot"]
         self.describe = res["describe"]
 

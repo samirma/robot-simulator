@@ -5,8 +5,11 @@ connection loss and exit arrive as their own events. The core turns held motion 
 the profile's command (a Twist for a wheeled base, gait amplitudes for the AiNex), applies
 the documented stop when the last motion key is released, on Space, on focus or input loss
 and on exit, and disables commands after an explicitly failed stop until the user presses
-Enter and presses a motion key afresh. Nothing is sent while commands are disabled; the
-window enables them once the start-up stop was delivered, so Enter is only for re-enabling.
+Enter and presses a motion key afresh. No motion or head command is sent while commands are
+disabled (stop requests still are); the window enables them once the start-up stop was
+delivered, so Enter is only for re-enabling.
+A head axis starts from the head's measured position (the profile's documented read),
+read when its first arrow key is pressed; while that position is unknown the key is ignored.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from robot_console.rosbridge import ServiceError, TransportError
 
 MOTION_KEYS = ("w", "s", "a", "d", "q", "e")
 HEAD_KEYS = ("left", "right", "up", "down")
+HEAD_AXIS = {"left": "pan", "right": "pan", "up": "tilt", "down": "tilt"}
 STOP_CALL_TIMEOUT_S = 3.0
 HEAD_PERIOD_S = 0.1          # console policy: head target re-sent at most at 10 Hz while held
 
@@ -50,9 +54,6 @@ class Sender:
     def call(self, service: str, type: str, args: Any) -> dict:
         return self.rb.call_service(service, args, timeout=self.call_timeout)
 
-    def advertise(self, topic: str, type: str) -> None:
-        self.rb.advertise(topic, type)
-
 
 @dataclasses.dataclass
 class Outcome:
@@ -81,9 +82,6 @@ class TeleopCore:
         self.head_send_at: Dict[str, float] = {}
         self.messages: List[str] = []
         self.stop_outcomes: List[Outcome] = []
-        if self.p.head:
-            for axis, h in self.p.head.items():
-                self.head_pos[axis] = float(h.template.get(h.field, 0.0))
 
     # ------------------------------------------------------------ helpers
     def log(self, text: str) -> None:
@@ -159,6 +157,17 @@ class TeleopCore:
         self.last_sent_at = self.clock()
 
     # ------------------------------------------------------------ events
+    def disabled_reason(self) -> str:
+        """Why keys are ignored: before the start-up stop no key is needed (commands enable on
+        their own once it is delivered); after a failed stop Enter re-enables them."""
+        if not self.connected:
+            return "commands are disabled: not connected"
+        if not self.stop_outcomes:
+            return "commands are not enabled yet: waiting for the start-up stop"
+        if not self.stop_outcomes[-1].ok:
+            return "commands are disabled after a failed stop: press Enter to re-enable, then press the keys again"
+        return "commands are disabled: press Enter to enable"
+
     def key_down(self, key: str) -> None:
         if key == "space":
             self.clear_and_stop("Space")
@@ -166,7 +175,7 @@ class TeleopCore:
             self.enable()
         elif key in MOTION_KEYS:
             if not self.enabled:
-                self.log("commands are disabled: press Enter to enable")
+                self.log(self.disabled_reason())
                 return
             if key in self.held:          # a repeat is not a fresh press
                 return
@@ -174,11 +183,15 @@ class TeleopCore:
             self._send_motion()
         elif key in HEAD_KEYS and self.p.head:
             if not self.enabled:
-                self.log("commands are disabled: press Enter to enable")
+                self.log(self.disabled_reason())
                 return
-            if key not in self.held_head:
-                self.held_head.append(key)
-                self.head_last_at = self.clock()
+            if key in self.held_head:
+                return
+            axis = HEAD_AXIS[key]
+            if not any(HEAD_AXIS[k] == axis for k in self.held_head) and not self._read_head(axis):
+                return
+            self.held_head.append(key)
+            self.head_last_at = self.clock()
 
     def key_up(self, key: str) -> None:
         if key in self.held:
@@ -274,8 +287,9 @@ class TeleopCore:
         if self.held_head and self.p.head:
             dt = now - (self.head_last_at or now)
             self.head_last_at = now
-            # the simulated AiNex's head_pan joint axis is -Z (robots_specs/ainex/model.xml):
-            # a positive pan turns the head to the robot's right, so Left commands negative
+            # the vendor model's head_pan joint axis is -Z (ainex:src/ainex_simulations/
+            # ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec §2.1 as amended
+            # 2026-10-02): a positive pan turns the head to the robot's right, so Left is negative
             dirs = {"pan": (("right" in self.held_head) - ("left" in self.held_head)),
                     "tilt": (("up" in self.held_head) - ("down" in self.held_head))}
             for axis, h in self.p.head.items():
@@ -289,6 +303,26 @@ class TeleopCore:
                     self._send_head(axis)
         elif self.head_last_at is not None:
             self.head_last_at = None
+
+    def _read_head(self, axis: str) -> bool:
+        """Start ``axis`` from the head's measured position, so a key moves the head its way
+        wherever it was left. False (reason shown, key ignored) when the position is unknown:
+        the template's 0 is never assumed. The position is the profile's documented read."""
+        h = self.p.head[axis]
+        found = self.p.head_read(axis)
+        try:
+            if found is None:
+                raise ValueError("the profile documents no position read")
+            read, value = found
+            pos = read.parse(self.sender.call(self.w(read.service), read.type, read.request))[
+                (value.control, value.field)]
+            if pos is None:
+                raise ValueError(f"{read.service} reported no position for it")
+        except (TransportError, ServiceError, TimeoutError, ValueError) as exc:
+            self.log(f"head position unknown ({axis}): {exc}; key ignored")
+            return False
+        self.head_pos[axis] = max(h.min, min(h.max, pos))
+        return True
 
     def _send_head(self, axis: str) -> None:
         h = self.p.head[axis]

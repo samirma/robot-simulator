@@ -180,7 +180,7 @@ class CameraStream:
                 return f"stale: no frame within {self.spec.stale_after_s:g} s"
             return f"stale: last frame {now - self.frame_at:.1f} s ago"
         if st == MISSING:
-            return "missing: topic not on the wire"
+            return "unavailable: the topic is not on the wire"
         if st in (FAILED, UNSUPPORTED):
             return f"{st}: {self.error}"
         return "waiting for the first frame"
@@ -189,8 +189,7 @@ class CameraStream:
 class CameraSet:
     """Subscribe to a set of streams on one connection; poll and close together."""
 
-    def __init__(self, rb, specs: Sequence[StreamSpec], *, throttle_ms: int = 0,
-                 present: Optional[Dict[str, str]] = None) -> None:
+    def __init__(self, rb, specs: Sequence[StreamSpec], *, present: Optional[Dict[str, str]] = None) -> None:
         self.rb = rb
         self.streams: Dict[str, CameraStream] = {}
         for s in specs:
@@ -199,7 +198,7 @@ class CameraSet:
             if present is not None and s.topic not in present:
                 cs.missing = True
                 continue
-            cs.sid = rb.subscribe(s.topic, s.type, cs.offer, throttle_rate=throttle_ms, queue_length=1)
+            cs.sid = rb.subscribe(s.topic, s.type, cs.offer, queue_length=1)
 
     def poll(self) -> None:
         for s in self.streams.values():

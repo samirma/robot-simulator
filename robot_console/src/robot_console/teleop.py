@@ -7,7 +7,8 @@ key-up events (key repeat is disabled and ignored), so a held key is known to be
 
 Exit status: 0 ordinary exit (Esc or closing the window); 1 no validated target; 2 refused
 (unknown id, arm, namespace override); 3 wire unreachable; 4 connection lost;
-5 keyboard input lost; 130/143 after SIGINT/SIGTERM.
+5 keyboard input lost; 128+N after a handled signal N (SIGINT 130, SIGTERM 143, SIGHUP 129,
+SIGQUIT 131), each of which clears motion intent and attempts the stop first.
 """
 
 from __future__ import annotations
@@ -35,6 +36,9 @@ from robot_console.teleop_core import (  # noqa: E402
 
 EXIT_OK, EXIT_NO_TARGET, EXIT_REFUSED, EXIT_UNREACHABLE, EXIT_CONN_LOST, EXIT_INPUT_LOST = 0, 1, 2, 3, 4, 5
 ADVERTISE_SETTLE_S = 0.6     # let a fresh ROS 1 publisher connect before the start-up stop
+#: Interruptions the process can handle (console spec §2.1): each ends teleop like an ordinary
+#: exit, clearing motion intent and attempting the documented stop.
+HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
 HELP = ("W/S forward/back  A/D strafe  Q/E rotate  Space stop  Enter re-enable  Esc quit")
 HEAD_HELP = "Arrows: head (Left/Right pan, Up/Down tilt)"
@@ -92,7 +96,7 @@ class TeleopApp:
 
     # ------------------------------------------------------------ main
     def run(self) -> int:
-        for s in (signal.SIGINT, signal.SIGTERM):
+        for s in HANDLED_SIGNALS:
             signal.signal(s, self._on_signal)
         rb = Rosbridge(self.url)
         try:
@@ -113,6 +117,8 @@ class TeleopApp:
         code = EXIT_OK
         try:
             code = self._session(rb)
+        except TransportError as exc:     # the connection broke while subscribing or advertising
+            code = self._connection_lost(self.lost or str(exc))
         finally:
             if self.cams:
                 self.cams.close()
@@ -180,13 +186,7 @@ class TeleopApp:
                 end_reason = f"signal {signal.Signals(self.signal).name}"
                 break
             if self.lost is not None:
-                if self.core:
-                    self.core.connection_lost(self.lost)
-                else:
-                    self.say(f"connection lost ({self.lost})")
-                self.say("teleop ends; relaunch to reconnect")
-                self._draw()
-                return EXIT_CONN_LOST
+                return self._connection_lost(self.lost)
             if self.max_seconds is not None and time.monotonic() - started > self.max_seconds:
                 end_reason = "time limit"
                 break
@@ -221,7 +221,7 @@ class TeleopApp:
                 elif ev.type == getattr(pg, "WINDOWFOCUSLOST", -1) or (
                         ev.type == getattr(pg, "ACTIVEEVENT", -2) and getattr(ev, "gain", 1) == 0
                         and getattr(ev, "state", 0) & 2):
-                    if self.core and (self.core.held or self.core.held_head or self.core.enabled):
+                    if self.core:
                         self.core.focus_lost()
             if quit_now:
                 break
@@ -234,6 +234,16 @@ class TeleopApp:
             if not out.ok:
                 self.say(REENABLE_LIMITATION)
         return code
+
+    def _connection_lost(self, reason: str) -> int:
+        """Clear intent, show the failure and that no stop can be delivered, end non-zero."""
+        if self.core:
+            self.core.connection_lost(reason)
+        else:
+            self.say(f"connection lost ({reason})")
+        self.say("teleop ends; relaunch to reconnect")
+        self._draw()
+        return EXIT_CONN_LOST
 
     # ------------------------------------------------------------ drawing
     def _pump_display(self) -> None:
@@ -278,9 +288,16 @@ class TeleopApp:
         y = area_h + 6
         if self.target is not None:
             core = self.core
-            state = "ENABLED" if core and core.enabled else "DISABLED (press Enter)"
             if core and not core.connected:
                 state = "DISCONNECTED"
+            elif core and core.enabled:
+                state = "ENABLED"
+            elif core and not core.stop_outcomes:
+                state = "WAITING for the start-up stop"
+            elif core and not core.stop_outcomes[-1].ok:
+                state = "DISABLED after a failed stop (Enter re-enables)"
+            else:
+                state = "DISABLED (press Enter)"
             head = f"{self.target.label} on {self.url}   commands: {state}"
         else:
             head = f"NO VALIDATED TARGET - commands refused: {self.reason}"

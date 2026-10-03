@@ -32,15 +32,12 @@ class Rosbridge:
     """rosbridge v2 protocol (ROS 1 rosbridge 0.11 and ROS 2 rosbridge 2.x) over one
     websocket, with a reader thread."""
 
-    def __init__(self, url: str, timeout: float = 10.0):
-        self.url = url
-        self.ws = websocket.create_connection(url, timeout=timeout,
-                                              enable_multithread=True)
+    def __init__(self, url: str):
+        self.ws = websocket.create_connection(url, timeout=10.0, enable_multithread=True)
         self.ws.settimeout(None)
         self._ids = itertools.count(1)
         self._pending: Dict[str, "queue.Queue"] = {}
         self._subs: Dict[str, Callable[[dict], None]] = {}
-        self.closed = threading.Event()
         self._reader = threading.Thread(target=self._loop, daemon=True)
         self._reader.start()
 
@@ -68,54 +65,46 @@ class Rosbridge:
         except Exception:
             pass
         finally:
-            self.closed.set()
             for q in list(self._pending.values()):
                 q.put(None)
 
     def send(self, msg: dict) -> None:
         self.ws.send(json.dumps(msg))
 
-    def call(self, service: str, args: Optional[dict] = None, timeout: float = 15.0,
-             check: bool = True) -> dict:
-        rid = f"call:{next(self._ids)}"
+    def _request(self, msg: dict, what: str, timeout: float) -> dict:
+        """Send a request carrying a fresh id and wait for its answer; a rosbridge `status`
+        reply to it (an error) raises."""
+        rid = msg["id"] = f"{msg['op']}:{next(self._ids)}"
         q: "queue.Queue" = queue.Queue(1)
         self._pending[rid] = q
-        self.send({"op": "call_service", "service": service, "args": args or {}, "id": rid})
+        self.send(msg)
         try:
             res = q.get(timeout=timeout)
         except queue.Empty:
             self._pending.pop(rid, None)
-            raise TimeoutError(f"{service} did not answer within {timeout} s")
+            raise TimeoutError(f"{what} did not answer within {timeout} s")
         if res is None:
             raise ConnectionError("rosbridge connection closed")
-        if check and not res.get("result", True):
+        if res.get("op") == "status":
+            raise RuntimeError(f"{what}: {res.get('level')} {res.get('msg')}")
+        return res
+
+    def call(self, service: str, args: Optional[dict] = None, timeout: float = 15.0) -> dict:
+        res = self._request({"op": "call_service", "service": service, "args": args or {}},
+                            service, timeout)
+        if not res.get("result", True):
             raise RuntimeError(f"{service} failed: {res.get('values')}")
         return res.get("values") or {}
 
     def action(self, action: str, action_type: str, goal: dict, timeout: float = 30.0) -> dict:
         """A ROS 2 action goal through rosbridge 2.x `send_action_goal`; the result message."""
-        rid = f"action:{next(self._ids)}"
-        q: "queue.Queue" = queue.Queue(1)
-        self._pending[rid] = q
-        self.send({"op": "send_action_goal", "action": action, "action_type": action_type,
-                   "args": goal, "id": rid, "feedback": False})
-        try:
-            res = q.get(timeout=timeout)
-        except queue.Empty:
-            self._pending.pop(rid, None)
-            raise TimeoutError(f"{action} gave no result within {timeout} s")
-        if res is None:
-            raise ConnectionError("rosbridge connection closed")
-        return res
+        return self._request({"op": "send_action_goal", "action": action, "action_type": action_type,
+                              "args": goal, "feedback": False}, action, timeout)
 
-    def subscribe(self, topic: str, cb: Callable[[dict], None], msg_type: Optional[str] = None,
-                  throttle_rate: int = 0, queue_length: int = 1):
+    def subscribe(self, topic: str, cb: Callable[[dict], None], throttle_rate: int = 0):
         self._subs[topic] = cb
-        m = {"op": "subscribe", "topic": topic, "id": f"sub:{topic}",
-             "throttle_rate": throttle_rate, "queue_length": queue_length}
-        if msg_type:
-            m["type"] = msg_type
-        self.send(m)
+        self.send({"op": "subscribe", "topic": topic, "id": f"sub:{topic}",
+                   "throttle_rate": throttle_rate, "queue_length": 1})
 
     def unsubscribe(self, topic: str):
         self._subs.pop(topic, None)
@@ -123,9 +112,6 @@ class Rosbridge:
 
     def advertise(self, topic: str, msg_type: str):
         self.send({"op": "advertise", "topic": topic, "type": msg_type, "id": f"adv:{topic}"})
-
-    def unadvertise(self, topic: str):
-        self.send({"op": "unadvertise", "topic": topic, "id": f"adv:{topic}"})
 
     def publish(self, topic: str, msg: dict):
         self.send({"op": "publish", "topic": topic, "msg": msg})
@@ -138,24 +124,22 @@ class Rosbridge:
 
 
 class Latest:
-    """The latest message of one topic, with a counter and its arrival time."""
+    """The latest message of one topic and a counter; with `keep`, every message with its
+    arrival time in `history`."""
 
-    def __init__(self, rb: Rosbridge, topic: str, msg_type: Optional[str] = None,
-                 throttle_rate: int = 0):
+    def __init__(self, rb: Rosbridge, topic: str):
         self.msg = None
         self.count = 0
-        self.t = 0.0
         self.history: list = []
         self.keep = False
         self._ev = threading.Event()
-        rb.subscribe(topic, self._cb, msg_type=msg_type, throttle_rate=throttle_rate)
+        rb.subscribe(topic, self._cb)
 
     def _cb(self, m):
         self.msg = m
         self.count += 1
-        self.t = time.monotonic()
         if self.keep:
-            self.history.append((self.t, m))
+            self.history.append((time.monotonic(), m))
         self._ev.set()
 
     def wait(self, timeout: float = 15.0):
@@ -181,8 +165,8 @@ class SimPort:
     """The simulation's private control port: `u32 BE header length | JSON header |
     payload (header nbytes)`; replies echo the request id (simulator/README.md)."""
 
-    def __init__(self, port: int, host: str = "127.0.0.1"):
-        self.sock = socket.create_connection((host, port), timeout=10)
+    def __init__(self, port: int):
+        self.sock = socket.create_connection(("127.0.0.1", port), timeout=10)
         self.sock.settimeout(120)
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
@@ -231,15 +215,15 @@ def _data_bytes(msg: dict) -> bytes:
 
 
 def colourize_depth(depth: np.ndarray) -> np.ndarray:
-    """A float depth map (m; 0/nan = no return) as a turbo-like RGB picture (near warm,
-    far cool), black where there is no return."""
-    valid = np.isfinite(depth) & (depth > 0)
+    """A depth map (m; 0 = no return) as a turbo-like RGB picture (near warm, far cool),
+    black where there is no return."""
+    valid = depth > 0
     out = np.zeros(depth.shape + (3,), np.uint8)
     if not valid.any():
         return out
     lo, hi = np.percentile(depth[valid], [1, 99])
     hi = max(hi, lo + 1e-3)
-    t = np.clip((np.nan_to_num(depth) - lo) / (hi - lo), 0, 1)
+    t = np.clip((depth - lo) / (hi - lo), 0, 1)
     # a polynomial approximation of the "turbo" colour map, reversed so near is red and
     # far dark blue (kept clear of turbo's near-black end, which marks no return here)
     tt = 0.1 + 0.9 * (1.0 - t)
@@ -252,7 +236,9 @@ def colourize_depth(depth: np.ndarray) -> np.ndarray:
 
 
 def decode_image(msg: dict) -> Dict[str, Any]:
-    """A sensor_msgs/Image (as rosbridge JSON) as an RGB array, with its statistics."""
+    """A sensor_msgs/Image (as rosbridge JSON) as an RGB array, with its statistics. The
+    encodings are those the interface files record for cameras (rgb8, yuv422_yuy2, 16UC1,
+    mono16); any other fails the camera item, naming it."""
     h, w, enc = int(msg["height"]), int(msg["width"]), msg["encoding"]
     step = int(msg.get("step") or 0)
     big = bool(msg.get("is_bigendian"))
@@ -266,19 +252,11 @@ def decode_image(msg: dict) -> Dict[str, Any]:
         a = np.frombuffer(raw, np.uint8)[: s * h].reshape(h, s)
         return a[:, : w * bpp]
 
-    if enc in ("rgb8", "bgr8", "rgba8", "bgra8"):
-        ch = 4 if enc.endswith("a8") else 3
-        a = rows(ch).reshape(h, w, ch)[..., :3]
-        rgb = a[..., ::-1] if enc.startswith("bgr") else a
-    elif enc in ("mono8", "8UC1"):
-        g = rows(1).reshape(h, w)
-        rgb = np.repeat(g[..., None], 3, axis=2)
-    elif enc in ("yuv422_yuy2", "yuyv", "yuv422"):
+    if enc == "rgb8":
+        rgb = rows(3).reshape(h, w, 3)
+    elif enc == "yuv422_yuy2":    # YUYV
         a = rows(2).reshape(h, w // 2, 4).astype(np.float32)
-        if enc == "yuv422":       # UYVY
-            u, y0, v, y1 = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
-        else:                     # YUYV
-            y0, u, y1, v = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
+        y0, u, y1, v = a[..., 0], a[..., 1], a[..., 2], a[..., 3]
         y = np.stack([y0, y1], -1).reshape(h, w)
         u = np.repeat(u, 2, axis=1) - 128.0
         v = np.repeat(v, 2, axis=1) - 128.0
@@ -297,14 +275,6 @@ def decode_image(msg: dict) -> Dict[str, Any]:
             lo, hi = np.percentile(a, [0.5, 99.5])
             g = np.clip((a - lo) / max(hi - lo, 1.0) * 255, 0, 255).astype(np.uint8)
             rgb = np.repeat(g[..., None], 3, axis=2)
-    elif enc == "32FC1":
-        dt = ">f4" if big else "<f4"
-        a = np.frombuffer(rows(4).tobytes(), dt).reshape(h, w)
-        fin = np.isfinite(a)
-        info["valid_fraction"] = float((fin & (a > 0)).mean())
-        info["min"] = float(a[fin].min()) if fin.any() else None
-        info["max"] = float(a[fin].max()) if fin.any() else None
-        rgb = colourize_depth(a.astype(np.float32))
     else:
         raise ValueError(f"unsupported encoding {enc}")
     rgb = np.ascontiguousarray(rgb, dtype=np.uint8)

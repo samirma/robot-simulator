@@ -46,7 +46,6 @@ class Graph:
     services: Dict[str, str]            # "" when rosapi could not tell the type
     actions: Dict[str, Optional[str]]   # ROS 2: None (type not reportable)
     action_parts: Set[str]              # wire names that belong to a discovered action
-    nodes: List[str] = dataclasses.field(default_factory=list)
     distro: str = ""
 
     def names(self) -> Set[str]:
@@ -126,18 +125,8 @@ def fetch_graph(rb: Rosbridge, timeout: float = 5.0) -> Graph:
         for a, t in actions.items():
             tp, sv = d.ros2_action_endpoints(a, t or "x/action/X")
             parts |= set(tp) | set(sv)
-    nodes: List[str] = []
     return Graph(dialect=dia, topics=topics, services=services, actions=actions,
-                 action_parts=parts, nodes=nodes, distro=distro)
-
-
-def read_wire(url: str, timeout: float = 5.0) -> Graph:
-    rb = Rosbridge(url)
-    rb.connect(timeout)
-    try:
-        return fetch_graph(rb, timeout)
-    finally:
-        rb.close()
+                 action_parts=parts, distro=distro)
 
 
 # ------------------------------------------------------------------ validation
@@ -329,8 +318,8 @@ def select_target(g: Graph, robot: Optional[Profile], namespace: Optional[str]) 
             if len(pick) == 1:
                 mine = pick
             else:
-                raise SelectionError(f"several '{robot.id}' targets found; choose one with "
-                                     f"--namespace: {describe_candidates(mine)}", mine)
+                raise SelectionError(f"several '{robot.id}' targets found; select one by its namespace: "
+                                     f"{describe_candidates(mine)}", mine)
         t = mine[0]
         others = [grp for grp in disc.ambiguous if t in grp]
         if others and robot.namespace is None:

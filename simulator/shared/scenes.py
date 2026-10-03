@@ -9,9 +9,11 @@ sources and default scene:
 The household scenes are loaded exactly as the reference project loaded them (the
 iTHOR/ProcTHOR house MJCF resolved and installed by MolmoSpaces and read with
 `MjSpec.from_file`; the RoboCasa kitchen built from `KitchenArena` with an empty robot
-list inside a robosuite `ManipulationTask`), with nothing added: no light, no object,
-no robot. `test` is a flat floor with one worktop at a fixed height, the same MJCF on
-both engines. `Scene.survey_facts` hands the worktop survey (`worktop_survey.py`) what
+list inside a robosuite `ManipulationTask`), with no light and no robot added. A RoboCasa
+kitchen also gets RoboCasa's own objects on its counters (`robocasa_objects.py`); the
+six worktop objects are staged by the simulation at start (`worktop_objects.py`), not
+here. `test` is a flat floor with one worktop at a fixed height, the same MJCF on both
+engines. `Scene.survey_facts` hands the worktop survey (`worktop_survey.py`) what
 each source knows about its surfaces.
 """
 
@@ -177,17 +179,21 @@ def engine_of(source: str) -> list[str]:
     return [e for e, info in ENGINES.items() if source in info["sources"]]
 
 
+#: Each source's ids, as `--help` and the refusals name them (iTHOR's and ProcTHOR's exact
+#: ranges are MolmoSpaces' training-split index, checked when the scene loads).
+SOURCE_RANGES = {
+    "ithor": "ithor:<n>, an iTHOR floor plan of the training split (1-12 kitchens, 201-212 "
+             "living rooms, 301-312 bedrooms, 401-412 bathrooms)",
+    "procthor": "procthor:<n>, a ProcTHOR-10k training house",
+    "robocasa": f"robocasa:<layout>-<style>, layout {ROBOCASA_LAYOUTS[0]}-"
+                f"{ROBOCASA_LAYOUTS[1]}, style {ROBOCASA_STYLES[0]}-{ROBOCASA_STYLES[1]}",
+    "test": "test:1, a flat floor with one worktop (identical on both engines)",
+}
+
+
 def help_text(engine: str) -> str:
     info = ENGINES[engine]
-    ranges = {
-        "ithor": "ithor:<n>, an iTHOR floor plan of the training split (1-12 kitchens, 201-212 "
-                 "living rooms, 301-312 bedrooms, 401-412 bathrooms)",
-        "procthor": "procthor:<n>, a ProcTHOR-10k training house",
-        "robocasa": f"robocasa:<layout>-<style>, layout {ROBOCASA_LAYOUTS[0]}-"
-                    f"{ROBOCASA_LAYOUTS[1]}, style {ROBOCASA_STYLES[0]}-{ROBOCASA_STYLES[1]}",
-        "test": "test:1, a flat floor with one worktop (identical on both engines)",
-    }
-    lines = [f"  {ranges[s]}" for s in info["sources"]]
+    lines = [f"  {SOURCE_RANGES[s]}" for s in info["sources"]]
     return "\n".join(lines) + f"\n  default: {info['default']}"
 
 
@@ -213,7 +219,9 @@ def parse(engine: str, text: str | None) -> tuple[str, str]:
     elif source == "robocasa":
         m = re.fullmatch(r"(\d+)-(\d+)", sid)
         if not m:
-            raise SceneError(f"--scene: robocasa ids are <layout>-<style>, got {sid!r}")
+            raise SceneError(f"--scene: robocasa ids are <layout>-<style> (layout "
+                             f"{ROBOCASA_LAYOUTS[0]}-{ROBOCASA_LAYOUTS[1]}, style "
+                             f"{ROBOCASA_STYLES[0]}-{ROBOCASA_STYLES[1]}), got {sid!r}")
         lay, sty = int(m.group(1)), int(m.group(2))
         if not ROBOCASA_LAYOUTS[0] <= lay <= ROBOCASA_LAYOUTS[1]:
             raise SceneError(f"--scene: layout {lay} out of range "
@@ -223,7 +231,8 @@ def parse(engine: str, text: str | None) -> tuple[str, str]:
                              f"{ROBOCASA_STYLES[0]}-{ROBOCASA_STYLES[1]}")
     else:
         if not re.fullmatch(r"\d+", sid):
-            raise SceneError(f"--scene: {source} ids are integers, got {sid!r}")
+            raise SceneError(f"--scene: {source} ids are integers, got {sid!r}; "
+                             f"{source} takes {SOURCE_RANGES[source]}")
     return source, sid
 
 

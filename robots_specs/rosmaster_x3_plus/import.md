@@ -19,7 +19,9 @@ change is listed below as an adaptation or an estimate.
 
 The firmware and library members were range-read from the pinned archive on 2026-09-29;
 their sizes match the archive's central directory. On 2026-09-30 Google Drive refused
-further downloads (quota exceeded), so their CRCs were not re-checked in this session.
+further downloads (quota exceeded), so their CRCs were not re-checked in this session. On
+2026-10-02 both members were range-read again and matched the sha256 digests above (read for
+the /cmd_vel yaw-adjust path and the arm watchdog sources in `ros.yml`).
 
 ## Conversion steps
 
@@ -143,7 +145,7 @@ The driver commands the arm to servo angles `[90, 145, 0, 45, 90, 30]` at start
 `grip_joint` −1.54 (A7), mimic joints set by their multipliers, `base_footprint` 2.9 mm
 above the floor (settled height, wheels touching).
 
-## Estimates versus manufacturer figures
+## Model figures: manufacturer versus estimate
 
 * Manufacturer / source: URDF geometry, masses and inertias; wheel radius and lx+ly;
   per-wheel speed clamp; servo ranges; camera resolution and rate; lidar angle and range
@@ -154,6 +156,24 @@ above the floor (settled height, wheels touching).
 * Mass: the URDF links total 1.544 kg; with the estimated wheels and rollers (4 × 0.128 kg)
   the model weighs 2.056 kg. No total robot mass appears in the pinned sources, so the URDF
   masses are kept as they are (a real X3 PLUS with battery is likely heavier; unverified).
+
+## Estimates (not manufacturer data)
+
+Interface values read from the expansion board at run time, which no pinned source fixes
+(added 2026-10-03):
+
+* **Battery** (`/voltage`): **12.3 V** (the pack is not modelled).
+* **Firmware version** (`/edition`): **3.5**, the major.minor of the pinned firmware V3.5.1.
+* **Magnetometer** (`/mag/mag_raw`): a fixed local field of **0.22 gauss horizontal (north)
+  and 0.42 gauss down**, rotated into `imu_link`.
+* **`orbbec_camera` message and service definitions**: the vendor's copy (`software.zip`)
+  could not be re-read (Google Drive quota), so its `msg/`/`srv/` files are taken from
+  Orbbec's public OrbbecSDK_ROS1. Basis: the vendor's cited `ob_camera_node.cpp`,
+  `ros_setup.cpp` and `ros_service.cpp` equal OrbbecSDK_ROS1 `v1.2.9`
+  (`9569cc31c14989d8008c7f1e99ec1ced12f3c138`) byte for byte (the sha256 prefixes in `ros.yml`
+  `sources[software_zip]`), and every `msg/` and `srv/` file of `v1.2.9` is the same git blob at
+  `v1.4.2` (`7ef885a4a168df02948ca97da216751a83d40471`), the revision the definitions are built
+  from (checked 2026-10-03). The vendor's own msg/srv files are still unverified.
 
 ## Verification (2026-09-30, MuJoCo 3.14.0, scratch wrapper adding a floor)
 

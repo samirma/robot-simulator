@@ -2,7 +2,9 @@
 """One recorded ROS 1 node, served by the simulator: `ros1_node.py /<node name>`.
 
 The node's endpoints come from the interface file: every non-optional topic it publishes
-or subscribes, every service it offers, with the recorded names, types, frames and rates.
+or subscribes, every service it offers, with the recorded names, types, frames and rates,
+and the topics the record lists it among the `internal_publishers` / `internal_subscribers`
+of (endpoints of another node of the boot it uses), so discovery shows them as on the robot.
 What the node *does* is the robot's wire module's behaviour for that node
 (`robots/<id>.py`, `BEHAVIOURS[node]`): the simulated driver of the real hardware, fed by
 and commanding the simulation. A periodic topic the behaviour does not publish itself is
@@ -70,6 +72,11 @@ class Node:
             self.rows[t["name"]] = t
             self.pub[t["name"]] = rospy.Publisher(t["name"], cls, queue_size=10,
                                                   latch=bool(t.get("latched")))
+        for t in common.served(self.iface.get("topics")):
+            if name in (t.get("internal_publishers") or []) and t["name"] not in self.pub:
+                cls = msg_class(t["type"])
+                self.types[t["name"]] = cls
+                self.pub[t["name"]] = rospy.Publisher(t["name"], cls, queue_size=10)
         module = importlib.import_module(f"robots.{self.robot.id}")
         behaviours = dict(getattr(module, "BEHAVIOURS", {}))
         row = next((n for n in self.iface.get("nodes", []) if n.get("name") == name), {})
@@ -80,7 +87,9 @@ class Node:
             behaviours[name] = StaticTransformPublisher
         self.behaviour = behaviours[name](self) if name in behaviours else None
         handled = set(getattr(self.behaviour, "publishes", ()))
-        for t in common.topics_of(self.iface, name, "in"):
+        internal_in = [t for t in common.served(self.iface.get("topics"))
+                       if name in (t.get("internal_subscribers") or [])]
+        for t in common.topics_of(self.iface, name, "in") + internal_in:
             cls = msg_class(t["type"])
             self.types[t["name"]] = cls
             rospy.Subscriber(t["name"], cls, self._on_msg, callback_args=t["name"],

@@ -10,6 +10,13 @@ from robot_console.rosbridge import ServiceError, TransportError
 from robot_console.teleop_core import REENABLE_LIMITATION, TeleopCore
 
 MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
+GET_POSITION = "/ros_robot_controller/bus_servo/get_position"
+
+
+def servo_positions(**pulses):
+    """A GetBusServosPosition answer: AiNex head servo 23 (pan) / 24 (tilt) at these pulses."""
+    ids = {"pan": 23, "tilt": 24}
+    return {"success": True, "position": [{"id": ids[a], "position": v} for a, v in pulses.items()]}
 
 
 class Clock:
@@ -27,6 +34,7 @@ class Rec:
         self.sent = []            # (op, name, payload)
         self.fail_publish = None  # predicate(name) -> exception or None
         self.fail_call = None
+        self.answers = {}         # service -> the values its call answers (default {})
 
     def publish(self, topic, type, msg):
         if self.fail_publish and self.fail_publish(topic):
@@ -37,10 +45,7 @@ class Rec:
         if self.fail_call and self.fail_call(service, args):
             raise self.fail_call(service, args)
         self.sent.append(("call", service, args))
-        return {}
-
-    def advertise(self, topic, type):
-        pass
+        return self.answers.get(service, {})
 
     def clear(self):
         self.sent.clear()
@@ -82,7 +87,7 @@ def speeds(p):
 
 
 @pytest.mark.parametrize("pid", MOBILE)
-def test_nothing_is_sent_before_enter(pid):
+def test_nothing_is_sent_before_commands_are_enabled(pid):
     core, rec, clk, p = make(pid)
     core.key_down("w")
     clk.t += 1
@@ -248,16 +253,22 @@ def test_ainex_enable_calls_documented_prerequisites():
     assert [a for op, n, a in rec.sent if op == "call"] == [o.msg for o in p.teleop_walk.enable]
 
 
+def head_targets(rec, p, axis):
+    return [m["position"] for op, n, m in rec.sent if n == p.head[axis].topic]
+
+
 def test_ainex_head_keys_move_within_limits_and_never_stop_walking():
     core, rec, clk, p = make("ainex")
     core.enable()
+    rec.answers[GET_POSITION] = servo_positions(pan=500, tilt=500)
     rec.clear()
     core.key_down("left")
     for _ in range(100):
         clk.t += 0.1
         core.tick()
-    pans = [m["position"] for op, n, m in rec.sent if n == p.head["pan"].topic]
-    # Left turns the head left, which is a negative pan on the simulated AiNex (axis -Z)
+    pans = head_targets(rec, p, "pan")
+    # Left turns the head left: a negative pan on the vendor model's -Z head_pan axis
+    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended 2026-10-02)
     assert pans and min(pans) == pytest.approx(p.head["pan"].min) and pans == sorted(pans, reverse=True)
     core.key_up("left")
     n = len(rec.sent)
@@ -269,8 +280,54 @@ def test_ainex_head_keys_move_within_limits_and_never_stop_walking():
     for _ in range(100):
         clk.t += 0.1
         core.tick()
-    tilts = [m["position"] for op, n, m in rec.sent if n == p.head["tilt"].topic]
+    tilts = head_targets(rec, p, "tilt")
     assert min(tilts) == pytest.approx(p.head["tilt"].min)
+
+
+def test_ainex_head_starts_from_the_measured_position():
+    """A head the page or an earlier session left turned still moves the key's way."""
+    core, rec, clk, p = make("ainex")
+    core.enable()
+    rec.answers[GET_POSITION] = servo_positions(pan=739, tilt=500)    # pan ~ +1.0 rad
+    rec.clear()
+    core.key_down("right")
+    clk.t += 0.15
+    core.tick()
+    assert [a for op, n, a in rec.sent if n == GET_POSITION] == [{"id": [23, 24]}]   # the documented read
+    pans = head_targets(rec, p, "pan")
+    assert len(pans) == 1 and pans[0] > 1.0, "Right turns further right from where the head is"
+    core.key_up("right")
+    core.key_down("left")                 # a fresh press reads the position again
+    clk.t += 0.15
+    core.tick()
+    pans = head_targets(rec, p, "pan")
+    assert len(pans) == 2 and pans[1] < pans[0] and pans[1] < 1.0
+    core.key_down("up")
+    clk.t += 0.15
+    core.tick()
+    assert len([a for op, n, a in rec.sent if n == GET_POSITION]) == 3                # one read per axis press
+    assert head_targets(rec, p, "tilt")[0] > 0
+
+
+@pytest.mark.parametrize("failure", ["raises", "transport", "success false", "id omitted"])
+def test_ainex_head_key_ignored_while_position_unknown(failure):
+    core, rec, clk, p = make("ainex")
+    core.enable()
+    if failure == "raises":
+        rec.fail_call = lambda s, a: ServiceError("no such servo") if s == GET_POSITION else None
+    elif failure == "transport":
+        rec.fail_call = lambda s, a: TransportError("send failed") if s == GET_POSITION else None
+    elif failure == "success false":
+        rec.answers[GET_POSITION] = {"success": False, "position": []}
+    else:
+        rec.answers[GET_POSITION] = servo_positions(tilt=500)
+    rec.clear()
+    core.key_down("right")
+    clk.t += 0.15
+    core.tick()
+    assert head_targets(rec, p, "pan") == [] and core.held_head == []
+    assert "head position unknown" in core.messages[-1]
+    assert core.enabled and not stops(rec, p), "an unknown head position is not a stop failure"
 
 
 @pytest.mark.parametrize("pid", MOBILE)

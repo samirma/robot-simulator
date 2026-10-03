@@ -247,96 +247,9 @@ def _node_matrix(node, ns):
 
 
 def dae_triangles(path: Path) -> list[tuple[tuple[float, ...], ...]]:
-    """Every triangle a COLLADA file's visual scene instantiates, in metres (the file's
-    `<unit meter>` applied; all pinned files are Z_UP). Walks nodes, `instance_node`s
-    into `library_nodes`, and composes matrix/translate/rotate/scale. Reads
-    `<triangles>`, `<polylist>` and `<polygons>` (polygons fanned into triangles)."""
-    root = ET.parse(path).getroot()
-    ns = root.tag.split("}")[0] + "}" if root.tag.startswith("{") else ""
-    up = root.find(f"{ns}asset/{ns}up_axis")
-    if up is not None and (up.text or "").strip() not in ("Z_UP", ""):
-        raise Refused(f"{path.name}: up_axis {up.text} is not handled")
-    unit = root.find(f"{ns}asset/{ns}unit")
-    scale = float(unit.get("meter", "1")) if unit is not None else 1.0
-    by_id = {el.get("id"): el for el in root.iter() if el.get("id")}
-
-    def positions(source_id):
-        src = by_id[source_id.lstrip("#")]
-        if src.tag.replace(ns, "") == "vertices":
-            pos = next(i for i in src.findall(f"{ns}input") if i.get("semantic") == "POSITION")
-            return positions(pos.get("source"))
-        arr = [float(v) for v in (src.find(f"{ns}float_array").text or "").split()]
-        acc = src.find(f"{ns}technique_common/{ns}accessor")
-        stride = int(acc.get("stride", "3")) if acc is not None else 3
-        return [tuple(arr[i:i + 3]) for i in range(0, len(arr) - stride + 1, stride)]
-
-    cache = {}
-
-    def geometry(gid):
-        if gid in cache:
-            return cache[gid]
-        mesh = by_id[gid].find(f"{ns}mesh")
-        parts = []
-        for prim in (mesh if mesh is not None else []):
-            kind = prim.tag.replace(ns, "")
-            if kind not in ("triangles", "polylist", "polygons"):
-                continue
-            inputs = prim.findall(f"{ns}input")
-            stride = max(int(i.get("offset", "0")) for i in inputs) + 1
-            vert = next(i for i in inputs if i.get("semantic") == "VERTEX")
-            off = int(vert.get("offset", "0"))
-            pos = positions(vert.get("source"))
-            if kind == "triangles":
-                p = prim.find(f"{ns}p")
-                if p is None or not (p.text or "").strip():
-                    continue
-                flat = [int(v) for v in p.text.split()]
-                ids = flat[off::stride]
-                tris = [tuple(ids[i:i + 3]) for i in range(0, len(ids) - 2, 3)]
-            else:
-                if kind == "polylist":
-                    counts = [int(c) for c in prim.find(f"{ns}vcount").text.split()]
-                    flat = [int(v) for v in prim.find(f"{ns}p").text.split()]
-                    polys, at = [], 0
-                    for c in counts:
-                        polys.append(flat[at * stride:(at + c) * stride])
-                        at += c
-                else:
-                    polys = [[int(v) for v in p.text.split()]
-                             for p in prim.findall(f"{ns}p") if (p.text or "").strip()]
-                tris = []
-                for poly in polys:
-                    ids = poly[off::stride]
-                    tris += [(ids[0], ids[k], ids[k + 1]) for k in range(1, len(ids) - 1)]
-            parts.append((pos, tris))
-        cache[gid] = parts
-        return parts
-
-    out = []
-
-    def walk(node, parent, depth=0):
-        if depth > 32:
-            raise Refused(f"{path.name}: node graph nests deeper than 32 levels")
-        m = _mat_mul(parent, _node_matrix(node, ns))
-        for child in node:
-            tag = child.tag.replace(ns, "")
-            if tag == "node":
-                walk(child, m, depth + 1)
-            elif tag == "instance_node":
-                walk(by_id[child.get("url").lstrip("#")], m, depth + 1)
-            elif tag == "instance_geometry":
-                for pos, tris in geometry(child.get("url").lstrip("#")):
-                    xf = [tuple(scale * (m[r][0] * x + m[r][1] * y + m[r][2] * z + m[r][3])
-                                for r in range(3)) for (x, y, z) in pos]
-                    out.extend((xf[a], xf[b], xf[c]) for a, b, c in tris)
-
-    ref = root.find(f"{ns}scene/{ns}instance_visual_scene")
-    scene = by_id[ref.get("url").lstrip("#")]
-    for node in scene.findall(f"{ns}node"):
-        walk(node, _eye())
-    if not out:
-        raise Refused(f"{path}: no triangles in the visual scene")
-    return out
+    """Every triangle of a COLLADA file's visual scene, in metres: the positions of
+    `dae_visual`'s triangles, material groups in order of first use."""
+    return [tuple(corner[0] for corner in tri) for _, tris in dae_visual(path) for tri in tris]
 
 
 def write_stl(path: Path, tris, source_name: str) -> None:

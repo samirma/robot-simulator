@@ -8,7 +8,8 @@
 # Authoritative boot: start_app_node.service -> `roslaunch ainex_bringup bringup.launch`.
 # It starts the camera, the base (board driver, gait controller, IMU pipeline), the
 # joystick, web_video_server, rosbridge (infrastructure, not listed) and the app with its
-# vision nodes. The boot loads no robot_description and publishes no TF.
+# vision nodes. The boot loads no robot_description and publishes no transform (the IMU
+# filter advertises /tf but never sends on it).
 #
 # Three boot data files are not in any pinned source (they live on the robot's SD image):
 # the action groups (/home/ubuntu/software/ainex_controller/ActionGroups/*.d6a), the LAB
@@ -45,6 +46,14 @@ sources:
     branch: noetic
     revision: c6118a2ef3299a9deab419b68c6a7d4e070b4ff7
     role: dependency (imu_complementary_filter 1.2.7, node `imu_filter`)
+  - id: geometry
+    url: https://github.com/ros/geometry
+    revision: faeeae78261896159072ca08270491e7f4aed3e5
+    role: "dependency, tag 1.13.4 (Noetic tf: tf::TransformBroadcaster wraps tf2_ros's; read for behaviour)"
+  - id: geometry2
+    url: https://github.com/ros/geometry2
+    revision: 40ce3df158c80cc4ac5edc5b1c22fe833d0cbc4c
+    role: "dependency, tag 0.7.10 (Noetic tf2_ros: TransformBroadcaster advertises /tf when constructed; read for behaviour)"
   - id: joystick_drivers
     url: https://github.com/ros-drivers/joystick_drivers
     revision: 1.15.1
@@ -163,7 +172,7 @@ topics:
     nodes: [/ainex_controller]
     rate: non_periodic
     internal_publishers: [/joystick_control, /app]
-    notes: Full gait parameter set; clamped (ainex_controller.py#L594-L645). balance_* fields are ignored.
+    notes: "Full gait parameter set; clamped (ainex_controller.py#L594-L645): the fields with a min/max in the walk motion, except dsp_ratio (amended 2026-10-02: not clamped, #L609). balance_* fields are ignored."
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L160
   - name: /app/set_walking_param
     type: ainex_interfaces/AppWalkingParam
@@ -246,7 +255,9 @@ topics:
     nodes: [/ros_robot_controller]
     rate: 100
     rate_basis: estimate
-    rate_note: As mag_raw; calibrated with the 4x4 matrix ~calibration (mag_calib.yaml). header.frame_id is left empty by the driver.
+    rate_note: As mag_raw; calibrated with the 4x4 matrix ~calibration (mag_calib.yaml).
+    frame_id: ""
+    notes: "header.frame_id is left empty: the driver sets only the stamp (ros_robot_controller_node.py#L293-L299; amended 2026-10-03: frame recorded as a field, it was in the rate note)"
     source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L35
   - {name: /ros_robot_controller/joy, type: sensor_msgs/Joy, direction: out, nodes: [/ros_robot_controller], rate: non_periodic, notes: "gamepad data relayed by the board, only when it reports one", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L36"}
   - {name: /ros_robot_controller/sbus, type: ros_robot_controller/Sbus, direction: out, nodes: [/ros_robot_controller], rate: non_periodic, notes: "only when an SBUS receiver reports", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L37"}
@@ -281,8 +292,22 @@ topics:
     rate_basis: estimate
     rate_note: One output per synchronised (/imu_corrected, /ros_robot_controller/mag) pair (use_mag true), i.e. the IMU rate.
     frame_id: imu_link
-    notes: Orientation from the complementary filter (world frame ENU); publish_tf defaults to false, so no TF.
+    notes: Orientation from the complementary filter (world frame ENU); publish_tf defaults to false, so no transform is sent (/tf is advertised all the same, see below).
     source: https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_complementary_filter/src/complementary_filter_ros.cpp#L53-L80
+  - name: /tf
+    type: tf2_msgs/TFMessage
+    direction: out
+    nodes: [/imu_filter]
+    rate: non_periodic
+    source:
+      - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_complementary_filter/include/imu_complementary_filter/complementary_filter_ros.h#L85
+      - https://github.com/ros/geometry/blob/faeeae78261896159072ca08270491e7f4aed3e5/tf/include/tf/transform_broadcaster.h#L73
+      - https://github.com/ros/geometry2/blob/40ce3df158c80cc4ac5edc5b1c22fe833d0cbc4c/tf2_ros/src/transform_broadcaster.cpp#L40-L43
+    notes: >-
+      Advertised, never published (amended 2026-10-02: the record omitted this topic). The
+      filter's tf::TransformBroadcaster member wraps a tf2_ros::TransformBroadcaster, whose
+      constructor advertises /tf; publish_tf is false (not set by imu.launch, default false,
+      complementary_filter_ros.cpp#L105), so sendTransform is never called (#L288-L305).
 
   # ---------------- camera: usb_cam 0.3.7 `/camera` + rectify nodelet ----------------
   - name: /camera/image_raw
@@ -305,8 +330,8 @@ topics:
     rate_note: Published with every image (image_transport CameraPublisher).
     frame_id: camera
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L236-L253
-  - {name: /camera/image_raw/compressed, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: 30, rate_basis: source, optional: true, notes: "image_transport compressed plugin; exists only if image_transport_plugins is installed on the robot image (not declared by the vendor)", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
-  - {name: /camera/image_raw/compressedDepth, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: non_periodic, optional: true, notes: "image_transport plugin, only if installed", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
+  - {name: /camera/image_raw/compressed, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: 30, rate_basis: source, optional: true, frame_id: camera, notes: "image_transport compressed plugin; exists only if image_transport_plugins is installed on the robot image (not declared by the vendor). Carries the raw image header (https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L83, the Noetic release 1.15.0; amended 2026-10-03: frame recorded)", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
+  - {name: /camera/image_raw/compressedDepth, type: sensor_msgs/CompressedImage, direction: out, nodes: [/camera], rate: non_periodic, optional: true, frame_id: camera, notes: "image_transport plugin, only if installed; it would carry the raw image header (https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/codec.cpp#L215) but encodes only depth encodings, so it publishes nothing for this rgb8 stream (amended 2026-10-03: frame recorded)", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
   - {name: /camera/image_raw/theora, type: theora_image_transport/Packet, direction: out, nodes: [/camera], rate: non_periodic, optional: true, notes: "image_transport plugin, only if installed", source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89"}
   - name: /camera/image_rect_color
     type: sensor_msgs/Image
@@ -350,10 +375,10 @@ topics:
 
   # ---------------- app and vision nodes (start.launch) ----------------
   - {name: /color_detection/update_detect, type: ainex_interfaces/ColorsDetect, direction: in, nodes: [/color_detection], rate: non_periodic, internal_publishers: [/app], source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L51"}
-  - {name: /color_detection/image_result, type: sensor_msgs/Image, direction: out, nodes: [/color_detection], rate: non_periodic, notes: "only after /color_detection/enter (then one per camera frame)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L46"}
+  - {name: /color_detection/image_result, type: sensor_msgs/Image, direction: out, nodes: [/color_detection], rate: non_periodic, frame_id: color_detection, notes: "only after /color_detection/enter (then one per camera frame). rgb8; header.frame_id is the node's name string, stamp the publish time (common.cv2_image2ros(frame, self.name), color_detection_node.py#L156, #L179; https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/src/ainex_sdk/common.py#L26-L35; amended 2026-10-03: frame recorded)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L46"}
   - {name: /object/pixel_coords, type: ainex_interfaces/ObjectsInfo, direction: out, nodes: [/color_detection, /face_detect], rate: non_periodic, notes: "only while detection is started", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_detection/color_detection_node.py#L49"}
-  - {name: /face_detect/image_result, type: sensor_msgs/Image, direction: out, nodes: [/face_detect], rate: non_periodic, notes: "only after /face_detect/enter", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L45"}
-  - {name: /app/image_result, type: sensor_msgs/Image, direction: out, nodes: [/app], rate: non_periodic, notes: "only in app modes that forward detection images", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L185"}
+  - {name: /face_detect/image_result, type: sensor_msgs/Image, direction: out, nodes: [/face_detect], rate: non_periodic, frame_id: face_detect, notes: "only after /face_detect/enter. rgb8; header.frame_id is the node's name string (common.cv2_image2ros(frame, self.name), face_detect_node.py#L146, #L166; amended 2026-10-03: frame recorded)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.py#L45"}
+  - {name: /app/image_result, type: sensor_msgs/Image, direction: out, nodes: [/app], rate: non_periodic, frame_id: "", notes: "only in app modes that forward detection images. rgb8; header.frame_id empty (cv2_image2ros with its default frame_id, app_node.py#L568, #L573, #L848; amended 2026-10-03: frame recorded)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L185"}
 
 services:
   - {name: /walking/command, type: ainex_interfaces/SetWalkingCommand, node: /ainex_controller, notes: "command start|stop|enable|disable act only while control is enabled; enable_control|disable_control toggle it; stop/disable block until the step cycle has ended; always returns result true (#L349-L373)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L159"}
@@ -361,7 +386,7 @@ services:
   - {name: /walking/get_param, type: ainex_interfaces/GetWalkingParam, node: /ainex_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L163"}
   - {name: /walking/is_walking, type: ainex_interfaces/GetWalkingState, node: /ainex_controller, notes: "state = not stopped (same name as the Bool topic)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L164"}
   - {name: /ros_robot_controller/bus_servo/get_position, type: ros_robot_controller/GetBusServosPosition, node: /ros_robot_controller, notes: "servo positions in pulses 0-1000; the only servo position feedback of the boot", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48"}
-  - {name: /ros_robot_controller/bus_servo/get_state, type: ros_robot_controller/GetBusServoState, node: /ros_robot_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L50"}
+  - {name: /ros_robot_controller/bus_servo/get_state, type: ros_robot_controller/GetBusServoState, node: /ros_robot_controller, notes: "amended 2026-10-03: a request with get_voltage or get_torque_state fails on the robot. The handler calls board.bus_servo_read_voltage and board.bus_servo_read_torque (ros_robot_controller_node.py#L194-L196, #L214-L216), which the pinned SDK does not define: it has bus_servo_read_vin and bus_servo_read_torque_state (https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L477, #L492). The AttributeError aborts the handler, so rospy answers the call with a service error; requests without those two flags (id, position, offset, temperature, limits) succeed", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L50"}
   - {name: /ros_robot_controller/pwm_servo/get_state, type: ros_robot_controller/GetPWMServoState, node: /ros_robot_controller, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L52"}
   - {name: /sensor/button/enable, type: std_srvs/SetBool, node: /sensor, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_sdk/scripts/sensor_node.py#L22"}
   - {name: /camera/start_capture, type: std_srvs/Empty, node: /camera, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L124"}
@@ -460,7 +485,7 @@ parameters:
   - {name: /face_detect/enable_display, value: false, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch#L22"}
   - {name: /face_detect/confidence, value: 0.5, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/face_detect/face_detect_node.launch#L23"}
 
-tf: []   # the boot runs no robot_state_publisher / TF broadcaster (tf_broadcaster_imu only with imu.launch debug:=true; imu_filter publish_tf defaults false)
+tf: []   # the boot publishes no transform: no robot_state_publisher, tf_broadcaster_imu only with imu.launch debug:=true, and imu_filter's broadcaster (it advertises /tf) never sends with publish_tf false
 
 motions:
   - id: walk
@@ -475,16 +500,32 @@ motions:
         /walking/command {command: "start"}. The gait engine keeps walking with those
         parameters until stopped (period_times 0) or for period_times steps.
       fields:
-        - {field: x_move_amplitude, unit: m (per step), min: -0.05, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L72"}
-        - {field: y_move_amplitude, unit: m (per step), min: -0.05, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L73"}
-        - {field: angle_move_amplitude, unit: deg (per step), min: -10, max: 10, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L77"}
+        - {field: x_move_amplitude, unit: "m per step, one step = one gait period", min: -0.05, max: 0.05, notes: "amended 2026-10-03: the step this length is per is one gait period (see walk.step_definition); the nominal commanded advance is x_move_amplitude per completed gait period", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L72"}
+        - {field: y_move_amplitude, unit: "m per step, one step = one gait period", min: -0.05, max: 0.05, notes: "amended 2026-10-03: as x_move_amplitude (walk.step_definition)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L73"}
+        - {field: angle_move_amplitude, unit: "deg per step, one step = one gait period", min: -10, max: 10, notes: "amended 2026-10-03: as x_move_amplitude (walk.step_definition)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L77"}
         - {field: z_move_amplitude, unit: m (foot lift), min: 0.0, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L75"}
         - {field: init_z_offset, unit: m (body lowered from full stretch), min: 0.015, max: 0.06, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L70"}
         - {field: y_swap_amplitude, unit: m, min: 0.0, max: 0.05, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L81"}
         - {field: arm_swing_gain, unit: rad, min: 0.0, max: 1.0471976, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L79"}
         - {field: period_time, unit: ms (one gait period), notes: "not clamped; GaitManager levels 300/400/500/600", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L21-L25"}
-        - {field: dsp_ratio, unit: "1 (double-support fraction)", min: 0.0, max: 1.0, source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L40"}
-        - {field: period_times, unit: steps (0 = until stopped), source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242"}
+        - {field: dsp_ratio, unit: "1 (double-support fraction)", min: 0.0, max: 1.0, notes: "amended 2026-10-02: the range is GaitManager's (it raises on a value outside it, gait_manager.py#L110-L111); /ainex_controller does not clamp it, set_walking_param_callback passes it to the gait engine as sent (ainex_controller.py#L609)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L40"}
+        - {field: period_times, unit: "steps = gait periods (0 = until stopped)", notes: "GaitManager step_num; ainex_controller counts one per completed gait period and stops after period_times of them (amended 2026-10-03: step = gait period; uint32, no further limit)", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242"}
+      step_definition: >-
+        Added 2026-10-03. A walk command's amplitudes are per step, and a step is one gait
+        period: GaitManager names x_amplitude / y_amplitude the step length ("步幅", m) and
+        rotation_angle the turn (deg) per step, period_time the gait period (ms) and step_num the
+        number of steps (gait_manager.py#L165-L174, #L199-L204), and ainex_controller counts one
+        step each time the gait engine completes a period (times_stamp reaching period_time,
+        ainex_controller.py#L234-L242). The nominal commanded displacement is therefore
+        x_move_amplitude (and y_move_amplitude, angle_move_amplitude) per completed gait period:
+        at the example's 0.013 m and 400 ms, 0.0325 m/s. How far the body actually advances in
+        one period is computed inside the closed walking_module.so (its symbols x_move_amplitude_,
+        x_move_period_time_, ssp_time_ and wSin resemble those of a sinusoidal ROBOTIS-OP-style gait,
+        whose source is not published), so the real advance per period is not established from
+        source; it needs measurement on the real robot.
+      step_definition_source:
+        - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/gait_manager.py#L165-L174
+        - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242
       example:
         # walking_param.yaml defaults with the joystick's forward step (joystick_control.py#L46-L49)
         set_param: {init_x_offset: 0.0, init_y_offset: -0.005, init_z_offset: 0.025, init_roll_offset: 0.0, init_pitch_offset: 0.0, init_yaw_offset: 0.0, period_time: 400.0, dsp_ratio: 0.2, step_fb_ratio: 0.028, period_times: 0, x_move_amplitude: 0.013, y_move_amplitude: 0.0, z_move_amplitude: 0.02, angle_move_amplitude: 0.0, move_aim_on: false, arm_swing_gain: 0.5236, y_swap_amplitude: 0.02, z_swap_amplitude: 0.006, pelvis_offset: 5.0, hip_pitch_offset: 15.0, balance_enable: false, balance_hip_roll_gain: 0.0, balance_knee_gain: 0.0, balance_ankle_roll_gain: 0.0, balance_ankle_pitch_gain: 0.0}
@@ -591,6 +632,20 @@ motions:
       fields:
         - {field: data, unit: action group name (file stem), notes: "plays /home/ubuntu/software/ainex_controller/ActionGroups/<data>.d6a; an unknown name prints 'can not find aciton file' and only returns to init pose", source: "https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L63-L99"}
       example: {data: left_shot}
+      smoke_example: {data: wave}
+      smoke_example_basis: estimate
+      notes: >-
+        amended 2026-10-03: no vendor action group is playable from the pinned sources. No .d6a
+        file is in Hiwonder/ainex@e8fe2a8 (the files ship on the robot image, see
+        boot.data_files); left_shot is a name the pinned code plays (run_action_demo.py#L22,
+        gait_control_demo.py), not data this record holds. Where the robot image's files are
+        absent, as in simulation, the controller answers every vendor name (left_shot, greet,
+        ...) as unknown: it prints 'can not find aciton file' (motion_manager.py#L74-L99),
+        stops walking and only returns arms and grippers to the init pose. The playable groups
+        this record defines are ESTIMATES, not vendor data, in action_groups.yml (wave,
+        raise_hands, nod: arm and head motions from the init pose); smoke_example `wave` is one
+        of them.
+      estimated_groups: action_groups.yml
     end_state: >-
       Walking is stopped, every frame of the .d6a is sent (each frame's duration in ms, then a
       sleep of that duration), then move_to_init_pose() returns arms/grippers to init_pose over
@@ -669,7 +724,9 @@ tolerances:
     notes: >-
       No manufacturer walking speed or accuracy is published and the gait engine is a closed
       binary; real small-humanoid walking slips and drifts. Checked by sign and magnitude
-      within +-50 % of the displacement the same command produces on the reference engine run.
+      within +-50 % of the nominal commanded displacement, x_move_amplitude per completed gait
+      period (motions[walk].command.step_definition) (amended 2026-10-03: it was compared with
+      the displacement of a reference engine run, which is not a source figure).
   - figure: walk heading drift during a straight walk
     applies_to: walk
     tolerance: {absolute: 0.35, unit: rad}

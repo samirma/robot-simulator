@@ -15,26 +15,33 @@ import pygame as pg
 import pytest
 
 from robot_console.profiles import load
+from robot_console.rosbridge import Rosbridge, TransportError
 from robot_console.teleop import TeleopApp
 from wirespec import merge, wire_spec
 
 MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
+CONSOLE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Script:
     """An event source that posts scheduled events into SDL's queue, then reads it."""
 
-    def __init__(self, steps, fail_at=None):
+    def __init__(self, steps, fail_at=None, hooks=None):
         self.steps = sorted(steps, key=lambda s: s[0])
         self.n = 0
         self.fail_at = fail_at
+        self.hooks = dict(hooks or {})   # step -> callable run when that step is reached
+        self.posted = {}          # step -> when its events were posted (time.monotonic)
 
     def __call__(self):
         self.n += 1
         if self.fail_at is not None and self.n >= self.fail_at:
             raise pg.error("keyboard device went away")
+        if self.n in self.hooks:
+            self.hooks[self.n]()
         while self.steps and self.steps[0][0] <= self.n:
-            _, evs = self.steps.pop(0)
+            step, evs = self.steps.pop(0)
+            self.posted[step] = time.monotonic()
             for e in evs:
                 pg.event.post(e)
         return pg.event.get()
@@ -90,6 +97,11 @@ def test_hold_release_and_exit_through_the_window(fake, pid):
     assert first_stop < first_move, "the start-up stop precedes any motion"
 
 
+def stops_between(srv, p, script, a, b):
+    """Stop ops the bridge received after step ``a``'s events were posted, before step ``b``'s."""
+    return [o for o in stop_ops(srv, p) if script.posted[a] <= o["_t"] < script.posted[b]]
+
+
 @pytest.mark.parametrize("pid", ["myagv", "ainex"])
 def test_focus_loss_stops(fake, pid):
     p = load(pid)
@@ -99,6 +111,67 @@ def test_focus_loss_stops(fake, pid):
     code, app = run_app(srv.url, steps)
     assert code == 0
     assert any("lost keyboard focus" in m for m in app.core.messages + app.lines)
+    assert len(stops_between(srv, p, app._events, 12, 20)) == 1, "focus loss reached the wire as a stop"
+
+
+def test_focus_loss_requests_stop_while_commands_are_disabled(fake):
+    """After a failed start-up stop commands stay disabled, and focus loss still requests stop."""
+    p = load("ainex")
+    srv = fake(wire_spec(p))
+    srv.set_service("/walking/command", "fail")
+    steps = [(10, [pg.event.Event(pg.WINDOWFOCUSLOST)]), (20, [down(pg.K_ESCAPE)])]
+    code, app = run_app(srv.url, steps, robot="ainex")
+    assert code == 0 and not app.core.enabled
+    assert any("STOP FAILED (start-up" in m for m in app.core.messages + app.lines)
+    assert len(stops_between(srv, p, app._events, 10, 20)) == 1
+    assert len(stop_ops(srv, p)) == 3, "start-up, focus loss and exit each requested the stop"
+
+
+def test_enter_reenables_after_a_failed_startup_stop_with_fresh_input(fake):
+    """Console spec §2.1: a failed start-up stop leaves commands disabled (keys are ignored and
+    the limitation is shown); Enter re-enables them without checking that the robot stopped, and
+    only a fresh key press moves the robot."""
+    p = load("ainex")
+    srv = fake(wire_spec(p))
+    refused = []
+
+    def walking_command(args):                    # the first stop (the start-up stop) is refused
+        if args.get("command") == "stop" and not refused:
+            refused.append(args)
+            raise RuntimeError("stop refused")
+        return {"result": True}
+    srv.set_service("/walking/command", walking_command)
+    steps = [(10, [down(pg.K_w)]), (14, [down(pg.K_RETURN), up(pg.K_RETURN)]),
+             (20, [up(pg.K_w)]), (24, [down(pg.K_w)]), (34, [up(pg.K_w)]), (40, [down(pg.K_ESCAPE)])]
+    code, app = run_app(srv.url, steps, robot="ainex")
+    assert code == 0 and refused
+    text = app.core.messages + app.lines
+    assert any("STOP FAILED (start-up" in m and "does not check or confirm" in m for m in text), text
+    script = app._events
+    moves = [o for o in srv.published(p.teleop_walk.param_topic)]
+    assert moves and min(o["_t"] for o in moves) >= script.posted[24], "no motion before Enter and a fresh press"
+    starts = [c for c in srv.calls("/walking/command") if c["args"] == {"command": "start"}]
+    assert len(starts) == 1 and starts[0]["_t"] >= script.posted[24]
+    assert len(stop_ops(srv, p)) == 3, "start-up (refused), release and exit"
+
+
+def test_cameras_show_live_then_stale_in_the_window(fake):
+    """Console spec §2.3 in teleop: the profile camera is live while frames arrive and turns stale
+    (its frame no longer drawn as live) once they stop."""
+    p = load("myagv")
+    srv = fake(wire_spec(p))
+    topic = p.cameras[0].topic
+    seen = {}
+    script = Script([(90, [down(pg.K_ESCAPE)])])
+    app = TeleopApp(srv.url, None, None, events=script, max_seconds=30)
+
+    def look(step):
+        s = app.cams.streams[topic]
+        seen[step] = (s.state(), s.status_text(), s.spec.tied)
+    script.hooks = {40: lambda: look(40), 41: lambda: srv.paused.add(topic), 89: lambda: look(89)}
+    assert app.run() == 0
+    assert seen[40][0] == "live" and seen[40][2], seen
+    assert seen[89][0] == "stale" and seen[89][1].startswith("stale: last frame"), seen
 
 
 def test_input_loss_stops_and_exits_nonzero(fake):
@@ -113,18 +186,44 @@ def test_input_loss_stops_and_exits_nonzero(fake):
 def test_ainex_head_arrows(fake):
     p = load("ainex")
     srv = fake(wire_spec(p))
+    srv.set_service("/ros_robot_controller/bus_servo/get_position",     # head at 500 pulses = 0 rad
+                    lambda args: {"success": True, "position": [{"id": i, "position": 500} for i in args["id"]]})
     steps = [(3, [down(pg.K_RETURN), up(pg.K_RETURN)]), (5, [down(pg.K_LEFT)]), (40, [up(pg.K_LEFT)]),
              (45, [down(pg.K_UP)]), (60, [up(pg.K_UP)]), (65, [down(pg.K_ESCAPE)])]
     code, app = run_app(srv.url, steps, robot="ainex")
     assert code == 0
     pans = [o["msg"]["position"] for o in srv.published("/head_pan_controller/command")]
     tilts = [o["msg"]["position"] for o in srv.published("/head_tilt_controller/command")]
-    # Left turns the head left: a negative pan on the simulated model (axis -Z)
+    # Left turns the head left: a negative pan on the vendor model's -Z head_pan axis
+    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended 2026-10-02)
     assert pans and pans == sorted(pans, reverse=True) and min(pans) >= p.head["pan"].min
     assert min(pans) < -0.5
     assert tilts and max(tilts) <= p.head["tilt"].max
     # head keys never request the walking stop; only start-up and exit did
     assert len(stop_ops(srv, p)) == 2
+
+
+def test_connection_lost_while_advertising_ends_with_status_4(fake, monkeypatch):
+    """The socket drops after discovery, before the start-up stop: no traceback, status 4."""
+    p = load("myagv")
+    srv = fake(wire_spec(p))
+
+    def advertise(self, topic, type):        # the socket drops as teleop advertises
+        srv.drop_all()
+        raise TransportError("send failed")
+    monkeypatch.setattr(Rosbridge, "advertise", advertise)
+    code, app = run_app(srv.url, [(30, [down(pg.K_ESCAPE)])])
+    assert code == 4
+    assert any("NOT guaranteed" in line for line in app.lines), app.lines
+    assert app.lines[-1] == "teleop ends; relaunch to reconnect"
+    assert stop_ops(srv, p) == [], "no stop is claimed or sent"
+
+
+def test_launcher_header_describes_automatic_enable():
+    """teleop.sh's header follows console spec §2.1 as amended 2026-10-02."""
+    with open(os.path.join(CONSOLE, "teleop.sh")) as f:
+        text = f.read()
+    assert "Enter enable commands" not in text and "re-enable" in text
 
 
 def test_automatically_identified_arm_is_refused(fake):
@@ -179,6 +278,21 @@ def test_handled_signals_stop_and_exit(fake, pid, sig, code):
     assert motion_publishes(srv, p) == [o["msg"] for o in stop_ops(srv, p)] if p.teleop_base else True
 
 
+@pytest.mark.parametrize("sig, code", [(signal.SIGHUP, 129), (signal.SIGQUIT, 131)])
+def test_other_handled_interruptions_stop_and_exit(fake, sig, code):
+    """A closed terminal (SIGHUP) or Ctrl-\\ (SIGQUIT) is an interruption the process can handle
+    (console spec §2.1): it clears intent and attempts the stop like SIGINT/SIGTERM."""
+    p = load("myagv")
+    srv = fake(wire_spec(p))
+    proc = launch(srv.url)
+    assert wait_for(lambda: len(stop_ops(srv, p)) >= 1)
+    time.sleep(0.3)
+    proc.send_signal(sig)
+    out, _ = proc.communicate(timeout=20)
+    assert proc.returncode == code, out
+    assert len(stop_ops(srv, p)) == 2, out
+
+
 @pytest.mark.parametrize("pid", MOBILE)
 def test_connection_loss_ends_teleop_nonzero_without_claiming_a_stop(fake, pid):
     p = load(pid)
@@ -207,6 +321,7 @@ def test_every_start_stops_once_without_resumed_motion(fake):
 
 @pytest.mark.parametrize("args, word", [
     (["--robot", "turtlebot"], "unknown robot id"),
+    (["--robot", "myagv_mycobot280"], "unknown robot id"),
     (["--robot", "so101"], "is an arm"),
     (["--robot", "mycobot280"], "is an arm"),
     (["--robot", "myagv", "--namespace", "robot1"], "no namespace override"),

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import math
 import threading
-import time
 
 import common
 from robots import _plan
@@ -33,10 +32,6 @@ def plan(robot, iface, describe):
     return p
 
 
-def drive_row(iface):
-    return next(m for m in iface["motions"] if m["id"] == "drive")
-
-
 class Odometry:
     """/myagv_odometry_node: myAGV.cpp's behaviour against a simulated MCU.
 
@@ -51,7 +46,7 @@ class Odometry:
 
     def __init__(self, node):
         self.node = node
-        self.kin = drive_row(node.iface)["kinematics"]
+        self.kin = common.motion_row(node.iface, "drive")["kinematics"]
         self.wheels = list(self.kin["wheel_joints"])
         self.cmd = (0.0, 0.0, 0.0)
         self.x = self.y = 0.0

@@ -75,7 +75,8 @@ class FakeRosbridge:
         self.ops_lock = threading.Lock()
         self.clients: List[Client] = []
         self.service_behaviour: Dict[str, Any] = {}   # name -> "fail" | "hang" | callable
-        self.action_behaviour: Dict[str, str] = {}    # ros2 action -> "silent" (no feedback, no preemption result)
+        # ros2 action -> "silent" (no feedback, no preemption result) | "abort" (goals end ABORTED)
+        self.action_behaviour: Dict[str, str] = {}
         self.paused: set = set()
         self.frame_encoding: Dict[str, str] = {}
         self.goals: Dict[str, dict] = {}          # ros2 goal id -> {client, action, t_end, done}
@@ -160,7 +161,7 @@ class FakeRosbridge:
         s = dict(INFRA[self.dialect]["services"])
         for r in self.spec["services"]:
             s[r["name"]] = r["type"]
-        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type"]
+        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type", "publishers"]
         if self.dialect == "ros2":
             rosapi += ["action_servers", "get_ros_version"]
         for n in rosapi:
@@ -179,6 +180,13 @@ class FakeRosbridge:
             return {"type": self._topics().get(args.get("topic"), "")}
         if name == "/rosapi/nodes":
             return {"nodes": ["/rosbridge_websocket", "/rosapi", "/robot"]}
+        if name == "/rosapi/publishers":
+            # A row may list its publishing nodes; else the robot publishes its `out` topics.
+            row = next((r for r in self.spec["topics"] if r["name"] == args.get("topic")), None)
+            if row is None:
+                return {"publishers": []}
+            pubs = row.get("publishers", ["/robot"] if row.get("direction", "out") == "out" else [])
+            return {"publishers": list(pubs)}
         if name == "/rosapi/action_servers" and self.dialect == "ros2":
             return {"action_servers": [a["name"] for a in self.spec["actions"]]}
         if name == "/rosapi/get_ros_version" and self.dialect == "ros2":
@@ -211,8 +219,6 @@ class FakeRosbridge:
             c.subs.pop(msg.get("id") or msg["topic"], None)
         elif op == "call_service":
             threading.Thread(target=self._call, args=(c, msg), daemon=True).start()
-        elif op == "publish":
-            self._on_publish(c, msg)
         elif op == "send_action_goal" and self.dialect == "ros2":
             spec = next((a for a in self.spec["actions"] if a["name"] == msg["action"]), None)
             if spec is None:
@@ -222,7 +228,7 @@ class FakeRosbridge:
             silent = self.action_behaviour.get(msg["action"]) == "silent"
             if not silent:
                 for gid, g in list(self.goals.items()):
-                    if g["action"] == msg["action"] and not g["done"] and not g.get("ros1"):
+                    if g["action"] == msg["action"] and not g["done"]:
                         self._finish_goal(gid, 5)           # preempted
             self.goals[msg["id"]] = {"client": c, "action": msg["action"],
                                      "t_end": time.monotonic() + float(spec.get("exec_s", 3.0)),
@@ -241,26 +247,6 @@ class FakeRosbridge:
         g["done"] = True
         g["client"].send({"op": "action_result", "id": gid, "action": g["action"], "values": {},
                           "status": status, "result": True})
-
-    def _on_publish(self, c: Client, msg: dict) -> None:
-        topic = msg["topic"]
-        if self.dialect == "ros1":
-            for a in self.spec["actions"]:
-                if topic == a["name"] + "/goal":
-                    gid = (msg.get("msg") or {}).get("goal_id", {}).get("id", "")
-                    self.goals[gid] = {"client": c, "action": a["name"], "ros1": True, "done": False,
-                                       "t_end": time.monotonic() + float(a.get("exec_s", 3.0))}
-                if topic == a["name"] + "/cancel":
-                    gid = (msg.get("msg") or {}).get("id", "")
-                    for k, g in self.goals.items():
-                        if g.get("ros1") and g["action"] == a["name"] and not g["done"] and gid in ("", k):
-                            self._finish_ros1(k, 2)
-
-    def _finish_ros1(self, gid: str, status: int) -> None:
-        g = self.goals[gid]
-        g["done"] = True
-        res = {"header": {}, "status": {"goal_id": {"id": gid}, "status": status, "text": ""}, "result": {}}
-        self._broadcast(g["action"] + "/result", res)
 
     def _broadcast(self, topic: str, msg: dict) -> None:
         for c in list(self.clients):
@@ -329,8 +315,5 @@ class FakeRosbridge:
                     self._broadcast(r["name"], image_msg(self.dialect, enc, seq=seq))
             for gid, g in list(self.goals.items()):
                 if not g["done"] and now >= g["t_end"]:
-                    if g.get("ros1"):
-                        self._finish_ros1(gid, 3)
-                    else:
-                        self._finish_goal(gid, 4)
+                    self._finish_goal(gid, 6 if self.action_behaviour.get(g["action"]) == "abort" else 4)
             time.sleep(0.01)

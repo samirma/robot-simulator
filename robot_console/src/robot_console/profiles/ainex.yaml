@@ -1,7 +1,6 @@
 id: ainex
 name: "Hiwonder AiNex humanoid (ROS 1, Raspberry Pi)"
 dialect: ros1
-kind: humanoid
 teleop: walk
 sources:
   ainex:
@@ -543,10 +542,11 @@ head:
       min/max = vendor app 'control' mode pan range pulses 125..875 (app_node.py#L89) converted with
       angle2pulse: pulse = 500 + rad*1000/(240 deg) (ainex_controller.py#L24-L25,#L320-L322;
       servo_controller.yaml#L222-L231 init 500, 0..1000). Hardware/URDF limit +-2.09 rad
-      (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L788-L790). Positive = higher pulse =
-      robot's left on the vendor app (find-ball 'left' uses pan 650, app_node.py#L144-L146).
-      The simulated model's head_pan joint axis is -Z (robots_specs/ainex/model.xml), so there
-      a positive command turns the head right; teleop maps the Left key to a negative pan.
+      (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L788-L790). Direction: the
+      vendor model's head_pan joint turns about -Z (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787),
+      so a negative pan turns the head to the robot's left (console spec §2.1, amended 2026-10-02): teleop's
+      Left key and the page's head pad send a negative pan for left. Note for hardware checks: the vendor app's
+      find-ball 'left' uses pan pulse 650, a positive pan (app_node.py#L144-L146).
     policy: "slew 1.0 rad/s (servo max ~0.2 s/60 deg, ainex_controller.py#L177); duration 0.2 s per command as the app's manual head moves (app_node.py#L684)"
   tilt:
     topic: /head_tilt_controller/command
@@ -573,7 +573,7 @@ controls:
     type: ainex_interfaces/HeadState
     template: {position: "$position", duration: "$duration"}
     fields:
-      - {name: position, label: "Pan (+ = left)", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89"}
+      - {name: position, label: "Pan (- = left, + = right)", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89", note: "Sign: the vendor model's head_pan turns about -Z (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec §2.1, amended 2026-10-02)."}
       - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: "console policy; controller converts to ms (ainex_controller.py#L339)"}
     stop: null
     prerequisites: [/head_pan_controller/command]
@@ -634,3 +634,74 @@ controls:
     note: >-
       Finite: the controller stops walking, plays the group once, then returns to init pose. No stop endpoint exists:
       run_action 'Cannot send a stop signal' (motion_manager.py#L65) and stop_action_group is an in-process flag only (#L60-L61).
+
+reads:
+  - id: head_position
+    service: /ros_robot_controller/bus_servo/get_position
+    type: ros_robot_controller/GetBusServosPosition
+    request: {id: [23, 24]}
+    ok_field: success
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48,#L128-L137"
+    note: >-
+      Bus-servo readback of the head servos 23 (pan) and 24 (tilt); teleop starts each head axis from it (the head
+      axis's position comes from the read value of the control that publishes the same topic field). Request
+      {id: [...]}, response {success, position: [{id, position}]} (ros_robot_controller/srv/GetBusServosPosition.srv,
+      msg/BusServoPosition.msg) with a servo left out when it could not be read (#L130-L136). Pulses map to the controls' rad with the controller's relation
+      pulse = 500 + rad * 180/pi/240*1000 (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L25,#L320-L322;
+      init 500, not flipped, ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L241). Called only
+      when the user clicks the read button.
+    values:
+      - {control: head_pan, field: position, path: "position[id=23].position", offset: 500, scale: 238.7324146, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L231"}
+      - {control: head_tilt, field: position, path: "position[id=24].position", offset: 500, scale: 238.7324146, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L232-L241"}
+reads_note: >-
+  A read maps each answered value to a control field as field = (raw - offset) / scale. The page calls a read service
+  only when the user clicks its button; it is never called on load.
+
+model:
+  source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro"
+  note: >-
+    Kinematic description for the page's 3D model, taken from the pinned vendor URDF: joint origins, axes and limits as written
+    there (head_pan turns about -Z, so a negative head_pan turns the head to the robot's left, #L786-L787). Links are drawn as sticks
+    between joint origins, terminal links to their centre of mass; torso and head as boxes bounding their meshes. The fixed camera
+    and imu frames are not drawn (the URDF attaches the camera to body_link, not to the head). The boot reports no joint positions
+    (no /joint_states; servo positions are only readable by calling the /ros_robot_controller/bus_servo/get_position service,
+    see reads.head_position, which the page calls only on a click), so the model has no feedback and draws
+    the head at the page's targets.
+  root: base_link
+  feedback: null
+  joints:
+    - {name: base_link_to_body, type: fixed, parent: base_link, child: body_link, xyz: [0, 0, 0], rpy: [0, 0, 0], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L14-L17"}
+    - {name: r_hip_yaw, type: revolute, parent: body_link, child: r_hip_yaw_link, xyz: [0, -0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L91-L111"}
+    - {name: r_hip_roll, type: revolute, parent: r_hip_yaw_link, child: r_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L148-L168"}
+    - {name: r_hip_pitch, type: revolute, parent: r_hip_roll_link, child: r_hip_pitch_link, xyz: [0.0190366, -0.02, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L205-L225"}
+    - {name: r_knee, type: revolute, parent: r_hip_pitch_link, child: r_knee_link, xyz: [-0.000372039, 5e-05, -0.0968862], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L262-L282"}
+    - {name: r_ank_pitch, type: revolute, parent: r_knee_link, child: r_ank_pitch_link, xyz: [0.00103699, 0, -0.0890766], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L319-L339"}
+    - {name: r_ank_roll, type: revolute, parent: r_ank_pitch_link, child: r_ank_roll_link, xyz: [-0.0190366, 0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L376-L396"}
+    - {name: l_hip_yaw, type: revolute, parent: body_link, child: l_hip_yaw_link, xyz: [0, 0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L433-L453"}
+    - {name: l_hip_roll, type: revolute, parent: l_hip_yaw_link, child: l_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L490-L510"}
+    - {name: l_hip_pitch, type: revolute, parent: l_hip_roll_link, child: l_hip_pitch_link, xyz: [0.019037, 0.02, 0], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L547-L567"}
+    - {name: l_knee, type: revolute, parent: l_hip_pitch_link, child: l_knee_link, xyz: [-0.00037204, -5e-05, -0.096886], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L604-L624"}
+    - {name: l_ank_pitch, type: revolute, parent: l_knee_link, child: l_ank_pitch_link, xyz: [0.001037, 0, -0.089077], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L661-L681"}
+    - {name: l_ank_roll, type: revolute, parent: l_ank_pitch_link, child: l_ank_roll_link, xyz: [-0.019037, -0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L718-L738"}
+    - {name: head_pan, type: revolute, parent: body_link, child: head_pan_link, xyz: [-0.00410029, 0, 0.1078], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, command: [{control: head_pan, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L776-L796"}
+    - {name: head_tilt, type: revolute, parent: head_pan_link, child: head_tilt_link, xyz: [0.00904595, -0.0185734, 0.0281579], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: head_tilt, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L833-L853"}
+    - {name: r_sho_pitch, type: revolute, parent: body_link, child: r_sho_pitch_link, xyz: [-5.46274e-05, -0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L922-L942"}
+    - {name: r_sho_roll, type: revolute, parent: r_sho_pitch_link, child: r_sho_roll_link, xyz: [0.0200035, -0.021506, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L979-L999"}
+    - {name: r_el_pitch, type: revolute, parent: r_sho_roll_link, child: r_el_pitch_link, xyz: [-0.0200035, -0.0741099, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1036-L1056"}
+    - {name: r_el_yaw, type: revolute, parent: r_el_pitch_link, child: r_el_yaw_link, xyz: [0.000397813, -0.0170183, 0.0190702], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1093-L1113"}
+    - {name: r_gripper, type: revolute, parent: r_el_yaw_link, child: r_gripper_link, xyz: [0.0198902, -0.0892356, -0.0190702], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1150-L1170"}
+    - {name: l_sho_pitch, type: revolute, parent: body_link, child: l_sho_pitch_link, xyz: [-5.4627e-05, 0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1207-L1227"}
+    - {name: l_sho_roll, type: revolute, parent: l_sho_pitch_link, child: l_sho_roll_link, xyz: [0.020003, 0.021507, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1264-L1284"}
+    - {name: l_el_pitch, type: revolute, parent: l_sho_roll_link, child: l_el_pitch_link, xyz: [-0.020003, 0.074109, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1321-L1341"}
+    - {name: l_el_yaw, type: revolute, parent: l_el_pitch_link, child: l_el_yaw_link, xyz: [0.00039506, 0.017019, 0.019072], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1378-L1398"}
+    - {name: l_gripper, type: revolute, parent: l_el_yaw_link, child: l_gripper_link, xyz: [0.019893, 0.089232, -0.019072], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1435-L1455"}
+  tips:
+    - {link: r_ank_roll_link, xyz: [0.0285085, -0.0128729, -0.017671], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L342-L345 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: l_ank_roll_link, xyz: [0.028508, 0.012873, -0.017671], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L684-L687 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: r_gripper_link, xyz: [-0.0193851, -0.00931115, -0.00543048], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1116-L1119 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: l_gripper_link, xyz: [-0.019384, 0.0093137, -0.005426], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1401-L1404 (inertial origin: the link is drawn to its centre of mass)"}
+    - {link: head_tilt_link, xyz: [0.0113381, 0.0189173, 0.0221227], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L799-L802 (inertial origin: the link is drawn to its centre of mass)"}
+  boxes:
+    - {link: body_link, min: [-0.0610414, -0.0501, 0.00385656], max: [0.0452424, 0.0500617, 0.102802], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L35-L44 (box = vertex bounds of ainex:src/ainex_simulations/ainex_description/meshes/body_link.STL, visual origin 0)"}
+    - {link: head_pan_link, min: [-0.00952131, -0.0206955, -0.00550082], max: [0.0194872, 0.0206955, 0.038581], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L756-L765 (box = vertex bounds of ainex:src/ainex_simulations/ainex_description/meshes/head_pan_link.STL, visual origin 0)"}
+    - {link: head_tilt_link, min: [-0.027284, -0.00653368, -0.00899648], max: [0.0486398, 0.0443102, 0.0438853], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L813-L822 (box = vertex bounds of ainex:src/ainex_simulations/ainex_description/meshes/head_tilt_link.STL, visual origin 0)"}

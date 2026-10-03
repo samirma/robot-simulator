@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""A wire container's entry point: one robot interface (or one component's) on one ROS
-graph with rosbridge_suite.
+"""A wire container's entry point: one robot interface on one ROS graph with
+rosbridge_suite.
 
 It attaches to the simulation with the spawn's token, starts the ROS graph (ROS 1: a
 master; ROS 2: nothing to start), sets the recorded parameters, starts rosbridge_websocket
 and rosapi on the wire port, then every node of the robot's wire plan (`robots/<id>.py`): the
 stock ROS packages the recorded boot runs where they need no hardware, and the simulated
-drivers for the rest. When every recorded node, topic and service is on the graph it
-prints RSIM-WIRE-READY. It exits -- and the container with it -- when the simulation
-removes the robot or ends.
+drivers for the rest. When every recorded node, topic, service and action is on the graph,
+every one-shot step of the plan (such as a controller spawner, which exits once its
+controllers are active) has succeeded and every recorded periodic output has delivered its
+first sample (`first_samples.py`), it prints RSIM-WIRE-READY. It exits -- and the
+container with it -- when the simulation removes the robot or ends.
 """
 
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import signal
 import subprocess
@@ -106,8 +109,8 @@ def main() -> int:
     dialect = iface["dialect"]
     link = common.SimLink(on_lost=lambda: (log("the simulation removed the robot; exiting"),
                                            stop_all(), os._exit(0)))
-    log(f"attached to the simulation as {link.role} of {link.robot_id} "
-        f"({robot.id}, {dialect} {iface.get('ros_distribution')})")
+    log(f"attached to the simulation as {link.robot_id} "
+        f"({dialect} {iface.get('ros_distribution')})")
     module = importlib.import_module(f"robots.{robot.id}")
     plan = module.plan(robot, iface, link.describe)
 
@@ -155,31 +158,48 @@ def main() -> int:
                             "rosbridge_websocket_launch.xml", f"port:={WIRE_PORT}", "address:=0.0.0.0"])
     for name, cmd in plan.procs:
         start(name, cmd)
-    if os.environ.get("RSIM_TEST_FAIL_ROLE") == link.role:
+    oneshots = [(name, start(name, cmd)) for name, cmd in getattr(plan, "oneshots", [])]
+    if os.environ.get("RSIM_TEST_FAIL_WIRE"):
         # test hook (tests/e2e/test_lifecycle.py): this wire fails during startup
-        log("RSIM_TEST_FAIL_ROLE: failing this wire's startup on purpose")
+        log("RSIM_TEST_FAIL_WIRE: failing this wire's startup on purpose")
         stop_all()
         return 3
 
-    # Ready once rosbridge answers and the graph holds every recorded node, topic and
-    # service (all but the optional rows).
+    # Ready once rosbridge answers, the graph holds every recorded node, topic, service and
+    # action (all but the optional rows) and every one-shot step has exited with status 0:
+    # a controller spawner exits once its controllers are active, so their action servers
+    # accept goals. ROS 1 actions are on the graph as their status topics.
     need_nodes = {n["name"] for n in common.served(iface.get("nodes"))}
     need_topics = {t["name"] for t in common.served(iface.get("topics"))}
     need_services = {s["name"] for s in common.served(iface.get("services"))}
+    need_actions = {a["name"] for a in common.served(iface.get("actions"))}
     rb = wait_for("127.0.0.1", WIRE_PORT, 120)
     t0 = time.time()
     missing = None
     while time.time() - t0 < 150:
+        failed = [f"{name} (status {p.returncode})" for name, p in oneshots
+                  if p.poll() not in (None, 0)]
+        if failed:
+            rb.close()
+            log(f"startup step failed: {', '.join(failed)}")
+            stop_all()
+            return 1
         try:
             nodes = set(rb.call("/rosapi/nodes", timeout=10).get("nodes", []))
             topics = set(rb.call("/rosapi/topics", timeout=10).get("topics", []))
             services = set(rb.call("/rosapi/services", timeout=10).get("services", []))
+            if need_actions and dialect == "ros2":
+                actions = set(rb.call("/rosapi/action_servers", timeout=10)
+                              .get("action_servers", []))
+            else:
+                actions = {a for a in need_actions if f"{a}/status" in topics}
         except Exception as exc:
             missing = f"rosapi: {exc}"
             time.sleep(1)
             continue
         missing = sorted(need_nodes - nodes) + sorted(need_topics - topics) + \
-            sorted(need_services - services)
+            sorted(need_services - services) + sorted(need_actions - actions) + \
+            [name for name, p in oneshots if p.poll() is None]
         if not missing:
             break
         time.sleep(0.5)
@@ -188,8 +208,15 @@ def main() -> int:
         log(f"not ready after 150 s; missing: {missing}")
         stop_all()
         return 1
-    log(f"{READY_MARK} {robot.id} role {link.role}: {len(need_nodes)} nodes, "
-        f"{len(need_topics)} topics, {len(need_services)} services")
+    # ... and every recorded periodic output has delivered its first sample: the wire is
+    # ready to provide its required outputs, not only to name them (spec §2.3)
+    silent = first_samples(iface, dialect)
+    if silent:
+        log(f"not ready: no sample yet on {', '.join(silent)}")
+        stop_all()
+        return 1
+    log(f"{READY_MARK} {robot.id}: {len(need_nodes)} nodes, {len(need_topics)} topics, "
+        f"{len(need_services)} services, {len(need_actions)} actions")
     # Stay until the simulation removes the robot (the link's on_lost exits the process).
     # A ROS 1 node that dies without unregistering (SIGKILL, a crash) stays on the master
     # and so on rosapi's node list; the wire checks each recorded node answers, and a lost
@@ -209,6 +236,32 @@ def main() -> int:
                 return 4
         time.sleep(1)
     return 0
+
+
+#: the least time a periodic output is given to deliver its first sample once the graph is up
+FIRST_SAMPLE_S = 30.0
+
+
+def first_samples(iface: dict, dialect: str) -> list:
+    """The served periodic output topics that delivered no message within FIRST_SAMPLE_S
+    (or five periods of the slowest, if longer), observed on the graph by
+    `first_samples.py`."""
+    rows = [t for t in common.served(iface.get("topics"))
+            if t.get("direction") == "out" and common.rate_of(t)]
+    if not rows:
+        return []
+    timeout = max(FIRST_SAMPLE_S, 5.0 / min(common.rate_of(t) for t in rows))
+    args = [t["name"] if dialect == "ros1" else f"{t['name']}={t['type']}" for t in rows]
+    cmd = source_cmd(["python3", "-u", str(HERE / "first_samples.py"), dialect, timeout, *args])
+    try:
+        res = subprocess.run(cmd, env=ros_env(), stdout=subprocess.PIPE, text=True,
+                             timeout=timeout + 60)
+    except subprocess.TimeoutExpired:
+        return [t["name"] for t in rows]
+    lines = [l for l in res.stdout.splitlines() if l.startswith("{")]
+    if not lines:
+        return [f"(the first-sample probe failed, status {res.returncode})"]
+    return json.loads(lines[-1])["silent"]
 
 
 class _TimeoutTransport(xmlrpc.client.Transport):

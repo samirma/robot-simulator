@@ -1,5 +1,7 @@
 """Checks of a live wire against the robot's interface file, over rosbridge (the same way a
-client sees it). Used by the contract, rate and engine-consistency checks."""
+client sees it). Used by the contract, frame, transform, rate and engine-consistency
+checks. The judging functions take what was observed as plain data, so they can be
+exercised without a wire."""
 
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ from rosbridge_client import Rosbridge
 ROS2_PARAM_SERVICES = ("describe_parameters", "get_parameter_types", "get_parameters",
                        "list_parameters", "set_parameters", "set_parameters_atomically",
                        "get_type_description")
+LOGGER_SERVICES = ("get_logger_levels", "set_logger_levels")
 INFRA_NODES = {"/rosbridge_websocket", "/rosapi", "/rosapi_params", "/rosout"}
 INFRA_TOPICS = {"/rosout", "/rosout_agg", "/parameter_events", "/client_count",
                 "/connected_clients"}
@@ -27,52 +30,22 @@ def interface(rid: str) -> dict:
         return yaml.safe_load(fh)
 
 
-#: Differences between the live wire and the interface file that come from the unchanged
-#: stock code the recorded boot runs, i.e. from the interface file, not the simulator.
-#: Reported (tests print them) and raised with robots_specs; not counted as failures.
-INTERFACE_FILE_GAPS = {
-    "ainex": {
-        "extra topic /tf": "the stock imu_complementary_filter (imu_tools 1.2.7) creates a tf "
-                           "broadcaster, which advertises /tf, even with publish_tf false (it "
-                           "never sends); ros.yml records no /tf",
-    },
-    "rosmaster_x3_plus": {
-        f"extra parameter /imu_filter_madgwick/{p}":
-            "the stock imu_filter_madgwick's dynamic_reconfigure server writes its whole "
-            "config (gain, zeta, magnetometer bias) to the parameter server at start-up; "
-            "ros.yml records only the launch file's parameters"
-        for p in ("gain", "zeta", "mag_bias_x", "mag_bias_y", "mag_bias_z")
-    },
-    "so101": {
-        "missing parameter /robot_state_publisher:qos_overrides./joint_states.subscription."
-        "durability": "robot_state_publisher 3.3.4 (the pinned release) declares only "
-                      "history, depth and reliability overrides for its /joint_states "
-                      "subscription (QosOverridingOptions::with_default_policies)",
-    },
-}
-
-
 def served(rows):
     return [r for r in rows or [] if not r.get("optional")]
 
 
 def infra_service(name: str, dialect: str) -> bool:
-    if name.startswith("/rosapi/") or name.startswith("/rosbridge_websocket/") or \
-            name.startswith("/rosapi_params/"):
+    """ROS infrastructure as the simulator spec's Terms define it: rosbridge's and rosapi's
+    own services and each node's client-library logger, parameter and type-description
+    services; and ROS 2 action internals, which no interface file lists (SCHEMA.md)."""
+    if name.startswith(("/rosapi/", "/rosbridge_websocket/", "/rosapi_params/")):
         return True
     if "/_action/" in name:
         return True
     leaf = name.rsplit("/", 1)[-1]
     if dialect == "ros1":
         return leaf in ("get_loggers", "set_logger_level")
-    # rclcpp's parameter, logger and type-description services, and rclcpp_lifecycle's own
-    # state services, which every lifecycle node (the ros2_control controllers) carries
-    return leaf in ROS2_PARAM_SERVICES + LOGGER_SERVICES + LIFECYCLE_SERVICES
-
-
-LOGGER_SERVICES = ("get_logger_levels", "set_logger_levels")
-LIFECYCLE_SERVICES = ("change_state", "get_state", "get_available_states",
-                      "get_available_transitions", "get_transition_graph")
+    return leaf in ROS2_PARAM_SERVICES + LOGGER_SERVICES
 
 
 def infra_param(name: str, dialect: str) -> bool:
@@ -163,8 +136,8 @@ def contract_problems(rid: str, snap: dict) -> list:
         elif snap["topics"][name] != typ:
             out.append(f"topic {name} is {snap['topics'][name]}, recorded {typ}")
     for name in sorted(set(snap["topics"]) - set(want_topics) - INFRA_TOPICS):
-        if "/_action/" in name or (dialect == "ros2" and name.endswith("/transition_event")):
-            continue   # action internals; rclcpp_lifecycle's own state-change topic
+        if "/_action/" in name:
+            continue   # ROS 2 action internals
         out.append(f"extra topic {name}")
     want_srv = {s["name"]: s["type"] for s in served(iface.get("services"))}
     for name, typ in want_srv.items():
@@ -201,13 +174,150 @@ def contract_problems(rid: str, snap: dict) -> list:
     return out
 
 
+# ---------------------------------------------------------------- frames and transforms
+
+
+def sample(port: int, topics, timeout: float = 15.0) -> dict:
+    """One message of each topic, over rosbridge (throttled, so big images get through)."""
+    rb = Rosbridge("127.0.0.1", port)
+    got = {}
+    try:
+        for t in topics:
+            rb.subscribe(t, lambda m, t=t: got.setdefault(t, m["msg"]), throttle_rate=500,
+                         queue_length=1)
+        deadline = time.monotonic() + timeout
+        while len(got) < len(topics) and time.monotonic() < deadline:
+            time.sleep(0.2)
+    finally:
+        rb.close()
+    return dict(got)
+
+
+def header_frames(port: int, rid: str) -> dict:
+    """{topic: [header frame_id, child_frame_id]} of one message of each served periodic
+    output topic (None where the type has neither)."""
+    got = sample(port, list(periodic_topics(rid)))
+    return {t: [(m.get("header") or {}).get("frame_id"), m.get("child_frame_id")]
+            for t, m in got.items()}
+
+
+def rpy_quat(roll: float, pitch: float, yaw: float) -> list:
+    """[x, y, z, w] of URDF fixed-axis roll, pitch, yaw (tf2's setRPY)."""
+    cr, sr = math.cos(roll / 2), math.sin(roll / 2)
+    cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
+    cy, sy = math.cos(yaw / 2), math.sin(yaw / 2)
+    return [sr * cp * cy - cr * sp * sy, cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy, cr * cp * cy + sr * sp * sy]
+
+
+def _pose_diff(xyz_a, q_a, xyz_b, q_b) -> float:
+    """Largest component difference of two transforms (q and -q are one rotation)."""
+    dq = min(max(abs(a - b) for a, b in zip(q_a, q_b)),
+             max(abs(a + b) for a, b in zip(q_a, q_b)))
+    return max(max(abs(a - b) for a, b in zip(xyz_a, xyz_b)), dq)
+
+
+def tf_window(iface: dict) -> float:
+    """How long to watch the transform tree: five periods of its slowest periodic edge."""
+    rates = [float(r["rate"]) for r in served(iface.get("tf"))
+             if isinstance(r.get("rate"), (int, float)) and not isinstance(r["rate"], bool)
+             and r["rate"] > 0]
+    return max(3.0, 5.0 / min(rates)) if rates else 3.0
+
+
+def tf_edges(port: int, seconds: float) -> dict:
+    """The transforms the wire sends on /tf and /tf_static (latched or transient-local, so
+    sent before the subscription too) over `seconds`: {(parent, child): {"topic", "xyz",
+    "quat" [x, y, z, w], "changed"}}, `topic` "both" when an edge came on both and
+    `changed` when its transform did not stay the same."""
+    rb = Rosbridge("127.0.0.1", port)
+    edges = {}
+    try:
+        for topic in ("/tf", "/tf_static"):
+            def cb(m, topic=topic):
+                for t in (m.get("msg") or {}).get("transforms") or []:
+                    tr = t["transform"]
+                    xyz = [tr["translation"][k] for k in "xyz"]
+                    quat = [tr["rotation"][k] for k in "xyzw"]
+                    key = (t["header"]["frame_id"], t["child_frame_id"])
+                    old = edges.get(key)
+                    edges[key] = {
+                        "topic": topic if old is None or old["topic"] == topic else "both",
+                        "xyz": xyz, "quat": quat,
+                        "changed": old is not None and (
+                            old["changed"] or _pose_diff(old["xyz"], old["quat"], xyz, quat) > 1e-9)}
+            rb.subscribe(topic, cb, queue_length=1000)
+        time.sleep(seconds)
+    finally:
+        rb.close()
+    return edges
+
+
+def tf_problems(iface: dict, edges: dict) -> list:
+    """Every difference between the observed transform tree (`tf_edges`) and the recorded
+    `tf` rows: a missing or an extra edge; an edge on the wrong topic (a fixed transform
+    recorded as non-periodic is latched on /tf_static, every other edge is sent on /tf);
+    a fixed transform that changes or does not carry its recorded xyz/rpy. A moving edge
+    recorded as non-periodic (sent only when its input arrives) may be absent."""
+    out = []
+    rows = {(r["parent"], r["child"]): r for r in served(iface.get("tf"))}
+    for key, r in rows.items():
+        edge = f"{key[0]} -> {key[1]}"
+        want = "/tf_static" if r.get("static") and r.get("rate") == "non_periodic" else "/tf"
+        got = edges.get(key)
+        if got is None:
+            if r.get("static") or r.get("rate") != "non_periodic":
+                out.append(f"missing transform {edge}")
+            continue
+        if got["topic"] != want:
+            out.append(f"transform {edge} on {got['topic']}, recorded on {want}")
+        if not r.get("static"):
+            continue
+        if got["changed"]:
+            out.append(f"fixed transform {edge} changed while observed")
+        if "xyz" in r or "rpy" in r:
+            xyz = [float(v) for v in r.get("xyz", [0.0, 0.0, 0.0])]
+            q = rpy_quat(*[float(v) for v in r.get("rpy", [0.0, 0.0, 0.0])])
+            if _pose_diff(xyz, q, got["xyz"], got["quat"]) > 1e-6:
+                out.append(f"fixed transform {edge} is xyz {got['xyz']} quat {got['quat']}, "
+                           f"recorded xyz {xyz} rpy {r.get('rpy', [0.0, 0.0, 0.0])}")
+    for key in sorted(set(edges) - set(rows)):
+        out.append(f"extra transform {key[0]} -> {key[1]}")
+    return out
+
+
+# ---------------------------------------------------------------- rates and stamps
+
+
+def _rate(row: dict):
+    r = row.get("rate")
+    if isinstance(r, bool) or not isinstance(r, (int, float)) or not r > 0:
+        return None
+    return float(r)
+
+
 def periodic_topics(rid: str) -> dict:
     """{topic: recorded rate} of the served periodic output topics."""
     out = {}
     for t in served(interface(rid)["topics"]):
-        if t.get("direction") == "out" and isinstance(t.get("rate"), (int, float)):
-            out[t["name"]] = float(t["rate"])
+        if t.get("direction") == "out" and _rate(t) is not None:
+            out[t["name"]] = _rate(t)
     return out
+
+
+def rate_record_problems(iface: dict) -> list:
+    """Served output topics whose recorded rate is neither a positive number nor
+    `non_periodic`: such a topic fails the rate check, it is never skipped (spec §5)."""
+    return [f"{t['name']}: no recorded rate ({t.get('rate')!r})"
+            for t in served(iface.get("topics"))
+            if t.get("direction") == "out" and t.get("rate") != "non_periodic"
+            and _rate(t) is None]
+
+
+def multi_publisher(iface: dict) -> set:
+    """Output topics several recorded nodes publish (their stamps interleave)."""
+    return {t["name"] for t in served(iface.get("topics"))
+            if t.get("direction") == "out" and len(t.get("nodes") or []) > 1}
 
 
 def measure(port: int, topics, seconds: float) -> dict:
@@ -243,7 +353,8 @@ PROBE_WARMUP_S = float(os.environ.get("RSIM_PROBE_WARMUP", "5"))
 def measure_on_graph(container: str, rid: str, topics, seconds: float) -> dict:
     """Arrival times of the topics on the wire's own ROS graph, from inside its container
     (rosbridge, a Python server, cannot carry every camera stream and point cloud at once;
-    this measures what the robot publishes, as a native subscriber sees it)."""
+    this measures what the robot publishes, as a native subscriber sees it), and the
+    header stamps of the messages that have one, in arrival order."""
     import subprocess
 
     iface = interface(rid)
@@ -277,11 +388,17 @@ def measure_on_graph(container: str, rid: str, topics, seconds: float) -> dict:
     return merged
 
 
-def rate_problems(measured: dict, rates: dict) -> list:
+def rate_problems(measured: dict, rates: dict, multi=()) -> list:
+    """The acceptance bounds of spec §5 on what `measure_on_graph` saw: over a window of at
+    least five periods, the arrival rate within ±10% of the recorded rate and no gap
+    between consecutive arrivals over three recorded periods. Where the type has a header
+    its stamps are the samples' acquisition times in the wall clock (spec §3 Timing):
+    each within three recorded periods of its arrival, and one publisher's never going
+    back (`multi`: topics several nodes publish, whose stamps interleave)."""
     out = []
     window = measured["window"]
     for topic, rate in rates.items():
-        ts = sorted(measured["times"].get(topic, []))
+        ts = measured["times"].get(topic, [])
         period = 1.0 / rate
         if window < 5 * period:
             out.append(f"{topic}: window {window:.1f} s is shorter than five periods")
@@ -289,14 +406,21 @@ def rate_problems(measured: dict, rates: dict) -> list:
         if len(ts) < 2:
             out.append(f"{topic}: {len(ts)} messages (recorded {rate} Hz)")
             continue
-        got = (len(ts) - 1) / (ts[-1] - ts[0])
+        arrivals = sorted(ts)
+        got = (len(arrivals) - 1) / (arrivals[-1] - arrivals[0])
         if not 0.9 * rate <= got <= 1.1 * rate:
             out.append(f"{topic}: {got:.2f} Hz, recorded {rate} Hz")
-        # Gaps between samples: by their header stamps (acquisition times) where the type
-        # has a header, else by arrival.
-        st = measured.get("stamps", {}).get(topic) or []
-        seq = st if len(st) >= 2 else ts
-        gap = max(b - a for a, b in zip(seq, seq[1:]))
+        gap = max(b - a for a, b in zip(arrivals, arrivals[1:]))
         if gap > 3 * period:
             out.append(f"{topic}: gap {gap:.3f} s > 3 periods ({3 * period:.3f} s)")
+        stamps = measured.get("stamps", {}).get(topic) or []
+        if not stamps:
+            continue
+        lag = max((a - s for a, s in zip(ts, stamps)), key=abs)
+        if abs(lag) > 3 * period:
+            out.append(f"{topic}: a header stamp {lag:+.3f} s from its arrival, over 3 periods "
+                       f"({3 * period:.3f} s): not the acquisition time in the wall clock")
+        back = min((b - a for a, b in zip(stamps, stamps[1:])), default=0.0)
+        if topic not in multi and back < 0:
+            out.append(f"{topic}: header stamps go back {-back:.3f} s")
     return out

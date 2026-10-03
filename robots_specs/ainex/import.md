@@ -144,6 +144,22 @@ real-robot calibration file should replace it when available.
 From the URDF `camera` joint (`ainex.urdf.xacro`), re-parented to `head_tilt_link` as in
 adaptation 5. The optical axis is the link's +x; the boot publishes no camera TF.
 
+## Estimates (not manufacturer data)
+
+Interface values the controller board reports at run time, which no pinned source fixes
+(added 2026-10-03):
+
+* **Board IMU report rate: 200 Hz.** The firmware's report rate is in no pinned source. The
+  driver node polls a queue of one at its 100 Hz loop (`ros.yml` takes that loop cap as the
+  published rate), so any report rate above 100 Hz gives the recorded rate.
+* **Magnetometer**: a fixed local field of 0.22 gauss horizontal (north) and 0.42 gauss down,
+  rotated into `imu_link`.
+* **Battery**: 11.1 V (the pack's nominal voltage, `ros.yml` `boot.hardware`) once per second;
+  the raw value is taken to be millivolts. Neither the unit nor the report interval is in a
+  pinned source (`ros.yml` `/ros_robot_controller/battery`).
+* **Action groups**: no vendor group is in a pinned source. `action_groups.yml` defines the
+  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only).
+
 ## Items not established
 
 * Real-hardware rates of the board IMU/magnetometer and battery reports (only the node's

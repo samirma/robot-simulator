@@ -6,10 +6,13 @@ positions, velocities, actuator activations and controls of every element that s
 into the new model -- scene objects and the other robots keep moving as they were, and
 no controller or watchdog state is reinitialised (the wire-side controllers never notice).
 
-A worktop robot comes with its staging (`worktop_objects.Staging`): the six objects it
-brings, and the scene's loose objects cleared from its working area. Both enter in the
-robot's own recompile and leave in the recompile that removes it; a cleared object comes
-back with the position and velocity it had when it was cleared.
+The six worktop objects are the scene's own, staged once at start (`stage_scene`). An arm
+placed where they are leaves them untouched. An arm placed elsewhere comes with a staging
+(`worktop_objects.Staging`): the six objects staged around it while it is here, and the
+scene's loose objects cleared from its working area. Both enter in the robot's own
+recompile and leave in the recompile that removes it: the six objects are back where the
+scene staged them, and a cleared object comes back with the position and velocity it had
+when it was cleared.
 
 Physics runs on its own thread against the wall clock. Everything that reads or writes
 the model or data holds `world.lock`.
@@ -17,6 +20,7 @@ the model or data holds `world.lock`.
 
 from __future__ import annotations
 
+import collections
 import math
 import queue
 import sys
@@ -27,16 +31,14 @@ from dataclasses import dataclass, field
 import mujoco
 import numpy as np
 
-import robot_model
+import mjutil
 from robot_model import RobotModel
 
 STEP_BATCH = 3          # physics steps per call between serving other threads
 RTF_WINDOW_S = 10.0
 RTF_WARN = 0.90
-
-
-def yaw_quat(yaw: float) -> list[float]:
-    return [math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2)]
+#: completed real-time-factor windows kept for the control port's `rtf` answer (an hour)
+RTF_HISTORY = 360
 
 
 @dataclass
@@ -49,13 +51,10 @@ class Instance:
     placement: str
     xyz: np.ndarray
     yaw: float
-    support_geoms: tuple = ()
     ports: tuple = ()
     state: str = "pending"
     token: str = ""
-    frame: object = None
     body: object = None
-    lease: object = None                 # the spawn's connection
     wires: list = field(default_factory=list)
     info: dict = field(default_factory=dict)
     #: the objects staged with a worktop robot (`worktop_objects.Staging`), or None
@@ -105,7 +104,10 @@ class World:
         self._stop = threading.Event()
         self._thread = None
         self.rtf = 1.0
-        self.listeners = []   # callables(world) run after a recompile, under the lock
+        #: every completed RTF window, oldest first: (wall start, wall end, rtf), wall times
+        #: in epoch seconds -- what a check needs to know whether an interval it measured
+        #: ran in real time (spec §3 Timing: nothing is claimed for an interval below 0.90)
+        self.rtf_windows = collections.deque(maxlen=RTF_HISTORY)
         self._calls = queue.SimpleQueue()
         # actuator targets from the wires, by full actuator name, applied by the physics
         # thread before its next step (see set_ctrl)
@@ -137,19 +139,19 @@ class World:
                         displaced.remove_objects(self.spec)
                     staging.apply(self.spec)
                 frame = self.spec.worldbody.add_frame(pos=[float(v) for v in inst.xyz],
-                                                      quat=yaw_quat(inst.yaw))
+                                                      quat=mjutil.yaw_quat(inst.yaw))
                 body = frame.attach_body(top, inst.prefix, "")
-                inst.frame, inst.body = frame, body
+                inst.body = body
                 model, data = self.spec.recompile(self.model, self.data)
             except Exception:
                 if body is not None:
-                    robot_model._delete(self.spec, body)
+                    mjutil.spec_delete(self.spec, body)
                 self._drop_prefixed(inst.prefix)
                 if staged:
                     staging.undo(self.spec)
                 if displaced is not None:
                     displaced.add_objects(self.spec)
-                inst.frame = inst.body = None
+                inst.body = None
                 raise
             if displaced is not None:
                 staging.place_objects(model, data)
@@ -237,7 +239,7 @@ class World:
             if inst is None:
                 return None
             if inst.body is not None:
-                robot_model._delete(self.spec, inst.body)
+                mjutil.spec_delete(self.spec, inst.body)
                 self._drop_prefixed(inst.prefix)
                 if inst.staging is not None:
                     # its objects go with it; the scene objects cleared for them come back
@@ -255,47 +257,29 @@ class World:
             return inst
 
     def _drop_prefixed(self, prefix: str) -> None:
-        """Remove the attached robot's leftover assets and frames (MuJoCo 3.5 through
-        `spec.delete`, 3.3 through the element's own `delete`)."""
+        """Remove the attached robot's leftover assets and frames."""
         for coll in ("meshes", "materials", "textures", "actuators", "sensors",
                      "equalities", "excludes", "tendons", "pairs"):
             for el in list(getattr(self.spec, coll, [])):
                 if getattr(el, "name", "").startswith(prefix):
                     try:
-                        if hasattr(self.spec, "delete"):
-                            self.spec.delete(el)
-                        elif hasattr(el, "delete"):
-                            el.delete()
+                        mjutil.spec_delete(self.spec, el)
                     except Exception:
                         pass
 
     def _swap(self, model, data) -> None:
         self.model, self.data = model, data
         self.version += 1
-        for fn in list(self.listeners):
-            try:
-                fn(self)
-            except Exception as exc:  # a listener never breaks the world
-                self.log(f"warning: recompile listener failed: {exc}")
 
     # ------------------------------------------------------------------ names
 
-    def ids(self, kind, prefix: str, names):
-        out = []
-        for n in names:
-            i = mujoco.mj_name2id(self.model, kind, prefix + n)
-            if i < 0:
-                raise KeyError(f"{prefix}{n}")
-            out.append(i)
-        return out
-
-    def robot_elements(self, inst: Instance, kind, prefix_extra: str = ""):
+    def robot_elements(self, inst: Instance, kind):
         """[(local name, id)] of the robot's elements of a kind, in model order."""
         m = self.model
         count = {mujoco.mjtObj.mjOBJ_JOINT: m.njnt, mujoco.mjtObj.mjOBJ_ACTUATOR: m.nu,
                  mujoco.mjtObj.mjOBJ_CAMERA: m.ncam, mujoco.mjtObj.mjOBJ_SITE: m.nsite,
                  mujoco.mjtObj.mjOBJ_BODY: m.nbody, mujoco.mjtObj.mjOBJ_GEOM: m.ngeom}[kind]
-        p = inst.prefix + prefix_extra
+        p = inst.prefix
         out = []
         for i in range(count):
             name = mujoco.mj_id2name(m, kind, i) or ""
@@ -305,18 +289,8 @@ class World:
 
     def robot_body_ids(self, inst: Instance) -> set:
         m = self.model
-        root = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, inst.prefix + inst.rm.root)
-        if root < 0:
-            return set()
-        ids = {root}
-        for b in range(m.nbody):
-            p = b
-            while p > 0:
-                if p == root:
-                    ids.add(b)
-                    break
-                p = m.body_parentid[p]
-        return ids
+        return mjutil.subtree(m, mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY,
+                                                   inst.prefix + inst.rm.root))
 
     # ------------------------------------------------------------------ physics loop
 
@@ -411,7 +385,7 @@ class World:
         wall0 = time.monotonic()
         with self.lock:
             sim0 = self.data.time
-        win_wall, win_sim = wall0, sim0
+        win_wall, win_sim, win_epoch = wall0, sim0, time.time()
         while not self._stop.is_set():
             now = time.monotonic()
             target = sim0 + (now - wall0)
@@ -447,11 +421,13 @@ class World:
                 wall0, sim0 = now, simt
             if now - win_wall >= RTF_WINDOW_S:
                 self.rtf = (simt - win_sim) / (now - win_wall)
+                epoch = time.time()
+                self.rtf_windows.append((win_epoch, epoch, self.rtf))
                 if self.rtf < RTF_WARN:
                     self.log(f"warning: real-time factor {self.rtf:.2f} over the last "
                              f"{now - win_wall:.0f} s is below {RTF_WARN:.2f}; rates and "
                              "physical bounds are not met for this interval")
-                win_wall, win_sim = now, simt
+                win_wall, win_sim, win_epoch = now, simt, epoch
             with self.lock:
                 ahead = self.data.time - (sim0 + (time.monotonic() - wall0))
             if ahead > 0:

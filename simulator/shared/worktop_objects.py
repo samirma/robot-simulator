@@ -38,6 +38,8 @@ from pathlib import Path
 import mujoco
 import numpy as np
 
+import mjutil
+
 #: The YCB scans (objects/LICENSES.md), fetched by `run.sh setup`.
 ASSETS = Path(__file__).resolve().parent / "objects" / "ycb"
 #: REF 47-52: the apple mesh scaled to its 20 mm sphere, the plate's to its cylinder, and
@@ -70,10 +72,6 @@ OBJECTS = ("apple", "plate", *(d[0] for d in DISTRACTORS))
 OBJECT_POSES = {"apple": APPLE_SPAWN, "plate": PLATE_CENTRE, **{d[0]: d[1] for d in DISTRACTORS}}
 #: Body name of each staged object.
 BODIES = {name: f"task_{name}" for name in OBJECTS}
-#: REF 133-136: each object's footprint radius on the worktop about its origin.
-FOOTPRINT_RADIUS = {"apple": 0.021, "plate": 0.103, "bowl": 0.084, "mug": 0.069,
-                    "banana": 0.108, "lemon": 0.032}
-
 #: REF 231-237: the plate's rim, 24 boxes around a cone.
 _RIM_N = 24
 _RIM_HALF_LEN = 0.022270
@@ -119,9 +117,8 @@ def _rim_geoms():
 
 def base_frame(pos, yaw: float) -> np.ndarray:
     """REF 255-261: base frame -> world."""
-    cos, sin = math.cos(yaw), math.sin(yaw)
     t = np.eye(4)
-    t[:3, :3] = np.array([[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]])
+    t[:3, :3] = mjutil.yaw_matrix(yaw)
     t[:3, 3] = np.asarray(pos, dtype=np.float64).reshape(3)
     return t
 
@@ -129,10 +126,6 @@ def base_frame(pos, yaw: float) -> np.ndarray:
 def _apply(transform, point) -> list[float]:
     out = transform @ np.array([*point, 1.0], dtype=np.float64)
     return [float(v) for v in out[:3]]
-
-
-def _yaw_quat(yaw: float) -> list[float]:
-    return [float(math.cos(yaw / 2)), 0.0, 0.0, float(math.sin(yaw / 2))]
 
 
 def _quat_mul(a, b) -> list[float]:
@@ -151,26 +144,15 @@ def frame_of(xy, surface_z: float, yaw: float):
 def poses(frame_pos, yaw: float) -> dict:
     """World pose {name: (pos, quat)} of each object as staged."""
     t = base_frame(frame_pos, yaw)
-    bq = _yaw_quat(yaw)
+    bq = mjutil.yaw_quat(yaw)
     out = {"apple": (_apply(t, OBJECT_POSES["apple"]), bq),
            "plate": (_apply(t, OBJECT_POSES["plate"]), bq)}
     for name, pos, obj_yaw, _m, _s in DISTRACTORS:
-        out[name] = (_apply(t, pos), _quat_mul(bq, _yaw_quat(obj_yaw)))
+        out[name] = (_apply(t, pos), _quat_mul(bq, mjutil.yaw_quat(obj_yaw)))
     return out
 
 
 # ---------------------------------------------------------------- clearing
-
-
-def _subtree(model, root: int) -> list[int]:
-    out = []
-    for b in range(root, model.nbody):
-        p = b
-        while p > 0 and p != root:
-            p = model.body_parentid[p]
-        if p == root:
-            out.append(b)
-    return out
 
 
 def plan_clear(model, data, frame_pos, yaw: float, keep=()) -> list[str]:
@@ -201,18 +183,10 @@ def plan_clear(model, data, frame_pos, yaw: float, keep=()) -> list[str]:
         movable = any(model.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE for j in range(adr, adr + num))
         if not (name and movable) or name.startswith("task_"):
             continue
-        if any(inside(data.xpos[k]) for k in _subtree(model, b)):
+        if any(inside(data.xpos[k]) for k in mjutil.subtree(model, b)):
             moved.append(name)
             gone.add(b)
     return moved
-
-
-def spec_delete(spec, element) -> None:
-    """REF 578-588: MuJoCo 3.5 has `spec.delete(element)`, 3.3 `element.delete()`."""
-    if hasattr(spec, "delete"):
-        spec.delete(element)
-    else:
-        element.delete()
 
 
 _JOINT_SKIP = {"id", "signature", "type", "name", "classname", "frame"}
@@ -253,11 +227,6 @@ class Staging:
     # -- reading
     def poses(self) -> dict:
         return poses(self.frame_pos, self.yaw)
-
-    def describe(self) -> dict:
-        return {"frame": {"pos": [round(v, 6) for v in self.frame_pos], "yaw": self.yaw},
-                "staged": {n: {"pos": p, "quat": q} for n, (p, q) in self.poses().items()},
-                "cleared": list(self.cleared)}
 
     # -- state of the cleared objects
     def capture(self, model, data) -> None:
@@ -311,7 +280,7 @@ class Staging:
             for joint in list(body.joints):
                 if joint.type == mujoco.mjtJoint.mjJNT_FREE:
                     joints.append((joint.name, _joint_props(joint)))
-                    spec_delete(spec, joint)
+                    mjutil.spec_delete(spec, joint)
             self._sunk[name] = ([float(v) for v in body.pos], joints)
             body.pos = [body.pos[0], body.pos[1], body.pos[2] - SUNK_DEPTH]
         self.add_objects(spec)
@@ -320,11 +289,11 @@ class Staging:
         """The six objects alone, at this staging's frame (no clearing)."""
         self._add_assets(spec)
         t = base_frame(self.frame_pos, self.yaw)
-        bq = _yaw_quat(self.yaw)
+        bq = mjutil.yaw_quat(self.yaw)
         self._stage_apple_plate(spec, t, bq)
         for name, pos, obj_yaw, mass, _scale in DISTRACTORS:
             body = spec.worldbody.add_body(name=f"task_{name}", pos=_apply(t, pos),
-                                           quat=_quat_mul(bq, _yaw_quat(obj_yaw)))
+                                           quat=_quat_mul(bq, mjutil.yaw_quat(obj_yaw)))
             body.add_freejoint(name=f"task_{name}_joint")
             body.add_geom(name=f"task_{name}_visual", type=mujoco.mjtGeom.mjGEOM_MESH,
                           meshname=f"task_{name}_vis", material=f"task_{name}_mat",
@@ -338,18 +307,16 @@ class Staging:
         """Take the six objects (and their assets) out of the spec, found by name so it
         also works on a copy of the spec they were staged into; the cleared scene objects
         stay cleared."""
-        from robot_model import _delete
-
         for body in self._bodies:
-            _delete(spec, body)
+            mjutil.spec_delete(spec, body)
         for name in BODIES.values():
             body = spec.body(name)
             if body is not None:
-                _delete(spec, body)
+                mjutil.spec_delete(spec, body)
         self._bodies = []
         for el in self._assets:
             try:
-                spec_delete(spec, el)
+                mjutil.spec_delete(spec, el)
             except Exception:
                 pass  # MuJoCo 3.3: an unused asset may stay in the spec
         self._assets = []
@@ -359,7 +326,7 @@ class Staging:
                     el = getattr(spec, kind)(asset)
                     if el is not None:
                         try:
-                            spec_delete(spec, el)
+                            mjutil.spec_delete(spec, el)
                         except Exception:
                             pass
 

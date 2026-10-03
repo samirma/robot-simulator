@@ -14,7 +14,7 @@ downloaded sources extracted over it, exactly where robocasa's own downloader an
 reference setup extracted them inside the checkout. The resulting files are the same, so
 the compiled kitchen is the same.
 
-Sources (the same zips robocasa v1.0's `download_kitchen_assets` and the reference
+Sources (the same zips robocasa v1.0's `download_kitchen_assets` and the reference project's
 `tools/download_lightwheel_assets.py` fetch):
 
 * `tex`             robocasa/robocasa-assets textures.zip           -> textures/

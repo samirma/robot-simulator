@@ -56,6 +56,22 @@ sources:
     url: https://github.com/ros-perception/image_common
     revision: 5559cc5ff15c4e94bef7912eabe5e330de62475c
     role: dependency of usb_cam, tag 1.12.1 (camera_info_manager, image_transport)
+  - id: image_transport_plugins
+    url: https://github.com/ros-perception/image_transport_plugins
+    revision: 7825def310eaab518da912bc491266e76eda8742
+    role: optional plugins, tag 1.15.0 (Noetic compressed, compressedDepth and theora transports; read for the optional plugin rows)
+  - id: navigation
+    url: https://github.com/ros-planning/navigation
+    revision: f13af47ee2bca6c3bf99db2965e46e55303f6e66
+    role: dependency of the optional navigation launch, tag 1.17.3 (Noetic move_base, costmap_2d, global_planner, base_local_planner, amcl, map_server)
+  - id: slam_gmapping
+    url: https://github.com/ros-perception/slam_gmapping
+    revision: 0835d19c69dae36c98b8fa337f4cc2162bdbaf0c
+    role: dependency of the optional mapping launch, tag 1.4.2 (Noetic gmapping)
+  - id: actionlib
+    url: https://github.com/ros/actionlib
+    revision: ce5635930d4083090ee1e6c4c3248daa3fb3de62
+    role: dependency of the optional navigation launch, tag 1.14.3 (Noetic action server topics of move_base)
 
 boot:
   summary: >-
@@ -80,7 +96,7 @@ boot:
     - {source: myagv_ros, path: myagv_odometry/launch/myagv_active.launch}
     - {source: usb_cam, path: nodes/usb_cam_node.cpp, role: approved community camera boot (rosrun with _camera_frame_id:=camera_link; no launch file)}
     - {source: myagv_ros, path: ydlidar_ros_driver/launch/X2.launch, role: included by myagv_active.launch (L25)}
-    - {source: myagv_ros, path: myagv_odometry/scripts/start_ydlidar.sh, role: lidar power script (calls start_ydlidar.py, GPIO20)}
+    - {source: myagv_ros, path: myagv_odometry/scripts/start_ydlidar.sh, role: "lidar power script (calls start_ydlidar.py, GPIO20)"}   # amended 2026-10-03: role quoted (the unquoted comma split it into two keys)
     - {source: myagv_docs, path: MYAGV_PI_2023_EN/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.md, role: "documentation of the bring-up (L7-19)"}
   data_files:
     - {source: myagv_ros, path: myagv_urdf/urdf/myAGV.urdf, role: robot_description (textfile)}
@@ -254,7 +270,11 @@ topics:
     rate_basis: source
     rate_note: joint_state_publisher default rate 10 Hz (param "rate" unset by the boot)
     source: https://github.com/ros/joint_state_publisher/blob/af3dd1bec348adba7879e3e7a866c5a28816bd38/joint_state_publisher/src/joint_state_publisher/__init__.py#L210
-    notes: name [base_up], position [0.0] (the URDF's only movable joint, default position).
+    frame_id: ""
+    notes: >-
+      name [base_up], position [0.0] (the URDF's only movable joint, default position).
+      header.frame_id is empty: joint_state_publisher sets only the stamp (__init__.py#L217-L218;
+      amended 2026-10-03: frame recorded).
   - name: /tf
     type: tf2_msgs/TFMessage
     direction: out
@@ -265,6 +285,7 @@ topics:
       sum of the publishers in tf[]: robot_state_publisher 10 (one message per /joint_states),
       base2camera_link 20, base2imu_link 20, base2laser_link 100, robot_pose_ekf 30.
     source: https://github.com/ros/geometry2/blob/309814fd7d55d874f9bac40b2cc8669a5b86f3c5/tf2_ros/src/transform_broadcaster.cpp#L42
+    notes: The optional /gmapping and /amcl also publish map -> odom on it (see tf).
   - name: /tf_static
     type: tf2_msgs/TFMessage
     direction: out
@@ -289,6 +310,7 @@ topics:
       only when the filter updates with newer sensor data, so 30 Hz holds while /odom and /imu
       arrive faster than 30 Hz.
     frame_id: odom
+    child_frame_id: ""   # amended 2026-10-03: recorded as a field (the notes state it)
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L436-L470
     notes: >-
       Pose from the EKF of /odom + /imu; twist copied from the last /odom; child_frame_id is left
@@ -330,7 +352,7 @@ topics:
     frame_id: camera_link
     camera: true
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89
-    notes: 640x480, rgb8 (driver defaults, pixel_format mjpeg decoded). image_transport plugin topics appear only when those plugins are installed.
+    notes: 640x480, rgb8 (driver defaults, pixel_format mjpeg decoded). The image_transport plugin topics exist only when those plugins are installed (optional rows below).
   - name: /usb_cam/camera_info
     type: sensor_msgs/CameraInfo
     direction: out
@@ -382,6 +404,8 @@ topics:
     rate: non_periodic
     optional: true
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L13
+    frame_id: map
+    notes: "amcl's global_frame_id, map (https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L1351; amended 2026-10-03: frame recorded)"
   - name: /initialpose
     type: geometry_msgs/PoseWithCovarianceStamped
     direction: in
@@ -396,7 +420,442 @@ topics:
     rate: non_periodic
     optional: true
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L20
-    notes: move_base's costmap, plan and action-internal topics are not enumerated here (optional launch).
+  # move_base (navigation 1.17.3; global_planner/GlobalPlanner, base_local_planner/TrajectoryPlannerROS,
+  # costmaps static/voxel|obstacle/inflation layers as the launch's yaml files configure them)
+  - name: /move_base/goal
+    type: move_base_msgs/MoveBaseActionGoal
+    direction: in
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros/actionlib/blob/ce5635930d4083090ee1e6c4c3248daa3fb3de62/actionlib/include/actionlib/server/action_server_imp.h#L178
+    notes: "action goal; move_base also publishes on it itself, turning each /move_base_simple/goal into an action goal (move_base.cpp L99-L100)."
+  - name: /move_base/cancel
+    type: actionlib_msgs/GoalID
+    direction: in
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros/actionlib/blob/ce5635930d4083090ee1e6c4c3248daa3fb3de62/actionlib/include/actionlib/server/action_server_imp.h#L182
+  - name: /move_base/status
+    type: actionlib_msgs/GoalStatusArray
+    direction: out
+    nodes: [/move_base]
+    rate: 5
+    rate_basis: source
+    rate_note: "actionlib status timer, actionlib_status_frequency unset so 5 Hz (L156-L174)"
+    optional: true
+    source: https://github.com/ros/actionlib/blob/ce5635930d4083090ee1e6c4c3248daa3fb3de62/actionlib/include/actionlib/server/action_server_imp.h#L152-L174
+  - name: /move_base/feedback
+    type: move_base_msgs/MoveBaseActionFeedback
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros/actionlib/blob/ce5635930d4083090ee1e6c4c3248daa3fb3de62/actionlib/include/actionlib/server/action_server_imp.h#L149-L150
+  - name: /move_base/result
+    type: move_base_msgs/MoveBaseActionResult
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros/actionlib/blob/ce5635930d4083090ee1e6c4c3248daa3fb3de62/actionlib/include/actionlib/server/action_server_imp.h#L148
+  - name: /move_base/current_goal
+    type: geometry_msgs/PoseStamped
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L97
+    frame_id: map
+    notes: "the goal transformed into the global costmap's global_frame, map (goalToGlobalFrame, move_base.cpp#L542-L543, #L658-L668; amended 2026-10-03: frame recorded)"
+  - name: /move_base/recovery_status
+    type: move_base_msgs/RecoveryStatus
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L101
+  - name: /move_base/global_costmap/costmap
+    type: nav_msgs/OccupancyGrid
+    direction: out
+    nodes: [/move_base]
+    rate: 0.3
+    rate_basis: source
+    rate_note: "published by the map update loop, which runs at update_frequency 0.3 Hz (global_costmap_params.yaml L5; publish_frequency 0.3; costmap_2d_ros.cpp L412-L446), once the costmap is initialised (map received); always_send_full_costmap true sends the whole grid"
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_publisher.cpp#L52-L53
+  - name: /move_base/global_costmap/costmap_updates
+    type: map_msgs/OccupancyGridUpdate
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_publisher.cpp#L54
+    notes: "advertised, but with always_send_full_costmap true every publication is a full costmap"
+  - name: /move_base/global_costmap/footprint
+    type: geometry_msgs/PolygonStamped
+    direction: out
+    nodes: [/move_base]
+    rate: 0.3
+    rate_basis: source
+    rate_note: "one per map update while the robot pose is known (costmap_2d_ros.cpp L455-L473), update_frequency 0.3 Hz"
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L149-L155
+    notes: "the padded robot footprint; the costmap also subscribes to this name for footprint updates (L141-L147)"
+  - name: /move_base/local_costmap/costmap
+    type: nav_msgs/OccupancyGrid
+    direction: out
+    nodes: [/move_base]
+    rate: 0.3
+    rate_basis: source
+    rate_note: "published by the map update loop, which runs at update_frequency 0.3 Hz (local_costmap_params.yaml L5; publish_frequency 2.0, capped by that loop; costmap_2d_ros.cpp L412-L446), once the costmap is initialised (map received); always_send_full_costmap true sends the whole grid"
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_publisher.cpp#L52-L53
+  - name: /move_base/local_costmap/costmap_updates
+    type: map_msgs/OccupancyGridUpdate
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_publisher.cpp#L54
+    notes: "advertised, but with always_send_full_costmap true every publication is a full costmap"
+  - name: /move_base/local_costmap/footprint
+    type: geometry_msgs/PolygonStamped
+    direction: out
+    nodes: [/move_base]
+    rate: 0.3
+    rate_basis: source
+    rate_note: "one per map update while the robot pose is known (costmap_2d_ros.cpp L455-L473), update_frequency 0.3 Hz"
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L149-L155
+    notes: "the padded robot footprint; the costmap also subscribes to this name for footprint updates (L141-L147)"
+  - name: /move_base/global_costmap/obstacle_layer/clearing_endpoints
+    type: sensor_msgs/PointCloud
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/voxel_layer.cpp#L64
+    frame_id: map
+    notes: "VoxelLayer (the global costmap's obstacle_layer); voxel_grid is not advertised (publish_voxel_map default false, L60-L62). Frame: the global costmap's global_frame, map (voxel_layer.cpp#L384; amended 2026-10-03: frame recorded)"
+  - name: /move_base/GlobalPlanner/plan
+    type: nav_msgs/Path
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L138
+    notes: "one per global plan while a goal is active (planner_frequency 1.0)"
+  - name: /move_base/GlobalPlanner/potential
+    type: nav_msgs/OccupancyGrid
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    frame_id: map
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L139
+  - name: /move_base/TrajectoryPlannerROS/global_plan
+    type: nav_msgs/Path
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L95
+    frame_id: map
+    notes: "the global plan transformed into the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, #L413, goal_functions.cpp#L66; amended 2026-10-03: frame recorded)"
+  - name: /move_base/TrajectoryPlannerROS/local_plan
+    type: nav_msgs/Path
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L96
+    frame_id: map
+    notes: "in the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, goal_functions.cpp#L66; amended 2026-10-03: frame recorded)"
+  - name: /move_base/TrajectoryPlannerROS/cost_cloud
+    type: sensor_msgs/PointCloud2
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/map_grid_visualizer.cpp#L50-L51
+    frame_id: map
+    notes: "sent each control cycle while executing, publish_cost_grid_pc true (base_local_planner_params.yaml L50); frame = the local costmap's global_frame, map (trajectory_planner_ros.cpp#L259-L260, map_grid_visualizer.cpp#L47, #L56; amended 2026-10-03: frame recorded)"
+  # dynamic_reconfigure servers of the optional nodes and plugins
+  - name: /amcl/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/amcl]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L504
+  - name: /amcl/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/amcl]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L504
+  - name: /move_base/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L177
+  - name: /move_base/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L177
+  - name: /move_base/global_costmap/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167
+  - name: /move_base/global_costmap/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167
+  - name: /move_base/global_costmap/static_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120
+  - name: /move_base/global_costmap/static_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120
+  - name: /move_base/global_costmap/obstacle_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/voxel_layer.cpp#L69
+  - name: /move_base/global_costmap/obstacle_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/voxel_layer.cpp#L69
+  - name: /move_base/global_costmap/inflation_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95
+  - name: /move_base/global_costmap/inflation_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95
+  - name: /move_base/local_costmap/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167
+  - name: /move_base/local_costmap/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167
+  - name: /move_base/local_costmap/static_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120
+  - name: /move_base/local_costmap/static_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120
+  - name: /move_base/local_costmap/obstacle_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/obstacle_layer.cpp#L223
+  - name: /move_base/local_costmap/obstacle_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/obstacle_layer.cpp#L223
+  - name: /move_base/local_costmap/inflation_layer/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95
+  - name: /move_base/local_costmap/inflation_layer/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95
+  - name: /move_base/GlobalPlanner/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L151
+  - name: /move_base/GlobalPlanner/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L151
+  - name: /move_base/TrajectoryPlannerROS/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L266
+  - name: /move_base/TrajectoryPlannerROS/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/move_base]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L266
+  - name: /usb_cam/image_raw/compressed/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69
+  - name: /usb_cam/image_raw/compressed/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69
+  - name: /usb_cam/image_raw/compressedDepth/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64
+  - name: /usb_cam/image_raw/compressedDepth/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64
+  - name: /usb_cam/image_raw/theora/parameter_descriptions
+    type: dynamic_reconfigure/ConfigDescription
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86
+  - name: /usb_cam/image_raw/theora/parameter_updates
+    type: dynamic_reconfigure/Config
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    latched: true
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86
+  # usb_cam image_transport plugins (only when image_transport_plugins is installed)
+  - name: /usb_cam/image_raw/compressed
+    type: sensor_msgs/CompressedImage
+    direction: out
+    nodes: [/usb_cam]
+    rate: 30
+    rate_basis: source
+    rate_note: "one JPEG per raw image while subscribed"
+    optional: true
+    frame_id: camera_link
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L60-L66
+  - name: /usb_cam/image_raw/compressedDepth
+    type: sensor_msgs/CompressedImage
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L55-L61
+    frame_id: camera_link
+    notes: "encodes only depth encodings, so it publishes nothing for this rgb8 stream; it would carry the raw image header (codec.cpp#L215; amended 2026-10-03: frame recorded)"
+  - name: /usb_cam/image_raw/theora
+    type: theora_image_transport/Packet
+    direction: out
+    nodes: [/usb_cam]
+    rate: non_periodic
+    optional: true
+    source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L72-L83
+    notes: "packets are emitted by the encoder, not one per frame"
 
 services:
   - name: /start_scan
@@ -459,6 +918,23 @@ services:
     node: /move_base
     optional: true
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L20
+  - {name: /amcl/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /amcl, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L504"}
+  - {name: /move_base/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L177"}
+  - {name: /move_base/global_costmap/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167"}
+  - {name: /move_base/global_costmap/static_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120"}
+  - {name: /move_base/global_costmap/obstacle_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/voxel_layer.cpp#L69"}
+  - {name: /move_base/global_costmap/inflation_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95"}
+  - {name: /move_base/local_costmap/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/src/costmap_2d_ros.cpp#L167"}
+  - {name: /move_base/local_costmap/static_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/static_layer.cpp#L120"}
+  - {name: /move_base/local_costmap/obstacle_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/obstacle_layer.cpp#L223"}
+  - {name: /move_base/local_costmap/inflation_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95"}
+  - {name: /move_base/GlobalPlanner/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L151"}
+  - {name: /move_base/TrajectoryPlannerROS/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L266"}
+  - {name: /usb_cam/image_raw/compressed/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69"}
+  - {name: /usb_cam/image_raw/compressedDepth/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64"}
+  - {name: /usb_cam/image_raw/theora/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86"}
+  - {name: /move_base/GlobalPlanner/make_plan, type: nav_msgs/GetPlan, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L149"}
+  - {name: /change_map, type: nav_msgs/LoadMap, node: /map_server_for_test, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/map_server/src/main.cpp#L78"}
 
 actions:
   - name: /move_base
@@ -500,9 +976,211 @@ parameters:
   - {name: /ydlidar_lidar_publisher/range_max, node: /ydlidar_lidar_publisher, value: 12.0, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L33"}
   - {name: /ydlidar_lidar_publisher/frequency, node: /ydlidar_lidar_publisher, value: 10.0, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L35", notes: "has no effect on the X2L (L34 comment)"}
   - {name: /usb_cam/camera_frame_id, node: /usb_cam, value: camera_link, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L118", notes: "set by the rosrun private argument; the driver's other settings are defaults and not on the parameter server"}
-  # The optional gmapping, amcl, map_server and move_base launches also load parameters
-  # (myagv_navigation/launch/gmapping.launch L6-38, navigation_active.launch L7-37 and
-  # myagv_navigation/param/base_local_planner_param/*.yaml); they are not enumerated here.
+  # --- optional: mapping (gmapping.launch L5-L40, private parameters of /gmapping) ---
+  - {name: /gmapping/base_frame, node: /gmapping, value: base_footprint, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L6"}
+  - {name: /gmapping/odom_frame, node: /gmapping, value: odom, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L7"}
+  - {name: /gmapping/map_update_interval, node: /gmapping, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L9"}
+  - {name: /gmapping/maxRange, node: /gmapping, value: 5.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L11"}
+  - {name: /gmapping/maxUrange, node: /gmapping, value: 4.5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L12"}
+  - {name: /gmapping/sigma, node: /gmapping, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L13"}
+  - {name: /gmapping/kernelSize, node: /gmapping, value: 1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L14"}
+  - {name: /gmapping/lstep, node: /gmapping, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L15"}
+  - {name: /gmapping/astep, node: /gmapping, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L16"}
+  - {name: /gmapping/iterations, node: /gmapping, value: 5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L17"}
+  - {name: /gmapping/lsigma, node: /gmapping, value: 0.075, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L18"}
+  - {name: /gmapping/ogain, node: /gmapping, value: 3.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L19"}
+  - {name: /gmapping/lskip, node: /gmapping, value: 0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L20"}
+  - {name: /gmapping/srr, node: /gmapping, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L21"}
+  - {name: /gmapping/srt, node: /gmapping, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L22"}
+  - {name: /gmapping/str, node: /gmapping, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L23"}
+  - {name: /gmapping/stt, node: /gmapping, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L24"}
+  - {name: /gmapping/linearUpdate, node: /gmapping, value: 0.5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L25"}
+  - {name: /gmapping/angularUpdate, node: /gmapping, value: 0.436, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L26"}
+  - {name: /gmapping/temporalUpdate, node: /gmapping, value: -1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L27"}
+  - {name: /gmapping/resampleThreshold, node: /gmapping, value: 0.5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L28"}
+  - {name: /gmapping/particles, node: /gmapping, value: 80, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L29"}
+  - {name: /gmapping/xmin, node: /gmapping, value: -1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L30"}
+  - {name: /gmapping/ymin, node: /gmapping, value: -1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L31"}
+  - {name: /gmapping/xmax, node: /gmapping, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L32"}
+  - {name: /gmapping/ymax, node: /gmapping, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L33"}
+  - {name: /gmapping/delta, node: /gmapping, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L34"}
+  - {name: /gmapping/llsamplerange, node: /gmapping, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L35"}
+  - {name: /gmapping/llsamplestep, node: /gmapping, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L36"}
+  - {name: /gmapping/lasamplerange, node: /gmapping, value: 0.005, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L37"}
+  - {name: /gmapping/lasamplestep, node: /gmapping, value: 0.005, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L38"}
+  # --- optional: navigation (navigation_active.launch) ---
+  - {name: /map_server_for_test/frame_id, node: /map_server_for_test, value: map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L7"}
+  # /amcl: amcl.yaml loaded into its private namespace (launch L14), then the launch params L15-L17
+  - {name: /amcl/use_map_topic, node: /amcl, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L1"}
+  - {name: /amcl/odom_frame_id, node: /amcl, value: odom, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L3"}
+  - {name: /amcl/base_frame_id, node: /amcl, value: base_footprint, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L4"}
+  - {name: /amcl/global_frame_id, node: /amcl, value: map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L5"}
+  - {name: /amcl/odom_model_type, node: /amcl, value: diff, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L8"}
+  - {name: /amcl/gui_publish_rate, node: /amcl, value: 10.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L9"}
+  - {name: /amcl/min_particles, node: /amcl, value: 2000, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L10"}
+  - {name: /amcl/max_particles, node: /amcl, value: 5000, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L11"}
+  - {name: /amcl/kld_err, node: /amcl, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L12"}
+  - {name: /amcl/kld_z, node: /amcl, value: 0.99, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L13"}
+  - {name: /amcl/odom_alpha1, node: /amcl, value: 0.4, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L15"}
+  - {name: /amcl/odom_alpha2, node: /amcl, value: 0.3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L16"}
+  - {name: /amcl/odom_alpha3, node: /amcl, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L17"}
+  - {name: /amcl/odom_alpha4, node: /amcl, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L18"}
+  - {name: /amcl/laser_max_beams, node: /amcl, value: 100, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L19"}
+  - {name: /amcl/laser_max_range, node: /amcl, value: 12.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L20"}
+  - {name: /amcl/update_min_d, node: /amcl, value: 0.15, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L29"}
+  - {name: /amcl/update_min_a, node: /amcl, value: 0.2, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L30"}
+  - {name: /amcl/resample_interval, node: /amcl, value: 1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L32"}
+  - {name: /amcl/transform_tolerance, node: /amcl, value: 0.3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L35"}
+  - {name: /amcl/recovery_alpha_slow, node: /amcl, value: 0.001, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L36"}
+  - {name: /amcl/recovery_alpha_fast, node: /amcl, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L37"}
+  - {name: /amcl/initial_cov_xx, node: /amcl, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L39"}
+  - {name: /amcl/initial_cov_yy, node: /amcl, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/amcl.yaml#L40"}
+  - {name: /amcl/initial_pose_x, node: /amcl, value: 0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L15", notes: "amcl later overwrites initial_pose_* and initial_cov_* with its pose estimate (amcl_node.cpp L782-L790)"}
+  - {name: /amcl/initial_pose_y, node: /amcl, value: 0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L16", notes: "amcl later overwrites initial_pose_* and initial_cov_* with its pose estimate (amcl_node.cpp L782-L790)"}
+  - {name: /amcl/initial_pose_a, node: /amcl, value: 0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L17", notes: "amcl later overwrites initial_pose_* and initial_cov_* with its pose estimate (amcl_node.cpp L782-L790)"}
+  # /move_base: costmap_common_params.yaml loaded into ns global_costmap and local_costmap (launch
+  # L22-L23), then local/global_costmap_params.yaml (L24-L25, overriding transform_tolerance),
+  # base_global_planner_params.yaml into ns move_base (L26, i.e. /move_base/move_base/..., where
+  # neither move_base nor GlobalPlanner reads it), base_local_planner_params.yaml (L27) and the
+  # launch params L29-L36 (controller_frequency overrides the yaml's equal value).
+  - {name: /move_base/global_costmap/footprint, node: /move_base, value: [[0.17, 0.12], [0.17, -0.12], [-0.17, -0.12], [-0.17, 0.12]], optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L1"}
+  - {name: /move_base/global_costmap/footprint_padding, node: /move_base, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L2"}
+  - {name: /move_base/global_costmap/transform_tolerance, node: /move_base, value: 1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L8"}
+  - {name: /move_base/global_costmap/always_send_full_costmap, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L7"}
+  - {name: /move_base/global_costmap/obstacle_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L10"}
+  - {name: /move_base/global_costmap/obstacle_layer/obstacle_range, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L12"}
+  - {name: /move_base/global_costmap/obstacle_layer/raytrace_range, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L13"}
+  - {name: /move_base/global_costmap/obstacle_layer/inflation_radius, node: /move_base, value: 0.04, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L14"}
+  - {name: /move_base/global_costmap/obstacle_layer/combination_method, node: /move_base, value: 1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L15"}
+  - {name: /move_base/global_costmap/obstacle_layer/observation_sources, node: /move_base, value: laser_scan_sensor, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L16"}
+  - {name: /move_base/global_costmap/obstacle_layer/track_unknown_space, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L17"}
+  - {name: /move_base/global_costmap/obstacle_layer/laser_scan_sensor/data_type, node: /move_base, value: LaserScan, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L20"}
+  - {name: /move_base/global_costmap/obstacle_layer/laser_scan_sensor/topic, node: /move_base, value: /scan, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L21"}
+  - {name: /move_base/global_costmap/obstacle_layer/laser_scan_sensor/marking, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L22"}
+  - {name: /move_base/global_costmap/obstacle_layer/laser_scan_sensor/clearing, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L23"}
+  - {name: /move_base/global_costmap/inflation_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L27"}
+  - {name: /move_base/global_costmap/inflation_layer/cost_scaling_factor, node: /move_base, value: 5.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L28"}
+  - {name: /move_base/global_costmap/inflation_layer/inflation_radius, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L29"}
+  - {name: /move_base/global_costmap/static_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L32"}
+  - {name: /move_base/global_costmap/static_layer/map_topic, node: /move_base, value: /map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L33"}
+  - {name: /move_base/local_costmap/footprint, node: /move_base, value: [[0.17, 0.12], [0.17, -0.12], [-0.17, -0.12], [-0.17, 0.12]], optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L1"}
+  - {name: /move_base/local_costmap/footprint_padding, node: /move_base, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L2"}
+  - {name: /move_base/local_costmap/transform_tolerance, node: /move_base, value: 1.2, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L10"}
+  - {name: /move_base/local_costmap/always_send_full_costmap, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L7"}
+  - {name: /move_base/local_costmap/obstacle_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L10"}
+  - {name: /move_base/local_costmap/obstacle_layer/obstacle_range, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L12"}
+  - {name: /move_base/local_costmap/obstacle_layer/raytrace_range, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L13"}
+  - {name: /move_base/local_costmap/obstacle_layer/inflation_radius, node: /move_base, value: 0.04, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L14"}
+  - {name: /move_base/local_costmap/obstacle_layer/combination_method, node: /move_base, value: 1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L15"}
+  - {name: /move_base/local_costmap/obstacle_layer/observation_sources, node: /move_base, value: laser_scan_sensor, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L16"}
+  - {name: /move_base/local_costmap/obstacle_layer/track_unknown_space, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L17"}
+  - {name: /move_base/local_costmap/obstacle_layer/laser_scan_sensor/data_type, node: /move_base, value: LaserScan, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L20"}
+  - {name: /move_base/local_costmap/obstacle_layer/laser_scan_sensor/topic, node: /move_base, value: /scan, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L21"}
+  - {name: /move_base/local_costmap/obstacle_layer/laser_scan_sensor/marking, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L22"}
+  - {name: /move_base/local_costmap/obstacle_layer/laser_scan_sensor/clearing, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L23"}
+  - {name: /move_base/local_costmap/inflation_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L27"}
+  - {name: /move_base/local_costmap/inflation_layer/cost_scaling_factor, node: /move_base, value: 5.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L28"}
+  - {name: /move_base/local_costmap/inflation_layer/inflation_radius, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L29"}
+  - {name: /move_base/local_costmap/static_layer/enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L32"}
+  - {name: /move_base/local_costmap/static_layer/map_topic, node: /move_base, value: /map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/costmap_common_params.yaml#L33"}
+  - {name: /move_base/local_costmap/global_frame, node: /move_base, value: map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L2"}
+  - {name: /move_base/local_costmap/robot_base_frame, node: /move_base, value: base_footprint, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L3"}
+  - {name: /move_base/local_costmap/update_frequency, node: /move_base, value: 0.3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L4"}
+  - {name: /move_base/local_costmap/publish_frequency, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L5"}
+  - {name: /move_base/local_costmap/rolling_window, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L6"}
+  - {name: /move_base/local_costmap/width, node: /move_base, value: 3.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L7"}
+  - {name: /move_base/local_costmap/height, node: /move_base, value: 3.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L8"}
+  - {name: /move_base/local_costmap/resolution, node: /move_base, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L9"}
+  - {name: /move_base/local_costmap/inflation_radius, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L11"}
+  - {name: /move_base/local_costmap/plugins, node: /move_base, value: [{name: static_layer, type: 'costmap_2d::StaticLayer'}, {name: obstacle_layer, type: 'costmap_2d::ObstacleLayer'}, {name: inflation_layer, type: 'costmap_2d::InflationLayer'}], optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/local_costmap_params.yaml#L13"}
+  - {name: /move_base/global_costmap/global_frame, node: /move_base, value: map, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L2"}
+  - {name: /move_base/global_costmap/robot_base_frame, node: /move_base, value: base_footprint, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L3"}
+  - {name: /move_base/global_costmap/static_map, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L4"}
+  - {name: /move_base/global_costmap/update_frequency, node: /move_base, value: 0.3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L5"}
+  - {name: /move_base/global_costmap/publish_frequency, node: /move_base, value: 0.3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L6"}
+  - {name: /move_base/global_costmap/rolling_window, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L7"}
+  - {name: /move_base/global_costmap/plugins, node: /move_base, value: [{name: static_layer, type: 'costmap_2d::StaticLayer'}, {name: obstacle_layer, type: 'costmap_2d::VoxelLayer'}, {name: inflation_layer, type: 'costmap_2d::InflationLayer'}], optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/global_costmap_params.yaml#L10"}
+  - {name: /move_base/move_base/base_global_planner, node: /move_base, value: global_planner/GlobalPlanner, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L2"}
+  - {name: /move_base/move_base/GlobalPlanner/old_navfn_behavior, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L5"}
+  - {name: /move_base/move_base/GlobalPlanner/use_quadratic, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L6"}
+  - {name: /move_base/move_base/GlobalPlanner/use_dijkstra, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L7"}
+  - {name: /move_base/move_base/GlobalPlanner/use_grid_path, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L8"}
+  - {name: /move_base/move_base/GlobalPlanner/allow_unknown, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L10"}
+  - {name: /move_base/move_base/GlobalPlanner/planner_window_x, node: /move_base, value: 0.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L12"}
+  - {name: /move_base/move_base/GlobalPlanner/planner_window_y, node: /move_base, value: 0.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L13"}
+  - {name: /move_base/move_base/GlobalPlanner/default_tolerance, node: /move_base, value: 0.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L14"}
+  - {name: /move_base/move_base/GlobalPlanner/lethal_cost, node: /move_base, value: 253, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L15"}
+  - {name: /move_base/move_base/GlobalPlanner/neutral_cost, node: /move_base, value: 66, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L16"}
+  - {name: /move_base/move_base/GlobalPlanner/cost_factor, node: /move_base, value: 0.55, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_global_planner_params.yaml#L17"}
+  - {name: /move_base/controller_frequency, node: /move_base, value: 5.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L34"}
+  - {name: /move_base/recovery_behaviour_enabled, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L2"}
+  - {name: /move_base/NavfnROS/allow_unknown, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L5"}
+  - {name: /move_base/NavfnROS/default_tolerance, node: /move_base, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L6"}
+  - {name: /move_base/TrajectoryPlannerROS/acc_lim_x, node: /move_base, value: 2, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L10"}
+  - {name: /move_base/TrajectoryPlannerROS/acc_lim_theta, node: /move_base, value: 0.5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L11"}
+  - {name: /move_base/TrajectoryPlannerROS/acc_lim_y, node: /move_base, value: 0.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L12"}
+  - {name: /move_base/TrajectoryPlannerROS/max_vel_x, node: /move_base, value: 0.2, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L14"}
+  - {name: /move_base/TrajectoryPlannerROS/min_vel_x, node: /move_base, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L15"}
+  - {name: /move_base/TrajectoryPlannerROS/max_vel_theta, node: /move_base, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L17"}
+  - {name: /move_base/TrajectoryPlannerROS/min_vel_theta, node: /move_base, value: -0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L18"}
+  - {name: /move_base/TrajectoryPlannerROS/min_in_place_vel_theta, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L19"}
+  - {name: /move_base/TrajectoryPlannerROS/holonomic_robot, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L21"}
+  - {name: /move_base/TrajectoryPlannerROS/escape_vel, node: /move_base, value: -0.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L22"}
+  - {name: /move_base/TrajectoryPlannerROS/yaw_goal_tolerance, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L25"}
+  - {name: /move_base/TrajectoryPlannerROS/xy_goal_tolerance, node: /move_base, value: 0.25, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L26"}
+  - {name: /move_base/TrajectoryPlannerROS/trans_stopped_vel, node: /move_base, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L27"}
+  - {name: /move_base/TrajectoryPlannerROS/theta_stopped_vel, node: /move_base, value: 0.01, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L28"}
+  - {name: /move_base/TrajectoryPlannerROS/latch_xy_goal_tolerance, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L29"}
+  - {name: /move_base/TrajectoryPlannerROS/sim_time, node: /move_base, value: 0.6, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L32"}
+  - {name: /move_base/TrajectoryPlannerROS/sim_granularity, node: /move_base, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L33"}
+  - {name: /move_base/TrajectoryPlannerROS/angular_sim_granularity, node: /move_base, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L34"}
+  - {name: /move_base/TrajectoryPlannerROS/vx_samples, node: /move_base, value: 3, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L35"}
+  - {name: /move_base/TrajectoryPlannerROS/vtheta_samples, node: /move_base, value: 20, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L36"}
+  - {name: /move_base/TrajectoryPlannerROS/controller_frequency, node: /move_base, value: 5.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L37"}
+  - {name: /move_base/TrajectoryPlannerROS/meter_scoring, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L40"}
+  - {name: /move_base/TrajectoryPlannerROS/occdist_scale, node: /move_base, value: 0.1, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L41"}
+  - {name: /move_base/TrajectoryPlannerROS/path_distance_bias, node: /move_base, value: 2.5, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L42"}
+  - {name: /move_base/TrajectoryPlannerROS/goal_distance_bias, node: /move_base, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L43"}
+  - {name: /move_base/TrajectoryPlannerROS/heading_lookahead, node: /move_base, value: 0.325, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L45"}
+  - {name: /move_base/TrajectoryPlannerROS/heading_scoring, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L46"}
+  - {name: /move_base/TrajectoryPlannerROS/heading_scoring_timestep, node: /move_base, value: 0.8, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L47"}
+  - {name: /move_base/TrajectoryPlannerROS/dwa, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L48"}
+  - {name: /move_base/TrajectoryPlannerROS/simple_attractor, node: /move_base, value: false, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L49"}
+  - {name: /move_base/TrajectoryPlannerROS/publish_cost_grid_pc, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L50"}
+  - {name: /move_base/TrajectoryPlannerROS/oscillation_reset_dist, node: /move_base, value: 0.02, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L53"}
+  - {name: /move_base/TrajectoryPlannerROS/escape_reset_dist, node: /move_base, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L54"}
+  - {name: /move_base/TrajectoryPlannerROS/escape_reset_theta, node: /move_base, value: 0.05, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/param/base_local_planner_param/base_local_planner_params.yaml#L55"}
+  - {name: /move_base/base_global_planner, node: /move_base, value: global_planner/GlobalPlanner, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L29"}
+  - {name: /move_base/planner_frequency, node: /move_base, value: 1.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L30"}
+  - {name: /move_base/planner_patience, node: /move_base, value: 2.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L31"}
+  - {name: /move_base/base_local_planner, node: /move_base, value: base_local_planner/TrajectoryPlannerROS, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L33"}
+  - {name: /move_base/controller_patience, node: /move_base, value: 3.0, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L35"}
+  - {name: /move_base/clearing_rotation_allowed, node: /move_base, value: true, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L36"}
+  # set by move_base when it loads its default recovery behaviours (no recovery_behaviors parameter)
+  - {name: /move_base/conservative_reset/reset_distance, node: /move_base, value: 3.0, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L1110", notes: "conservative_reset_dist unset, default 3.0 (L113)"}
+  - {name: /move_base/aggressive_reset/reset_distance, node: /move_base, value: 1.84, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L1111", notes: "4 x local_costmap/circumscribed_radius, unset, default 0.46 (L111)"}
+  # --- optional: usb_cam image_transport plugins (dynamic_reconfigure config of each plugin publisher) ---
+  - {name: /usb_cam/image_raw/compressed/format, node: /usb_cam, value: jpeg, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressed/jpeg_quality, node: /usb_cam, value: 80, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressed/jpeg_progressive, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressed/jpeg_optimize, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressed/jpeg_restart_interval, node: /usb_cam, value: 0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressed/png_level, node: /usb_cam, value: 9, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L17", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressedDepth/format, node: /usb_cam, value: png, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressedDepth/depth_max, node: /usb_cam, value: 10.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressedDepth/depth_quantization, node: /usb_cam, value: 100.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/compressedDepth/png_level, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/theora/optimize_for, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/theora/target_bitrate, node: /usb_cam, value: 800000, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/theora/quality, node: /usb_cam, value: 31, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {name: /usb_cam/image_raw/theora/keyframe_frequency, node: /usb_cam, value: 64, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  # Beyond the values above, these optional nodes write parameters at run time that no launch
+  # or yaml file sets: every dynamic_reconfigure server (/amcl, /move_base, both costmaps and
+  # their layers, /move_base/GlobalPlanner, /move_base/TrajectoryPlannerROS) writes its whole
+  # config, the .cfg default for each value not set above (navigation 1.17.3 */cfg/*.cfg), and
+  # amcl saves its pose estimate to initial_pose_* and initial_cov_* (amcl_node.cpp L782-L790).
+  # costmap_2d also copies local_costmap/inflation_radius into local_costmap/inflation_layer
+  # (costmap_2d_ros.cpp L265-L297), which already holds the same 0.25.
 
 tf:
   - parent: base_footprint
@@ -624,7 +1302,7 @@ motions:
       date: 2026-09-30
       source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGVSub.cpp#L4-L34
     feedback:
-      - {name: /odom, field: pose.pose (x, y, yaw) and twist.twist}
+      - {name: /odom, field: "pose.pose (x, y, yaw) and twist.twist"}   # amended 2026-10-03: quoted (the unquoted commas split the field)
       - {name: /robot_pose_ekf/odom_combined, field: pose.pose}
     kinematics:
       type: mecanum

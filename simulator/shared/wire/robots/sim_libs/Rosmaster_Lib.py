@@ -5,10 +5,11 @@ Where the real library talks to the STM32 board over serial, this one talks to t
 simulation. It reproduces the board firmware behaviour recorded in the robot
 specification's interface file (robots_specs/rosmaster_x3_plus/ros.yml):
 
-* `set_car_motion(vx, vy, wz)`: the firmware's mecanum mixing (motor order L1, L2, R1, R2),
-  each wheel clamped to +-0.7 m/s at the rim, all-zero brakes; the four wheels' velocity
-  servos in the simulation are the motors. No watchdog. (The firmware's IMU yaw-hold
-  correction while driving is not reproduced -- a documented simplification.)
+* `set_car_motion(vx, vy, wz)`: the firmware's FUNC_MOTION path: vx and vy clamped to
+  +-0.7 m/s, its mecanum mixing (motor order L1, L2, R1, R2), each wheel clamped to
+  +-0.7 m/s at the rim, all-zero brakes; the four wheels' velocity servos in the
+  simulation are the motors. No watchdog, and no IMU yaw-hold (the firmware applies it
+  only to FUNC_CAR_RUN commands with the adjust bit, which the driver never sends).
 * `get_motion_data()`: the chassis velocity from the wheel encoders (the simulated wheels'
   speeds through the inverse mixing).
 * `set_uart_servo_angle_array(angles, run_time)` / `set_uart_servo_angle(id, angle, t)`:
@@ -35,17 +36,12 @@ for _p in (str(_WIRE), str(_WIRE.parent)):
         sys.path.insert(0, _p)
 
 import common  # noqa: E402
+from robots import _plan  # noqa: E402
 
 WHEELS = ["front_left_joint", "back_left_joint", "front_right_joint", "back_right_joint"]
 SERVOS = ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
 SERVO_RANGE = [(0, 180), (0, 180), (0, 180), (0, 180), (0, 270), (0, 180)]
 RATE = 100.0
-MAG_WORLD = (0.22, 0.0, -0.42)
-
-
-def _drive_row():
-    iface = common.interface()
-    return next(m for m in iface["motions"] if m["id"] == "drive")["kinematics"]
 
 
 def servo_to_rad(i: int, deg: float) -> float:
@@ -63,10 +59,9 @@ def rad_to_servo(i: int, rad: float) -> float:
 
 class Rosmaster:
     def __init__(self, car_type=1, com="/dev/myserial", delay=0.002, debug=False):
-        k = _drive_row()
-        self.r = float(k["wheel_radius"])
-        self.s = float(k.get("lx_plus_ly") or (float(k["lx"]) + float(k["ly"])))
-        self.vmax = float(k.get("wheel_speed_limit", 0.7))
+        self.k = common.motion_row(common.interface(), "drive")["kinematics"]
+        self.r = float(self.k["wheel_radius"])
+        self.vmax = float(self.k.get("wheel_speed_limit", 0.7))
         self.link = common.SimLink()
         common.exit_when_lost(self.link)
         self.lock = threading.Lock()
@@ -116,19 +111,17 @@ class Rosmaster:
 
     def set_car_motion(self, v_x, v_y, v_z):
         vx, vy, wz = float(v_x), float(v_y), float(v_z)
-        s = self.s
-        rim = [vx - vy - s * wz, vx + vy - s * wz, vx + vy + s * wz, vx - vy + s * wz]
-        rim = [max(-self.vmax, min(self.vmax, v)) for v in rim]
+        # the firmware clamps vx and vy to +-700 mm/s before mixing (app_motion.c L384-L392)
+        vx, vy = (max(-self.vmax, min(self.vmax, v)) for v in (vx, vy))
+        fl, fr, rl, rr = (max(-self.vmax, min(self.vmax, v))
+                          for v in _plan.mecanum_rim(self.k, vx, vy, wz))
         with self.lock:
-            self.wheel_cmd = [v / self.r for v in rim]
+            self.wheel_cmd = [v / self.r for v in (fl, rl, fr, rr)]    # motor order WHEELS
 
     def get_motion_data(self):
         with self.lock:
-            w = [self.state.get(j, [0, 0, 0])[1] * self.r for j in WHEELS]
-        fl, bl, fr, br = w
-        vx = (fl + bl + fr + br) / 4.0
-        vy = (-fl + bl + fr - br) / 4.0
-        wz = (-fl - bl + fr + br) / (4.0 * self.s)
+            fl, bl, fr, br = (self.state.get(j, [0, 0, 0])[1] for j in WHEELS)
+        vx, vy, wz = _plan.mecanum_fk(self.k, [fl, fr, bl, br])
         return round(vx, 3), round(vy, 3), round(wz, 3)
 
     def _servo_move(self, i, deg, run_time):
@@ -158,9 +151,6 @@ class Rosmaster:
             return [int(round(rad_to_servo(i, self.state[j][0]))) if j in self.state else -1
                     for i, j in enumerate(SERVOS)]
 
-    def get_uart_servo_angle(self, s_id):
-        return self.get_uart_servo_angle_array()[int(s_id) - 1]
-
     def get_accelerometer_data(self):
         with self.lock:
             a = self.imu.get("accel", [0.0, 0.0, 9.81])
@@ -174,13 +164,7 @@ class Rosmaster:
     def get_magnetometer_data(self):
         with self.lock:
             q = self.imu.get("quat", [1.0, 0.0, 0.0, 0.0])
-        w, x, y, z = q
-        # rotate the world field into the IMU frame (inverse rotation)
-        R = [[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
-             [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
-             [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]]
-        m = [sum(R[r][c] * MAG_WORLD[r] for r in range(3)) for c in range(3)]
-        return tuple(round(v, 4) for v in m)
+        return tuple(round(v, 4) for v in common.world_to_sensor(q, common.MAG_FIELD_WORLD))
 
     def get_battery_voltage(self):
         return 12.3
@@ -189,9 +173,6 @@ class Rosmaster:
         return 3.5
 
     def set_colorful_effect(self, effect, speed=255, parm=255):
-        pass
-
-    def set_colorful_lamps(self, led_id, red, green, blue):
         pass
 
     def set_beep(self, on_time):

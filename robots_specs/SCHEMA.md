@@ -67,7 +67,7 @@ may cite; `revision` is a commit hash, a release tag, or for a download the file
 
 `{summary, commands[], launch_files[], data_files[], hardware}` —
 `commands` are the shell commands the vendor documentation runs for normal operation;
-`launch_files`/`data_files` are `{source, path, role?}` rows at the pinned revision
+`launch_files`/`data_files` are `{source, path, role?}` rows (no other keys) at the pinned revision
 (`source` is a `sources[].id`); `hardware` is prose: computer, OS image, serial devices,
 camera and lidar devices, controller firmware.
 
@@ -102,9 +102,15 @@ camera and lidar devices, controller firmware.
   `non_periodic` has a rate.
 * `rate_basis`: `source` | `manufacturer` | `measured` | `estimate` (see conventions);
   `rate_note` explains how the value follows from the source.
-* optional: `frame_id`, `child_frame_id`, `latched` (bool), `qos` (ROS 2 map:
-  `reliability`, `durability`, `depth`), `camera: true` on each camera's **raw image
-  stream**, `optional`, `notes`.
+* `frame_id`: the `header.frame_id` the publisher sets — required on every `out` row whose
+  message carries a header (images, camera info, scans, point clouds, IMU, magnetic field,
+  odometry, joint states, maps, paths and stamped geometry), `""` when the publisher leaves
+  it empty; `child_frame_id` likewise for odometry.
+* optional: `latched` (bool), `qos` (ROS 2 map: `reliability`, `durability`, `depth`),
+  `camera: true` on each camera's **raw image stream**, `optional`, `notes`;
+  `internal_publishers` on an `in` row lists boot nodes that also publish that command
+  topic (a teleop or app node feeding the controller), `internal_subscribers` on an `out`
+  row the boot nodes that consume it.
 
 ### `services[]`, `actions[]`
 
@@ -160,6 +166,19 @@ A `watchdog` with `basis: source` has been derived from the pinned code only; it
 `method` says so, and the real-hardware measurement the robot specification asks for is
 still outstanding.
 
+`feedback` rows are `{name, field, notes?}` with `name` a recorded topic, service or action;
+`feedback_note` explains feedback or its absence. Further optional motion keys: `joint`
+(the joint a row drives when one motion has several rows, e.g. the AiNex head's pan and
+tilt), `kinematics` (a drive's wheel mixing and its figures), `gait` (a walk's gait engine,
+files and defaults); in `command`: `notes`, `source`, `sequence` (a multi-step command
+flow), `alternative` (another vendor command path for the same motion), `also` (further
+endpoints accepting the same command), `servo_profile` (servo speed/acceleration the
+hardware layer writes), `step_definition` with `step_definition_source` (what one step of
+a walk command is, and so the nominal displacement it commands), and `estimated_groups`
+with `smoke_example` and `smoke_example_basis: estimate` (an action-group motion whose vendor
+groups are in no pinned source: the file of estimated groups and the playable example); in
+`stop`: `notes`.
+
 ### `sensors`
 
 * `cameras[]`: `{id, image_topic, info_topic?, compressed_topic?, frame_id, width, height,
@@ -167,10 +186,13 @@ still outstanding.
   source}, mount{parent, xyz, rpy, basis, source}, hardware, optional?}`
   (`intrinsics.basis: uncalibrated` records what the boot publishes when it loads no
   calibration; the simulator then renders with the model camera's `fovy` and publishes
-  the recorded CameraInfo content).
+  the recorded CameraInfo content). Optional: `hfov_basis`/`hfov_note` (how `hfov_deg`
+  was established), `range_m` with `range_basis` (a depth stream's working range, m),
+  `notes` in `intrinsics` and `mount`.
 * `lidars[]`: `{id, topic, frame_id, model, angle_min, angle_max, samples, range_min,
   range_max, scan_rate, mount{...}, basis, source}` (angles in rad).
-* `imus[]`: `{id, topic, frame_id, rate, mount{...}, source}`.
+* `imus[]`: `{id, topic, frame_id, rate, mount{...}, source, filtered_topic?}`
+  (`filtered_topic`: the boot's filtered IMU output, when it has one).
 
 ### `tolerances[]`
 
@@ -180,6 +202,21 @@ example a commanded drive displacement read back from odometry, or a joint reach
 commanded position). `basis: manufacturer` when the vendor states the accuracy,
 otherwise `estimate` with the reason. Periodic rates are not listed here: the simulator
 spec fixes them at ±10%.
+
+## Estimated action groups (`action_groups.yml`)
+
+A robot whose vendor action groups are in no pinned source may record playable groups,
+labelled as estimates, in `robots_specs/<id>/action_groups.yml`, named by its action-group
+motion's `command.estimated_groups`. `tests/schema.py` checks it (`validate_action_groups`).
+
+| key | meaning |
+| --- | --- |
+| `schema_version`, `robot_id` | `1`; the folder name |
+| `basis`, `reason` | always `estimate`, and why |
+| `player` | `{path, file_format, source}`: where and in what format the vendor player reads a group |
+| `frames_are`, `pulse_source` | how a frame becomes servo commands, and the files that mapping uses |
+| `smoke_example` | a group name; equals the motion's `command.smoke_example.data` |
+| `groups` | `{<name>: {description, frames: [{time_ms, offsets_rad: {<joint>: rad}}]}}` — offsets from the recorded init pose; every target stays inside the URDF joint limits |
 
 ## MuJoCo model conventions (`model.xml`)
 

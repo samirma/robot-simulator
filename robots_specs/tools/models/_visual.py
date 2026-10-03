@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import math
 import struct
+import sys
 from pathlib import Path
 
-STL_FACE_LIMIT = 200000
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from fetch_meshes import STL_FACE_LIMIT  # noqa: E402  (one limit for the splitter and the generators)
 
 
 def dae_parts(robot_dir: Path, dae_rel: str) -> list[dict]:

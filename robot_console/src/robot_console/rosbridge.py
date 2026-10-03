@@ -11,7 +11,6 @@ import concurrent.futures
 import itertools
 import json
 import threading
-import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -50,7 +49,6 @@ class Rosbridge:
         self._closed = threading.Event()
         self._close_reason = ""
         self._user_closed = False
-        self.status_messages: List[dict] = []
         self._reader: Optional[threading.Thread] = None
 
     # ------------------------------------------------------------ lifecycle
@@ -69,15 +67,8 @@ class Rosbridge:
     def connected(self) -> bool:
         return self._ws is not None and not self._closed.is_set()
 
-    @property
-    def close_reason(self) -> str:
-        return self._close_reason
-
     def on_close(self, cb: Callable[[str], None]) -> None:
         self._close_cbs.append(cb)
-
-    def wait_closed(self, timeout: Optional[float] = None) -> bool:
-        return self._closed.wait(timeout)
 
     def close(self) -> None:
         """Unsubscribe, unadvertise and close. Idempotent."""
@@ -165,7 +156,6 @@ class Rosbridge:
                 else:
                     fut.set_result(msg.get("values") or {})
         elif op == "status":
-            self.status_messages.append(msg)
             fut = self._pending.get(str(msg.get("id")))
             if fut is not None and msg.get("level") == "error" and not fut.done():
                 self._pending.pop(str(msg.get("id")), None)
@@ -230,11 +220,3 @@ class Rosbridge:
             self.advertise(topic, type)
         self._send({"op": "publish", "topic": topic, "msg": msg})
 
-
-def wait_until(pred: Callable[[], bool], timeout: float, step: float = 0.02) -> bool:
-    end = time.monotonic() + timeout
-    while time.monotonic() < end:
-        if pred():
-            return True
-        time.sleep(step)
-    return pred()

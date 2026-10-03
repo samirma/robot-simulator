@@ -5,21 +5,28 @@
     tests/evidence.sh --engine robocasa --robot ainex   # a subset (repeatable flags)
     tests/evidence.sh --index-only                      # rebuild evidences/index.{md,json}
 
-A case starts the engine's default scene with `simulator/kitchen.sh start --engine <e>`,
-spawns the robot with `simulator/spawn.sh` (mobile robots on the floor, arms on the
-worktop), and records into `evidences/<engine>/<id>/`:
+A case starts the engine's default scene with `simulator/kitchen.sh start --engine <e>`
+(and checks the simulation reports that scene), spawns the robot with `simulator/spawn.sh`
+(mobile robots on the floor, arms on the worktop), and records into
+`evidences/<engine>/<id>/`:
 
-* `scene.png` -- an offscreen render of the simulation framing the robot in its scene;
+* `scene.png` -- an offscreen render of the simulation framing the robot in its scene; for
+  an arm, also its six worktop objects, each checked to be in the picture (projected into
+  the view and not hidden, by a depth render);
 * `cam__<topic>.png` -- one frame of every camera not marked `optional` in the robot's
   interface file, taken off the vendor wire through rosbridge and decoded;
 * `smoke.json` + `motion_<name>_{before,after}.png` -- the motion smoke run through the
-  vendor wire with each robot's recorded command, judged by recorded feedback (or, where
-  the interface publishes none, by readings from the simulation's control port) against
-  the tolerances recorded in `robots_specs/<id>/ros*.yml`;
+  vendor wire with each robot's recorded command, one or more motions per recorded motion
+  (workspace spec §3's list), judged by recorded feedback (or, where the interface
+  publishes none, by readings from the simulation's control port) against the tolerances
+  recorded in `robots_specs/<id>/ros*.yml`;
 * `fleet_<profile>.txt` -- `robot_console/python.sh -m robot_console.fleet --expect` for
-  every console profile naming the robot;
+  the console profile naming the robot, if any;
 * `case.json` -- robot, engine, scene, placement, ports, readiness line, timestamps, host
-  load, per-item results and the verdict.
+  load, the worktop objects staged and the scene objects cleared (arms), per-item results
+  and the verdict. Evidence collected while the simulation ran below real time (RTF < 0.90
+  over a 10 s window, simulator spec §3 Timing) cannot claim the acceptance bounds and fails
+  the case.
 
 Independence (workspace spec §1.4): the smoke-run commands and bounds come from
 `robots_specs/` (normative for the simulator); the console's verdict is its own exit
@@ -57,7 +64,11 @@ REPO = Path(__file__).resolve().parent.parent
 SPECS = REPO / "robots_specs"
 SIM = REPO / "simulator"
 CONSOLE = REPO / "robot_console"
-ENGINES = ["molmospaces", "robocasa"]
+#: The engines and their default scenes (simulator spec §2.1): a case runs on the default.
+DEFAULT_SCENES = {"molmospaces": "ithor:1", "robocasa": "robocasa:1-1"}
+ENGINES = list(DEFAULT_SCENES)
+#: The worktop objects staged around an arm on the worktop (simulator spec Terms, §2.3).
+WORKTOP_OBJECTS = ("apple", "banana", "bowl", "lemon", "mug", "plate")
 
 
 # =========================================================================== registry
@@ -80,19 +91,22 @@ def registry() -> List[dict]:
     return out
 
 
-def interface(rid: str) -> dict:
+def interface_file(rid: str) -> Path:
     for name in ("ros.yml", "ros2.yml"):
-        p = SPECS / rid / name
-        if p.exists():
-            return yaml.safe_load(p.read_text())
+        if (SPECS / rid / name).exists():
+            return SPECS / rid / name
     raise FileNotFoundError(f"no interface file for {rid}")
+
+
+def interface(rid: str) -> dict:
+    return yaml.safe_load(interface_file(rid).read_text())
 
 
 def tolerance(rid: str, fragment: str) -> dict:
     for t in interface(rid).get("tolerances") or []:
         if fragment in t["figure"]:
             return {"figure": t["figure"], "tolerance": t["tolerance"], "basis": t.get("basis"),
-                    "source": f"robots_specs/{rid}/{'ros.yml' if (SPECS / rid / 'ros.yml').exists() else 'ros2.yml'} tolerances"}
+                    "source": f"{interface_file(rid).relative_to(REPO)} tolerances"}
     raise KeyError(f"{rid}: no tolerance '{fragment}'")
 
 
@@ -108,6 +122,25 @@ def motion_row(rid: str, mid: str, joint: Optional[str] = None) -> dict:
         if m["id"] == mid and (joint is None or m.get("joint") == joint):
             return m
     raise KeyError(f"{rid}: no motion {mid}")
+
+
+#: The legs of a wheeled base's drive (workspace spec §3: forward, back, sideways, turn).
+DRIVE_LEGS = ("forward", "back", "left", "right", "turn")
+
+
+def required_motions(rid: str) -> List[str]:
+    """The smoke-run motions a case must pass, from the robot's recorded motions (workspace
+    spec §3, simulator spec Terms: drive or walk, arm, gripper, head and action group, as the
+    robot has them): a drive is one motion per leg, a head one per recorded joint."""
+    out = []
+    for m in interface(rid).get("motions") or []:
+        if m["id"] == "drive":
+            out += [f"drive_{leg}" for leg in DRIVE_LEGS]
+        elif m["id"] == "head":
+            out.append(m["joint"])
+        else:
+            out.append(m["id"])
+    return out
 
 
 def console_profiles() -> List[str]:
@@ -220,19 +253,12 @@ def docker_left(sim_port: int) -> List[str]:
 
 
 def parse_ready(line: str) -> List[dict]:
-    """Wires of a readiness line: `... wire(s): <owner> ws://h:p [ROS n distro]` or
-    `base (<owner>) ws://... ; arm (<owner>) ws://...`."""
-    wires = []
+    """The wire of a readiness line: `... wire(s): <id> ws://h:p [ROS n distro]` (every
+    robot is a single body with one wire)."""
     tail = line.split("wire(s):", 1)[-1]
-    for part in tail.split(";"):
-        m = re.search(r"(?:(\w+) \((\w+)\)|(\w+)) ws://([\d.]+):(\d+)\s*\[([^\]]+)\]", part)
-        if m:
-            role = m.group(1) or "main"
-            owner = m.group(2) or m.group(3)
-            wires.append({"role": role, "owner": owner, "host": m.group(4),
-                          "port": int(m.group(5)), "ros": m.group(6),
-                          "url": f"ws://{m.group(4)}:{m.group(5)}"})
-    return wires
+    return [{"robot": m.group(1), "port": int(m.group(3)), "ros": m.group(4),
+             "url": f"ws://{m.group(2)}:{m.group(3)}"}
+            for m in re.finditer(r"(\w+) ws://([\d.]+):(\d+)\s*\[([^\]]+)\]", tail)]
 
 
 # =========================================================================== rendering
@@ -244,33 +270,89 @@ def robot_bbox(rd: dict):
     return (lo + hi) / 2, max(float(np.linalg.norm(hi - lo)), 0.25)
 
 
-def choose_view(sp: SimPort, rid: str, mobile: bool, extra=()) -> dict:
-    """A free-camera view showing the whole robot (and the bodies named in `extra`: an
-    arm's worktop objects) with a clear line of sight and as much of its surroundings as
-    possible: candidate eyes around the robot, each checked with a depth render (nothing
-    nearer than the robot inside the robot's image window)."""
+#: The vertical field of view of every evidence viewpoint, deg (passed with the view, so the
+#: projection below matches the render whatever the scene model's default).
+FOVY = 45.0
+
+
+def free_view(lookat, distance: float, azimuth: float, elevation: float) -> dict:
+    """The documented `{pos, target, fovy}` viewpoint (simulator/README.md, control port)
+    of a camera `distance` from `lookat`, looking along azimuth/elevation (deg, MuJoCo's
+    free-camera convention: forward = (cos el cos az, cos el sin az, sin el))."""
+    az, el = math.radians(azimuth), math.radians(elevation)
+    fwd = np.array([math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el)])
+    target = np.asarray(lookat, float)
+    return {"pos": [float(x) for x in target - distance * fwd],
+            "target": [float(x) for x in target], "fovy": FOVY}
+
+
+def project(view: dict, point, width: int, height: int):
+    """Where a world point appears in a render of a `{pos, target, fovy}` view: (column,
+    row, depth along the view axis), or None when it is behind the eye or out of frame.
+    The camera has no roll (up is world z), as the simulation's free camera."""
+    eye, target = np.asarray(view["pos"], float), np.asarray(view["target"], float)
+    fwd = target - eye
+    fwd /= np.linalg.norm(fwd)
+    right = np.cross(fwd, [0.0, 0.0, 1.0])
+    right /= np.linalg.norm(right)
+    up = np.cross(right, fwd)
+    v = np.asarray(point, float) - eye
+    z = float(v @ fwd)
+    if z <= 1e-6:
+        return None
+    f = (height / 2.0) / math.tan(math.radians(view.get("fovy", FOVY)) / 2.0)
+    col = width / 2.0 + f * float(v @ right) / z
+    row = height / 2.0 - f * float(v @ up) / z
+    if not (0 <= col < width and 0 <= row < height):
+        return None
+    return col, row, z
+
+
+def shown(depth: np.ndarray, view: dict, point, margin: float = 0.10) -> bool:
+    """Whether a world point is in the picture of `view` and not hidden: it projects into
+    the frame and, around its pixel, the depth render reaches it (nothing more than
+    `margin` m nearer, which allows for the object's own surface in front of its origin)."""
+    h, w = depth.shape
+    p = project(view, point, w, h)
+    if p is None:
+        return False
+    c, r, z = int(p[0]), int(p[1]), p[2]
+    win = depth[max(0, r - 1):r + 2, max(0, c - 1):c + 2]
+    return bool((win >= z - margin).any())
+
+
+def depth_render(sp: SimPort, view: dict, width: int, height: int) -> np.ndarray:
+    r = sp.call("render", view=view, width=width, height=height, format="depth")
+    return np.frombuffer(r["_payload"], np.float32).reshape(height, width)
+
+
+def choose_view(sp: SimPort, rid: str, mobile: bool, objects: Optional[Dict[str, str]] = None) -> dict:
+    """A view showing the whole robot with a clear line of sight and as much of its
+    surroundings as possible -- and, for an arm, every one of its worktop `objects` (name
+    -> body) in the picture: candidate eyes around the robot, each checked with a depth
+    render (nothing nearer than the robot inside the robot's image window; each object
+    projected into the frame and reached by the depth render)."""
+    objects = objects or {}
     rd = sp.call("readings", robot=rid)
-    if extra:
-        rd = dict(rd, bodies=dict(rd["bodies"], **sp.call("bodies", names=list(extra))["bodies"]))
+    opos = {}
+    if objects:
+        bodies = sp.call("bodies", names=list(objects.values()))["bodies"]
+        opos = {n: bodies[b]["pos"] for n, b in objects.items() if b in bodies}
+        rd = dict(rd, bodies=dict(rd["bodies"], **bodies))
     centre, size = robot_bbox(rd)
     yaw = math.degrees(yaw_of_wxyz(rd["base"]["quat"]))
-    W, H, fovy = 160, 90, 45.0
-    if mobile:
-        dists = [max(1.3, 2.6 * size), max(1.0, 2.0 * size), max(0.8, 1.5 * size)]
-        els = [-28.0]
-    else:
-        dists = [max(1.3, 2.6 * size), max(1.0, 2.0 * size), max(0.8, 1.5 * size)]
-        els = [-25.0]
-    best = None
+    W, H = 160, 90
+    dists = [max(1.3, 2.6 * size), max(1.0, 2.0 * size), max(0.8, 1.5 * size)]
+    els = [-28.0] if mobile else [-25.0]
+    best = None        # every object shown
+    best_any = None    # the most objects shown (only used when no view shows them all)
     for dist in dists:
         for el in els:
             for daz in (0, 30, -30, 60, -60, 90, -90, 120, -120, 150, -150, 180):
-                view = {"lookat": [float(x) for x in centre], "distance": dist,
-                        "azimuth": yaw + daz + 180.0, "elevation": el}
-                r = sp.call("render", view=view, width=W, height=H, format="depth")
-                d = np.frombuffer(r["_payload"], np.float32).reshape(H, W)
+                view = free_view(centre, dist, yaw + daz + 180.0, el)
+                d = depth_render(sp, view, W, H)
                 half = math.degrees(math.atan2(0.6 * size, dist))
-                ph = int(min(H / 2 - 1, max(2, half / fovy * H)))
+                ph = int(min(H / 2 - 1, max(2, half / FOVY * H)))
                 pw = int(min(W / 2 - 1, max(2, ph)))
                 win = d[H // 2 - ph:H // 2 + ph, W // 2 - pw:W // 2 + pw]
                 near = float((win < dist - 0.6 * size - 0.05).mean())
@@ -278,13 +360,29 @@ def choose_view(sp: SimPort, rid: str, mobile: bool, extra=()) -> dict:
                     continue
                 context = float(np.clip(d, 0, 8).mean())
                 score = context - 0.4 * abs(daz) / 180.0
-                if best is None or score > best[0]:
-                    best = (score, view, near, context)
+                seen = [n for n, p in opos.items() if shown(d, view, p)]
+                cand = (score, view, near, context, seen)
+                if len(seen) == len(objects):
+                    if best is None or score > best[0]:
+                        best = cand
+                elif best_any is None or (len(seen), score) > (len(best_any[4]), best_any[0]):
+                    best_any = cand
         if best is not None:
             break
-    if best is None:
+    pick = best or best_any
+    if pick is None:
         return {"frame_robot": rid, "elevation": -30.0}
-    return dict(best[1], _clear_fraction=round(1 - best[2], 3), _context_m=round(best[3], 2))
+    return dict(pick[1], _clear_fraction=round(1 - pick[2], 3), _context_m=round(pick[3], 2))
+
+
+def objects_in_picture(sp: SimPort, view: dict, objects: Dict[str, str]) -> Dict[str, bool]:
+    """For each worktop object (name -> body), whether the scene picture of `view` shows
+    it (checked on a 320x180 depth render of the same view)."""
+    if "pos" not in view:          # the simulation's own framing: not projectable here
+        return {n: False for n in objects}
+    bodies = sp.call("bodies", names=list(objects.values()))["bodies"]
+    d = depth_render(sp, {k: x for k, x in view.items() if not k.startswith("_")}, 320, 180)
+    return {n: b in bodies and shown(d, view, bodies[b]["pos"]) for n, b in objects.items()}
 
 
 def render(sp: SimPort, view: dict, path: Path, width=1280, height=720) -> dict:
@@ -305,14 +403,8 @@ def twist(x=0.0, y=0.0, z=0.0) -> dict:
 class Ctx:
     """Everything a motion needs."""
 
-    def __init__(self, rid, sp: SimPort, wires, outdir: Path, view: dict, say):
-        self.rid, self.sp, self.wires, self.out, self.view, self.say = rid, sp, wires, outdir, view, say
-
-    def wire(self, owner: str) -> dict:
-        for w in self.wires:
-            if w["owner"] == owner:
-                return w
-        raise KeyError(owner)
+    def __init__(self, rid, sp: SimPort, wire: dict, outdir: Path, view: dict, say):
+        self.rid, self.sp, self.wire, self.out, self.view, self.say = rid, sp, wire, outdir, view, say
 
     def readings(self) -> dict:
         return self.sp.call("readings", robot=self.rid)
@@ -346,8 +438,12 @@ def run_motion(ctx: Ctx, name: str, fn) -> dict:
 
 # --------------------------------------------------------------------------- wheeled base
 
+#: (name, vx m/s, vy m/s, wz rad/s, s). Each leg's commanded displacement plus its acceptance
+#: bound stays inside the travel a floor placement guarantees (simulator spec §2.3: forward
+#: 0.5 m, back and each side 0.25 m): 0.25 m forward and back to the start, 0.20 m to each
+#: side and back, then a turn in place.
 DRIVES = [("forward", 0.2, 0.0, 0.0, 1.25), ("back", -0.2, 0.0, 0.0, 1.25),
-          ("left", 0.0, 0.2, 0.0, 1.25), ("right", 0.0, -0.2, 0.0, 1.25),
+          ("left", 0.0, 0.2, 0.0, 1.0), ("right", 0.0, -0.2, 0.0, 1.0),
           ("turn", 0.0, 0.0, 0.5, 2.0)]
 
 
@@ -376,12 +472,13 @@ def pose_at(history, t: float):
     return {"position": pos, "orientation": near["orientation"]}, (ta if f < 0.5 else tb) - t
 
 
-def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
+def drive_motions(ctx: Ctx) -> List[dict]:
     """Forward, back, left, right and an in-place turn on the base wire, each a timed
     recorded /cmd_vel command followed by the recorded stop (zero Twist), confirmed by
-    the recorded odometry. Travel: 0.25 m forward/back/side and back to the start."""
-    w = ctx.wire(owner)
-    row = motion_row(owner, "drive")
+    the recorded odometry. Travel: 0.25 m forward/back and 0.20 m to each side, each time
+    back to the start (DRIVES)."""
+    w, rid = ctx.wire, ctx.rid
+    row = motion_row(rid, "drive")
     stop_msg = row["stop"]["message"]
     rb = Rosbridge(w["url"])
     out = []
@@ -390,18 +487,14 @@ def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
         odom = Latest(rb, odom_topic)
         odom.keep = True
         odom.wait(20)
-        extra = {}
-        if owner == "rosmaster_x3_plus":
-            extra["vel_raw"] = Latest(rb, "/vel_raw")
-            extra["odom_raw"] = Latest(rb, "/odom_raw")
-        if owner == "myagv":
-            lin_tol = tolerance(owner, "drive displacement")
-            yaw_tol = tolerance(owner, "drive rotation")
-            rest_tol = tolerance(owner, "residual chassis speed")
+        if rid == "myagv":
+            lin_tol = tolerance(rid, "drive displacement")
+            yaw_tol = tolerance(rid, "drive rotation")
+            rest_tol = tolerance(rid, "residual chassis speed")
         else:
-            lin_tol = tolerance(owner, "translation displacement")
-            yaw_tol = tolerance(owner, "yaw change")
-            rest_tol = tolerance(owner, "residual motion after the stop")
+            lin_tol = tolerance(rid, "translation displacement")
+            yaw_tol = tolerance(rid, "yaw change")
+            rest_tol = tolerance(rid, "residual motion after the stop")
         rb.advertise(row["command"]["name"], row["command"]["type"])
         time.sleep(1.0)
         # the stop once first: the robot starts from rest under the recorded stop
@@ -421,10 +514,8 @@ def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
                 t_run = time.monotonic() - t0
                 time.sleep(0.5)
                 m05 = odom.next()
-                vr05 = extra["vel_raw"].msg if "vel_raw" in extra else None
                 time.sleep(1.0)
                 m15 = odom.next()
-                vr15 = extra["vel_raw"].msg if "vel_raw" in extra else None
                 p1 = m15["pose"]["pose"]
                 s1 = ctx.readings()["base"]
                 # the odometry's own pose at the instant of the stop command, by its
@@ -486,7 +577,7 @@ def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
                 kin = row.get("kinematics") or {}
                 lxly = kin.get("lx_plus_ly") or (kin.get("lx", 0.0) + kin.get("ly", 0.0))
                 rest = {}
-                if owner == "myagv":
+                if rid == "myagv":
                     tw = m05["twist"]["twist"]
                     speed = math.hypot(tw["linear"]["x"], tw["linear"]["y"])
                     rim = abs(tw["angular"]["z"]) * lxly
@@ -515,7 +606,6 @@ def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
                     resid = math.hypot(p1["position"]["x"] - p_stop["position"]["x"],
                                        p1["position"]["y"] - p_stop["position"]["y"])
                     ryaw = abs(wrap(yaw_of_quat_xyzw(p1["orientation"]) - yaw_of_quat_xyzw(p_stop["orientation"])))
-                    vr = vr15 or {}
                     rest = {"figure": rest_tol["figure"], "tolerance": rest_tol["tolerance"],
                             "lx_plus_ly_m": lxly,
                             "stop_pose_from": f"/odom interpolated at the stop's wall time by header stamp "
@@ -523,7 +613,6 @@ def drive_motions(ctx: Ctx, owner: str) -> List[dict]:
                             "travel_after_stop_m": round(resid, 4),
                             "yaw_after_stop_rad": round(ryaw, 4),
                             "yaw_after_stop_at_rim_m": round(ryaw * lxly, 4),
-                            "vel_raw_1_5s_info": {"linear": vr.get("linear"), "angular": vr.get("angular")},
                             "rule": f"/odom from the zero Twist to 1.5 s after it: travel <= {lim} m and "
                                     f"|yaw|*(lx+ly) <= {lim} m"}
                     if resid > lim + 1e-9:
@@ -574,7 +663,7 @@ def rounded(d: dict, n=4) -> dict:
 
 
 def so101_motions(ctx: Ctx) -> List[dict]:
-    w = ctx.wire("so101")
+    w = ctx.wire
     arm = motion_row("so101", "arm")
     grip = motion_row("so101", "gripper")
     t_arm = tolerance("so101", "arm joint")
@@ -595,7 +684,7 @@ def so101_motions(ctx: Ctx) -> List[dict]:
             m = js.msg
             return dict(zip(m["name"], m.get("velocity") or [0.0] * len(m["name"])))
 
-        rb.advertise(arm["command"]["name"], "trajectory_msgs/msg/JointTrajectory")
+        rb.advertise(arm["command"]["name"], arm["command"]["type"])
         time.sleep(1.0)
 
         def do_arm():
@@ -635,10 +724,12 @@ def so101_motions(ctx: Ctx) -> List[dict]:
 
         def do_grip():
             ex = grip["command"]["example"]
-            goal = {"command": {"name": ex["command"]["name"], "position": ex["command"]["position"],
-                                "velocity": [], "effort": []}}
-            want = float(ex["command"]["position"][0])
             before = fb()["gripper_joint"]
+            want = float(ex["command"]["position"][0])
+            if abs(before - want) < 0.2:   # already there: close instead, so the jaw moves
+                want = 0.0
+            goal = {"command": {"name": ex["command"]["name"], "position": [want],
+                                "velocity": [], "effort": []}}
             res = rb.action(grip["command"]["name"], grip["command"]["type"], goal, timeout=30)
             lim = t_grip["tolerance"]["absolute"]
             st = wait_settled(fb, ["gripper_joint"], {"gripper_joint": want}, lambda k: lim, 8.0, still=0.002)
@@ -677,7 +768,7 @@ def so101_motions(ctx: Ctx) -> List[dict]:
 def mycobot_motions(ctx: Ctx) -> List[dict]:
     """Arm, then gripper, through /joint_states on the myCobot wire; judged by the
     simulation's joint readings (the boot publishes no measured feedback)."""
-    w = ctx.wire("mycobot280")
+    w = ctx.wire
     arm = motion_row("mycobot280", "arm")
     grip = motion_row("mycobot280", "gripper")
     t_arm = tolerance("mycobot280", "arm joint")
@@ -692,7 +783,7 @@ def mycobot_motions(ctx: Ctx) -> List[dict]:
         return ctx.joints()
 
     try:
-        rb.advertise(arm["command"]["name"], "sensor_msgs/msg/JointState")
+        rb.advertise(arm["command"]["name"], arm["command"]["type"])
         time.sleep(1.0)
 
         def msg_of(pos):
@@ -766,7 +857,7 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
     """/TargetAngle (yahboomcar_msgs/ArmJoint): the arm (all six servos, gripper held)
     and the gripper (single-servo form, the recorded example); judged by the measured
     servo angles of the /CurrentAngle service."""
-    w = ctx.wire("rosmaster_x3_plus")
+    w = ctx.wire
     arm = motion_row("rosmaster_x3_plus", "arm")
     grip = motion_row("rosmaster_x3_plus", "gripper")
     t_arm = tolerance("rosmaster_x3_plus", "arm joint")
@@ -865,9 +956,28 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
 
 # --------------------------------------------------------------------------- AiNex
 
+#: How long the AiNex walks before the recorded stop, s. With the recorded example's
+#: x_move_amplitude per gait period (plus the step cycle the stop completes) and the walk's
+#: acceptance bound, the walk stays inside the forward travel a floor placement guarantees
+#: (simulator spec §2.3: 0.5 m; tests/test_evidence_script.py checks it).
+AINEX_WALK_S = 4.0
+
+
+def ainex_walk_step_periods(walk: dict) -> int:
+    """Gait periods per walk step, as the AiNex record defines it
+    (motions[walk].command.step_definition, amended 2026-10-03: the amplitudes are per step and
+    one step is one gait period, so the nominal commanded displacement is x_move_amplitude per
+    completed gait period). A record that stops saying so fails the walk, naming the change."""
+    cmd = walk["command"]
+    unit = next(f["unit"] for f in cmd["fields"] if f["field"] == "x_move_amplitude")
+    if not cmd.get("step_definition") or "one step = one gait period" not in unit:
+        raise ValueError("robots_specs/ainex/ros.yml no longer defines a walk step as one gait "
+                         f"period (x_move_amplitude unit {unit!r}); update the walk judgement")
+    return 1
+
 
 def ainex_motions(ctx: Ctx) -> List[dict]:
-    w = ctx.wire("ainex")
+    w = ctx.wire
     rb = Rosbridge(w["url"])
     out = []
     t_head = tolerance("ainex", "head joint")
@@ -934,7 +1044,7 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             rb.publish(row["command"]["name"], {"position": 0.0, "duration": 0.5})
         time.sleep(1.5)
 
-        # ---------------- walk + recorded stop
+        # ---------------- walk + recorded stop (AINEX_WALK_S, then the stop)
         walk = motion_row("ainex", "walk")
 
         def do_walk():
@@ -952,7 +1062,7 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             time.sleep(0.4)
             t_start = time.monotonic()
             rb.call(ex["start"]["service"], ex["start"]["request"])
-            time.sleep(4.0)
+            time.sleep(AINEX_WALK_S)
             t_stop_call = time.monotonic()
             rb.call(walk["stop"]["name"], walk["stop"]["message"], timeout=30)
             t_stop_ret = time.monotonic()
@@ -971,12 +1081,17 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             t_true = next((t for t, s in states if s), None)
             t_false = next((t for t, s in reversed(states) if not s), None)
             walked = (t_false - t_true) if (t_true and t_false and t_false > t_true) else (t_stop_ret - t_start)
-            period = float(prm.get("period_time", 400.0)) / 1000.0
-            steps = walked / period
+            # the nominal commanded displacement: x_move_amplitude per step, a step being
+            # ainex_walk_step_periods() gait periods, over the gait periods completed
+            period = float(prm["period_time"]) / 1000.0
+            completed = int(round(walked / period))
+            steps = completed / ainex_walk_step_periods(walk)
             commanded = amp * steps
             b = bound_of(t_walk, commanded)
             settle = math.hypot(r2["pos"][0] - r1["pos"][0], r2["pos"][1] - r1["pos"][1])
             problems = []
+            if completed < 1:
+                problems.append(f"no gait period completed (walked {walked:.3f} s)")
             if not (fwd > 0):
                 problems.append(f"walked {fwd:.3f} m: wrong sign")
             if abs(fwd - commanded) > b:
@@ -992,15 +1107,17 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             return {"wire": w["url"],
                     "command": {"sequence": "get_param -> publish /walking/set_param -> /walking/command start",
                                 "topic": walk["command"]["name"], "type": walk["command"]["type"],
-                                "set_param": prm, "start": ex["start"], "walk_s": 4.0},
+                                "set_param": prm, "start": ex["start"], "walk_s": AINEX_WALK_S},
                     "stop": {"service": walk["stop"]["name"], "request": walk["stop"]["message"],
                              "returned_after_s": round(t_stop_ret - t_stop_call, 3)},
                     "feedback": "/walking/is_walking (state) + sim-port base pose (no odometry on the wire)",
                     "is_walking": [[round(t - t_start, 3), s] for t, s in states],
-                    "walking_time_s": round(walked, 3), "gait_periods": round(steps, 2),
+                    "walking_time_s": round(walked, 3), "period_time_s": period,
+                    "gait_periods_completed": completed,
                     "commanded": {"forward_m": round(commanded, 4),
-                                  "derivation": f"x_move_amplitude {amp} m per step x {steps:.2f} steps "
-                                                f"(walking time / period_time {period} s)"},
+                                  "derivation": f"x_move_amplitude {amp} m per step x {steps:g} steps "
+                                                f"({completed} completed gait periods of {period} s, one "
+                                                "step per period: motions[walk].command.step_definition)"},
                     "measured": {"forward_m": round(fwd, 4), "left_m": round(lat, 4),
                                  "heading_drift_rad": round(drift, 4),
                                  "height_change_m": round(r1["pos"][2] - r0["pos"][2], 4)},
@@ -1009,7 +1126,8 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
                              "travel_during_stop_call_m": round(math.hypot(r_stop["pos"][0] - r0["pos"][0], r_stop["pos"][1] - r0["pos"][1]) - math.hypot(dx, dy), 4)},
                     "bound": {"figure": t_walk["figure"], "tolerance": t_walk["tolerance"],
                               "bound": round(b, 4), "drift": t_drift["tolerance"],
-                              "rule": "forward > 0 and |forward - commanded| <= relative*commanded; |heading drift| <= "
+                              "rule": "forward > 0 and |forward - commanded| <= relative*commanded (commanded = "
+                                      "x_move_amplitude per completed gait period); |heading drift| <= "
                                       "the drift tolerance; is_walking ends False; still (< 0.01 m over 1 s) after the stop"},
                     "problems": problems}
         out.append(run_motion(ctx, "walk", do_walk))
@@ -1018,14 +1136,19 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
         ag = motion_row("ainex", "action_group")
 
         def do_action():
-            group = "wave"
+            # the record's smoke example: no vendor group is playable from the pinned sources,
+            # so the record names one of its estimated groups (smoke_example_basis)
+            cmd = ag["command"]
+            msg = dict(cmd["smoke_example"])
+            basis = cmd.get("smoke_example_basis")
+            groups_file = f"robots_specs/ainex/{cmd['estimated_groups']}" if cmd.get("estimated_groups") else None
             arms = ["r_sho_pitch", "r_sho_roll", "r_el_pitch", "r_el_yaw",
                     "l_sho_pitch", "l_sho_roll", "l_el_pitch", "l_el_yaw", "head_pan", "head_tilt"]
             j0 = ctx.joints()
             arms = [a for a in arms if a in j0]
             rb.advertise(ag["command"]["name"], ag["command"]["type"])
             time.sleep(0.8)
-            rb.publish(ag["command"]["name"], {"data": group})
+            rb.publish(ag["command"]["name"], msg)
             peak = {a: 0.0 for a in arms}
             t0 = time.monotonic()
             quiet_since = None
@@ -1052,10 +1175,12 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             bad = {a: round(v, 4) for a, v in back.items() if v > lim}
             if bad:
                 problems.append(f"not back at the init pose: {bad} (> {lim})")
-            return {"wire": w["url"], "command": {"topic": ag["command"]["name"], "type": ag["command"]["type"],
-                                                  "message": {"data": group}},
-                    "note": "the vendor .d6a files are in no pinned source (robots_specs ainex boot.data_files); "
-                            "'wave' is one of the groups the simulator ships (simulator/README.md)",
+            return {"wire": w["url"], "command": {"topic": cmd["name"], "type": cmd["type"], "message": msg,
+                                                  "smoke_example_basis": basis,
+                                                  "estimated_groups": groups_file},
+                    "note": (f"'{msg['data']}' is an ESTIMATED action group ({groups_file}, smoke_example_basis "
+                             f"{basis}), not vendor data: no vendor .d6a file is in a pinned source"
+                             if basis == "estimate" else f"the record's smoke example ({basis})"),
                     "feedback": "none on the wire (interface feedback: []); judged by sim-port joint readings",
                     "peak_excursion_rad": rounded(peak), "final_error_vs_init_rad": rounded(back),
                     "duration_s": round(time.monotonic() - t0, 2),
@@ -1069,19 +1194,21 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
     return out
 
 
+#: Each robot's smoke run (workspace spec §3's list): a robot of the registry without one
+#: fails its case (a missing smoke run is a defect).
+SMOKE = {
+    "myagv": drive_motions,
+    "rosmaster_x3_plus": lambda ctx: drive_motions(ctx) + rosmaster_arm_motions(ctx),
+    "so101": so101_motions,
+    "mycobot280": mycobot_motions,
+    "ainex": ainex_motions,
+}
+
+
 def smoke(ctx: Ctx) -> List[dict]:
-    rid = ctx.rid
-    if rid == "myagv":
-        return drive_motions(ctx, "myagv")
-    if rid == "rosmaster_x3_plus":
-        return drive_motions(ctx, "rosmaster_x3_plus") + rosmaster_arm_motions(ctx)
-    if rid == "so101":
-        return so101_motions(ctx)
-    if rid == "mycobot280":
-        return mycobot_motions(ctx)
-    if rid == "ainex":
-        return ainex_motions(ctx)
-    raise KeyError(f"no smoke run defined for {rid}")
+    if ctx.rid not in SMOKE:
+        raise KeyError(f"no smoke run defined for {ctx.rid}")
+    return SMOKE[ctx.rid](ctx)
 
 
 # =========================================================================== cameras
@@ -1091,72 +1218,65 @@ def topic_file(topic: str) -> str:
     return "cam__" + topic.strip("/").replace("/", "__") + ".png"
 
 
-def capture_cameras(wires: List[dict], outdir: Path, say) -> List[dict]:
-    res = []
-    for w in wires:
-        iface = interface(w["owner"])
-        cams = [c for c in (iface.get("sensors") or {}).get("cameras") or [] if not c.get("optional")]
-        if not cams:
-            continue
-        rb = Rosbridge(w["url"])
-        try:
-            for c in cams:
-                topic = c["image_topic"]
-                rec = {"wire": w["url"], "owner": w["owner"], "camera": c["id"], "topic": topic,
-                       "recorded": {"encoding": c["encoding"], "width": c["width"],
-                                    "height": c["height"], "frame_id": c["frame_id"]}}
-                box = []
-                rb.subscribe(topic, lambda m: box.append((time.monotonic(), m)), throttle_rate=300)
-                t0 = time.monotonic()
-                while len(box) < 2 and time.monotonic() - t0 < 20:
-                    time.sleep(0.05)
-                rb.unsubscribe(topic)
-                if not box:
-                    rec.update({"pass": False, "problems": ["no image on the wire within 20 s"]})
-                    res.append(rec)
-                    say(f"    camera {topic}: FAIL (no image)")
-                    continue
-                msg = box[-1][1]
-                try:
-                    d = decode_image(msg)
-                except Exception as exc:
-                    rec.update({"pass": False, "problems": [f"decode failed: {exc!r}"]})
-                    res.append(rec)
-                    continue
-                fn = topic_file(topic)
-                (outdir / fn).write_bytes(png_bytes(d["rgb"]))
-                info = d["info"]
-                problems = []
-                for k in ("encoding", "width", "height", "frame_id"):
-                    if info.get(k) != c[k]:
-                        problems.append(f"{k} {info.get(k)!r} != recorded {c[k]!r}")
-                if len(box) < 2:
-                    problems.append("only one frame within 20 s")
-                if info["std"] < 2.0:
-                    problems.append(f"picture is flat (std {info['std']})")
-                rec.update({"file": fn, "frames_seen": len(box), "message": info,
-                            "pass": not problems, "problems": problems})
-                say(f"    camera {topic}: {'PASS' if not problems else 'FAIL ' + str(problems)} -> {fn}")
+def required_cameras(rid: str) -> List[dict]:
+    """The robot's cameras not marked `optional` (interface file `sensors.cameras`)."""
+    return [c for c in (interface(rid).get("sensors") or {}).get("cameras") or []
+            if not c.get("optional")]
+
+
+def capture_cameras(rid: str, wire: dict, outdir: Path, say) -> List[dict]:
+    res, cams = [], required_cameras(rid)
+    if not cams:
+        return res
+    rb = Rosbridge(wire["url"])
+    try:
+        for c in cams:
+            topic = c["image_topic"]
+            rec = {"wire": wire["url"], "camera": c["id"], "topic": topic,
+                   "recorded": {"encoding": c["encoding"], "width": c["width"],
+                                "height": c["height"], "frame_id": c["frame_id"]}}
+            box = []
+            rb.subscribe(topic, lambda m: box.append((time.monotonic(), m)), throttle_rate=300)
+            t0 = time.monotonic()
+            while len(box) < 2 and time.monotonic() - t0 < 20:
+                time.sleep(0.05)
+            rb.unsubscribe(topic)
+            if not box:
+                rec.update({"pass": False, "problems": ["no image on the wire within 20 s"]})
                 res.append(rec)
-        finally:
-            rb.close()
+                say(f"    camera {topic}: FAIL (no image)")
+                continue
+            try:
+                d = decode_image(box[-1][1])
+            except Exception as exc:
+                rec.update({"pass": False, "problems": [f"decode failed: {exc!r}"]})
+                res.append(rec)
+                continue
+            fn = topic_file(topic)
+            (outdir / fn).write_bytes(png_bytes(d["rgb"]))
+            info = d["info"]
+            problems = [f"{k} {info.get(k)!r} != recorded {c[k]!r}"
+                        for k in ("encoding", "width", "height", "frame_id") if info.get(k) != c[k]]
+            if len(box) < 2:
+                problems.append("only one frame within 20 s")
+            if info["std"] < 2.0:
+                problems.append(f"picture is flat (std {info['std']})")
+            rec.update({"file": fn, "frames_seen": len(box), "message": info,
+                        "pass": not problems, "problems": problems})
+            say(f"    camera {topic}: {'PASS' if not problems else 'FAIL ' + str(problems)} -> {fn}")
+            res.append(rec)
+    finally:
+        rb.close()
     return res
 
 
 # =========================================================================== fleet
 
 
-def fleet_checks(rid: str, wires: List[dict], outdir: Path, say) -> List[dict]:
+def fleet_checks(rid: str, w: dict, outdir: Path, say) -> List[dict]:
+    """`robot_console.fleet --expect <id>` for the console profile naming the robot, if any."""
     res = []
-    for pid in console_profiles():
-        if pid != rid:
-            continue
-        owner = pid
-        try:
-            w = next(x for x in wires if x["owner"] == owner)
-        except StopIteration:
-            res.append({"profile": pid, "pass": False, "problems": [f"no wire for {owner}"]})
-            continue
+    for pid in [p for p in console_profiles() if p == rid]:
         cmd = [str(CONSOLE / "python.sh"), "-m", "robot_console.fleet", "--url", w["url"],
                "--expect", pid]
         t0 = time.time()
@@ -1245,14 +1365,12 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
             raise RuntimeError(f"port {args.sim_port} or {args.port} is taken")
         sim = Proc([str(SIM / "kitchen.sh"), "start", "--engine", engine,
                     "--sim-port", str(args.sim_port)], sim_log)
-        sim_line = sim.wait_for("simulation ready", 600)
-        case["simulation_ready_line"] = sim_line
+        sim.wait_for("simulation ready", 600)
         case["simulation_command"] = f"simulator/kitchen.sh start --engine {engine} --sim-port {args.sim_port}"
         sp = SimPort(args.sim_port)
         rtfmon = RtfMonitor(args.sim_port)
         hello = sp.call("hello")
         case["scene"] = hello["scene"]
-        case["engine_reported"] = hello["engine"]
         if hello["engine"] != engine:
             raise RuntimeError(f"simulation reports engine {hello['engine']}")
         spawn_cmd = [str(SIM / "spawn.sh"), rid, "--placement", placement,
@@ -1260,39 +1378,42 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         case["spawn_command"] = "simulator/spawn.sh " + " ".join(spawn_cmd[1:])
         spawn = Proc(spawn_cmd, outdir / "spawn.log")
         case["readiness_line"] = spawn.wait_for("spawn ready:", 900)
-        case["ready_at"] = iso()
         wires = parse_ready(case["readiness_line"])
-        case["wires"] = wires
-        case["ports"] = {w["role"]: w["port"] for w in wires} | {"sim_port": args.sim_port}
+        if [w["robot"] for w in wires] != [rid]:
+            raise RuntimeError(f"the readiness line names {wires}, not one wire of {rid}")
+        wire = case["wire"] = wires[0]
+        case["ports"] = {"wire": wire["port"], "sim_port": args.sim_port}
         # let the spawn's recompile transient pass out of the RTF window before collecting
         time.sleep(args.settle)
         t_collect = [time.time(), None]
         row = next(r for r in sp.call("robots")["robots"] if r["id"] == rid)
         case["spawned"] = {k: row.get(k) for k in ("state", "placement", "xyz", "yaw", "ports",
                                                    "staged", "cleared")}
-        case["rtf_at_start"] = sp.call("hello").get("rtf")
-        if row.get("staged"):
-            say(f"    worktop objects: {', '.join(row['staged'])}; cleared: "
+        staged = {n: o["body"] for n, o in (row.get("staged") or {}).items()}
+        if staged:
+            say(f"    worktop objects: {', '.join(staged)}; cleared: "
                 f"{', '.join(row.get('cleared') or []) or 'none'}")
 
         # scene picture (an arm's: with the objects staged around it in view)
-        view = choose_view(sp, rid, mobile, extra=[o["body"] for o in (row.get("staged") or {}).values()])
+        view = choose_view(sp, rid, mobile, staged)
         case["view"] = view
         sc = render(sp, view, outdir / "scene.png")
         case["items"]["scene"] = {"file": "scene.png", **sc,
                                   "pass": sc["width"] == 1280 and sc["height"] == 720 and sc["std"] > 5}
-        say(f"    scene.png ({view.get('_context_m')} m context)")
+        if staged:
+            case["items"]["scene"]["worktop_objects_shown"] = objects_in_picture(sp, view, staged)
+        say(f"    scene.png ({view.get('_context_m')} m context"
+            + (f"; objects shown: {case['items']['scene']['worktop_objects_shown']}" if staged else "")
+            + ")")
 
         # cameras on the wire
-        case["items"]["cameras"] = capture_cameras(wires, outdir, say)
+        case["items"]["cameras"] = capture_cameras(rid, wire, outdir, say)
 
         # the console's check
-        case["host_load_fleet"] = host_load()
-        case["items"]["fleet"] = fleet_checks(rid, wires, outdir, say)
+        case["items"]["fleet"] = fleet_checks(rid, wire, outdir, say)
 
         # the motion smoke run
-        case["host_load_smoke"] = host_load()
-        ctx = Ctx(rid, sp, wires, outdir, view, say)
+        ctx = Ctx(rid, sp, wire, outdir, view, say)
         motions = smoke(ctx)
         sm = {"robot": rid, "engine": engine, "scene": case["scene"],
               "bounds_note": "Bounds are the tolerances recorded in robots_specs/<id>/ros*.yml; a recorded "
@@ -1305,7 +1426,6 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         (outdir / "smoke.json").write_text(json.dumps(sm, indent=1, default=str))
         case["items"]["smoke"] = {"file": "smoke.json", "pass": all(m["pass"] for m in motions),
                                   "motions": {m["name"]: m["pass"] for m in motions}}
-        case["rtf_at_end"] = sp.call("hello").get("rtf")
         t_collect[1] = time.time()
         # the RTF window covering the end of the collection, before the robot is removed
         time.sleep(RtfMonitor.WINDOW_S + 1.0)
@@ -1320,7 +1440,11 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
             if t_collect:
                 case["collection"] = {"from": iso(t_collect[0]), "to": iso(t_collect[1])}
                 case["rtf_low_windows_during_collection"] = rtfmon.low_windows(*t_collect)
-            case["rtf_samples"] = [[round(t - rtfmon.samples[0][0], 1), r] for t, r in rtfmon.samples]
+                # the monitor sampled the whole collection (its thread ends on an error)
+                case["rtf_monitored_to_end"] = bool(rtfmon.samples) and \
+                    rtfmon.samples[-1][0] >= t_collect[1]
+            t0 = rtfmon.samples[0][0] if rtfmon.samples else 0.0
+            case["rtf_samples"] = [[round(t - t0, 1), r] for t, r in rtfmon.samples]
             rtfmon.close()
         if sp is not None:
             sp.close()
@@ -1332,23 +1456,38 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         case["containers_left"] = docker_left(args.sim_port)
     log = sim_log.read_text(errors="replace") if sim_log.exists() else ""
     case["rtf_warnings"] = [ln for ln in log.splitlines() if "real-time factor" in ln]
-    case["host_load_after"] = host_load()
     case["finished"] = iso()
     it = case["items"]
+    spawned = case.get("spawned") or {}
+    smoke_run = it.get("smoke", {}).get("motions") or {}
     checks = {
+        # a case runs on the engine's default scene (workspace spec §3)
+        "default_scene": case.get("scene") == DEFAULT_SCENES[engine],
+        "placement": spawned.get("placement") == placement,
         "scene": bool(it.get("scene", {}).get("pass")),
         "cameras": all(c.get("pass") for c in it.get("cameras", [])) and
-                   len(it.get("cameras", [])) == sum(
-                       len([c for c in (interface(w["owner"]).get("sensors") or {}).get("cameras") or []
-                            if not c.get("optional")]) for w in case.get("wires", [])),
-        "fleet": bool(it.get("fleet")) and all(f["pass"] for f in it.get("fleet", [])),
+                   len(it.get("cameras", [])) == len(required_cameras(rid)),
+        # the console profile naming the robot, if any (workspace spec §3)
+        "fleet": sorted(f["profile"] for f in it.get("fleet", [])) ==
+                 sorted(p for p in console_profiles() if p == rid)
+                 and all(f["pass"] for f in it.get("fleet", [])),
         "smoke": bool(it.get("smoke", {}).get("pass")),
+        # every motion of workspace spec §3's list, as the robot records it, was run
+        "smoke_covers_recorded_motions": set(required_motions(rid)) <= set(smoke_run),
+        # nothing collected below real time (simulator spec §3 Timing: no claim of the
+        # acceptance bounds for such an interval)
+        "real_time": "collection" in case and not case.get("rtf_low_windows_during_collection")
+                     and bool(case.get("rtf_monitored_to_end")),
         "spawn_clean_exit": case.get("spawn_exit_code") == 0 and not case["containers_left"],
     }
     if not mobile:
-        # an arm on the worktop brings the six worktop objects (simulator spec §2.3)
-        checks["worktop_objects"] = sorted((case.get("spawned") or {}).get("staged") or {}) == \
-            sorted(["apple", "banana", "bowl", "lemon", "mug", "plate"])
+        # an arm on the worktop stands among the six worktop objects (simulator spec §2.3),
+        # which the scene picture shows (workspace spec §3)
+        checks["worktop_objects"] = sorted(spawned.get("staged") or {}) == sorted(WORKTOP_OBJECTS) \
+            and isinstance(spawned.get("cleared"), list)
+        shown_ = it.get("scene", {}).get("worktop_objects_shown") or {}
+        checks["worktop_objects_in_picture"] = sorted(shown_) == sorted(WORKTOP_OBJECTS) \
+            and all(shown_.values())
     case["checks"] = checks
     case["pass"] = "error" not in case and all(checks.values())
     # evidence collected while the simulation ran below real time is retried (main loop)
@@ -1361,14 +1500,6 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
 
 
 # =========================================================================== index
-
-
-def required_cameras(rid: str) -> List[str]:
-    out = []
-    for c in (interface(rid).get("sensors") or {}).get("cameras") or []:
-        if not c.get("optional"):
-            out.append(topic_file(c["image_topic"]))
-    return out
 
 
 def write_index(out_root: Path) -> dict:
@@ -1401,7 +1532,6 @@ def write_index(out_root: Path) -> dict:
                 "checks": c.get("checks"), "error": c.get("error"),
                 "dir": d, "scene_png": f"{d}/scene.png" if (out_root / d / "scene.png").exists() else None,
                 "camera_pngs": [f"{d}/{x}" for x in cams],
-                "required_camera_pngs": [f"{d}/{x}" for x in required_cameras(rid)],
                 "motion_pngs": [f"{d}/{x}" for x in motion_pics],
                 "smoke": f"{d}/smoke.json", "motions": c["items"].get("smoke", {}).get("motions"),
                 "fleet": [{"profile": f["profile"], "exit_code": f.get("exit_code"), "pass": f["pass"],
@@ -1425,7 +1555,8 @@ def write_index(out_root: Path) -> dict:
 
     L = ["# Evidence index", "",
          f"Generated {idx['generated']} by `tests/evidence.py` (workspace spec §3). "
-         "One case per robot of `robots_specs/high_level_spec.md` per engine, on the engine's "
+         "One case per robot of the robot registry (the robot files `robots_specs/<id>.md`) "
+         "per engine, on the engine's "
          "default scene (`simulator/kitchen.sh start --engine <engine>`), spawned with "
          "`simulator/spawn.sh` (mobile robots on the floor, arms on the worktop).", "",
          f"**Overall: {'PASS' if idx['all_pass'] else 'FAIL'}** "
@@ -1447,6 +1578,8 @@ def write_index(out_root: Path) -> dict:
         L.append(f"| {c['engine']} | `{c['robot']}` | {c['scene']} | {c['placement']} | {res} | {sc} | "
                  f"{cams} | {sm} | {fl} | {att} |")
     L += ["", "## How a case is judged", "",
+          "* **Scene**: the simulation reports the engine's default scene "
+          f"({', '.join(f'{e} `{s}`' for e, s in DEFAULT_SCENES.items())}) and the robot at its placement.",
           "* **Scene picture**: an offscreen 1280x720 render through the simulation's control port, "
           "from a viewpoint with a clear line of sight to the robot (checked with a depth render).",
           "* **Camera pictures**: one frame of every camera not marked `optional` in the robot's "
@@ -1459,16 +1592,25 @@ def write_index(out_root: Path) -> dict:
           "none, the control port's joint/pose readings) shows the commanded displacement within the "
           "tolerance recorded in the interface file -- a `{relative, absolute}` pair bounds "
           "|measured - commanded| by max(relative x |commanded|, absolute) -- and the robot is at rest "
-          "afterwards. Each motion in `smoke.json` names its bound and rule. Base motions: 0.25 m "
-          "forward/back/left/right at 0.2 m/s and a 1 rad turn at 0.5 rad/s, within the placement's "
-          "guaranteed travel.",
+          "afterwards. Each motion in `smoke.json` names its bound and rule. Every motion the "
+          "robot records is run (workspace spec §3's list: a drive as forward, back, left, right "
+          "and turn; each head joint; walk; arm; gripper; action group). Base motions: 0.25 m "
+          "forward/back and 0.20 m left/right at 0.2 m/s and a 1 rad turn at 0.5 rad/s; the AiNex "
+          f"walks {AINEX_WALK_S:g} s with the recorded example's step, its commanded displacement "
+          "x_move_amplitude per completed gait period (the record's step definition); all within "
+          "the placement's guaranteed travel. The AiNex action group is its record's `smoke_example`, "
+          "an estimated group (`smoke_example_basis: estimate`, robots_specs/ainex/action_groups.yml): "
+          "no vendor group is in a pinned source.",
           "* **Console check**: `robot_console/python.sh -m robot_console.fleet --url <wire> --expect <profile>` "
-          "for every console profile naming the robot; exit 0 is the console's own verdict.",
+          "for the console profile naming the robot, if any; exit 0 is the console's own verdict.",
+          "* **Real time**: the simulation's real-time factor never fell below 0.90 (over its 10 s "
+          "window) during the collection; below it no acceptance bound can be claimed (simulator "
+          "spec §3 Timing).",
           "* A case also requires `spawn.sh` to exit 0 on SIGINT with no container left.",
-          "* **Worktop objects** (an arm on the worktop): the spawn staged the six worktop objects "
-          "(apple, plate, bowl, mug, banana, lemon) around the arm (simulator spec §2.3); the scene "
-          "picture frames them with the arm, and the case records them and any scene objects "
-          "cleared for them.",
+          "* **Worktop objects** (an arm on the worktop): the arm stands among the six worktop "
+          "objects (apple, plate, bowl, mug, banana, lemon; simulator spec §2.3); the scene "
+          "picture shows each of them (projected into the view and reached by a depth render), and "
+          "the case records them and any scene objects cleared for them.",
           "", "## Cases", ""]
     for c in cases:
         if c.get("missing"):
@@ -1544,7 +1686,7 @@ def main(argv=None) -> int:
     ap.add_argument("--robot", action="append", help="robot id(s); default every recorded robot")
     ap.add_argument("--out", default=str(REPO / "evidences"), help="output directory")
     ap.add_argument("--sim-port", type=int, default=9080)
-    ap.add_argument("--port", type=int, default=9090, help="wire port (an arm wire takes port+1)")
+    ap.add_argument("--port", type=int, default=9090, help="rosbridge port of the robot's wire")
     ap.add_argument("--max-load", type=float, default=float(os.cpu_count() or 8) * 0.5,
                     help="wait before a case until the 1-min load average is at most this")
     ap.add_argument("--max-wait", type=float, default=1800.0, help="longest wait for low load, s")

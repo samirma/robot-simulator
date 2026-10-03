@@ -38,6 +38,16 @@ sources:
     branch: humble
     revision: cfdb3b7dcea4a503c0acaa304d033636beeb1dba
     role: dependency — QoS-override parameters robot_state_publisher declares
+  - id: rviz
+    url: https://github.com/ros2/rviz
+    branch: humble
+    revision: 4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054
+    role: dependency (rviz2 release 11.2.29, the humble branch head) — the boot's /rviz2 node, its tools and its tf buffer
+  - id: geometry2
+    url: https://github.com/ros2/geometry2
+    branch: humble
+    revision: 404b7224d623d614f18fa9738dbf1716403d857e
+    role: dependency (tf2 / tf2_ros release 0.25.24, the humble branch head) — rviz2's TransformListener and tf buffer default
   - id: docs_ros2
     url: https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/ROS/12.2-ROS2/12.2.4-rivzIntroductionAndUse/
     revision: retrieved 2026-09-30
@@ -63,9 +73,10 @@ boot:
     only mycobot_280pi launch that loads this embodiment's URDF and drives the gripper. The
     recorded boot runs it with gui:=false: with the default gui:=true the desktop slider app
     joint_state_publisher_gui is the command source and republishes /joint_states at 10 Hz,
-    which would override any ROS client; its rows are recorded as optional. rviz2 is started
-    unconditionally but is a desktop viewer that needs a display and is not part of the robot's
-    control interface; its rows are optional. The boot publishes no measured joint feedback.
+    which would override any ROS client; its rows are recorded as optional. rviz2 (config
+    mycobot_pi.rviz) is started unconditionally by the boot launch, so its node, its tool topics
+    and its parameter are part of the recorded boot (amended 2026-10-02: they were recorded as
+    optional). The boot publishes no measured joint feedback.
   commands:
     - ros2 launch mycobot_280pi slider_control_adaptive_gripper.launch.py gui:=false
   launch_files:
@@ -82,6 +93,12 @@ boot:
     - source: mycobot_ros2
       path: mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf
       role: robot_description (run through xacro by the launch)
+    - source: mycobot_ros2
+      path: mycobot_280/mycobot_280pi/config/mycobot_pi.rviz
+      role: >-
+        rviz2 configuration the launch passes with -d (launch argument rvizconfig, L25-L31, L71-L78):
+        fixed frame joint1 and the tool topics /initialpose, /goal_pose, /clicked_point (amended
+        2026-10-03: the record omitted this data file)
   hardware: >-
     myCobot 280 Pi (2023): Raspberry Pi 4B (Broadcom BCM2711) in the base, talking to the arm's
     Atom controller over /dev/ttyAMA0 at 1000000 baud; six servo joints; the myCobot Adaptive
@@ -131,9 +148,16 @@ nodes:
   - name: /rviz2
     package: rviz2
     executable: rviz2
-    optional: true
-    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L71-L78
-    notes: Desktop viewer with config/mycobot_pi.rviz; needs a display; not part of the control interface.
+    source:
+      - https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L71-L78
+      - https://github.com/ros2/rviz/blob/4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054/rviz_common/src/rviz_common/visualizer_app.cpp#L147
+    notes: >-
+      Desktop viewer with config/mycobot_pi.rviz, started unconditionally by the boot launch (node
+      "rviz" renamed by the launch's name="rviz2"); not optional (amended 2026-10-02). Its RobotModel
+      display subscribes /robot_description. Its tf buffer is fed by tf2_ros's TransformListener,
+      which subscribes /tf and /tf_static on a node of its own named transform_listener_impl_<hex
+      address of the listener> (tf_wrapper.cpp#L133-L138, tf2_ros transform_listener.cpp#L42-L57;
+      parameter services disabled); that name differs on every run, so it has no row of its own here.
   - name: /listen_real_service
     package: mycobot_280pi
     executable: listen_real_service
@@ -204,22 +228,46 @@ topics:
     direction: out
     nodes: [/rviz2]
     rate: non_periodic
-    optional: true
-    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L221-L227
+    qos: {reliability: reliable, durability: volatile, depth: 5}
+    source:
+      - https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L221-L227
+      - https://github.com/ros2/rviz/blob/4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054/rviz_default_plugins/src/rviz_default_plugins/tools/pose_estimate/initial_pose_tool.cpp#L93-L94
+    frame_id: joint1
+    notes: >-
+      SetInitialPose tool; advertised when rviz2 loads the tool at start-up, sent only on a click in the
+      viewer. header.frame_id is rviz2's fixed frame, joint1 in the boot's config
+      (mycobot_pi.rviz#L210; the tool sets context_->getFixedFrame()) (amended 2026-10-03:
+      frame recorded).
   - name: /goal_pose
     type: geometry_msgs/msg/PoseStamped
     direction: out
     nodes: [/rviz2]
     rate: non_periodic
-    optional: true
-    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L228-L234
+    qos: {reliability: reliable, durability: volatile, depth: 5}
+    source:
+      - https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L228-L234
+      - https://github.com/ros2/rviz/blob/4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054/rviz_default_plugins/src/rviz_default_plugins/tools/goal_pose/goal_tool.cpp#L78-L79
+    frame_id: joint1
+    notes: >-
+      SetGoal tool; advertised when rviz2 loads the tool at start-up, sent only on a click in the
+      viewer. header.frame_id is rviz2's fixed frame, joint1 in the boot's config
+      (mycobot_pi.rviz#L210; the tool sets context_->getFixedFrame()) (amended 2026-10-03:
+      frame recorded).
   - name: /clicked_point
     type: geometry_msgs/msg/PointStamped
     direction: out
     nodes: [/rviz2]
     rate: non_periodic
-    optional: true
-    source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L235-L242
+    qos: {reliability: reliable, durability: volatile, depth: 5}
+    source:
+      - https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/config/mycobot_pi.rviz#L235-L242
+      - https://github.com/ros2/rviz/blob/4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054/rviz_default_plugins/src/rviz_default_plugins/tools/point/point_tool.cpp#L93-L94
+    frame_id: joint1
+    notes: >-
+      PublishPoint tool; advertised when rviz2 loads the tool at start-up, sent only on a click in the
+      viewer. header.frame_id is rviz2's fixed frame, joint1 in the boot's config
+      (mycobot_pi.rviz#L210; the tool sets context_->getFixedFrame()) (amended 2026-10-03:
+      frame recorded).
   - name: /visualization_marker
     type: visualization_msgs/msg/Marker
     direction: out
@@ -228,6 +276,8 @@ topics:
     rate_basis: source
     rate_note: create_rate(30) loop in follow_display.py; another launch.
     optional: true
+    frame_id: /joint1
+    notes: "follow_display.py#L65 sets the literal '/joint1' (amended 2026-10-03: frame recorded)"
     source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/mycobot_280pi/follow_display.py#L37-L46
 
 services:
@@ -305,6 +355,13 @@ parameters:
     value: 1000000
     source: https://github.com/elephantrobotics/mycobot_ros2/blob/d42ff61a78122c79246623391540d75738b03b23/mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L46-L51
     notes: Integer parameter (the node's own default is 115200).
+  - name: tf_buffer_cache_time_ms
+    node: /rviz2
+    value: 10000
+    source:
+      - https://github.com/ros2/rviz/blob/4e2b27b7561da7eb03fbc7e92a74d4b3f1e0b054/rviz_default_plugins/src/rviz_default_plugins/transformation/tf_wrapper.cpp#L148-L157
+      - https://github.com/ros2/geometry2/blob/404b7224d623d614f18fa9738dbf1716403d857e/tf2/include/tf2/buffer_core.hpp#L73
+    notes: Read-only integer, ms; tf2's default buffer cache time of 10 s (added 2026-10-02 with the /rviz2 node).
   - name: rate
     node: /joint_state_publisher
     value: 10

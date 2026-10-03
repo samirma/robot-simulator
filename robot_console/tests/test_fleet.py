@@ -50,10 +50,20 @@ def test_missing_required_endpoint_fails(fake, pid):
     assert code != 0 and row.name in out, out
 
 
+def test_failed_validation_still_reports_cameras(fake):
+    """Every discovered robot's profile cameras are reported, also when it fails validation."""
+    srv = fake(retype(wire_spec(load("ainex")), "/walking/command", "std_srvs/Empty"))
+    code, out = fleet("--url", srv.url)
+    assert code == 1 and "robot ainex: typed validation FAIL" in out, out
+    assert "camera /camera/image_raw: LIVE" in out, out
+
+
 def test_ambiguous_candidates_are_named(fake):
     srv = fake(merge(wire_spec(load("myagv")), wire_spec(load("rosmaster_x3_plus"))))
     code, out = fleet("--url", srv.url)
     assert code != 0 and "ambiguous" in out and "myagv" in out and "rosmaster_x3_plus" in out, out
+    for c in load("myagv").cameras + load("rosmaster_x3_plus").cameras:
+        assert out.count(f"camera {c.topic}:") == 1, out     # each candidate's cameras, once
     code, out = fleet("--url", srv.url, "--expect", "myagv")
     assert code != 0 and "rosmaster_x3_plus" in out, out
 
@@ -103,6 +113,7 @@ def test_missing_camera_reported(fake):
     assert code != 0 and "camera /camera/rgb/image_raw: MISSING" in out, out
 
 
-def test_unknown_id():
-    code, out = fleet("--url", "ws://127.0.0.1:1", "--expect", "turtlebot")
-    assert code == 2 and "unknown robot id" in out, out
+@pytest.mark.parametrize("unknown", ["turtlebot", "myagv_mycobot280"])
+def test_unknown_id(unknown):
+    code, out = fleet("--url", "ws://127.0.0.1:1", "--expect", unknown)
+    assert code == 2 and "unknown robot id" in out and "Accepted ids" in out, out

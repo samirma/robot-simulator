@@ -30,6 +30,7 @@ from rclpy.qos import (DurabilityPolicy, HistoryPolicy, QoSProfile,  # noqa: E40
                        ReliabilityPolicy)
 from rosidl_runtime_py.utilities import get_message, get_service  # noqa: E402
 from builtin_interfaces.msg import Time as TimeMsg  # noqa: E402
+from rcl_interfaces.msg import ParameterDescriptor  # noqa: E402
 
 _link = None
 _link_lock = threading.Lock()
@@ -84,8 +85,11 @@ class Node:
         for row in common.params_of(self.iface, name):
             value = overrides.get(row["name"], common.param_value(self.robot, row))
             p = _param_obj(row["name"], value)
+            # a parameter the record notes as read-only (rclpy's QoS overrides, rviz2's
+            # tf_buffer_cache_time_ms) is declared so: setting it is refused, as on the robot
+            ro = str(row.get("notes") or "").lower().startswith("read-only")
             try:
-                self.rcl.declare_parameter(p.name, p.value)
+                self.rcl.declare_parameter(p.name, p.value, ParameterDescriptor(read_only=ro))
             except Exception:
                 self.rcl.declare_parameter(p.name, p.type_)
                 self.rcl.set_parameters([p])

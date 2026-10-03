@@ -1,0 +1,60 @@
+# AiNex action groups that can be played without the vendor's .d6a files: ESTIMATES, not
+# vendor data (added 2026-10-03). Referenced by ros.yml motions[action_group]; format in
+# robots_specs/SCHEMA.md, "Estimated action groups".
+#
+# Hiwonder ships its action groups (left_shot, greet, ...) as .d6a files on the robot image
+# only; none is in any pinned source (ros.yml boot.data_files), so no vendor group can be
+# played from the record. The groups below are arm and head motions defined here so that the
+# action-group motion has a playable, documented example. They are not Hiwonder motions.
+schema_version: 1
+robot_id: ainex
+basis: estimate
+reason: >-
+  No vendor action group is in a pinned source. These groups are invented motions of the
+  arms and head only, with both feet left at the init pose, so the robot stays standing. Each
+  joint target stays inside the URDF limit (+-2.09 rad) and inside the servo pulse range
+  0-1000 under servo_controller.yaml's init/direction mapping (checked 2026-10-03 against
+  Hiwonder/ainex@e8fe2a8).
+player:
+  # How the vendor's controller plays a group: /app/set_action <name> (ros.yml motions[action_group]).
+  path: /home/ubuntu/software/ainex_controller/ActionGroups/<name>.d6a
+  file_format: >-
+    SQLite database with table ActionGroup, one row per frame in order: column 0 the frame
+    index, column 1 the frame time in ms, columns 2.. the pulse (0-1000) of servo id 1, 2, ...;
+    each frame is sent with its time as the move duration, then the player sleeps that time.
+  source: https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L63-L99
+frames_are: >-
+  Each frame is {time_ms, offsets_rad}: offsets (rad) added to the recorded init pose,
+  ros.yml parameter /ainex_controller/init_pose; a joint a frame does not name is at its
+  init-pose angle. A frame converts to servo pulses as
+  pulse = clamp(0, 1000, round(init + angle * sign * 1000 / (240 deg in rad))), with each
+  joint's servo id, init and sign (-1 when the servo's min > max) from servo_controller.yaml.
+pulse_source:
+  - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml
+  - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L24
+smoke_example: wave
+groups:
+  wave:
+    description: right arm raised forward and out, elbow waved three times, then back to the init pose
+    frames:
+      - {time_ms: 600, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_yaw: 0.0}}
+      - {time_ms: 400, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_pitch: 0.6}}
+      - {time_ms: 400, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_pitch: -0.2}}
+      - {time_ms: 400, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_pitch: 0.6}}
+      - {time_ms: 400, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_pitch: -0.2}}
+      - {time_ms: 400, offsets_rad: {r_sho_pitch: -1.2, r_sho_roll: -1.3, r_el_pitch: 0.6}}
+      - {time_ms: 600, offsets_rad: {}}
+  raise_hands:
+    description: both arms raised sideways overhead and lowered again
+    frames:
+      - {time_ms: 800, offsets_rad: {r_sho_roll: -1.4, l_sho_roll: 1.4}}
+      - {time_ms: 800, offsets_rad: {r_sho_roll: -2.4, l_sho_roll: 2.4}}
+      - {time_ms: 800, offsets_rad: {r_sho_roll: -1.4, l_sho_roll: 1.4}}
+      - {time_ms: 800, offsets_rad: {}}
+  nod:
+    description: head tilted down and up twice
+    frames:
+      - {time_ms: 400, offsets_rad: {head_tilt: -0.4}}
+      - {time_ms: 400, offsets_rad: {head_tilt: 0.1}}
+      - {time_ms: 400, offsets_rad: {head_tilt: -0.4}}
+      - {time_ms: 400, offsets_rad: {}}

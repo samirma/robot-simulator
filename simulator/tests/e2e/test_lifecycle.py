@@ -7,12 +7,11 @@ import shutil
 import signal
 import subprocess
 import time
-from pathlib import Path
 
 import pytest
 
 from conftest import (REPO, SIM, Spawn, docker_containers, docker_ok, port_free, running_sim,
-                      wait_no_containers, wait_port_free)
+                      wait_port_free)
 
 import protocol
 
@@ -44,8 +43,9 @@ def wait(pred, timeout=30.0):
 
 
 def containers(rid, sim_port=SIM_PORT):
-    return docker_containers(f"label=rsim.robot={rid}") and \
-        [c for c in docker_containers(f"label=rsim.sim_port={sim_port}") if f"-{rid}-" in c]
+    """The wire containers of a robot in the simulation on `sim_port`."""
+    return sorted(set(docker_containers(f"label=rsim.robot={rid}"))
+                  & set(docker_containers(f"label=rsim.sim_port={sim_port}")))
 
 
 def assert_released(rid, ports, sim_port=SIM_PORT):
@@ -65,13 +65,12 @@ def test_ready_line_and_sigint_exit_zero(sim, logdir):
     assert_released("myagv", [9391])
 
 
-def test_sigterm_exit_zero_and_composite_ports(sim, logdir):
-    sp = Spawn("myagv_mycobot280", SIM_PORT, 9392, placement="floor", arm_port=9394,
-               log=logdir / "lc-comp.log")
+def test_sigterm_exit_zero(sim, logdir):
+    sp = Spawn("myagv", SIM_PORT, 9392, placement="floor", log=logdir / "lc-term.log")
     line = sp.wait_ready()
-    assert "ws://127.0.0.1:9392" in line and "ws://127.0.0.1:9394" in line
+    assert line.startswith("spawn ready: myagv") and "ws://127.0.0.1:9392" in line
     assert sp.stop(signal.SIGTERM) == 0
-    assert_released("myagv_mycobot280", [9392, 9394])
+    assert_released("myagv", [9392])
 
 
 def test_duplicate_and_busy_refusals_and_isolation(sim, logdir):
@@ -150,7 +149,7 @@ def test_sigkill_releases_robot_containers_ports_and_id(sim, logdir):
 def test_container_exit_ends_the_spawn(sim, logdir):
     sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-cexit.log")
     sp.wait_ready()
-    subprocess.run(["docker", "kill", f"rsim-{SIM_PORT}-myagv-main"], stdout=subprocess.DEVNULL)
+    subprocess.run(["docker", "kill", *containers("myagv")], stdout=subprocess.DEVNULL)
     assert sp.wait_exit(60) != 0
     assert "container exited" in sp.text()
     assert_released("myagv", [9391])
@@ -159,7 +158,7 @@ def test_container_exit_ends_the_spawn(sim, logdir):
 def test_serving_process_failure_ends_the_spawn(sim, logdir):
     sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-proc.log")
     sp.wait_ready()
-    name = f"rsim-{SIM_PORT}-myagv-main"
+    (name,) = containers("myagv")
     subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "rosbridge_websocket"])
     # the container itself keeps running; the spawn notices the wire stopped serving
     assert sp.wait_exit(60) != 0
@@ -170,37 +169,28 @@ def test_serving_process_failure_ends_the_spawn(sim, logdir):
 def test_vendor_node_failure_ends_the_spawn(sim, logdir):
     sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-node.log")
     sp.wait_ready()
-    subprocess.run(["docker", "exec", f"rsim-{SIM_PORT}-myagv-main", "pkill", "-9", "-f",
-                    "robot_pose_ekf"])
+    (name,) = containers("myagv")
+    subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "robot_pose_ekf"])
     assert sp.wait_exit(60) != 0 and "lost node(s) /robot_pose_ekf" in sp.text()
     assert_released("myagv", [9391])
 
 
-def test_one_of_two_wires_failing_ends_the_whole_spawn(sim, logdir):
-    sp = Spawn("myagv_mycobot280", SIM_PORT, 9392, placement="floor",
-               log=logdir / "lc-onewire.log")
-    sp.wait_ready()
-    subprocess.run(["docker", "kill", f"rsim-{SIM_PORT}-myagv_mycobot280-arm"],
-                   stdout=subprocess.DEVNULL)
-    assert sp.wait_exit(60) != 0
-    assert_released("myagv_mycobot280", [9392, 9393])
-
-
 def test_partially_failed_startup_leaves_nothing(sim, logdir):
-    env_before = os.environ.get("RSIM_TEST_FAIL_ROLE")
-    os.environ["RSIM_TEST_FAIL_ROLE"] = "arm"
+    """The robot is added and its wire container started, then the wire fails during its
+    startup (the supervisor's test hook): the attempt removes all it created."""
+    env_before = os.environ.get("RSIM_TEST_FAIL_WIRE")
+    os.environ["RSIM_TEST_FAIL_WIRE"] = "1"
     try:
-        sp = Spawn("myagv_mycobot280", SIM_PORT, 9392, placement="floor",
-                   log=logdir / "lc-partial.log")
+        sp = Spawn("myagv", SIM_PORT, 9392, placement="floor", log=logdir / "lc-partial.log")
     finally:
         if env_before is None:
-            del os.environ["RSIM_TEST_FAIL_ROLE"]
+            del os.environ["RSIM_TEST_FAIL_WIRE"]
         else:
-            os.environ["RSIM_TEST_FAIL_ROLE"] = env_before
+            os.environ["RSIM_TEST_FAIL_WIRE"] = env_before
     assert sp.wait_exit(400) != 0
     assert "failed to start" in sp.text()
-    assert_released("myagv_mycobot280", [9392, 9393])
-    assert robots() == {} or "myagv_mycobot280" not in robots()
+    assert_released("myagv", [9392])
+    assert "myagv" not in robots()
     c = protocol.Client("127.0.0.1", SIM_PORT)
     assert c.call("robots")["starting"] is None
     c.close()
@@ -225,9 +215,11 @@ def test_refusals_without_docker_or_files(sim, tmp_path):
     # a robot whose required files are missing is refused, naming run.sh setup
     fake = tmp_path / "repo"
     (fake / "robots_specs").mkdir(parents=True)
-    shutil.copy(REPO / "robots_specs" / "high_level_spec.md", fake / "robots_specs")
+    for name in ("high_level_spec.md", "ainex.md"):   # the registry, without the robot's folder
+        shutil.copy(REPO / "robots_specs" / name, fake / "robots_specs")
     out = subprocess.run([str(SIM / "spawn.sh"), "ainex", "--sim-port", str(SIM_PORT)],
                          env=dict(os.environ, RSIM_REPO_ROOT=str(fake)), stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, timeout=120)
-    assert out.returncode != 0 and "run.sh setup" in out.stdout and "missing" in out.stdout
+    assert out.returncode != 0 and "run.sh setup" in out.stdout
+    assert "required files are missing" in out.stdout
     assert "ainex" not in robots()

@@ -3,9 +3,8 @@
 // whose changes are sent at once. Plain browser JavaScript, no external dependencies.
 "use strict";
 (() => {
-  const RC = (window.RC = { events: [] });
+  const RC = (window.RC = {});        // RC.state and RC.ready: the page state, for tests and tools
   const $ = (id) => document.getElementById(id);
-  const log = (e) => { RC.events.push(Object.assign({ t: Date.now() }, e)); };
 
   // ------------------------------------------------------------------ dialect
   function normType(t) {
@@ -22,7 +21,7 @@
   let INFRA = null;
   function isInfra(name, kind) {
     if (INFRA.topics.includes(name) || INFRA.prefixes.some((p) => name.startsWith(p))) return true;
-    if (name === "/rosapi" || name === "/rosbridge_websocket") return true;
+    if (INFRA.nodes.includes(name)) return true;
     if (kind === "service" && INFRA.node_service_suffixes.some((s) => name.endsWith(s))) return true;
     return false;
   }
@@ -42,6 +41,7 @@
       this.url = url; this.ws = null; this.ids = 0; this.pending = new Map(); this.subs = new Map();
       this.advertised = new Map(); this.userClosed = false; this.closed = false; this.onlost = null;
       this.handlers = new Map();
+      this.wsClosed = new Promise((r) => { this._wsClosed = r; });   // the socket finished closing
     }
     connect(timeoutMs = 5000) {
       return new Promise((resolve, reject) => {
@@ -50,7 +50,7 @@
         try { this.ws = new WebSocket(this.url); } catch (e) { clearTimeout(timer); reject(e); return; }
         this.ws.onopen = () => { if (!done) { done = true; clearTimeout(timer); resolve(this); } };
         this.ws.onerror = () => { if (!done) { done = true; clearTimeout(timer); reject(new Error("cannot connect to " + this.url)); } };
-        this.ws.onclose = () => this._closed();
+        this.ws.onclose = () => { this._wsClosed(); this._closed(); };
         this.ws.onmessage = (ev) => this._message(ev.data);
       });
     }
@@ -107,6 +107,11 @@
       try { for (const [topic] of this.advertised) this.send({ op: "unadvertise", topic }); } catch (e) {}
       try { this.ws.close(); } catch (e) {}
       this.closed = true;
+    }
+    // Close, resolving once the socket has closed (or after timeoutMs).
+    closeAndWait(timeoutMs = 500) {
+      this.close();
+      return Promise.race([this.wsClosed, new Promise((r) => setTimeout(r, timeoutMs))]);
     }
   }
 
@@ -272,7 +277,6 @@
     if (!t.validation.ok) throw new SelectionError(`${t.label} failed typed validation: ${t.validation.problems.join("; ")}`, [t]);
     return t;
   }
-  RC.lib = { normType, typeDialect, validate, discover, selectTarget, fetchGraph, RosConn };
 
   // ------------------------------------------------------------------ templates
   function fill(tpl, values, jp) {
@@ -297,14 +301,22 @@
 
   // ------------------------------------------------------------------ cameras
   const UNTIED_STALE_S = 2.0;
+  // Bytes per pixel of the supported raw encodings (4:2:2 packed: 2), as camera.py.
+  const BPP = { rgb8: 3, bgr8: 3, "8uc3": 3, rgba8: 4, bgra8: 4, mono8: 1, "8uc1": 1, mono16: 2, "16uc1": 2,
+    yuv422: 2, uyvy: 2, yuv422_yuy2: 2, yuyv: 2 };
+  const YUV422 = ["yuv422", "uyvy", "yuv422_yuy2", "yuyv"];
   function decodeImage(msg, allowed) {
     const enc = String(msg.encoding || "").toLowerCase();
     if (allowed && allowed.length && !allowed.map((x) => x.toLowerCase()).includes(enc)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
+    if (!(enc in BPP)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
     const w = msg.width | 0, h = msg.height | 0, step = msg.step | 0;
     const bin = typeof msg.data === "string" ? atob(msg.data) : null;
     const len = bin ? bin.length : (msg.data || []).length;
     const at = bin ? (i) => bin.charCodeAt(i) : (i) => msg.data[i];
-    if (!w || !h || len < step * h) throw new Error("truncated or empty image");
+    if (w <= 0 || h <= 0) throw new Error("empty image");
+    if (step < w * BPP[enc]) throw new Error(`row step ${step} shorter than ${w} pixels of ${enc}`);
+    if (YUV422.includes(enc) && w % 2) throw new Error("odd width for a 4:2:2 image");
+    if (len < step * h) throw new Error(`truncated image (${len} of ${step * h} bytes)`);
     const out = new Uint8ClampedArray(w * h * 4);
     const put = (o, r, g, b) => { out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255; };
     for (let y = 0; y < h; y++) {
@@ -332,7 +344,8 @@
   }
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
-    lost: false, streams: [], controls: new Map(), feedback: new Map(), padGroup: null });
+    lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(), conflicts: new Map(),
+    padGroup: null, model: null });
 
   // ------------------------------------------------------------------ DOM helpers
   function h(tag, props, ...kids) {
@@ -408,7 +421,7 @@
   }
   // [state, badge, detail]. Never "live" unless a frame arrived within the stale threshold.
   function cameraState(s, now) {
-    if (s.missing) return ["missing", "MISSING", "missing: topic not on the wire"];
+    if (s.missing) return ["missing", "MISSING", "unavailable: the topic is not on the wire"];
     if (S.lost) return ["failed", "DISCONNECTED", "Connection lost: this image is frozen, not live. Reload the page to connect again."];
     if (s.unsupported) return ["unsupported", "UNSUPPORTED", s.error];
     if (s.error) return ["failed", "FAILED", "failed: " + s.error];
@@ -450,17 +463,31 @@
     $("no-cameras").textContent = none ? (S.target ? "No cameras for this robot's profile." : "No cameras discovered on the wire.") : "";
     $("cam-summary").textContent = none ? "" : `${live} of ${S.streams.length} live`;
     tickFeedback(now);
+    drawModel();
   }
   setInterval(tick, 200);
 
-  // ------------------------------------------------------------------ measured joint positions
-  // Shown only where a control's own prerequisites include a documented JointState output
-  // topic and its template pairs joint names with field values; nothing is invented.
+  // ------------------------------------------------------------------ reported joint positions
+  // Shown only where the profile documents them: explicitly, by its model's joints that name a
+  // control field and the joint's name on the model's documented JointState feedback (with the
+  // documented unit mapping, field = (rad - offset) / scale); otherwise where a control's own
+  // prerequisites include a documented JointState output topic and its template pairs joint
+  // names with field values. Nothing is invented. `measured` is false where the profile says the
+  // robot reports something other than a measurement (e.g. an echo of its last commands).
   function feedbackFor(c, t) {
+    const jp = jointPrefix(t.profile, t.namespace), m = t.profile.model;
+    if (m && m.feedback) {
+      const map = {}, conv = {};
+      for (const j of m.joints) for (const b of j.command || []) {
+        if (b.control !== c.id || !j.reported) continue;
+        map[b.field] = j.reported.split("{joint_prefix}").join(jp);
+        conv[b.field] = { scale: b.scale == null ? 1 : Number(b.scale), offset: Number(b.offset || 0) };
+      }
+      if (Object.keys(map).length) return { topic: t.wire(m.feedback.topic), type: m.feedback.type, map, conv, measured: !!m.feedback.measured };
+    }
     const fb = c.prerequisites.map((n) => t.profile.endpoints.find((e) => e.name === n))
       .find((e) => e && e.kind === "topic" && e.direction === "out" && normType(e.type) === "sensor_msgs/JointState");
     if (!fb) return null;
-    const jp = jointPrefix(t.profile, t.namespace);
     const nameLists = [], refLists = [];
     (function walk(x) {
       if (Array.isArray(x)) {
@@ -478,7 +505,7 @@
         if (fld && (fld.unit === "rad" || fld.unit === "m")) map[f] = names[i];
       });
     }
-    return Object.keys(map).length ? { topic: t.wire(fb.name), type: fb.type, map } : null;
+    return Object.keys(map).length ? { topic: t.wire(fb.name), type: fb.type, map, conv: {}, measured: true } : null;
   }
   function subscribeFeedback(topic, type) {
     if (S.feedback.has(topic)) return;
@@ -489,6 +516,7 @@
         const names = m.name || [], pos = m.position || [];
         names.forEach((n, i) => { if (Number.isFinite(pos[i])) f.pos.set(n, pos[i]); });
         f.last = performance.now();
+        scheduleModelDraw();
       }, 100);
     } catch (e) {}
   }
@@ -501,30 +529,113 @@
     const f = S.feedback.get(cs.fb.topic);
     const fresh = f && f.last != null && now - f.last < 1000 && !S.lost;
     const out = {};
-    for (const [field, joint] of Object.entries(cs.fb.map)) out[field] = fresh && f.pos.has(joint) ? f.pos.get(joint) : null;
+    for (const [field, joint] of Object.entries(cs.fb.map)) {
+      const cv = cs.fb.conv[field] || { scale: 1, offset: 0 };
+      out[field] = fresh && f.pos.has(joint) ? (f.pos.get(joint) - cv.offset) / cv.scale : null;
+    }
     return out;
   }
+  const fbWord = (fb) => (fb.measured ? "measured" : "reported");
   function tickFeedback(now) {
     for (const cs of S.controls.values()) {
-      if (!cs.fb) continue;
-      const m = measuredOf(cs, now);
       let any = false;
-      for (const fs of Object.values(cs.fields)) {
-        if (!fs.meas) continue;
-        const v = m[fs.f.name];
-        if (v == null) {
-          fs.measVal.textContent = "—"; fs.meas.dataset.state = "none"; fs.meas.title = `measured: no fresh ${cs.fb.topic} message`;
-          fs.mark.hidden = true;
-        } else {
-          any = true;
-          fs.measVal.textContent = `${signed(v, decimals(fs.f) + 1)} ${fs.f.unit}`; fs.meas.dataset.state = "live";
-          fs.meas.title = `measured ${cs.fb.map[fs.f.name]} on ${cs.fb.topic}`;
-          const p = Math.min(1, Math.max(0, (v - fs.f.min) / (fs.f.max - fs.f.min)));
-          fs.mark.style.left = `${p * 100}%`;
+      if (cs.fb) {
+        const m = measuredOf(cs, now);
+        for (const fs of Object.values(cs.fields)) {
+          if (!fs.meas) continue;
+          const v = m[fs.f.name];
+          if (v == null) {
+            fs.measVal.textContent = "—"; fs.meas.dataset.state = "none"; fs.meas.title = `${fbWord(cs.fb)}: no fresh ${cs.fb.topic} message`;
+            fs.mark.hidden = true;
+          } else {
+            if (cs.fb.measured) any = true;
+            fs.measVal.textContent = `${signed(v, decimals(fs.f) + 1)} ${fs.f.unit}`; fs.meas.dataset.state = "live";
+            fs.meas.title = cs.fb.measured ? `measured ${cs.fb.map[fs.f.name]} on ${cs.fb.topic}`
+              : `reported ${cs.fb.map[fs.f.name]} on ${cs.fb.topic}: what the robot publishes for this joint, not a measurement`;
+            const p = Math.min(1, Math.max(0, (v - fs.f.min) / (fs.f.max - fs.f.min)));
+            fs.mark.style.left = `${p * 100}%`;
+          }
         }
+      }
+      if (cs.reads.length && cs.readStatus) {
+        const rv = readValues(cs);
+        for (const fs of Object.values(cs.fields)) {
+          if (!fs.read) continue;
+          const r = rv[fs.f.name];
+          if (!r || r.v == null) {
+            fs.readVal.textContent = "—"; fs.read.dataset.state = r ? "invalid" : "none";
+            fs.read.title = r ? `the last read of ${r.x.wire} gave no valid value for this field` : `not read yet: “${cs.readBtn.textContent}” asks the robot once`;
+          } else {
+            any = true;
+            fs.readVal.textContent = `${signed(r.v, decimals(fs.f) + 1)} ${fs.f.unit}`; fs.read.dataset.state = "read";
+            fs.read.title = `measured: read from ${r.x.wire} ${((now - r.x.last.at) / 1000).toFixed(1)} s ago (not live)`;
+          }
+        }
+        cs.readStatus.textContent = readText(cs.reads, now);
       }
       if (cs.useMeasured) cs.useMeasured.disabled = !any;
     }
+  }
+
+  // ------------------------------------------------------------------ measured reads
+  // Read services the profile documents as returning measured joint positions (e.g. a servo
+  // readback). The page calls one only when the user clicks its button, once per click, never
+  // on load or by itself; each answered value maps to a control field as
+  // field = (raw - offset) / scale. A reading is a snapshot, shown with its age, not live.
+  function readPath(v, path) {
+    for (const seg of String(path).split(".")) {
+      if (v == null) return undefined;
+      const m = /^([A-Za-z_]\w*)\[([A-Za-z_]\w*)=(-?[\d.]+)\]$/.exec(seg);      // list element by key: name[key=value]
+      if (m) { const a = v[m[1]]; v = Array.isArray(a) ? a.find((x) => x && Number(x[m[2]]) === Number(m[3])) : undefined; }
+      else if (/^\d+$/.test(seg)) v = Array.isArray(v) ? v[Number(seg)] : undefined;
+      else v = v[seg];
+    }
+    return v;
+  }
+  function prepareReads(t, g) {
+    S.reads = new Map();
+    for (const r of t.profile.reads || []) {
+      const e = t.profile.endpoints.find((x) => x.name === r.service && x.kind === "service"), wire = t.wire(r.service);
+      let reason = null;
+      if (!e) reason = `${r.service} is not in the profile`;
+      else if (!has(g, "service", wire)) reason = `${wire} is not on the wire`;
+      else if (normType(typeOf(g, "service", wire)) !== normType(r.type)) reason = `${wire} has type ${typeOf(g, "service", wire)}, expected ${r.type}`;
+      S.reads.set(r.id, { r, wire, reason, last: null, busy: false, err: null });
+    }
+  }
+  // The available reads that give values for control `cid`.
+  const readsOf = (cid) => [...S.reads.values()].filter((x) => !x.reason && x.r.values.some((m) => m.control === cid));
+  function readValues(cs) {
+    const out = {};
+    for (const x of cs.reads) {
+      if (!x.last || !x.last.vals[cs.ctrl.id]) continue;
+      for (const [f, v] of Object.entries(x.last.vals[cs.ctrl.id])) if (!out[f] || out[f].x.last.at < x.last.at) out[f] = { v, x };
+    }
+    return out;
+  }
+  function readText(xs, now) {
+    return xs.map((x) => x.busy ? `reading ${x.wire}…` : x.err ? `read of ${x.wire} failed: ${x.err}`
+      : x.last ? `read from ${x.wire} ${((now - x.last.at) / 1000).toFixed(1)} s ago` : "").filter(Boolean).join("; ");
+  }
+  function doRead(x) {
+    const conn = S.conn;
+    if (!conn || S.lost || !S.target || x.busy) return;
+    const r = x.r;
+    x.busy = true; x.err = null;
+    conn.call(x.wire, r.request || {}, 5000).then((v) => {
+      if (r.ok_field && v && v[r.ok_field] === false) throw new Error(`the service answered ${JSON.stringify(v).slice(0, 120)}`);
+      const raws = r.values.map((m) => readPath(v, m.path));
+      const allZero = !!r.invalid_if_all_zero && raws.every((z) => Number(z) === 0);
+      const vals = {};
+      r.values.forEach((m, i) => {
+        const raw = Number(raws[i]);
+        const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw) && !allZero;
+        (vals[m.control] = vals[m.control] || {})[m.field] = ok ? (raw - Number(m.offset || 0)) / (m.scale == null ? 1 : Number(m.scale)) : null;
+      });
+      x.last = { at: performance.now(), vals };
+    }).catch((e) => { x.err = e.message; })
+      .finally(() => { x.busy = false; tickFeedback(performance.now()); });
+    tickFeedback(performance.now());
   }
 
   // ------------------------------------------------------------------ sending
@@ -546,17 +657,23 @@
   }
   const liveOk = (cs) => !!S.target && !!S.conn && !S.lost && cs.available && !cs.dead;
 
-  function setStatus(id, cls, text) {
+  // Every control shows the phase of its latest send: sending (on its way, or waiting for the
+  // answer), running (a goal the action server acknowledged), done, failed, or invalid (a value
+  // outside the documented limits, never sent). The text starts with the phase.
+  const PHASE_CLS = { sending: "warn", running: "warn", done: "ok", failed: "bad", invalid: "bad" };
+  function setStatus(id, phase, text) {
     const cs = S.controls.get(id); if (!cs) return;
-    cs.status = { cls, text }; cs.statusEl.textContent = text; cs.statusEl.className = "status " + cls;
-    cs.div.dataset.status = cls;
-    log({ ev: "status", control: id, cls, text });
+    const cls = PHASE_CLS[phase] || "dim";
+    text = `${phase}: ${text}`;
+    cs.status = { phase, cls, text }; cs.statusEl.textContent = text; cs.statusEl.className = "status " + cls;
+    cs.div.dataset.status = cls; cs.div.dataset.phase = phase;
   }
 
   // A value of a streamed control changed: send it now, or as soon as the throttle allows.
   function trigger(cs) {
     if (!liveOk(cs) || cs.mode !== "stream") return;
     cs.th.pending = true; pump(cs);
+    if (cs.th.pending && (!cs.status || cs.status.phase !== "sending")) setStatus(cs.ctrl.id, "sending", "the new value goes out as the rate limit allows…");
   }
   function pump(cs) {
     const th = cs.th;
@@ -575,36 +692,40 @@
     if (!liveOk(cs)) return false;
     const values = {};
     try { for (const f of c.fields) values[f.name] = coerce(f, cs.inputs[f.name].value); }
-    catch (e) { setStatus(c.id, "bad", "not sent: " + e.message); return false; }
+    catch (e) { setStatus(c.id, "invalid", "not sent: " + e.message); return false; }
     let payload;
     try { payload = fill(c.template, values, jointPrefix(t.profile, t.namespace)); }
-    catch (e) { setStatus(c.id, "bad", "not sent: " + e.message); return false; }
+    catch (e) { setStatus(c.id, "invalid", "not sent: " + e.message); return false; }
     const name = t.wire(c.name);
-    log({ ev: "send", control: c.id, name, values });
     try {
       if (c.kind === "publish") {
         conn.publish(name, payload, c.type); cs.sent++;
-        setStatus(c.id, "ok", `sent (${cs.sent} message${cs.sent === 1 ? "" : "s"} so far; a publish is not acknowledged)`);
+        setStatus(c.id, "done", `sent (${cs.sent} message${cs.sent === 1 ? "" : "s"} so far; a publish is not acknowledged)`);
       } else if (c.kind === "call") {
-        setStatus(c.id, "warn", "pending: waiting for the service answer…");
+        setStatus(c.id, "sending", "pending: waiting for the service answer…");
         conn.call(name, payload, 10000).then((v) => {
-          if (v && (v.result === false || v.success === false)) setStatus(c.id, "bad", "failed: " + JSON.stringify(v));
-          else setStatus(c.id, "ok", "done: " + JSON.stringify(v).slice(0, 120));
-        }, (e) => setStatus(c.id, "bad", "failed: " + e.message));
+          // A documented response field (the profile's ok_field) that is false is a failure.
+          const bad = v && ((c.ok_field && v[c.ok_field] === false) || v.result === false || v.success === false);
+          if (bad) setStatus(c.id, "failed", "the service answered " + JSON.stringify(v));
+          else setStatus(c.id, "done", "the service answered " + JSON.stringify(v).slice(0, 120));
+        }, (e) => setStatus(c.id, "failed", e.message));
       } else if (c.kind === "action") {
-        if (t.profile.dialect === "ros2") await sendGoal2(cs, conn, name, payload);
-        else sendGoal1(cs, conn, name, payload);
+        await sendGoal2(cs, conn, name, payload);       // action controls are ROS 2 only (profiles test)
       }
       return true;
-    } catch (e) { setStatus(c.id, "bad", "failed to send: " + e.message); return false; }
+    } catch (e) { setStatus(c.id, "failed", "could not send: " + e.message); return false; }
   }
 
   // ROS 2: stock rosbridge (Humble, Jazzy) handles one client's send_action_goal to completion
   // before that client's next op, so each goal gets its own connection. Its result or feedback
   // acknowledges it; once the latest goal is acknowledged the superseded goals' connections
-  // close (closing one cancels nothing on stock rosbridge). At most GOAL_CONNS_MAX stay open.
+  // close (closing one cancels nothing on stock rosbridge). At most GOAL_CONNS_MAX are open,
+  // counting the new goal's: the oldest superseded ones close (and are closed) before it opens.
   async function sendGoal2(cs, conn, name, payload) {
     const c = cs.ctrl;
+    const room = cs.goals.slice(0, Math.max(0, cs.goals.length - (GOAL_CONNS_MAX - 1)));
+    await Promise.all(room.map((o) => retireGoal(cs, o, true)));
+    if (!liveOk(cs) || S.conn !== conn) return;
     const gc = new RosConn(conn.url); await gc.connect(5000);
     if (!liveOk(cs) || S.conn !== conn) { gc.close(); return; }
     const g = { conn: gc, id: randomId(), sentAt: Date.now(), acked: false, done: false };
@@ -613,7 +734,7 @@
       if (g.acked) return;
       g.acked = true;
       if (cs.goal === g) {
-        if (!g.done) setStatus(c.id, "warn", "goal running");
+        if (!g.done) setStatus(c.id, "running", "goal running (acknowledged by the action server)");
         for (const o of [...cs.goals]) if (o !== g) retireGoal(cs, o);
       }
       pump(cs);
@@ -622,43 +743,30 @@
     gc.handlers.set("action_result:" + g.id, (m) => {
       g.done = true; ack();
       if (cs.goal === g) {
+        // GoalStatus: 4 succeeded, 5 canceled, 6 aborted; anything but success did not reach the target
         const st = { 4: "succeeded", 5: "canceled", 6: "aborted", 2: "canceled" }[m.status] || `ended (status ${m.status})`;
-        setStatus(c.id, m.result === false || m.status === 6 ? "bad" : m.status === 4 ? "ok" : "warn",
+        setStatus(c.id, m.result !== false && m.status === 4 ? "done" : "failed",
           "goal " + st + (m.result === false ? ": " + JSON.stringify(m.values) : ""));
       }
       retireGoal(cs, g);
     });
     gc.onlost = () => {
-      if (!g.done && cs.goal === g) setStatus(c.id, "bad", "goal connection lost; outcome unknown");
+      if (!g.done && cs.goal === g) setStatus(c.id, "failed", "goal connection lost; outcome unknown");
       g.done = true; retireGoal(cs, g);
     };
     gc.send({ op: "send_action_goal", id: g.id, action: name, action_type: c.type, args: payload, feedback: true });
-    setStatus(c.id, "warn", "sending: goal sent, waiting for the action server…");
+    setStatus(c.id, "sending", "goal sent, waiting for the action server…");
     setTimeout(() => pump(cs), GOAL_ACK_MS + 10);
     const old = cs.goals.filter((o) => o !== g);
     for (let i = 0; i < old.length && cs.goals.length > GOAL_CONNS_MAX; i++) retireGoal(cs, old[i]);
   }
-  function retireGoal(cs, g) {
-    const i = cs.goals.indexOf(g); if (i < 0) return;
+  // `now`: close at once and resolve when the socket has closed (making room for a new goal).
+  function retireGoal(cs, g, now = false) {
+    const i = cs.goals.indexOf(g); if (i < 0) return Promise.resolve();
     cs.goals.splice(i, 1);
+    if (now) return g.conn.closeAndWait(500);
     setTimeout(() => g.conn.close(), 50);
-  }
-
-  // ROS 1 actionlib: goals go out on the target's connection; a new goal preempts the previous
-  // one on the action server. One result subscription per control reports the latest goal.
-  function sendGoal1(cs, conn, name, payload) {
-    const c = cs.ctrl, topics = ros1ActionTopics(name, c.type);
-    if (!cs.resultSid) {
-      cs.resultSid = conn.subscribe(name + "/result", topics[name + "/result"], (m) => {
-        if (!cs.goal || !m.status || !m.status.goal_id || m.status.goal_id.id !== cs.goal.id) return;
-        const st = { 3: "succeeded", 2: "canceled", 8: "canceled", 4: "aborted", 5: "rejected" }[m.status.status] || `ended (status ${m.status.status})`;
-        setStatus(c.id, m.status.status === 3 ? "ok" : m.status.status === 4 || m.status.status === 5 ? "bad" : "warn", "goal " + st);
-      });
-    }
-    const g = { conn, id: randomId(), sentAt: Date.now(), acked: true, done: false };
-    cs.goal = g;
-    conn.publish(name + "/goal", { header: {}, goal_id: { id: g.id, stamp: { secs: 0, nsecs: 0 } }, goal: payload }, topics[name + "/goal"]);
-    setStatus(c.id, "warn", "goal sent, running…");
+    return Promise.resolve();
   }
 
   // Controls of a target that is being replaced: no further sends. The latest unfinished goal
@@ -675,6 +783,7 @@
   function refreshControls() {
     for (const cs of S.controls.values()) cs.body.disabled = !liveOk(cs);
     if (S.padGroup) S.padGroup.sync();
+    drawModel();
     syncLive();
   }
   function updateLock() {
@@ -780,11 +889,16 @@
         h("span", { class: "num-wrap" }, num, h("span", { class: "unit", text: f.unit || "" }))),
       h("div", { class: "slider-row", id: id + "-lim" }, lo, h("div", { class: "track" }, range, mark), hi),
       h("div", { class: "field-err", role: "alert" }));
-    const fs = { f, div, num, range, mark, err: div.querySelector(".field-err"), listeners: [], meas: null, measVal: null };
+    const fs = { f, div, num, range, mark, err: div.querySelector(".field-err"), listeners: [], meas: null, measVal: null, read: null, readVal: null };
     if (cs.fb && cs.fb.map[f.name]) {
       fs.measVal = h("span", { class: "m-val", text: "—" });
-      fs.meas = h("span", { class: "measured" }, h("span", { class: "m-label", text: "measured" }), fs.measVal);
+      fs.meas = h("span", { class: "measured" }, h("span", { class: "m-label", text: fbWord(cs.fb) }), fs.measVal);
       div.querySelector(".field-top").insertBefore(fs.meas, div.querySelector(".num-wrap"));
+    }
+    if (cs.reads.some((x) => x.r.values.some((m) => m.control === c.id && m.field === f.name))) {
+      fs.readVal = h("span", { class: "m-val", text: "—" });
+      fs.read = h("span", { class: "measured read", "data-testid": "read-value" }, h("span", { class: "m-label", text: "measured" }), fs.readVal);
+      div.querySelector(".field-top").insertBefore(fs.read, div.querySelector(".num-wrap"));
     }
     // Typing only validates; a typed value is sent when committed (Enter or leaving the field).
     num.addEventListener("input", () => validateField(fs));
@@ -808,9 +922,11 @@
       const got = typeOf(g, e.kind, wire);
       if (!(e.kind === "action" && got === null) && normType(got) !== normType(e.type)) { reason = `prerequisite ${wire} has type ${got}, expected ${e.type}`; break; }
     }
+    if (!reason && S.conflicts.has(c.id)) reason = S.conflicts.get(c.id);
     const compact = !c.fields.length;
     const div = h("div", { class: "control" + (compact ? " compact" : "") + (reason ? " unavailable" : ""), "data-control": c.id, "data-testid": "control" });
     const cs = { ctrl: c, div, inputs: {}, fields: {}, available: !reason, status: null, afterBuild: [], fb: reason ? null : feedbackFor(c, t),
+      reads: reason ? [] : readsOf(c.id),
       mode: sendMode(c), th: { pending: false, timer: null, busy: false, last: 0 }, goal: null, goals: [], sent: 0, dead: false };
     div.append(h("div", { class: "ctl-head" },
       h("div", {}, h("h3", { text: c.label }), h("div", { class: "ctl-kind", text: kindText(c) }))));
@@ -818,7 +934,7 @@
       h("dl", {},
         h("dt", { text: "Name" }), h("dd", { text: t.wire(c.name) }),
         h("dt", { text: "Type" }), h("dd", { text: c.type }),
-        cs.fb ? [h("dt", { text: "Measured" }), h("dd", { text: cs.fb.topic })] : null)));
+        cs.fb ? [h("dt", { text: cs.fb.measured ? "Measured" : "Reported" }), h("dd", { text: cs.fb.topic })] : null)));
     if (reason) div.append(h("div", { class: "unavail", "data-testid": "unavailable", text: "unavailable: " + reason }));
     // Everything that edits or sends sits in one fieldset, disabled while the control is not live.
     cs.body = h("fieldset", { class: "ctl-body", disabled: true });
@@ -829,16 +945,29 @@
       const reset = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Reset to defaults" });
       reset.addEventListener("click", () => { for (const f of numeric) if (f.default != null) setField(cs.fields[f.name], f.default); trigger(cs); });
       tools.append(reset);
-      if (cs.fb) {
+      if (cs.reads.length) {
+        // One call of each documented read service per click; never automatic.
+        cs.readBtn = h("button", { type: "button", class: "btn btn-sm btn-ghost", "data-testid": "read", text: "Read measured",
+          title: "ask the robot once for the measured positions: " + cs.reads.map((x) => x.wire).join(", ") });
+        cs.readBtn.addEventListener("click", () => { for (const x of cs.reads) doRead(x); });
+        tools.append(cs.readBtn);
+      }
+      if ((cs.fb && cs.fb.measured) || cs.reads.length) {
+        const from = [cs.fb && cs.fb.measured ? cs.fb.topic : null, ...cs.reads.map((x) => x.wire)].filter(Boolean).join(" / ");
         cs.useMeasured = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Use measured", disabled: true,
-          title: `set targets to the positions measured on ${cs.fb.topic}` });
+          title: `set targets to the positions measured on ${from}` });
         cs.useMeasured.addEventListener("click", () => {
-          const m = measuredOf(cs, performance.now());
-          for (const [k, v] of Object.entries(m)) if (v != null) setField(cs.fields[k], v);
+          // A fresh measurement on the documented topic first, else the latest read.
+          const m = cs.fb && cs.fb.measured ? measuredOf(cs, performance.now()) : {}, rv = readValues(cs);
+          for (const k of Object.keys(cs.fields)) {
+            const v = m[k] != null ? m[k] : rv[k] ? rv[k].v : null;
+            if (v != null) setField(cs.fields[k], v);
+          }
           trigger(cs);
         });
         tools.append(cs.useMeasured);
       }
+      if (cs.reads.length) { cs.readStatus = h("span", { class: "read-status", "data-testid": "read-status", role: "status" }); tools.append(cs.readStatus); }
       cs.body.append(tools);
     }
     if (cs.mode === "click" && !c.fields.some((f) => f.choices)) {
@@ -881,13 +1010,14 @@
       const fp = P.f, ft = T.f;
       const live = () => liveOk(PC) && liveOk(TC);
       g.sync = () => { pad.classList.toggle("disabled", !live()); pad.setAttribute("aria-disabled", String(!live())); pad.tabIndex = live() ? 0 : -1; };
-      // + pan = left, + tilt = up (profile labels): left edge is pan max, top edge is tilt max.
-      const xOf = (v) => (fp.max - v) / (fp.max - fp.min), yOf = (v) => (ft.max - v) / (ft.max - ft.min);
+      // − pan = the robot's left (head_pan turns about the model's −Z axis, console spec §2.1),
+      // + tilt = up: the left edge is pan min, the top edge is tilt max.
+      const xOf = (v) => (v - fp.min) / (fp.max - fp.min), yOf = (v) => (ft.max - v) / (ft.max - ft.min);
       const x0 = xOf(Math.min(fp.max, Math.max(fp.min, 0))) * 100, y0 = yOf(Math.min(ft.max, Math.max(ft.min, 0))) * 100;
       zx.style.left = `${x0}%`; zy.style.top = `${y0}%`;
       const lbl = (txt, css) => { const e = h("span", { class: "pad-lbl", text: txt }); Object.assign(e.style, css); pad.append(e); };
-      lbl(`← left ${exact(fp.max)}`, { left: "8px", top: `calc(${y0}% + 4px)` });
-      lbl(`right ${exact(fp.min)} →`, { right: "8px", top: `calc(${y0}% + 4px)` });
+      lbl(`← left ${exact(fp.min)}`, { left: "8px", top: `calc(${y0}% + 4px)` });
+      lbl(`right ${exact(fp.max)} →`, { right: "8px", top: `calc(${y0}% + 4px)` });
       lbl(`↑ up ${exact(ft.max)}`, { top: "6px", left: `calc(${x0}% + 8px)` });
       lbl(`↓ down ${exact(ft.min)}`, { bottom: "6px", left: `calc(${x0}% + 8px)` });
       const paint = () => {
@@ -901,7 +1031,7 @@
       const setFrom = (ev) => {
         const r = pad.getBoundingClientRect();
         const x = Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), y = Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height));
-        setField(P, fp.max - x * (fp.max - fp.min)); setField(T, ft.max - y * (ft.max - ft.min));
+        setField(P, fp.min + x * (fp.max - fp.min)); setField(T, ft.max - y * (ft.max - ft.min));
         trigger(PC); trigger(TC);
       };
       let drag = false;
@@ -911,7 +1041,7 @@
       pad.addEventListener("pointerup", end); pad.addEventListener("pointercancel", end);
       pad.addEventListener("keydown", (e) => {
         const st = e.shiftKey ? 0.2 : 0.05;
-        const d = { ArrowLeft: [st, 0], ArrowRight: [-st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] }[e.key];
+        const d = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] }[e.key];
         if (!d || !live()) return;
         e.preventDefault();
         const pv = Number(P.num.value) || 0, tv = Number(T.num.value) || 0;
@@ -924,10 +1054,11 @@
   }
 
   function renderControls() {
-    const root = $("controls"); root.innerHTML = ""; S.controls.clear(); S.padGroup = null;
+    const root = $("controls"); root.innerHTML = ""; S.controls.clear(); S.padGroup = null; S.reads = new Map();
     $("workspace").classList.toggle("no-controls", !S.target || !S.target.profile.controls.length);
-    if (!S.target) { root.append(h("p", { class: "empty", text: "No validated target: no controls are offered." })); refreshControls(); return; }
+    if (!S.target) { root.append(h("p", { class: "empty", text: "No validated target: no controls are offered." })); renderModel(); refreshControls(); return; }
     const t = S.target, g = S.graph;
+    prepareReads(t, g);
     if (!t.profile.controls.length) root.append(h("p", { class: "empty", "data-testid": "no-controls", text: "This robot's profile lists no bounded page controls." }));
     const pair = padPair(t.profile);
     let group = null;
@@ -944,12 +1075,302 @@
       if (!pair) el.classList.add("solo");
     }
     for (const cs of S.controls.values()) if (cs.fb) subscribeFeedback(cs.fb.topic, cs.fb.type);
+    renderModel();
     refreshControls();
   }
 
+  // ------------------------------------------------------------------ 3D model
+  // The validated target's embodiment from its profile's `model` (the joint tree of the pinned
+  // vendor URDF), drawn on a plain canvas with an orthographic projection; dragging empty space
+  // turns the view. Each joint is posed from the joint position the robot reports where the
+  // profile documents feedback for it, otherwise at the page's target for it (or zero when no
+  // control commands it), and the page says which. A joint that a control commands can be
+  // clicked and dragged, or selected and moved with the arrow keys, to change that control's
+  // field: the same clamped, validated and throttled path as the control's own inputs.
+  let M = null;
+  const ID3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+  const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const mm3 = (A, B) => A.map((r) => [0, 1, 2].map((j) => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
+  const mv3 = (A, v) => A.map((r) => dot3(r, v));
+  const at3 = (T, p) => mv3(T.R, p).map((x, i) => x + T.t[i]);
+  function rpyMat([r, p, y]) {                                   // URDF: Rz(yaw) Ry(pitch) Rx(roll)
+    const cr = Math.cos(r), sr = Math.sin(r), cp = Math.cos(p), sp = Math.sin(p), cy = Math.cos(y), sy = Math.sin(y);
+    return [[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+      [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr],
+      [-sp, cp * sr, cp * cr]];
+  }
+  function axisMat(a, q) {                                       // rotation by q about axis a
+    const n = Math.hypot(a[0], a[1], a[2]) || 1, x = a[0] / n, y = a[1] / n, z = a[2] / n;
+    const c = Math.cos(q), s = Math.sin(q), C = 1 - c;
+    return [[c + x * x * C, x * y * C - z * s, x * z * C + y * s],
+      [y * x * C + z * s, c + y * y * C, y * z * C - x * s],
+      [z * x * C - y * s, z * y * C + x * s, c + z * z * C]];
+  }
+
+  function buildModel(t) {
+    const m = t.profile.model;
+    if (!m || !(m.joints || []).length) return null;
+    const jp = jointPrefix(t.profile, t.namespace);
+    const joints = m.joints.map((j) => Object.assign({}, j, { R0: rpyMat(j.rpy || [0, 0, 0]), q: 0, src: "zero", active: null,
+      wire: j.reported ? j.reported.split("{joint_prefix}").join(jp) : null }));
+    const kids = new Map();
+    for (const j of joints) { if (!kids.has(j.parent)) kids.set(j.parent, []); kids.get(j.parent).push(j); }
+    return { m, joints, kids, byName: new Map(joints.map((j) => [j.name, j])),
+      commanded: joints.filter((j) => !j.mimic && (j.command || []).length),
+      fb: m.feedback ? { topic: t.wire(m.feedback.topic), type: m.feedback.type, measured: !!m.feedback.measured } : null,
+      yaw: Math.PI - 0.7, pitch: 0.5, fit: null, selected: null, drag: null, pts: new Map(), chips: new Map() };
+  }
+  // A joint's command binding resolved to the field built on this page (null if not built).
+  function bound(b) {
+    const cs = S.controls.get(b.control), fs = cs && cs.fields[b.field];
+    return fs ? { cs, fs, scale: b.scale == null ? 1 : Number(b.scale), offset: Number(b.offset || 0) } : null;
+  }
+  // The field the model edits for joint J: the one last changed while live, else the first live one.
+  function editField(J) {
+    const all = (J.command || []).map(bound).filter(Boolean);
+    if (J.active && liveOk(J.active.cs)) return J.active;
+    return all.find((x) => liveOk(x.cs)) || all.find((x) => x.cs.available) || all[0] || null;
+  }
+
+  function poseJoints(now) {
+    const f = M.fb && S.feedback.get(M.fb.topic);
+    const fresh = !!f && f.last != null && now - f.last < 1000 && !S.lost;
+    for (const J of M.joints) {
+      if (J.type === "fixed" || J.mimic) continue;
+      if (fresh && J.wire && f.pos.has(J.wire)) { J.q = f.pos.get(J.wire); J.src = "reported"; continue; }
+      const b = J.active || editField(J);
+      if (!b) { J.q = 0; J.src = "zero"; continue; }
+      const v = Number(b.fs.num.value);                          // an invalid entry keeps the last pose
+      if (b.fs.num.value !== "" && Number.isFinite(v) && v >= b.fs.f.min && v <= b.fs.f.max) J.q = v * b.scale + b.offset;
+      J.src = "target";
+    }
+    for (const J of M.joints) {
+      if (!J.mimic) continue;
+      const o = M.byName.get(J.mimic.joint);
+      J.q = o ? Number(J.mimic.multiplier == null ? 1 : J.mimic.multiplier) * o.q + Number(J.mimic.offset || 0) : 0;
+      J.src = o ? o.src : "zero";
+    }
+  }
+  function forward() {
+    const frames = new Map([[M.m.root, { R: ID3, t: [0, 0, 0] }]]), todo = [M.m.root];
+    while (todo.length) {
+      const link = todo.pop(), T = frames.get(link);
+      for (const J of M.kids.get(link) || []) {
+        let R = mm3(T.R, J.R0);
+        if (J.type !== "fixed" && J.axis) R = mm3(R, axisMat(J.axis, J.q));
+        J.T = { R, t: at3(T, J.xyz) };
+        frames.set(J.child, J.T); todo.push(J.child);
+      }
+    }
+    return frames;
+  }
+  // Line segments [a, b, kind] in the root frame: links between joint origins, links to their
+  // documented tip point, and the edges of the documented boxes.
+  function segments(frames) {
+    const out = [];
+    for (const J of M.joints) {
+      const a = frames.get(J.parent);
+      if (a && J.T && Math.hypot(...J.T.t.map((x, i) => x - a.t[i])) > 1e-6) out.push([a.t, J.T.t, "link"]);
+    }
+    for (const tp of M.m.tips || []) { const T = frames.get(tp.link); if (T) out.push([T.t, at3(T, tp.xyz), "link"]); }
+    for (const bx of M.m.boxes || []) {
+      const T = frames.get(bx.link); if (!T) continue;
+      const c = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => at3(T, [k & 1 ? bx.max[0] : bx.min[0], k & 2 ? bx.max[1] : bx.min[1], k & 4 ? bx.max[2] : bx.min[2]]));
+      for (const [i, j] of [[0, 1], [2, 3], [4, 5], [6, 7], [0, 2], [1, 3], [4, 6], [5, 7], [0, 4], [1, 5], [2, 6], [3, 7]]) out.push([c[i], c[j], "box"]);
+    }
+    return out;
+  }
+  function fitOf(segs) {
+    const pts = segs.flatMap((s) => [s[0], s[1]]); if (!pts.length) pts.push([0, 0, 0]);
+    const lo = [0, 1, 2].map((i) => Math.min(...pts.map((p) => p[i]))), hi = [0, 1, 2].map((i) => Math.max(...pts.map((p) => p[i])));
+    const center = lo.map((x, i) => (x + hi[i]) / 2);
+    const radius = Math.max(0.05, ...pts.map((p) => Math.hypot(p[0] - center[0], p[1] - center[1], p[2] - center[2])));
+    return { center, radius, floor: lo[2] };
+  }
+  function projector(w, h) {
+    const cy = Math.cos(M.yaw), sy = Math.sin(M.yaw), cp = Math.cos(M.pitch), sp = Math.sin(M.pitch);
+    const d = [cp * cy, cp * sy, sp], r = [-sy, cy, 0], u = [-sp * cy, -sp * sy, cp];
+    const k = 0.45 * Math.min(w, h) / M.fit.radius, c = M.fit.center;
+    return (p) => { const v = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; return [w / 2 + k * dot3(v, r), h / 2 - k * dot3(v, u), dot3(v, d)]; };
+  }
+
+  let modelQueued = false;
+  function scheduleModelDraw() {
+    if (!M || modelQueued) return;
+    modelQueued = true;
+    requestAnimationFrame(() => { modelQueued = false; drawModel(); });
+  }
+  const SRC_TEXT = { reported: "reported", target: "not reported: the page's target", zero: "not reported or commanded: drawn at 0" };
+  function drawModel() {
+    if (!M) return;
+    const cv = $("model-canvas"), w = cv.clientWidth, hgt = cv.clientHeight;
+    const now = performance.now();
+    poseJoints(now);
+    const frames = forward(), segs = segments(frames);
+    if (!M.fit) M.fit = fitOf(segs);
+    if (w && hgt) {
+      const dpr = window.devicePixelRatio || 1;
+      if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(hgt * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(hgt * dpr); }
+      const g = cv.getContext("2d"), P = projector(w, hgt), css = getComputedStyle(document.documentElement);
+      const col = (n) => css.getPropertyValue(n).trim();
+      g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hgt); g.lineCap = "round";
+      const R = M.fit.radius, c = M.fit.center;                    // floor grid under the model
+      g.strokeStyle = col("--border"); g.lineWidth = 1;
+      for (let i = -4; i <= 4; i++) {
+        for (const [a, b] of [[[c[0] + i * R / 4, c[1] - R, M.fit.floor], [c[0] + i * R / 4, c[1] + R, M.fit.floor]],
+          [[c[0] - R, c[1] + i * R / 4, M.fit.floor], [c[0] + R, c[1] + i * R / 4, M.fit.floor]]]) {
+          const A = P(a), B = P(b); g.beginPath(); g.moveTo(A[0], A[1]); g.lineTo(B[0], B[1]); g.stroke();
+        }
+      }
+      const items = segs.map(([a, b, kind]) => { const A = P(a), B = P(b); return { z: (A[2] + B[2]) / 2, kind, A, B }; });
+      M.pts.clear();
+      for (const J of M.joints) {
+        if (J.type === "fixed" || !J.T) continue;
+        const s = P(J.T.t), cmd = M.commanded.includes(J);
+        if (cmd) M.pts.set(J.name, s);
+        items.push({ z: M.selected === J.name ? Infinity : s[2] + 1e-4, kind: cmd ? "cmd" : "joint", A: s, J });
+      }
+      items.sort((x, y) => x.z - y.z);
+      for (const it of items) {
+        if (it.kind === "link" || it.kind === "box") {
+          g.strokeStyle = col(it.kind === "link" ? "--muted" : "--faint"); g.lineWidth = it.kind === "link" ? 5 : 1.5;
+          g.beginPath(); g.moveTo(it.A[0], it.A[1]); g.lineTo(it.B[0], it.B[1]); g.stroke();
+        } else if (it.kind === "joint") {
+          g.fillStyle = col("--faint"); g.beginPath(); g.arc(it.A[0], it.A[1], 3, 0, 2 * Math.PI); g.fill();
+        } else {
+          const J = it.J, sel = M.selected === J.name;
+          if (sel && J.axis) {                                      // the selected joint's axis
+            const e = P(at3(J.T, J.axis.map((x) => x * R * 0.3)));
+            g.strokeStyle = col("--focus"); g.lineWidth = 2; g.beginPath(); g.moveTo(it.A[0], it.A[1]); g.lineTo(e[0], e[1]); g.stroke();
+          }
+          g.fillStyle = col("--ink"); g.strokeStyle = col(sel ? "--focus" : J.src === "reported" ? "--ok" : "--warn");
+          g.lineWidth = 3; g.beginPath(); g.arc(it.A[0], it.A[1], sel ? 9 : 7, 0, 2 * Math.PI); g.fill(); g.stroke();
+          if (sel) { g.fillStyle = col("--text"); g.font = "12px " + col("--mono"); g.fillText(J.name, it.A[0] + 12, it.A[1] - 10); }
+        }
+      }
+    }
+    syncModelText(now);
+  }
+  function syncModelText(now) {
+    const f = M.fb && S.feedback.get(M.fb.topic);
+    const n = { reported: 0, target: 0, zero: 0 };
+    for (const J of M.joints) if (J.type !== "fixed" && !J.mimic) n[J.src]++;
+    const why = M.fb ? (f && f.last != null ? `no fresh ${M.fb.topic}` : `no ${M.fb.topic} yet`) : "the profile documents no joint-position topic";
+    const rest = [];
+    if (n.target) rest.push(`${n.target} commanded joint${n.target > 1 ? "s" : ""} drawn at the page's targets`);
+    if (n.zero) rest.push(`${n.zero} other joint${n.zero > 1 ? "s" : ""} at 0`);
+    const text = n.reported
+      ? `Pose reported on ${M.fb.topic}` + (M.fb.measured ? "" : " (what the robot publishes, not a measurement)") +
+        (rest.length ? `; not reported: ${rest.join(", ")}.` : ".")
+      : `Pose not reported (${why}): ${rest.join(", ") || "no movable joints"}.`;
+    const pose = $("model-pose");
+    if (pose.textContent !== text) pose.textContent = text;
+    pose.dataset.state = n.reported && !n.target ? "reported" : n.reported ? "partial" : "not-reported";
+    for (const J of M.commanded) {
+      const chip = M.chips.get(J.name), b = editField(J);
+      const txt = `${J.name} ${signed(Math.round(J.q * 100) / 100 || 0, 2)}`;
+      if (chip.firstChild.textContent !== txt) chip.firstChild.textContent = txt;
+      chip.dataset.src = J.src; chip.setAttribute("aria-pressed", String(M.selected === J.name));
+      chip.disabled = !(b && liveOk(b.cs));
+      chip.title = `${J.name}: ${SRC_TEXT[J.src]}` + (b ? `; commanded by ${b.cs.ctrl.label} › ${b.fs.f.label}` : "");
+    }
+    const J = M.selected && M.byName.get(M.selected), sel = $("model-sel");
+    let st = "";
+    if (J) {
+      const b = editField(J);
+      st = `${J.name}: ${signed(J.q, 3)} rad, ${SRC_TEXT[J.src]}.`;
+      if (b) st += ` Commands ${b.cs.ctrl.label} › ${b.fs.f.label} = ${b.fs.num.value} ${b.fs.f.unit}` +
+        (liveOk(b.cs) ? "; drag the joint or use the arrow keys to change it." : " (control not live).");
+    }
+    if (sel.textContent !== st) sel.textContent = st;
+    // For tests and tools: the pose drawn, where each joint came from, each joint origin in the
+    // root frame, and the commanded joints' positions on the canvas (CSS px from its top-left).
+    S.model = { rendered: true, selected: M.selected, joints: {}, sources: {}, world: {}, clickable: M.commanded.map((x) => x.name), points: {} };
+    for (const x of M.joints) {
+      if (x.T) S.model.world[x.name] = x.T.t;
+      if (x.type !== "fixed") { S.model.joints[x.name] = x.q; S.model.sources[x.name] = x.src; }
+    }
+    for (const [name, s] of M.pts) S.model.points[name] = [s[0], s[1]];
+  }
+
+  function selectJoint(name) { if (M) { M.selected = name; drawModel(); } }
+  // Set joint J's field to `v` (field units) through the control's own path; false if not live.
+  function setJointField(J, b, v) {
+    if (!b || !liveOk(b.cs) || !Number.isFinite(v)) return false;
+    setField(b.fs, v); J.active = b; trigger(b.cs); drawModel();
+    return true;
+  }
+  function nudgeJoint(J, n) {
+    const b = editField(J); if (!b) return;
+    setJointField(J, b, Number(b.fs.num.value) + n * (b.fs.f.max - b.fs.f.min) / 100);
+  }
+  function renderModel() {
+    M = S.target ? buildModel(S.target) : null;
+    S.model = null;
+    $("model-view").hidden = !M; $("model-empty").hidden = !!M;
+    $("model-empty").textContent = S.target ? "This robot's profile has no model." : "No validated target: no model is shown.";
+    const list = $("model-joints"); list.innerHTML = "";
+    if (!M) { $("model-pose").textContent = ""; $("model-sel").textContent = ""; return; }
+    for (const J of M.commanded) {
+      const chip = h("button", { type: "button", class: "joint-chip", "data-joint": J.name, "aria-pressed": "false" }, h("span"));
+      chip.addEventListener("click", () => selectJoint(J.name));
+      chip.addEventListener("keydown", (e) => {
+        const k = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key]; if (!k) return;
+        e.preventDefault(); M.selected = J.name; nudgeJoint(J, k * (e.shiftKey ? 5 : 1));
+      });
+      M.chips.set(J.name, chip); list.append(chip);
+      for (const b of J.command) {                               // the field changed last is the one shown
+        const x = bound(b); if (x) x.fs.listeners.push(() => { J.active = x; scheduleModelDraw(); });
+      }
+    }
+    if (M.fb) subscribeFeedback(M.fb.topic, M.fb.type);
+    drawModel();
+  }
+  (function wireModelCanvas() {
+    const cv = $("model-canvas");
+    const xy = (ev) => { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+    // A press on a joint picks the selected joint if it is under the pointer, else the nearest;
+    // a click without moving on joints drawn on top of each other picks the next of them.
+    cv.addEventListener("pointerdown", (ev) => {
+      if (!M) return;
+      const [x, y] = xy(ev);
+      const near = [...M.pts].map(([name, s]) => [Math.hypot(s[0] - x, s[1] - y), name]).filter(([d]) => d < 14)
+        .sort((a, b) => a[0] - b[0]).map(([, name]) => name);
+      try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+      ev.preventDefault(); cv.focus();
+      if (near.length) {
+        const prev = near.includes(M.selected) ? M.selected : null, J = M.byName.get(prev || near[0]), b = editField(J);
+        M.selected = J.name; M.drag = { J, b, x, y, v0: b ? Number(b.fs.num.value) : NaN, near, prev, moved: false };
+        drawModel();
+      } else M.drag = { x, y, yaw: M.yaw, pitch: M.pitch };
+    });
+    cv.addEventListener("pointermove", (ev) => {
+      const d = M && M.drag; if (!d) return;
+      const [x, y] = xy(ev);
+      if (Math.hypot(x - d.x, y - d.y) > 3) d.moved = true;
+      if (!d.J) { M.yaw = d.yaw - (x - d.x) * 0.01; M.pitch = Math.max(-1.4, Math.min(1.4, d.pitch + (y - d.y) * 0.01)); drawModel(); }
+      else if (d.b && d.moved) setJointField(d.J, d.b, d.v0 + ((x - d.x) - (y - d.y)) * (d.b.fs.f.max - d.b.fs.f.min) / 300);
+    });
+    cv.addEventListener("pointerup", () => {
+      const d = M && M.drag; if (!d) return;
+      M.drag = null;
+      if (d.J && d.prev && !d.moved && d.near.length > 1) selectJoint(d.near[(d.near.indexOf(d.prev) + 1) % d.near.length]);
+    });
+    const end = () => { if (M) M.drag = null; };
+    cv.addEventListener("pointercancel", end); cv.addEventListener("lostpointercapture", end);
+    cv.addEventListener("keydown", (e) => {
+      const k = M && { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key]; if (!k) return;
+      e.preventDefault();
+      const J = M.selected && M.byName.get(M.selected);
+      if (J) nudgeJoint(J, k * (e.shiftKey ? 5 : 1));
+      else { if (e.key === "ArrowLeft" || e.key === "ArrowRight") M.yaw -= k * 0.15; else M.pitch = Math.max(-1.4, Math.min(1.4, M.pitch + k * 0.15)); drawModel(); }
+    });
+    if (window.ResizeObserver) new ResizeObserver(() => drawModel()).observe(cv);
+  })();
+
   // ------------------------------------------------------------------ target lifecycle
   async function connectAndSelect(robotId, ns) {
-    S.target = null;
+    S.target = null; renderModel();
     $("target").textContent = "none"; $("target-pill").dataset.state = "none";
     setValidation("pending", "Connecting to the wire…", S.config.url, "");
     setConn("pending", "connecting…");
@@ -977,17 +1398,33 @@
       $("target-pill").dataset.state = "warn";
       for (const [n, ty] of Object.entries(S.graph.topics).filter(([, ty]) => normType(ty) === "sensor_msgs/Image").sort()) addCamera(n, ty, UNTIED_STALE_S, null, false, false);
       renderControls(); updateLock();
-      log({ ev: "no-target", reason: e.reason || e.message });
       return;
     }
     const t = S.target;
+    await checkSolePublishers(t, conn);
+    if (S.conn !== conn || S.target !== t) return;
     $("target").textContent = t.label; $("target-pill").dataset.state = "ok";
     $("robot").value = t.profile.id; $("namespace").value = t.namespace; syncNsField(); $("namespace").value = t.namespace;
     setValidation("ok", `${t.label} validated`,
       `${t.profile.name} · ${t.profile.dialect === "ros2" ? "ROS 2" : "ROS 1"} · typed interface matches the packaged profile`, "");
     for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics));
     renderControls(); updateLock();
-    log({ ev: "target", label: t.label });
+  }
+
+  // A publish control its profile marks `sole_publisher` is incompatible with any other node
+  // publishing its topic, whose messages would re-command the robot (e.g. the myCobot 280 boot's
+  // slider GUI). rosapi names the publishers when the target validates (a read, nothing is sent
+  // to the robot); rosbridge's own node is ROS infrastructure and is ignored.
+  async function checkSolePublishers(t, conn) {
+    S.conflicts = new Map();
+    for (const c of t.profile.controls) {
+      if (!c.sole_publisher || c.kind !== "publish") continue;
+      const topic = t.wire(c.name);
+      try {
+        const pubs = ((await conn.call("/rosapi/publishers", { topic })).publishers || []).filter((n) => !INFRA.nodes.includes(n));
+        if (pubs.length) S.conflicts.set(c.id, `${topic} is also published by ${pubs.join(", ")}, whose messages would re-command the robot (incompatible prerequisite; see the profile)`);
+      } catch (e) { S.conflicts.set(c.id, `cannot check which nodes publish ${topic}: ${e.message}`); }
+    }
   }
 
   // Connection loss sends nothing: the controls are disabled and the page stays disconnected
@@ -999,7 +1436,6 @@
     if (S.target) $("target-pill").dataset.state = "bad";
     showBanner(`Connection to ${conn.url} lost. Controls disabled; nothing was sent and nothing was stopped. Reload the page to connect again.`);
     refreshControls(); updateLock();
-    log({ ev: "lost" });
   }
 
   async function changeTarget() {

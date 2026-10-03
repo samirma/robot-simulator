@@ -8,7 +8,6 @@ with ``importlib.resources``, so an installed console needs no sibling source tr
 
 from __future__ import annotations
 
-import copy
 import dataclasses
 import functools
 import json
@@ -38,7 +37,6 @@ class Endpoint:
     optional: bool = False
     direction: Optional[str] = None   # topics: in (robot subscribes) / out (robot publishes)
     rate_hz: Optional[float] = None
-    source: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -49,7 +47,6 @@ class Camera:
     stale_after_s: float
     rate_hz: Optional[float] = None
     optional: bool = False
-    source: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -60,7 +57,6 @@ class Op:
     name: str = ""
     type: str = ""
     msg: Any = None           # publish payload / call request
-    source: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,31 +70,12 @@ class Field:
     integer: bool = False
     choices: Optional[Tuple[str, ...]] = None
 
-    def coerce(self, value: Any) -> Any:
-        """Validate one user value against the documented bounds; raise ValueError."""
-        if self.choices is not None:
-            if value not in self.choices:
-                raise ValueError(f"{self.name}: {value!r} is not one of {list(self.choices)}")
-            return value
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
-            raise ValueError(f"{self.name}: {value!r} is not a number") from None
-        if v != v or v in (float("inf"), float("-inf")):
-            raise ValueError(f"{self.name}: not finite")
-        if self.min is not None and v < self.min:
-            raise ValueError(f"{self.name}: {v} below documented minimum {self.min}")
-        if self.max is not None and v > self.max:
-            raise ValueError(f"{self.name}: {v} above documented maximum {self.max}")
-        if self.integer:
-            if v != int(v):
-                raise ValueError(f"{self.name}: must be an integer")
-            return int(v)
-        return v
-
 
 @dataclasses.dataclass(frozen=True)
 class Control:
+    """A bounded page control. Only the page sends controls: it fills ``template`` (``"$field"``
+    placeholders, ``{joint_prefix}`` in strings) with the bounds-checked field values."""
+
     id: str
     label: str
     kind: str                 # publish | call | action
@@ -106,24 +83,75 @@ class Control:
     type: str
     template: Any
     fields: Tuple[Field, ...]
-    stop: Optional[Tuple[Op, ...]]
+    stop: Optional[Tuple[Op, ...]]    # the documented stop/cancel (the page never sends it)
     prerequisites: Tuple[str, ...]
-    source: str = ""
-    note: str = ""
+    ok_field: str = ""        # call: the documented response field that is false on failure
+    # publish: incompatible with any other (non-infrastructure) publisher of its topic, whose
+    # messages would re-command the robot (checked through rosapi when the target validates)
+    sole_publisher: bool = False
 
-    def build(self, values: Mapping[str, Any], joint_prefix: str = "") -> Any:
-        """The command payload for ``values`` (bounds-checked), from the template."""
-        checked = {}
-        for f in self.fields:
-            checked[f.name] = f.coerce(values.get(f.name, f.default))
-        return fill_template(self.template, checked, joint_prefix)
+
+@dataclasses.dataclass(frozen=True)
+class ReadValue:
+    """One answered value of a read, as a control field: field = (raw - offset) / scale."""
+
+    control: str
+    field: str
+    path: str                 # "a.b", "list.0" or "list[key=value].b" into the service answer
+    offset: float = 0.0
+    scale: float = 1.0
+
+
+@dataclasses.dataclass(frozen=True)
+class Read:
+    """A documented read service returning measured joint positions. The page calls it once per
+    click of its read button; teleop reads the AiNex head position through it."""
+
+    id: str
+    service: str
+    type: str
+    request: Any
+    values: Tuple[ReadValue, ...]
+    ok_field: str = ""                # answer field that is false when the read failed
+    invalid: Tuple[float, ...] = ()   # raw values that mean "not read"
+    invalid_if_all_zero: bool = False
+
+    def parse(self, answer: Any) -> Dict[Tuple[str, str], Optional[float]]:
+        """{(control, field): value in the field's unit, or None when not read}; ValueError when
+        the answer reports a failed read."""
+        if not isinstance(answer, Mapping) or (self.ok_field and answer.get(self.ok_field) is False):
+            raise ValueError(f"{self.service} answered {answer}")
+        raws = [read_path(answer, v.path) for v in self.values]
+        nums = [float(r) if isinstance(r, (int, float)) and not isinstance(r, bool) else None for r in raws]
+        none = self.invalid_if_all_zero and all(n == 0 for n in nums)
+        return {(v.control, v.field): None if none or n is None or n in self.invalid
+                else (n - v.offset) / v.scale for v, n in zip(self.values, nums)}
+
+
+_PATH_KEY = re.compile(r"^(\w+)\[(\w+)=(-?[\d.]+)\]$")
+
+
+def read_path(value: Any, path: str) -> Any:
+    """``path`` into a service answer (the same grammar as the page's ``readPath``)."""
+    for seg in str(path).split("."):
+        if value is None:
+            return None
+        m = _PATH_KEY.match(seg)
+        if m:
+            items = value.get(m[1]) if isinstance(value, Mapping) else None
+            value = next((x for x in items or [] if isinstance(x, Mapping)
+                          and float(x.get(m[2], "nan")) == float(m[3])), None)
+        elif seg.isdigit():
+            value = value[int(seg)] if isinstance(value, list) and int(seg) < len(value) else None
+        else:
+            value = value.get(seg) if isinstance(value, Mapping) else None
+    return value
 
 
 @dataclasses.dataclass(frozen=True)
 class Axis:
     speed: float
     limit: float
-    unit: str
     field: Optional[str] = None      # teleop_walk: gait field this axis sets
 
 
@@ -156,7 +184,6 @@ class HeadAxis:
     min: float
     max: float
     rate: float                       # slew while an arrow key is held, unit/s
-    unit: str
 
 
 @dataclasses.dataclass(frozen=True)
@@ -165,7 +192,6 @@ class NamespaceRule:
     compose: str
     global_names: Tuple[str, ...]
     joint_prefix: str = ""            # e.g. "{ns}/" when joints are prefixed too
-    source: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -173,7 +199,6 @@ class Profile:
     id: str
     name: str
     dialect: str
-    kind: str
     teleop: str                       # base | walk | none
     sources: Mapping[str, Mapping[str, Any]]
     boot: Any
@@ -187,6 +212,7 @@ class Profile:
     teleop_walk: Optional[WalkTeleop]
     head: Optional[Mapping[str, HeadAxis]]
     controls: Tuple[Control, ...]
+    reads: Tuple[Read, ...]
     raw: Mapping[str, Any] = dataclasses.field(repr=False, compare=False, default_factory=dict)
 
     # ---- names
@@ -194,22 +220,12 @@ class Profile:
     def is_arm(self) -> bool:
         return self.teleop == "none"
 
-    @property
-    def namespaced(self) -> bool:
-        return self.namespace is not None
-
     def resolve(self, name: str, namespace: str = "") -> str:
         """The wire name of documented name ``name`` for the selected namespace."""
         ns = (namespace or "").strip("/")
         if not ns or self.namespace is None or name in self.namespace.global_names:
             return name
         return self.namespace.compose.format(ns=ns, name=name)
-
-    def joint_prefix(self, namespace: str = "") -> str:
-        ns = (namespace or "").strip("/")
-        if not ns or self.namespace is None:
-            return ""
-        return self.namespace.joint_prefix.format(ns=ns)
 
     def required(self) -> List[Endpoint]:
         return [e for e in self.endpoints if not e.optional]
@@ -223,30 +239,14 @@ class Profile:
     def stop_description(self) -> str:
         return describe_ops(self.stop)
 
-    def to_json(self) -> dict:
-        """The profile as the page consumes it (``/profiles.json``)."""
-        return profile_json(self)
-
-
-# ------------------------------------------------------------------ templates
-
-_PLACEHOLDER = re.compile(r"^\$([A-Za-z_][A-Za-z0-9_]*)$")
-
-
-def fill_template(template: Any, values: Mapping[str, Any], joint_prefix: str = "") -> Any:
-    """Replace ``"$field"`` strings by values and ``{joint_prefix}`` inside strings."""
-    if isinstance(template, Mapping):
-        return {k: fill_template(v, values, joint_prefix) for k, v in template.items()}
-    if isinstance(template, list):
-        return [fill_template(v, values, joint_prefix) for v in template]
-    if isinstance(template, str):
-        m = _PLACEHOLDER.match(template)
-        if m:
-            if m.group(1) not in values:
-                raise KeyError(f"template field ${m.group(1)} has no value")
-            return values[m.group(1)]
-        return template.replace("{joint_prefix}", joint_prefix)
-    return copy.deepcopy(template)
+    def head_read(self, axis: str) -> Optional[Tuple[Read, ReadValue]]:
+        """The documented read of head ``axis``'s measured position: the read value of the page
+        control that publishes the same topic field."""
+        h = (self.head or {}).get(axis)
+        if h is None:
+            return None
+        ids = {c.id for c in self.controls if c.kind == "publish" and c.name == h.topic}
+        return next(((r, v) for r in self.reads for v in r.values if v.control in ids and v.field == h.field), None)
 
 
 def describe_ops(ops: Iterable[Op]) -> str:
@@ -256,8 +256,6 @@ def describe_ops(ops: Iterable[Op]) -> str:
             parts.append(f"publish {o.type} {json.dumps(o.msg, separators=(',', ':'))} on {o.name}")
         elif o.op == "call":
             parts.append(f"call {o.name} ({o.type}) with {json.dumps(o.msg, separators=(',', ':'))}")
-        elif o.op == "cancel":
-            parts.append("cancel the goal")
     return "; then ".join(parts) or "none documented"
 
 
@@ -267,7 +265,7 @@ def _ops(rows: Any) -> Tuple[Op, ...]:
     out = []
     for r in rows or []:
         out.append(Op(op=r["op"], name=r.get("name", ""), type=r.get("type", ""),
-                      msg=r.get("msg", r.get("request", {})), source=str(r.get("source", ""))))
+                      msg=r.get("msg", r.get("request", {}))))
     return tuple(out)
 
 
@@ -282,8 +280,18 @@ def _field(r: Mapping[str, Any]) -> Field:
 
 
 def _axes(rows: Mapping[str, Any]) -> Dict[str, Axis]:
-    return {k: Axis(speed=float(v["speed"]), limit=float(v["limit"]), unit=str(v.get("unit", "")),
-                    field=v.get("field")) for k, v in (rows or {}).items()}
+    return {k: Axis(speed=float(v["speed"]), limit=float(v["limit"]), field=v.get("field"))
+            for k, v in (rows or {}).items()}
+
+
+def _read(r: Mapping[str, Any]) -> Read:
+    return Read(id=r["id"], service=r["service"], type=r["type"],
+                request=r.get("request") or {}, ok_field=str(r.get("ok_field", "")),
+                invalid=tuple(float(x) for x in r.get("invalid") or ()),
+                invalid_if_all_zero=bool(r.get("invalid_if_all_zero", False)),
+                values=tuple(ReadValue(control=v["control"], field=v["field"], path=str(v["path"]),
+                                       offset=float(v.get("offset", 0)), scale=float(v.get("scale", 1)))
+                             for v in r["values"]))
 
 
 def parse_profile(raw: Mapping[str, Any]) -> Profile:
@@ -295,18 +303,17 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
         for r in raw.get(key) or []:
             eps.append(Endpoint(kind=kind, name=r["name"], type=r["type"],
                                 optional=bool(r.get("optional", False)),
-                                direction=r.get("direction"), rate_hz=r.get("rate_hz"),
-                                source=str(r.get("source", ""))))
+                                direction=r.get("direction"), rate_hz=r.get("rate_hz")))
     cams = tuple(Camera(topic=c["topic"], type=c["type"], encodings=tuple(c.get("encodings") or ()),
                         stale_after_s=float(c["stale_after_s"]), rate_hz=c.get("rate_hz"),
-                        optional=bool(c.get("optional", False)), source=str(c.get("source", "")))
+                        optional=bool(c.get("optional", False)))
                  for c in raw.get("cameras") or [])
     ns = raw.get("namespace")
     nsr = None
     if ns:
         nsr = NamespaceRule(default=str(ns.get("default", "")), compose=ns.get("compose", "/{ns}{name}"),
                             global_names=tuple(ns.get("global_names") or ()),
-                            joint_prefix=str(ns.get("joint_prefix", "")), source=str(ns.get("source", "")))
+                            joint_prefix=str(ns.get("joint_prefix", "")))
     tb = raw.get("teleop_base")
     base = None
     if tb:
@@ -324,7 +331,7 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
     if hd:
         head = {k: HeadAxis(topic=v["topic"], type=v["type"], template=dict(v["template"]),
                             field=v["field"], min=float(v["min"]), max=float(v["max"]),
-                            rate=float(v["rate"]), unit=str(v.get("unit", "")))
+                            rate=float(v["rate"]))
                 for k, v in hd.items()}
     controls = []
     for c in raw.get("controls") or []:
@@ -333,16 +340,15 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
             type=c["type"], template=c.get("template", {}),
             fields=tuple(_field(f) for f in c.get("fields") or []),
             stop=_ops(c["stop"]) if c.get("stop") else None,
-            prerequisites=tuple(c.get("prerequisites") or ()), source=str(c.get("source", "")),
-            note=str(c.get("note", ""))))
-    boot = raw.get("boot")
+            prerequisites=tuple(c.get("prerequisites") or ()), ok_field=str(c.get("ok_field", "")),
+            sole_publisher=bool(c.get("sole_publisher", False))))
     return Profile(
-        id=raw["id"], name=raw.get("name", raw["id"]), dialect=dia, kind=raw.get("kind", ""),
-        teleop=raw.get("teleop", "none"), sources=raw.get("sources") or {}, boot=boot,
+        id=raw["id"], name=raw.get("name", raw["id"]), dialect=dia,
+        teleop=raw.get("teleop", "none"), sources=raw.get("sources") or {}, boot=raw.get("boot"),
         namespace=nsr, owned_prefixes=tuple(raw.get("owned_prefixes") or ()),
         endpoints=tuple(eps), cameras=cams, stop=_ops(raw.get("stop")),
         watchdog=str(raw.get("watchdog", "")), teleop_base=base, teleop_walk=walk, head=head,
-        controls=tuple(controls), raw=raw)
+        controls=tuple(controls), reads=tuple(_read(r) for r in raw.get("reads") or []), raw=raw)
 
 
 @functools.lru_cache(maxsize=None)
@@ -408,30 +414,32 @@ def expand_endpoint(p: Profile, e: Endpoint) -> List[Tuple[str, str, str]]:
 
 
 def profile_json(p: Profile) -> dict:
-    def ops(o: Optional[Sequence[Op]]):
-        return None if o is None else [dataclasses.asdict(x) for x in o]
-
+    """What the page needs of a profile: the typed interface it validates, its cameras, its
+    bounded controls (never their stop: the page stops nothing), its measured reads and the
+    ``model`` section for its 3D model (the embodiment's joint tree from the pinned vendor URDF,
+    the control fields that command each joint and the documented joint-position feedback)."""
     return {
-        "id": p.id, "name": p.name, "dialect": p.dialect, "kind": p.kind, "teleop": p.teleop,
-        "sources": p.sources,
+        "id": p.id, "name": p.name, "dialect": p.dialect,
         "namespace": dataclasses.asdict(p.namespace) if p.namespace else None,
         "owned_prefixes": list(p.owned_prefixes),
-        "endpoints": [dict(dataclasses.asdict(e),
+        "endpoints": [dict(kind=e.kind, name=e.name, type=e.type, optional=e.optional, direction=e.direction,
                            parts=[{"kind": k, "name": n, "type": t} for k, n, t in expand_endpoint(p, e)])
                       for e in p.endpoints],
-        "cameras": [dataclasses.asdict(c) for c in p.cameras],
-        "stop": ops(p.stop),
-        "watchdog": p.watchdog,
-        "controls": [dict(dataclasses.asdict(c), stop=ops(c.stop)) for c in p.controls],
+        "cameras": [dict(topic=c.topic, type=c.type, encodings=list(c.encodings), stale_after_s=c.stale_after_s)
+                    for c in p.cameras],
+        "controls": [{k: v for k, v in dataclasses.asdict(c).items() if k != "stop"} for c in p.controls],
+        "reads": [dataclasses.asdict(r) for r in p.reads],
+        "model": p.raw.get("model"),
     }
 
 
 def all_profiles_json() -> dict:
+    """``/profiles.json``: every packaged profile and the ROS infrastructure rules."""
     return {
-        "supported_ids": list(SUPPORTED_IDS),
         "infrastructure": {
             "topics": sorted(d.INFRA_TOPICS), "prefixes": list(d.INFRA_PREFIXES),
             "node_service_suffixes": list(d._NODE_SERVICE_SUFFIXES),
+            "nodes": list(d.INFRA_NODES),
         },
         "profiles": [profile_json(p) for p in load_all()],
     }

@@ -99,14 +99,11 @@ class Sim:
 class Spawn:
     """A running `spawn.sh` process."""
 
-    def __init__(self, robot, sim_port, port, placement=None, arm_port=None, log=None):
+    def __init__(self, robot, sim_port, port, placement=None, log=None):
         self.robot, self.sim_port, self.port = robot, sim_port, port
-        self.arm_port = arm_port
         args = [str(SIM / "spawn.sh"), robot, "--sim-port", str(sim_port), "--port", str(port)]
         if placement:
             args += ["--placement", placement]
-        if arm_port:
-            args += ["--arm-port", str(arm_port)]
         self.log = log
         self.logf = open(log, "w")
         self.proc = subprocess.Popen(args, stdout=self.logf, stderr=subprocess.STDOUT,
@@ -168,6 +165,32 @@ def running_sim(engine, scene, port, logdir):
         yield sim
     finally:
         sim.stop()
+
+
+def real_time_problems(sim_port: int, t0: float, t1: float | None = None) -> list:
+    """Spec §3 Timing: no rate or physical bound is claimed for an interval in which the
+    simulation ran below real time. Every completed real-time-factor window of the
+    simulation on `sim_port` overlapping the measurement [t0, t1] (epoch seconds; t1 now
+    by default) -- waiting until one covers t1 -- and a problem for each below 0.90, so a
+    check that measured then fails, saying why, instead of claiming the bound was met."""
+    import protocol
+
+    t1 = time.time() if t1 is None else t1
+    c = protocol.Client("127.0.0.1", sim_port)
+    try:
+        res = c.call("rtf", since=t0)
+        deadline = time.monotonic() + float(res["window_s"]) + 10.0
+        while not any(w[1] >= t1 for w in res["windows"]) and time.monotonic() < deadline:
+            time.sleep(0.5)
+            res = c.call("rtf", since=t0)
+    finally:
+        c.close()
+    windows = [w for w in res["windows"] if w[1] >= t0 and w[0] <= t1]
+    if not any(w[1] >= t1 for w in windows):
+        return [f"no completed real-time-factor window covers the measurement ending at {t1:.1f}"]
+    return [f"real-time factor {r:.3f} below {res['warn_below']:.2f} over a {e - s:.0f} s window "
+            "of the measurement (host load): its rates and physical bounds are not claimed"
+            for s, e, r in windows if r < res["warn_below"]]
 
 
 def engine_ready(engine: str) -> bool:

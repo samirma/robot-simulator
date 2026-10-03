@@ -14,7 +14,6 @@ Which registries are drawn from follows what is installed: the Lightwheel set is
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -90,7 +89,9 @@ def populate(arena, regions, seed: int):
             c, s = np.cos(reg["rot"]), np.sin(reg["rot"])
             xy = (float(reg["centre"][0] + c * local[0] - s * local[1]),
                   float(reg["centre"][1] + s * local[0] + c * local[1]))
-            if not _free(xy, radius, taken[idx]):
+            # clear of every object already stood, on this counter or a neighbouring one
+            # (regions of adjacent counters can meet)
+            if not _free(xy, radius, [t for ts in taken.values() for t in ts]):
                 continue
             z = float(reg["top_z"]) - float(obj.bottom_offset[2]) + DROP
             yaw = float(rng.uniform(-np.pi, np.pi))

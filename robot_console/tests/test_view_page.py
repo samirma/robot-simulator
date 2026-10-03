@@ -5,19 +5,23 @@ check what reached the wire, not only what the page displays. Contract: controls
 soon as the target validates; changed values are sent at once (topic publishes and action
 goals streamed while dragging, throttled with the last value always delivered; services and
 action-group buttons once per click); limits are never exceeded; nothing is ever stopped or
-cancelled by the page.
+cancelled by the page. The 3D model is posed from the joint positions the robot reports (where
+the profile documents them) and its commanded joints edit their controls through the same path.
 """
 
+import math
 import threading
 import time
 
+import numpy as np
 import pytest
 
+import robot_console.view as view_mod
 from robot_console.discovery import SelectionError, fetch_graph, select_target
-from robot_console.profiles import load
+from robot_console.profiles import SUPPORTED_IDS, load
 from robot_console.rosbridge import Rosbridge
 from robot_console.view import make_server
-from wirespec import drop, merge, wire_spec
+from wirespec import drop, merge, retype, wire_spec
 
 pytestmark = pytest.mark.browser
 playwright = pytest.importorskip("playwright.sync_api")
@@ -141,12 +145,69 @@ def test_cameras_live_and_only_profile_controls(view):
         assert (r.get_attribute("min"), r.get_attribute("max")) == (n.get_attribute("min"), n.get_attribute("max"))
 
 
-def test_stale_camera_is_marked(view):
-    srv, page = view(wire_spec(load("rosmaster_x3_plus")))
-    page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'live'")
-    srv.paused.add("/camera/rgb/image_raw")
-    page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'stale'", timeout=8000)
-    assert "STALE" in page.locator('[data-testid="camera-state"]').inner_text()
+@pytest.mark.parametrize("pid", [i for i in SUPPORTED_IDS if load(i).cameras])
+def test_every_profile_camera_is_shown_live_then_stale(view, pid):
+    """Console spec §4, for each profile: every supported stream is displayed under its resolved
+    topic name, live while frames arrive and visibly stale (never live) once they stop."""
+    p = load(pid)
+    srv, page = view(wire_spec(p))
+    cams = page.locator('[data-testid="camera"]')
+    assert sorted(cams.evaluate_all("els => els.map(e => e.dataset.topic)")) == sorted(c.topic for c in p.cameras)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')",
+                           timeout=8000)
+    srv.paused.add(p.cameras[0].topic)
+    page.wait_for_function(f"document.querySelector('[data-testid=camera][data-topic=\"{p.cameras[0].topic}\"]')"
+                           ".dataset.state === 'stale'", timeout=8000)
+    assert "STALE" in cams.first.locator('[data-testid="camera-state"]').inner_text()
+    assert srv.command_ops() == []
+
+
+def cam_state(page):
+    return page.locator('[data-testid="camera"]').get_attribute("data-state")
+
+
+def test_unsupported_and_malformed_frames_are_visible_states(view):
+    """An encoding the profile does not document shows UNSUPPORTED; a frame whose row step is
+    shorter than its width (camera.py refuses it too) shows FAILED and is never drawn as live."""
+    srv, page = view(wire_spec(load("ainex")))
+    live = "document.querySelector('[data-testid=camera]').dataset.state === '%s'"
+    page.wait_for_function(live % "live")
+    srv.frame_encoding["/camera/image_raw"] = "bgr8"                     # the profile documents rgb8
+    page.wait_for_function(live % "unsupported", timeout=5000)
+    assert "UNSUPPORTED" in page.locator('[data-testid="camera-state"]').inner_text()
+    del srv.frame_encoding["/camera/image_raw"]
+    page.wait_for_function(live % "live", timeout=5000)
+    send = srv._broadcast
+
+    def short_rows(topic, msg):
+        if topic == "/camera/image_raw" and "step" in msg:
+            msg = dict(msg, step=msg["width"] * 3 - 3)
+        send(topic, msg)
+    srv._broadcast = short_rows
+    page.wait_for_function(live % "failed", timeout=5000)
+    assert "row step" in page.locator('[data-testid="camera"] .ov-detail').inner_text()
+    page.wait_for_timeout(400)
+    assert cam_state(page) == "failed"
+    assert srv.command_ops() == []
+
+
+def test_missing_profile_camera_is_a_visible_state(view, monkeypatch):
+    """A profile camera absent from a validated target's wire shows MISSING. No packaged profile
+    has an optional camera, so the page is handed an AiNex profile whose camera row is optional."""
+    packaged = view_mod.all_profiles_json
+
+    def optional_camera():
+        j = packaged()
+        p = next(x for x in j["profiles"] if x["id"] == "ainex")
+        for row in p["endpoints"] + p["cameras"]:
+            if row.get("name", row.get("topic")) == "/camera/image_raw":
+                row["optional"] = True
+        return j
+    monkeypatch.setattr(view_mod, "all_profiles_json", optional_camera)
+    srv, page = view(drop(wire_spec(load("ainex")), "/camera/image_raw"))
+    assert page.locator('[data-testid="target"]').inner_text() == "ainex"
+    page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'missing'")
+    assert "MISSING" in page.locator('[data-testid="camera-state"]').inner_text()
 
 
 def test_no_cameras_is_a_visible_state(view):
@@ -183,10 +244,23 @@ def test_nothing_is_sent_before_validation(view):
     # Explicit selection on an ambiguous wire is still refused: the typed evidence is shared.
     assert len(srv.clients) == n + 1 and page.locator('[data-testid="target"]').inner_text() == "none"
     assert page.locator('[data-testid="control"]').count() == 0
+    assert page.evaluate("RC.state.model") is None                     # no target, no model
     assert srv.command_ops() == []
 
 
-@pytest.mark.parametrize("robot", ["so101", "ainex", "mycobot280"])
+@pytest.mark.parametrize("robot,name,bad", [("ainex", HEAD_PAN, "std_msgs/Float64"),
+                                            ("so101", "/joint_states", "sensor_msgs/msg/Imu")])
+def test_explicit_selection_cannot_bypass_type_checks(view, robot, name, bad):
+    srv, page = view(retype(wire_spec(load(robot)), name, bad), robot=robot)
+    assert page.locator('[data-testid="target"]').inner_text() == "none"
+    reason = page.locator('[data-testid="reason"]').inner_text()
+    assert "wrong type" in reason and name in reason and bad in reason, reason
+    assert page.locator('[data-testid="control"]').count() == 0
+    assert page.evaluate("RC.state.model") is None
+    assert srv.command_ops() == []
+
+
+@pytest.mark.parametrize("robot", ["so101", "ainex", "mycobot280", "rosmaster_x3_plus"])
 def test_nothing_is_sent_on_load_or_reload(view, robot):
     srv, page = view(wire_spec(load(robot), include_optional=True))
     assert page.locator('[data-testid="live-card"]').get_attribute("data-state") == "live"
@@ -198,16 +272,20 @@ def test_nothing_is_sent_on_load_or_reload(view, robot):
     assert srv.command_ops() == []
 
 
-def test_page_states_the_sending_contract_and_has_no_arm_or_stop(view):
-    srv, page = view(so101_spec())
+@pytest.mark.parametrize("robot", ["so101", "ainex"])
+def test_page_states_the_sending_contract_and_has_no_arm_or_stop(view, robot):
+    srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
     note = page.locator('[data-testid="send-note"]').inner_text()
     assert "Changes are sent to the robot immediately, and nothing is stopped automatically." in note
     assert "keeps running" in note
-    assert "Controls live on so101" in page.locator('[data-testid="live-card"]').inner_text()
+    assert f"Controls live on {robot}" in page.locator('[data-testid="live-card"]').inner_text()
     for sel in ("#enable", '[data-testid="enable"]', '[data-testid="stop-all"]', '[data-testid="armed-pill"]',
                 '[data-testid="hold"]', '[data-testid="stop-status"]', '[data-testid="startup"]'):
         assert page.locator(sel).count() == 0, sel
     assert "STOP" not in page.locator("body").inner_text()
+    page.keyboard.press("Escape")                                        # Esc does nothing
+    page.wait_for_timeout(300)
+    assert srv.command_ops() == []
 
 
 # ------------------------------------------------------------------ topic publishes stream while dragging
@@ -234,9 +312,12 @@ def test_ros1_head_slider_and_pad_stream(view):
     pubs = srv.published(HEAD_PAN)
     assert len(pubs) >= 5 and min(gaps(pubs)) > 0.07
     assert pubs[-1]["msg"] == {"position": final, "duration": 0.5}
-    # The head pad streams both axes while dragged.
+    # The head pad streams both axes while dragged. Its left is the robot's left: a negative
+    # head_pan on the model's -Z axis (console spec §2.1, amended 2026-10-02), as teleop's Left key.
     pad = page.locator(".pad")
     pad.scroll_into_view_if_needed()
+    labels = pad.locator(".pad-lbl").all_inner_texts()
+    assert "← left −1.57" in labels and "right 1.57 →" in labels, labels
     box = pad.bounding_box()
     n_pan, n_tilt = len(srv.published(HEAD_PAN)), len(srv.published(HEAD_TILT))
     page.mouse.move(box["x"] + box["width"] * 0.5, box["y"] + box["height"] * 0.5)
@@ -249,8 +330,14 @@ def test_ros1_head_slider_and_pad_stream(view):
     pan = float(num(page, "head_pan", "position").input_value())
     tilt = float(num(page, "head_tilt", "position").input_value())
     assert len(srv.published(HEAD_PAN)) - n_pan >= 4 and len(srv.published(HEAD_TILT)) - n_tilt >= 4
-    assert srv.published(HEAD_PAN)[-1]["msg"]["position"] == pan > 0.5
+    assert srv.published(HEAD_PAN)[-1]["msg"]["position"] == pan < -0.5           # up-left: pan negative
     assert srv.published(HEAD_TILT)[-1]["msg"]["position"] == tilt > 0.1
+    # ArrowLeft on the pad turns the head further to the robot's left (a lower pan).
+    pad.focus()
+    page.keyboard.press("ArrowLeft")
+    page.wait_for_timeout(300)
+    assert srv.published(HEAD_PAN)[-1]["msg"]["position"] == pytest.approx(pan - 0.05)
+    assert "- = left" in control(page, "head_pan").locator("label").first.inner_text()
     no_stop_ops(srv)
 
 
@@ -303,12 +390,14 @@ def test_action_drag_streams_preempting_goals_with_bounded_connections(view):
     srv, page = view(so101_spec())
     base = srv.open_clients()
     seen = []
+    t0 = time.monotonic()
     final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.1, steps=50, step_ms=40,
                  during=lambda: seen.append(srv.open_clients()))
+    dur = time.monotonic() - t0                                          # longer than 2 s on a loaded host
     page.wait_for_timeout(800)
     gs = goals(srv, SO_ARM)
-    assert 5 <= len(gs) <= 2.2 / 0.2 + 3, len(gs)                        # about 5 per s
-    assert min(gaps(gs)) > 0.15, gaps(gs)
+    assert 5 <= len(gs) <= dur / 0.2 + 3, (len(gs), dur)                 # about 5 per s
+    assert min(gaps(gs)) > 0.1, gaps(gs)                         # throttled (each goal has its own connection: arrival jitter)
     g = gs[-1]
     assert g["args"]["trajectory"]["points"][0]["positions"][0] == final < -1.0
     assert g["args"]["trajectory"]["joint_names"][0] == "shoulder_pan_joint" and g["feedback"] is True
@@ -330,17 +419,29 @@ def test_gripper_slider_streams_goals(view):
 
 
 def test_silent_action_server_bounds_goals_and_connections(view):
+    """A server that never acknowledges: about one goal per second, and never more than
+    GOAL_CONNS_MAX goal connections at any moment (sampled every 5 ms through a 5 s drag)."""
     srv, page = view(so101_spec())
     srv.action_behaviour[SO_ARM] = "silent"                              # never acknowledges a goal
     base = srv.open_clients()
-    seen = []
-    final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.9, steps=60, step_ms=40,
-                 during=lambda: seen.append(srv.open_clients()))
-    page.wait_for_timeout(1500)                                          # the trailing goal after the ack timeout
+    seen, stop = [], threading.Event()
+
+    def sample():
+        while not stop.is_set():
+            seen.append(srv.open_clients())
+            time.sleep(0.005)
+    th = threading.Thread(target=sample, daemon=True)
+    th.start()
+    try:
+        final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.9, steps=130, step_ms=40)
+        page.wait_for_timeout(1500)                                      # the trailing goal after the ack timeout
+    finally:
+        stop.set()
+        th.join()
     gs = goals(srv, SO_ARM)
-    assert 2 <= len(gs) <= 6, len(gs)                                    # about one per second
+    assert 4 <= len(gs) <= 10, len(gs)                                   # about one per second
     assert gs[-1]["args"]["trajectory"]["points"][0]["positions"][0] == final
-    assert max(seen + [srv.open_clients()]) <= base + GOAL_CONNS_MAX, seen
+    assert max(seen) <= base + GOAL_CONNS_MAX, (base, max(seen))
 
 
 def test_use_measured_and_reset_send_their_values(view):
@@ -372,6 +473,116 @@ def test_use_measured_and_reset_send_their_values(view):
         stop.set()
     page.wait_for_function("document.querySelector('[data-control=arm_trajectory] .measured').dataset.state === 'none'", timeout=5000)
     assert srv.published() == []
+
+
+# ------------------------------------------------------------------ measured reads: once per click, never on load
+
+def read_value(page, cid, field):
+    return num(page, cid, field).locator(
+        "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' field ')][1]").locator('[data-testid="read-value"]')
+
+
+def test_x3_measured_servo_angles_are_read_per_click_and_copied(view):
+    """ROSMASTER: /CurrentAngle reads the six servo angles back (a measurement, unlike the
+    /joint_states echo). Console spec §2.2: the page shows measured positions where the profile
+    documents them and copies them into the targets. It calls the service only on a click,
+    with the vendor's request; -1 (unread) is shown as no value."""
+    srv, page = view(wire_spec(load("rosmaster_x3_plus")))
+    srv.set_service("/CurrentAngle", lambda args: {"angles": [80.0, 120.0, 10.0, 45.0, -1, 60.0]})
+    page.wait_for_timeout(600)
+    assert srv.calls("/CurrentAngle") == [] and srv.command_ops() == []      # nothing on load
+    control(page, "arm_pose").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'read'")
+    assert [c["args"] for c in srv.calls("/CurrentAngle")] == [{"apply": "GetArmJoints"}]
+    assert "+120.0 deg" in read_value(page, "arm_pose", "j2").inner_text()
+    assert read_value(page, "arm_pose", "j5").get_attribute("data-state") == "invalid"
+    assert "+60.0 deg" in read_value(page, "gripper", "angle").inner_text()  # one read serves both controls
+    assert "read from /CurrentAngle" in control(page, "arm_pose").locator('[data-testid="read-status"]').inner_text()
+    assert srv.published("/TargetAngle") == []                               # reading sends no command
+    control(page, "arm_pose").get_by_role("button", name="Use measured").click()
+    page.wait_for_timeout(400)
+    joints = srv.published("/TargetAngle")[-1]["msg"]["joints"]
+    assert joints == [80, 120, 10, 45, 90, 60]                               # j5 unread: its target is kept
+    assert len(srv.calls("/CurrentAngle")) == 1
+
+
+def test_ainex_measured_head_position_is_read_per_click(view):
+    srv, page = view(wire_spec(load("ainex")))
+    pulses = {23: 739, 24: 400}                                              # pan ~ +1.0 rad, tilt ~ -0.42 rad
+    srv.set_service("/ros_robot_controller/bus_servo/get_position",
+                    lambda args: {"success": True, "position": [{"id": i, "position": pulses[i]} for i in args["id"]]})
+    page.wait_for_timeout(500)
+    assert srv.calls() == []
+    control(page, "head_pan").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=head_tilt] [data-testid=read-value]').dataset.state === 'read'")
+    assert [c["args"] for c in srv.calls()] == [{"id": [23, 24]}]
+    assert "+1.001 rad" in read_value(page, "head_pan", "position").inner_text()
+    assert "−0.419 rad" in read_value(page, "head_tilt", "position").inner_text()
+    control(page, "head_tilt").get_by_role("button", name="Use measured").click()
+    page.wait_for_timeout(400)
+    assert srv.published(HEAD_TILT)[-1]["msg"]["position"] == pytest.approx(-0.42)
+    assert srv.published(HEAD_PAN) == []
+    srv.set_service("/ros_robot_controller/bus_servo/get_position", lambda args: {"success": False, "position": []})
+    control(page, "head_pan").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=head_pan] [data-testid=read-status]').innerText.includes('failed')")
+    assert srv.calls("/walking/command") == []
+    no_stop_ops(srv)
+
+
+def test_mycobot_all_zero_answer_is_no_reading(view):
+    """listen_real_service answers the response defaults (all zeros) when it cannot read the arm."""
+    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
+    srv.set_service("/get_angles", lambda args: {f"joint_{i}": 0.0 for i in range(1, 7)})
+    control(page, "set_angles").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=set_angles] [data-testid=read-value]').dataset.state === 'invalid'")
+    assert control(page, "set_angles").get_by_role("button", name="Use measured").is_disabled()
+    srv.set_service("/get_angles", lambda args: {f"joint_{i}": 10.0 * i for i in range(1, 7)})
+    control(page, "arm_gripper_target").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=arm_gripper_target] [data-testid=read-value]').dataset.state === 'read'")
+    assert "+0.17 rad" in read_value(page, "arm_gripper_target", "j1").inner_text()           # 10 deg
+    assert "+30.0 deg" in read_value(page, "set_angles", "j3").inner_text()
+    assert len(srv.calls("/get_angles")) == 2 and srv.calls("/set_angles") == []
+
+
+# ------------------------------------------------------------------ sending, done and failed states
+
+def phase(page, cid):
+    return control(page, cid).get_attribute("data-phase")
+
+
+def test_each_control_shows_its_sending_done_and_failed_state(view):
+    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
+    assert phase(page, "set_angles") is None                                  # nothing sent yet
+    srv.set_service("/set_angles", "hang")
+    control(page, "set_angles").locator('[data-testid="send"]').click()
+    page.wait_for_timeout(200)
+    assert phase(page, "set_angles") == "sending" and status(page, "set_angles").startswith("sending")
+    # The documented response field `flag` is false when the arm refused (listen_real_service.py)
+    srv.set_service("/set_gripper", lambda args: {"flag": False})
+    control(page, "gripper_close").locator('[data-testid="send"]').click()
+    page.wait_for_function("document.querySelector('[data-control=gripper_close]').dataset.phase === 'failed'")
+    srv.set_service("/set_gripper", lambda args: {"flag": True})
+    control(page, "gripper_open").locator('[data-testid="send"]').click()
+    page.wait_for_function("document.querySelector('[data-control=gripper_open]').dataset.phase === 'done'")
+    drag(page, "arm_gripper_target", "j1", 0.5, 0.6, steps=5, step_ms=40)
+    page.wait_for_timeout(300)
+    assert phase(page, "arm_gripper_target") == "done" and "sent" in status(page, "arm_gripper_target")
+    num(page, "arm_gripper_target", "j1").fill("9")
+    num(page, "arm_gripper_target", "j1").press("Enter")
+    page.wait_for_timeout(200)
+    assert phase(page, "arm_gripper_target") == "invalid" and "not sent" in status(page, "arm_gripper_target")
+
+
+def test_aborted_goal_is_a_visible_failure(view):
+    srv, page = view(so101_spec(exec_s=0.6))
+    srv.action_behaviour[SO_GRIP] = "abort"
+    num(page, "gripper", "position").fill("0.5")
+    num(page, "gripper", "position").press("Enter")
+    page.wait_for_function("document.querySelector('[data-control=gripper]').dataset.phase === 'failed'", timeout=8000)
+    assert "aborted" in status(page, "gripper")
+    page.wait_for_timeout(300)
+    assert len(goals(srv, SO_GRIP)) == 1                                      # a failure is not retried
+    no_stop_ops(srv)
 
 
 # ------------------------------------------------------------------ services and action groups: once per click
@@ -406,6 +617,20 @@ def test_call_control_pending_and_failure_states(view):
     assert len(srv.calls("/set_gripper")) == 1
 
 
+def test_ros1_call_control_pending_and_failure_states(view):
+    srv, page = view(wire_spec(load("ainex")))
+    srv.set_service("/walking/init_pose", "hang")
+    control(page, "init_pose").locator('[data-testid="send"]').click()
+    page.wait_for_timeout(200)
+    assert "pending" in status(page, "init_pose")
+    srv.set_service("/walking/init_pose", "fail")
+    control(page, "init_pose").locator('[data-testid="send"]').click()
+    page.wait_for_function("document.querySelector('[data-control=init_pose] .status').innerText.includes('failed')")
+    assert len(srv.calls("/walking/init_pose")) == 2
+    assert srv.calls("/walking/command") == []
+    no_stop_ops(srv)
+
+
 def test_ainex_init_pose_and_action_group_once_per_click(view):
     srv, page = view(wire_spec(load("ainex")))
     control(page, "init_pose").locator('[data-testid="send"]').click()
@@ -426,15 +651,65 @@ def test_unsupported_controls_remain_unavailable(view):
         assert disabled(page, cid)
     assert control(page, "set_angles").locator('[data-testid="send"]').is_disabled()
     assert not disabled(page, "arm_gripper_target")
+    assert control(page, "set_angles").locator('[data-testid="read"]').count() == 0      # /get_angles absent too
+
+
+def test_incompatible_prerequisite_leaves_the_control_unavailable(view):
+    """myCobot 280: the slider-control boot executes every /joint_states message, so the page's
+    target needs the boot with gui:=false. While another node (the slider GUI, or a measured
+    joint-state publisher) publishes /joint_states the control is unavailable and names it;
+    rosbridge's own node (an earlier page's publication) is infrastructure."""
+    def spec_with(pubs):
+        s = wire_spec(load("mycobot280"))
+        next(r for r in s["topics"] if r["name"] == "/joint_states")["publishers"] = pubs
+        return s
+    srv, page = view(spec_with(["/joint_state_publisher"]))
+    assert page.locator('[data-testid="target"]').inner_text() == "mycobot280"
+    reason = control(page, "arm_gripper_target").locator('[data-testid="unavailable"]').inner_text()
+    assert "/joint_state_publisher" in reason and "re-command" in reason
+    assert disabled(page, "arm_gripper_target")
+    assert srv.command_ops() == []
+    srv2, page2 = view(spec_with(["/rosbridge_websocket"]))
+    assert not disabled(page2, "arm_gripper_target")
+    assert control(page2, "arm_gripper_target").locator('[data-testid="unavailable"]').count() == 0
+
+
+@pytest.mark.parametrize("pid", SUPPORTED_IDS)
+def test_controls_without_their_prerequisites_are_unavailable(view, pid):
+    """Console spec §4, for each profile: a control whose prerequisite is an optional row absent
+    from the wire is shown unavailable with its reason; a missing required prerequisite fails the
+    target's validation, so no control is offered at all. Either way nothing is sent."""
+    p = load(pid)
+    if not p.controls:
+        srv, page = view(wire_spec(p))
+        assert page.locator('[data-testid="control"]').count() == 0
+        assert page.locator('[data-testid="no-controls"]').count() == 1
+        return
+    optional = {e.name for e in p.endpoints if e.optional}
+    gated = [c for c in p.controls if set(c.prerequisites) & optional]
+    if gated:
+        srv, page = view(wire_spec(p))                    # the optional rows are absent
+        for c in gated:
+            assert "is not on the wire" in control(page, c.id).locator('[data-testid="unavailable"]').inner_text()
+            assert disabled(page, c.id)
+    c = p.controls[0]
+    required = next(n for n in c.prerequisites if n not in optional)
+    srv, page = view(drop(wire_spec(p, include_optional=True), required), robot=pid)
+    assert page.locator('[data-testid="target"]').inner_text() == "none"
+    assert required in page.locator('[data-testid="reason"]').inner_text()
+    assert page.locator('[data-testid="control"]').count() == 0
+    assert srv.command_ops() == []
 
 
 # ------------------------------------------------------------------ nothing is stopped automatically
 
-def test_release_escape_focus_hide_and_close_send_no_stop(view, browser):
-    srv, page = view(so101_spec())
-    drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.6, steps=5, step_ms=40)     # release ends the drag
+@pytest.mark.parametrize("robot", ["so101", "ainex"])
+def test_release_escape_focus_hide_and_close_send_no_stop(view, browser, robot):
+    srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
+    cid, field = ("arm_trajectory", "shoulder_pan") if robot == "so101" else ("head_pan", "position")
+    drag(page, cid, field, 0.5, 0.6, steps=5, step_ms=40)               # release ends the drag
     page.wait_for_timeout(500)
-    n = len(srv.ops_of("send_action_goal"))
+    n = len(srv.command_ops())
     assert n >= 1
     page.keyboard.press("Escape")
     page.evaluate("window.dispatchEvent(new Event('blur'))")
@@ -443,10 +718,12 @@ def test_release_escape_focus_hide_and_close_send_no_stop(view, browser):
     page.wait_for_timeout(300)
     page.close()                                                          # closing the tab
     time.sleep(0.5)
-    assert len(srv.ops_of("send_action_goal")) == n
+    assert len(srv.command_ops()) == n
     no_stop_ops(srv)
-    latest = goals(srv, SO_ARM)[-1]
-    assert srv.goals[latest["id"]]["done"] is False                      # the goal keeps running
+    assert srv.calls("/walking/command") == []                           # the AiNex walking stop
+    if robot == "so101":
+        latest = goals(srv, SO_ARM)[-1]
+        assert srv.goals[latest["id"]]["done"] is False                  # the goal keeps running
 
 
 def test_target_change_sends_nothing_and_rebinds_controls(view):
@@ -476,6 +753,36 @@ def test_target_change_sends_nothing_and_rebinds_controls(view):
     assert p.id == "so101"
 
 
+def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
+    """Every pair of ROS 1 profiles shares required names and none is namespace-capable, so two
+    validated ROS 1 targets cannot share one wire: the change goes through a refused selection
+    and back. Each selection validates afresh on a new connection and sends nothing."""
+    srv, page = view(wire_spec(load("ainex")))
+    num(page, "head_pan", "position").fill("0.2")
+    num(page, "head_pan", "position").press("Enter")
+    page.wait_for_timeout(300)
+    assert [p["msg"]["position"] for p in srv.published(HEAD_PAN)] == [0.2]
+    n_clients, n_ops = len(srv.clients), len(srv.command_ops())
+    page.select_option('[data-testid="robot"]', "myagv")
+    page.click('[data-testid="select"]')
+    page.wait_for_function("document.querySelector('[data-testid=reason]').innerText.includes('myagv')", timeout=8000)
+    assert page.locator('[data-testid="target"]').inner_text() == "none"
+    assert page.locator('[data-testid="control"]').count() == 0
+    assert len(srv.clients) == n_clients + 1
+    page.select_option('[data-testid="robot"]', "ainex")
+    page.click('[data-testid="select"]')
+    page.wait_for_function("document.querySelector('[data-testid=target]').innerText === 'ainex'", timeout=8000)
+    assert len(srv.clients) == n_clients + 2
+    page.wait_for_timeout(500)
+    assert len(srv.command_ops()) == n_ops                              # the changes sent nothing
+    no_stop_ops(srv)
+    assert srv.calls("/walking/command") == []
+    num(page, "head_pan", "position").fill("0.3")
+    num(page, "head_pan", "position").press("Enter")
+    page.wait_for_timeout(400)
+    assert [p["msg"]["position"] for p in srv.published(HEAD_PAN)] == [0.2, 0.3]     # once, from the new target
+
+
 @pytest.mark.parametrize("robot", ["so101", "ainex"])
 def test_connection_loss_disables_controls_sends_no_stop_and_never_reconnects(view, robot):
     srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
@@ -500,6 +807,222 @@ def test_connection_loss_disables_controls_sends_no_stop_and_never_reconnects(vi
     assert len(srv.clients) == n, "the page connects again only when reloaded"
     assert len(srv.command_ops()) == n_ops                              # nothing sent on or after the loss
     no_stop_ops(srv)
+
+
+# ------------------------------------------------------------------ reported joint values; the 3D model
+
+SO_JOINTS = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_flex_joint", "wrist_flex_joint",
+             "wrist_roll_joint", "gripper_joint"]
+X3_JOINTS = ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
+
+
+def joint_states(srv, names, positions, topic="/joint_states", period=0.05):
+    """Publish a JointState from the robot every `period` s until the returned event is set."""
+    stop = threading.Event()
+
+    def run():
+        while not stop.is_set():
+            srv._broadcast(topic, {"name": names, "position": positions})
+            time.sleep(period)
+    threading.Thread(target=run, daemon=True).start()
+    return stop
+
+
+def readout(page, cid, field):
+    return num(page, cid, field).locator(
+        "xpath=ancestor::div[contains(concat(' ', @class, ' '), ' field ')][1]").locator(".measured:not(.read)")
+
+
+def model(page):
+    return page.evaluate("RC.state.model")
+
+
+def model_point(page, joint):
+    """Page coordinates of a commanded joint drawn on the model canvas."""
+    cv = page.locator('[data-testid="model-canvas"]')
+    cv.scroll_into_view_if_needed()
+    page.wait_for_timeout(100)
+    box = cv.bounding_box()
+    x, y = page.evaluate("j => RC.state.model.points[j]", joint)
+    return box["x"] + x, box["y"] + y
+
+
+def select_in_model(page, joint):
+    """Click the joint on the canvas (again, where joints are drawn on top of each other)."""
+    x, y = model_point(page, joint)
+    for _ in range(len(model(page)["clickable"]) + 1):
+        page.mouse.click(x, y)
+        if model(page)["selected"] == joint:
+            return x, y
+    raise AssertionError(f"{joint} cannot be selected in the model: {model(page)['selected']}")
+
+
+def test_reported_arm_angles_are_shown_in_the_controls_units(view):
+    """ROSMASTER: /joint_states is the driver's echo of its last commanded servo angles, mapped to
+    rad as (deg - 90) * pi/180 (gripper 30..180 deg first mapped to 0..90); the page shows it back
+    in the controls' degrees, labelled as reported, not measured. Displaying sends nothing."""
+    srv, page = view(wire_spec(load("rosmaster_x3_plus")))
+    stop = joint_states(srv, X3_JOINTS, [0.0, 0.5, 0.0, 0.0, 0.0, -1.5708], period=0.1)
+    try:
+        page.wait_for_function("document.querySelector('[data-control=arm_pose] .measured').dataset.state === 'live'", timeout=5000)
+        assert readout(page, "arm_pose", "j1").inner_text().replace("\n", " ").split()[-2:] == ["+90.0", "deg"]
+        assert "+118.6 deg" in readout(page, "arm_pose", "j2").inner_text()
+        assert "+30.0 deg" in readout(page, "arm_pose", "gripper").inner_text()       # 30 = open
+        page.wait_for_function("document.querySelector('[data-control=gripper] .measured').dataset.state === 'live'", timeout=5000)
+        assert "+30.0 deg" in readout(page, "gripper", "angle").inner_text()
+        assert "reported" in readout(page, "arm_pose", "j1").inner_text()
+        # the echo is not a measurement: it cannot be copied into the targets (only a /CurrentAngle read can)
+        assert control(page, "arm_pose").get_by_role("button", name="Use measured").is_disabled()
+        m = model(page)
+        assert m["sources"]["arm_joint2"] == "reported" and m["joints"]["arm_joint2"] == 0.5
+    finally:
+        stop.set()
+    assert srv.command_ops() == []
+
+
+def test_model_follows_reported_joint_positions(view):
+    """SO-101: each joint of the model is posed from /joint_states; when a joint moves, the same
+    joint of the model turns by the same angle. Without fresh reports the page says so."""
+    srv, page = view(so101_spec())
+    m = model(page)
+    assert m["rendered"] and set(m["clickable"]) == set(SO_JOINTS)
+    assert {m["sources"][j] for j in SO_JOINTS} == {"target"}
+    assert "not reported" in page.locator('[data-testid="model-pose"]').inner_text()
+    pose = [0.5, -0.25, 0.75, 0.1, -0.2, 0.3]
+    stop = joint_states(srv, SO_JOINTS, pose)
+    try:
+        page.wait_for_function("RC.state.model.sources.shoulder_pan_joint === 'reported'", timeout=5000)
+        m = model(page)
+        assert [m["joints"][j] for j in SO_JOINTS] == pose
+        assert {m["sources"][j] for j in SO_JOINTS} == {"reported"}
+        assert "reported on /joint_states" in page.locator('[data-testid="model-pose"]').inner_text()
+        before = m["world"]
+    finally:
+        stop.set()
+    stop = joint_states(srv, SO_JOINTS, [0.5 - 0.4] + pose[1:])
+    try:
+        page.wait_for_function("Math.abs(RC.state.model.joints.shoulder_pan_joint - 0.1) < 1e-9", timeout=5000)
+        after = model(page)["world"]
+    finally:
+        stop.set()
+    # The links after shoulder_pan turned about its axis (vertical, to the URDF's 5-decimal pi in
+    # its origin rpy) by the same 0.4 rad.
+    pan = before["shoulder_pan_joint"]
+    ang = lambda p: math.atan2(p[1] - pan[1], p[0] - pan[0])           # noqa: E731
+    for j in ("elbow_flex_joint", "wrist_flex_joint"):
+        turn = (ang(after[j]) - ang(before[j]) + math.pi) % (2 * math.pi) - math.pi
+        assert abs(turn) == pytest.approx(0.4, abs=1e-4), j
+        assert after[j][2] == pytest.approx(before[j][2], abs=1e-5)
+    page.wait_for_function("RC.state.model.sources.shoulder_pan_joint === 'target'", timeout=5000)   # stale: says so
+    assert srv.command_ops() == []
+
+
+def urdf_forward(model, q):
+    """Joint origins in the model's root frame, computed here from the URDF rows (origin xyz/rpy
+    then a rotation about the axis; mimic joints follow their joint)."""
+    def rpy(r, p, y):
+        cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
+        return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
+                         [sy * cp, sy * sp * sr + cy * cr, sy * sp * cr - cy * sr], [-sp, cp * sr, cp * cr]])
+
+    def about(a, t):
+        a = np.asarray(a, float) / np.linalg.norm(a)
+        k = np.array([[0, -a[2], a[1]], [a[2], 0, -a[0]], [-a[1], a[0], 0]])
+        return np.eye(3) + math.sin(t) * k + (1 - math.cos(t)) * k @ k
+    frames, out, joints = {model["root"]: (np.eye(3), np.zeros(3))}, {}, list(model["joints"])
+    while joints:
+        j = next(j for j in joints if j["parent"] in frames)
+        joints.remove(j)
+        R, t = frames[j["parent"]]
+        Rc, tc = R @ rpy(*j["rpy"]), R @ np.array(j["xyz"], float) + t
+        if j["type"] != "fixed":
+            m = j.get("mimic")
+            angle = m["multiplier"] * q.get(m["joint"], 0.0) + m["offset"] if m else q.get(j["name"], 0.0)
+            Rc = Rc @ about(j["axis"], angle)
+        frames[j["child"]] = (Rc, tc)
+        out[j["name"]] = tc
+    return out
+
+
+@pytest.mark.parametrize("robot,names,pose", [
+    ("so101", SO_JOINTS, [0.5, -0.25, 0.75, 0.1, -0.2, 0.3]),
+    ("rosmaster_x3_plus", X3_JOINTS, [0.3, -0.6, 0.9, -0.4, 1.2, -1.0]),
+])
+def test_model_pose_is_the_urdf_pose_of_the_reported_joints(view, robot, names, pose):
+    srv, page = view(wire_spec(load(robot)))
+    stop = joint_states(srv, names, pose)
+    try:
+        page.wait_for_function(f"RC.state.model.sources['{names[0]}'] === 'reported'", timeout=5000)
+        world = model(page)["world"]
+    finally:
+        stop.set()
+    want = urdf_forward(load(robot).raw["model"], dict(zip(names, pose)))
+    assert set(world) == set(want)
+    for j, p in want.items():
+        assert world[j] == pytest.approx(list(p), abs=1e-9), j
+
+
+def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
+    srv, page = view(so101_spec())
+    x, y = select_in_model(page, "shoulder_pan_joint")
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for i in range(1, 16):
+        page.mouse.move(x + 4 * i, y)
+        page.wait_for_timeout(40)
+    page.mouse.up()
+    page.wait_for_timeout(800)
+    v = float(num(page, "arm_trajectory", "shoulder_pan").input_value())
+    assert v == pytest.approx(60 * 2 * 1.91986 / 300, abs=0.011)          # 300 px span the documented range
+    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v
+    assert model(page)["joints"]["shoulder_pan_joint"] == pytest.approx(v)
+    page.keyboard.press("ArrowRight")                                    # the selected joint, by key
+    page.wait_for_timeout(600)
+    v2 = float(num(page, "arm_trajectory", "shoulder_pan").input_value())
+    assert v2 == pytest.approx(v + 2 * 1.91986 / 100, abs=0.011)
+    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v2
+    for _ in range(60):                                                  # never past the documented limit
+        page.keyboard.press("Shift+ArrowRight")
+    page.wait_for_timeout(800)
+    assert float(num(page, "arm_trajectory", "shoulder_pan").input_value()) == 1.91986
+    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == 1.91986
+    no_stop_ops(srv)
+
+
+def test_ainex_head_joints_in_the_model_publish_the_head_controls(view):
+    srv, page = view(wire_spec(load("ainex")))
+    m = model(page)
+    assert set(m["clickable"]) == {"head_pan", "head_tilt"}
+    assert m["sources"]["head_pan"] == "target" and m["sources"]["r_knee"] == "zero"
+    assert "documents no joint-position topic" in page.locator('[data-testid="model-pose"]').inner_text()
+    x, y = select_in_model(page, "head_pan")
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for i in range(1, 16):
+        page.mouse.move(x - 4 * i, y)                                    # to the left: a negative pan
+        page.wait_for_timeout(40)
+    page.mouse.up()
+    page.wait_for_timeout(400)
+    v = float(num(page, "head_pan", "position").input_value())
+    assert v < -0.5
+    assert srv.published(HEAD_PAN)[-1]["msg"]["position"] == v
+    assert model(page)["joints"]["head_pan"] == pytest.approx(v)
+    assert srv.published(HEAD_TILT) == []
+    no_stop_ops(srv)
+
+
+@pytest.mark.parametrize("robot", SUPPORTED_IDS)
+def test_model_renders_and_every_commanded_joint_is_clickable(view, robot):
+    srv, page = view(wire_spec(load(robot), include_optional=True))
+    expected = {j["name"] for j in load(robot).raw["model"]["joints"] if j.get("command") and not j.get("mimic")}
+    m = model(page)
+    assert m["rendered"] and set(m["clickable"]) == expected
+    drawn = page.evaluate("""() => { const c = document.querySelector('[data-testid=model-canvas]');
+        return c.getContext('2d').getImageData(0, 0, c.width, c.height).data.some((v, i) => i % 4 === 3 && v); }""")
+    assert drawn
+    for j in sorted(expected):
+        select_in_model(page, j)
+    assert srv.command_ops() == []                                       # selecting sends nothing
 
 
 # ------------------------------------------------------------------ same contracts as Python

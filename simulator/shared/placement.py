@@ -10,11 +10,13 @@ casting, so they need nothing an engine knows that the other does not:
 * **The floor** is the most common surface height near the lowest one. **The worktop**
   is the surface the reference project's survey ranks first (`worktop_survey.py`); a
   scene with none has no worktop.
-* **A worktop robot** (`worktop_survey.MOUNT`: the arms) is tried at the survey's spots
-  in its order -- the reference project's own choice first -- with the objects it brings
-  (`worktop_objects.py`) staged around it and the scene's loose objects in its working
-  area cleared. Every requirement below but travel still holds at the spot taken, with
-  clearance judged on the boxes of the robot's parts (not one box around it all) and
+* **A worktop robot** (`worktop_survey.MOUNT`: the arms) is tried first where the
+  scene's six worktop objects are staged (`World.stage_scene`), which then stay
+  untouched; if it does not fit there, at the survey's spots in their order -- the
+  reference project's own choice first -- with the six objects (`worktop_objects.py`)
+  staged around it instead and the scene's loose objects in its working area cleared.
+  Every requirement below but travel still holds at the spot taken, with clearance judged
+  on the robot's own collision geometry (not on boxes around it or its parts) and
   non-interpenetration also measured for the parts welded to the world (a fixed base,
   the staged plate), which make no contacts with fixed geometry; a staged object must
   stand on the surface without intersecting anything.
@@ -42,13 +44,12 @@ from __future__ import annotations
 
 import copy
 import math
-import os
-import sys
 from dataclasses import dataclass, field
 
 import mujoco
 import numpy as np
 
+import mjutil
 import robot_model
 import worktop_objects
 import worktop_survey
@@ -122,18 +123,6 @@ class Placement:
 # ---------------------------------------------------------------- geometry helpers
 
 
-def _geom_aabbs(model, data):
-    """World AABB (lo, hi) of every geom; planes get an infinite horizontal extent."""
-    R = data.geom_xmat.reshape(-1, 3, 3)
-    c = data.geom_xpos + np.einsum("nij,nj->ni", R, model.geom_aabb[:, :3])
-    e = np.einsum("nij,nj->ni", np.abs(R), model.geom_aabb[:, 3:])
-    lo, hi = c - e, c + e
-    planes = model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE
-    lo[planes, :2], hi[planes, :2] = -np.inf, np.inf
-    lo[planes, 2] = hi[planes, 2] = data.geom_xpos[planes, 2]
-    return lo, hi
-
-
 def _static(model) -> np.ndarray:
     return model.body_weldid[model.geom_bodyid] == 0
 
@@ -148,7 +137,7 @@ PLANE_PAD = 2.0   # m of an unbounded floor plane mapped around the scene's othe
 def scene_bounds(model, data) -> tuple:
     """The xy region the surface maps cover: every finite collidable geom, and a floor
     plane's own extent (an infinite plane: PLANE_PAD around everything else)."""
-    lo, hi = _geom_aabbs(model, data)
+    lo, hi = mjutil.geom_aabbs(model, data)
     coll = _collidable(model)
     fin = np.isfinite(lo[:, 0]) & coll
     planes = coll & (model.geom_type == mujoco.mjtGeom.mjGEOM_PLANE)
@@ -176,7 +165,7 @@ def surface_map(model, data, include: np.ndarray, bounds, res: float = RES) -> S
     m2 = copy.copy(model)
     m2.geom_group[:] = np.where(include, 0, 5)
     group = np.array([1, 0, 0, 0, 0, 0], np.uint8)
-    lo, hi = _geom_aabbs(model, data)
+    lo, hi = mjutil.geom_aabbs(model, data)
     top = float(np.max(hi[include & np.isfinite(hi[:, 2]), 2])) + 0.2 if include.any() else 3.0
     x0, y0, x1, y1 = bounds
     nx = max(1, int(math.ceil((x1 - x0) / res)))
@@ -211,7 +200,7 @@ class SceneSurfaces:
         self._spots: dict = {}
         self._worktop_map = None
         self.bounds = scene_bounds(model, data)
-        lo, _ = _geom_aabbs(model, data)
+        lo, _ = mjutil.geom_aabbs(model, data)
         coll, static = _collidable(model), _static(model)
         base = float(np.min(lo[coll & static, 2])) if (coll & static).any() else 0.0
         # First pass: find the floor under everything that starts within 1.5 m of the
@@ -285,8 +274,7 @@ class SceneSurfaces:
 
 
 def _rot(yaw):
-    c, s = math.cos(yaw), math.sin(yaw)
-    return np.array([[c, -s], [s, c]])
+    return mjutil.yaw_matrix(yaw)[:2, :2]
 
 
 def _rect_points(lo, hi, step=RES / 2):
@@ -325,7 +313,7 @@ class Context:
         """Everything collidable -- fixed, loose objects and earlier robots -- that
         reaches into the band from the surface up to the robot's height."""
         m = self.model
-        lo, _ = _geom_aabbs(m, self.data)
+        lo, _ = mjutil.geom_aabbs(m, self.data)
         inc = _collidable(m) & (lo[:, 2] <= surface_z + self.height + 0.03)
         return surface_map(m, self.data, inc, self.surfaces.bounds)
 
@@ -351,7 +339,7 @@ class RayCaster:
         """`aabbs`: the world AABBs (lo, hi) of every geom, when already computed;
         `region`: (lo, hi) corners outside which no ray of this caster will look."""
         self.m, self.d = m, d
-        lo, hi = aabbs if aabbs is not None else _geom_aabbs(m, d)
+        lo, hi = aabbs if aabbs is not None else mjutil.geom_aabbs(m, d)
         accept = np.asarray(accept, bool)
         if region is not None:
             accept = accept & np.all(lo <= region[1], axis=1) & np.all(hi >= region[0], axis=1)
@@ -395,18 +383,11 @@ class RayCaster:
         return (best, best_g) if best_g >= 0 else (-1.0, -1)
 
 
-def _first_hit(m, d, origin, direction, accept):
-    """(distance, geom) of the first geom along a ray for which `accept[geom]`, looking
-    through every other geom (geom -1 when there is none)."""
-    return RayCaster(m, d, accept).cast(origin, direction)
-
-
 def _camera_rays(ctx: Context, xyz, yaw, surface_z, support_geoms, skip=frozenset()):
     """Hits within CAMERA_CLEARANCE of each camera lens: [(camera, geom name, dist)].
     `skip`: geoms the rays look through (objects about to be cleared from the spot)."""
     m, d = ctx.model, ctx.data
-    R = np.array([[math.cos(yaw), -math.sin(yaw), 0], [math.sin(yaw), math.cos(yaw), 0],
-                  [0, 0, 1]])
+    R = mjutil.yaw_matrix(yaw)
     group = np.array([1, 1, 1, 1, 1, 1], np.uint8)
     gid = np.zeros(1, np.int32)
     caster = None
@@ -478,7 +459,7 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
         worktop_objects.Staging(staging.frame_pos, staging.yaw, staging.cleared).apply(spec)
     world._contact_bits(rspec, SimpleNamespace(info={}))
     frame = spec.worldbody.add_frame(pos=[float(v) for v in xyz],
-                                     quat=[math.cos(yaw / 2), 0, 0, math.sin(yaw / 2)])
+                                     quat=mjutil.yaw_quat(yaw))
     frame.attach_body(rspec.body(rm.root), inst_prefix, "")
     m = spec.compile()
     d = mujoco.MjData(m)
@@ -506,15 +487,7 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
         a = m.jnt_qposadr[k]
         d.qpos[a:a + 7] = rm.root_qpos(xyz, yaw)
     mujoco.mj_forward(m, d)
-    root =mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, inst_prefix + rm.root)
-    own = set()
-    for b in range(m.nbody):
-        p = b
-        while p > 0:
-            if p == root:
-                own.add(b)
-                break
-            p = m.body_parentid[p]
+    own = mjutil.subtree(m, mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, inst_prefix + rm.root))
     support_names = {mujoco.mj_id2name(world.model, mujoco.mjtObj.mjOBJ_GEOM, g)
                      for g in support_geoms}
     staged = {}
@@ -548,7 +521,7 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
     welded = [g for g in range(m.ngeom) if coll[g] and m.body_weldid[m.geom_bodyid[g]] == 0
               and (m.geom_bodyid[g] in own or m.geom_bodyid[g] in staged)]
     if welded:
-        lo, hi = _geom_aabbs(m, d)
+        lo, hi = mjutil.geom_aabbs(m, d)
         mine = own | set(staged)
         others = np.array([g for g in range(m.ngeom) if coll[g] and m.geom_bodyid[g] not in mine])
         fromto = np.zeros(6)
@@ -586,15 +559,8 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
 
 def _subtree_geoms(m, bodies) -> set:
     """Geoms of these bodies and every body inside them."""
-    bodies = set(bodies)
-    out = set()
-    for g in range(m.ngeom):
-        b = int(m.geom_bodyid[g])
-        while b > 0 and b not in bodies:
-            b = int(m.body_parentid[b])
-        if b > 0:
-            out.add(g)
-    return out
+    inside = set().union(*(mjutil.subtree(m, int(b)) for b in bodies))
+    return {g for g in range(m.ngeom) if int(m.geom_bodyid[g]) in inside}
 
 
 def _box_clearance(m, d, aabbs, coll, skip, boxes, xyz, yaw, surface_z):
@@ -604,8 +570,7 @@ def _box_clearance(m, d, aabbs, coll, skip, boxes, xyz, yaw, surface_z):
     its bottom, report anything they meet within it."""
     if boxes is None or not len(boxes):
         return None
-    R = np.array([[math.cos(yaw), -math.sin(yaw), 0.0], [math.sin(yaw), math.cos(yaw), 0.0],
-                  [0.0, 0.0, 1.0]])
+    R = mjutil.yaw_matrix(yaw)
     corners = np.array([[sx, sy, sz] for sx in (0, 1) for sy in (0, 1) for sz in (0, 1)])
     world = []
     for lo, hi in boxes:
@@ -654,10 +619,9 @@ def _place_on_spots(world, surfaces, ctx, rm, shape, spots, inst_prefix) -> Plac
 def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixed=None,
                        displace=None) -> Placement:
     """A worktop robot at the survey's spots, in order, with its objects staged: the first
-    spot where the robot's base is supported by the top face, nothing but objects about to
-    be cleared is inside the boxes of its parts, its cameras are clear, and the trial
-    compile (robot and staging) finds no interpenetration and every staged object standing
-    on the surface."""
+    spot where the robot's base is supported by the top face, its cameras are clear, and
+    the trial compile (robot and staging) finds no interpenetration of its own collision
+    geometry and every staged object standing on the surface."""
     m, d = ctx.model, ctx.data
     rid = rm.robot.id
     robots = set()
@@ -667,8 +631,6 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
     support_local = _rect_points(fp.min(axis=0), fp.max(axis=0))
     static_rays = RayCaster(surfaces.model, surfaces.data,
                             _collidable(surfaces.model) & _static(surfaces.model))
-    aabbs = _geom_aabbs(m, d)
-    coll = _collidable(m)
     down = np.array([0.0, 0.0, -1.0])
     reasons: dict[str, int] = {}
     first_detail: dict[str, str] = {}
@@ -679,11 +641,12 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
 
     # With the worktop objects part of the scene (`World.stage_scene`), the arm first
     # stands where they are: the one spot, and nothing to stage or clear. `displace` is the
-    # scene's objects when the arm stands elsewhere instead, and they move to it.
-    scene_skip: set = set()
-    if displace is not None:
-        scene_skip = _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
-                                        for b in worktop_objects.BODIES.values()])
+    # scene's objects when the arm stands elsewhere instead, and they move to it. Either
+    # way they are the arm's own worktop objects, never a camera obstacle (spec §2.3).
+    objects: set = set()
+    if world.scene_staging is not None:
+        objects = _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
+                                     for b in worktop_objects.BODIES.values()])
     if fixed is not None:
         spots = [worktop_survey.Spot(
             xy=np.array(fixed.frame_pos[:2], float),
@@ -709,17 +672,12 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
         frame_pos, frame_yaw = worktop_objects.frame_of(xy, z, yaw)
         cleared = ([] if fixed is not None
                    else worktop_objects.plan_clear(m, d, frame_pos, frame_yaw, keep=robots))
-        skip = scene_skip | _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, n)
-                                               for n in cleared])
-        # clearance: nothing (but what is about to be cleared) inside any of the robot's
-        # collision geoms' boxes at its home pose -- the boxes of its parts, not one box
-        # around it all, which for an upright arm under a wall cabinet would take the
-        # space beside the arm for the arm
+        # the cameras look past the six objects and what is about to be cleared; clearance
+        # is judged on the robot's own collision geometry, by the trial compile below
+        # (spec §2.3), not on boxes around its parts, which take the room beside a part
+        skip = objects | _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, n)
+                                            for n in cleared])
         xyz = np.array([xy[0], xy[1], z - shape.lo[2] + 0.0005])
-        blocked = _box_clearance(m, d, aabbs, coll, skip, shape.boxes, xyz, yaw, z)
-        if blocked:
-            fail("interpenetration", f"{blocked} inside the robot at {where}")
-            continue
         hits = _camera_rays(ctx, xyz, yaw, z, support, skip)
         if hits:
             fail("camera clearance", f"camera {hits[0][0]} sees {hits[0][1]} at "
@@ -819,7 +777,7 @@ def _place(world, surfaces, rm, placement, mobile, inst_prefix, spots=None) -> P
         fp = shape.footprint
         support_pts_local = _rect_points(fp.min(axis=0), fp.max(axis=0))
     body_pts_local = _rect_points(foot_lo, foot_hi)
-    body_aabbs = _geom_aabbs(ctx.model, ctx.data) if placement == "worktop" else None
+    body_aabbs = mjutil.geom_aabbs(ctx.model, ctx.data) if placement == "worktop" else None
     body_coll = _collidable(ctx.model) if placement == "worktop" else None
     # a worktop crowded with the scene's objects needs more trial compiles than the floor
     max_trials = MAX_WORKTOP_TRIALS if placement == "worktop" else MAX_TRIALS
@@ -895,9 +853,6 @@ def _place(world, surfaces, rm, placement, mobile, inst_prefix, spots=None) -> P
             pen = _penetrations(world, rm, inst_prefix, xyz, yaw, support, z)
             if pen:
                 fail("interpenetration", "intersects " + pen[0])
-                if os.environ.get("RSIM_DEBUG"):
-                    print(f"trial ({xy[0]:.3f}, {xy[1]:.3f}) yaw {math.degrees(yaw):.0f}: "
-                          f"{pen[0]}", file=sys.stderr)
                 if trials >= max_trials:
                     break
                 continue

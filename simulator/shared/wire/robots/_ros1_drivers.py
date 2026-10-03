@@ -6,7 +6,6 @@ simulation's camera and lidar streams and publishing with the sample's acquisiti
 from __future__ import annotations
 
 import math
-import threading
 import time
 
 import numpy as np
@@ -62,6 +61,28 @@ def encode(rgb: np.ndarray, encoding: str):
     raise ValueError(f"unsupported encoding {encoding}")
 
 
+def tf_message(rows, stamp: float):
+    """A tf2_msgs/TFMessage of the recorded fixed transforms `rows` (parent, child, xyz,
+    rpy), every one stamped `stamp` (s)."""
+    import rospy
+    from geometry_msgs.msg import TransformStamped
+    from tf2_msgs.msg import TFMessage
+
+    msg = TFMessage()
+    for r in rows:
+        ts = TransformStamped()
+        ts.header.stamp = rospy.Time.from_sec(stamp)
+        ts.header.frame_id, ts.child_frame_id = r["parent"], r["child"]
+        x, y, z = r.get("xyz", [0, 0, 0])
+        ts.transform.translation.x, ts.transform.translation.y = x, y
+        ts.transform.translation.z = z
+        qx, qy, qz, qw = common.rpy_to_quat(*r.get("rpy", [0, 0, 0]))
+        ts.transform.rotation.x, ts.transform.rotation.y = qx, qy
+        ts.transform.rotation.z, ts.transform.rotation.w = qz, qw
+        msg.transforms.append(ts)
+    return msg
+
+
 class StaticTransformPublisher:
     """tf's static_transform_publisher (ROS 1): the node's recorded transform on /tf at its
     recorded period, frame ids exactly as given (leading slash kept), each stamp dated one
@@ -77,27 +98,11 @@ class StaticTransformPublisher:
 
     def start(self):
         import rospy
-        from geometry_msgs.msg import TransformStamped
-        from tf2_msgs.msg import TFMessage
 
-        rate = float(self.rows[0]["rate"])
-        period = 1.0 / rate
+        period = 1.0 / float(self.rows[0]["rate"])
 
         def fire(_):
-            msg = TFMessage()
-            stamp = rospy.Time.from_sec(time.time() + period)
-            for r in self.rows:
-                ts = TransformStamped()
-                ts.header.stamp = stamp
-                ts.header.frame_id, ts.child_frame_id = r["parent"], r["child"]
-                x, y, z = r.get("xyz", [0, 0, 0])
-                ts.transform.translation.x, ts.transform.translation.y = x, y
-                ts.transform.translation.z = z
-                qx, qy, qz, qw = common.rpy_to_quat(*r.get("rpy", [0, 0, 0]))
-                ts.transform.rotation.x, ts.transform.rotation.y = qx, qy
-                ts.transform.rotation.z, ts.transform.rotation.w = qz, qw
-                msg.transforms.append(ts)
-            self.node.publish("/tf", msg)
+            self.node.publish("/tf", tf_message(self.rows, time.time() + period))
 
         self._timer = rospy.Timer(rospy.Duration(period), fire)
 
@@ -127,14 +132,6 @@ class UsbCam:
     def _frame(self, h, payload):
         if not self.capturing:
             return
-        if common.env("RSIM_PROFILE"):
-            import time as _t
-            self._n = getattr(self, "_n", 0) + 1
-            if self._n % 60 == 0:
-                now = _t.time()
-                print(f"[usb_cam] 60 frames in {now - getattr(self, '_t0', now):.2f} s, "
-                      f"latency {now - h['stamp']:.3f} s", flush=True)
-                self._t0 = now
         c = self.cam
         rgb = np.frombuffer(payload, np.uint8).reshape(h["height"], h["width"], 3)
         data, step = encode(rgb, c["encoding"])
@@ -161,13 +158,6 @@ class UsbCam:
         return None
 
 
-def _param(node, name, default=None):
-    for p in node.iface.get("parameters") or []:
-        if p.get("name") == name:
-            return p.get("value")
-    return default
-
-
 class YdLidar:
     """ydlidar_ros_driver: /scan and /point_cloud from the simulation's planar ray
     cast at the lidar site, with the driver's recorded geometry and conventions
@@ -179,8 +169,8 @@ class YdLidar:
         self.row = rows[0]
         self.publishes = {self.row["topic"], "/point_cloud"}
         me = node.name
-        self.inf_invalid = bool(_param(node, f"{me}/invalid_range_is_inf", False))
-        ign = str(_param(node, f"{me}/ignore_array", "") or "")
+        self.inf_invalid = bool(common.param(node.iface, f"{me}/invalid_range_is_inf", False))
+        ign = str(common.param(node.iface, f"{me}/ignore_array", "") or "")
         vals = [float(x) for x in ign.replace(" ", "").split(",") if x]
         self.ignore = [(math.radians(vals[i]), math.radians(vals[i + 1]))
                        for i in range(0, len(vals) - 1, 2)]

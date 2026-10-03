@@ -285,10 +285,6 @@ input::placeholder { color: var(--faint); }
 .ctl-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .ctl-head h3 { font-size: 15px; font-weight: 700; }
 .ctl-kind { font-size: 12px; color: var(--muted); margin-top: 2px; }
-.ctl-chip {
-  flex: none; font-size: 11px; font-weight: 650; padding: 2px 8px; border-radius: 999px;
-  border: 1px solid var(--border); color: var(--muted); white-space: nowrap;
-}
 .ctl-wire { font-size: 12px; color: var(--muted); }
 .ctl-wire summary { cursor: pointer; width: fit-content; border-radius: 4px; }
 .ctl-wire summary:hover { color: var(--text); }
@@ -310,6 +306,9 @@ input::placeholder { color: var(--faint); }
 .measured::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--faint); }
 .measured[data-state="live"] { color: var(--ok); }
 .measured[data-state="live"]::before { background: var(--ok); }
+/* a measured read is a snapshot the user asked for: shown in the info colour, never as live */
+.measured[data-state="read"] { color: var(--info); }
+.measured[data-state="read"]::before { background: var(--info); }
 .num-wrap { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); flex: none; }
 .num-wrap:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
 .num-wrap input[type="number"] {
@@ -356,6 +355,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 .choice[aria-checked="true"] { background: var(--ink); color: var(--on-ink); border-color: var(--ink); font-weight: 700; }
 
 .ctl-tools { display: flex; gap: 6px; flex-wrap: wrap; margin-top: -4px; }
+.read-status { font-size: 12px; color: var(--muted); align-self: center; overflow-wrap: anywhere; }
 
 /* send button: service calls and controls without numeric fields send once per click */
 .send {
@@ -402,6 +402,28 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 .pad .pad-lbl { position: absolute; font-size: 11px; color: var(--faint); font-family: var(--mono); pointer-events: none; white-space: nowrap; }
 .pad-readout { margin-top: 8px; font-size: 12.5px; font-family: var(--mono); color: var(--muted); }
 
+/* 3D model: commanded joints are dark dots, ringed green when reported, amber when not */
+.model-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+.model-empty { margin: 0; color: var(--muted); font-size: 13px; }
+#model-view { display: flex; flex-direction: column; gap: 8px; }
+.model-frame { position: relative; height: 260px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+#model-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
+#model-canvas:active { cursor: grabbing; }
+.model-pose { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
+.model-pose[data-state="reported"] { color: var(--ok); }
+.model-joints { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-joints:empty { display: none; }
+.joint-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 9px; border-radius: 999px;
+  border: 1px solid var(--border-strong); background: var(--surface); font-family: var(--mono); font-size: 11.5px; cursor: pointer;
+}
+.joint-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
+.joint-chip[data-src="reported"]::before { background: var(--ok); }
+.joint-chip[aria-pressed="true"] { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
+.joint-chip:disabled { cursor: not-allowed; opacity: .6; }
+.model-sel { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
+.model-sel:empty { display: none; }
+
 /* ------------------------------------------------------------------ small screens */
 @media (max-width: 720px) {
   :root { --topbar-h: 104px; }
@@ -420,7 +442,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   .target-form .btn { flex: 1 1 auto; }
   #controls { grid-template-columns: minmax(0, 1fr); }
   .num-wrap input[type="number"] { width: 76px; }
-  .cameras-panel, .target-card, .live-card, .control, .pad-card { padding: 12px; }
+  .cameras-panel, .target-card, .live-card, .control, .pad-card, .model-card { padding: 12px; }
+  .model-frame { height: 240px; }
   .target-row .section-title { display: none; }
   .measured .m-label { display: none; }
 }
@@ -513,12 +536,27 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
         </div>
         <p class="send-note" data-testid="send-note">
           <strong>Changes are sent to the robot immediately, and nothing is stopped automatically.</strong>
-          Sliders and the head pad send while you drag, a typed number when you commit it (Enter or
-          leaving the field), and service and action-group buttons once per click. Leaving, reloading
+          Sliders, the head pad and the model's joints send while you drag, a typed number when you
+          commit it (Enter or leaving the field), and service and action-group buttons once per click.
+          ‘Read measured’ asks the robot for its measured positions once per click. Leaving, reloading
           or closing this page and a lost connection send nothing: a running goal keeps running.
           Base driving and walking are not offered here (use teleop.sh).
         </p>
       </div>
+
+      <section class="model-card" data-testid="model" aria-labelledby="model-h">
+        <div class="ctl-head"><h3 id="model-h">Model</h3></div>
+        <p id="model-empty" class="model-empty">No validated target: no model is shown.</p>
+        <div id="model-view" hidden>
+          <div class="model-frame">
+            <canvas id="model-canvas" data-testid="model-canvas" tabindex="0"
+                    aria-label="3D model of the robot. Drag empty space to turn the view; drag a joint, or select it and use the arrow keys, to change the control that commands it."></canvas>
+          </div>
+          <div id="model-pose" class="model-pose" data-testid="model-pose" role="status"></div>
+          <div id="model-joints" class="model-joints" role="group" aria-label="Joints the controls command"></div>
+          <div id="model-sel" class="model-sel" data-testid="model-sel" aria-live="polite"></div>
+        </div>
+      </section>
 
       <div id="controls" data-testid="controls"></div>
     </section>

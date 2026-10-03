@@ -141,6 +141,13 @@ after 3 s under gravity; no contacts at `home`.
 * Commands and feedback are in rad in the boot's joint frames (0 = the per-joint `offset` tick
   of the ros2_control xacro), which are the model's joint frames.
 
+## Estimates (not manufacturer data)
+
+* **Servo acceleration** (added 2026-10-03): the hardware plugin writes acceleration register
+  50 with every goal (`ros2.yml` → `motions[arm].command.servo_profile`), but no pinned source
+  states the register's unit. Estimate: Feetech's STS unit of 100 ticks/s² per count, so 50 =
+  **5000 ticks/s² = 7.67 rad/s²** (4096 ticks/rev), with the recorded 2400 ticks/s speed.
+
 ## Wrist camera
 
 * **Wire:** `usb_cam` 0.8.1 started as the pinned README documents first,

@@ -1,8 +1,10 @@
 """The one placement function (spec §2.3 Placement, §5 Placement), on small scenes built
-for each case, with real robot models. (A worktop is a top-level body: the reference
+for each case, with real robot models -- and one synthetic robot whose turning circle
+reaches far beyond its straight runs. (A worktop is a top-level body: the reference
 survey looks at bodies, not at loose geoms of the world body.)"""
 
 import math
+import types
 
 import mujoco
 import numpy as np
@@ -81,6 +83,89 @@ def test_arm_on_the_worktop_at_the_survey_spot_and_repeatable():
     assert sorted(a.staging.poses()) == sorted(["apple", "plate", "bowl", "mug", "banana", "lemon"])
 
 
+def robot_frame_to_world(spot, shape, p):
+    """A point of the robot's own frame, with the robot standing at a survey spot."""
+    xyz = np.array([spot.xy[0], spot.xy[1], spot.z - shape.lo[2] + 0.0005])
+    c, s_ = math.cos(spot.yaw), math.sin(spot.yaw)
+    return xyz + np.array([[c, -s_, 0.0], [s_, c, 0.0], [0.0, 0.0, 1.0]]) @ np.asarray(p, float)
+
+
+def peg_distance(rm, p):
+    """Signed distance from a 4 mm sphere at robot-frame point `p` to the nearest collision
+    geom of the robot alone at home, and whether `p` is inside one of its part boxes."""
+    spec = rm.spec.copy()
+    spec.worldbody.add_body(name="peg", pos=list(p)).add_geom(
+        name="peg", type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.004, 0, 0])
+    m = spec.compile()
+    d = mujoco.MjData(m)
+    for name, q in rm.home.items():
+        j = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if j >= 0:
+            d.qpos[m.jnt_qposadr[j]] = q
+    mujoco.mj_forward(m, d)
+    peg = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_GEOM, "peg")
+    dist = min(mujoco.mj_geomDistance(m, d, peg, g, 0.5, np.zeros(6)) for g in range(m.ngeom)
+               if g != peg and (m.geom_contype[g] or m.geom_conaffinity[g]))
+    boxes = robot_model.shape(rm).boxes
+    return dist, any(np.all(p >= lo) and np.all(p <= hi) for lo, hi in boxes)
+
+
+@pytest.mark.parametrize("peg,taken", [((0.102, 0.021, 0.055), True), (None, False)],
+                         ids=["beside-a-part", "inside-a-part"])
+def test_worktop_clearance_is_judged_on_the_collision_geometry(peg, taken):
+    """Spec §2.3: a worktop robot's clearance is judged on its own collision geometry, not
+    on its bounding box: a fixed 4 mm peg inside the box of one of its parts but clear of
+    every collision geom leaves the survey's first spot to it; one inside a part does not."""
+    rm = load("so101")
+    if peg is None:   # a point inside the shoulder: its centre of mass
+        m = rm.spec.copy().compile()
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "shoulder_link")
+        d = mujoco.MjData(m)
+        mujoco.mj_forward(m, d)
+        peg = d.xipos[b]
+    dist, in_box = peg_distance(rm, peg)
+    assert in_box
+    assert (dist > 0) if taken else (dist < -0.001), dist
+    _, s0 = make_world(scenes.TEST_SCENE_XML)
+    first = s0.spots("so101")[0]
+    at = robot_frame_to_world(first, robot_model.shape(rm), peg)
+    w, s = make_world(scenes.TEST_SCENE_XML.replace(
+        "</worldbody>", f'<geom name="peg" type="sphere" size="0.004" '
+                        f'pos="{at[0]} {at[1]} {at[2]}"/></worldbody>'))
+    # that spot alone (the survey itself would rank the spots differently with the peg)
+    if taken:
+        pl = placement.place(w, s, rm, "worktop", False, "so101/", spots=[first])
+        assert np.allclose(pl.xyz[:2], first.xy) and pl.yaw == first.yaw
+    else:
+        with pytest.raises(placement.Refused, match="peg"):
+            placement.place(w, s, rm, "worktop", False, "so101/", spots=[first])
+
+
+def test_the_scene_objects_are_no_camera_obstacle_for_an_arm_among_them():
+    """Spec §2.3 camera clearance excludes the robot's own worktop objects: an arm that
+    fits where the scene's objects are stands there, even with one of them (moved by
+    physics) right in front of its camera."""
+    w, s = make_world(scenes.TEST_SCENE_XML)
+    rm = load("so101")
+    pl = placement.place(w, s, rm, "worktop", False, "so101/")
+    w.stage_scene(pl.staging)
+    shape = robot_model.shape(rm)
+    _name, cpos, cmat, _fovy, _res = shape.cameras[0]
+    spot = types.SimpleNamespace(xy=pl.xyz[:2], z=pl.surface_z, yaw=pl.yaw)
+    target = robot_frame_to_world(spot, shape, cpos + 0.3 * -cmat[:, 2])
+    mug = pl.staging.poses()["mug"][0]
+    j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, "task_mug_joint")
+    a = w.model.jnt_qposadr[j]
+    w.data.qpos[a:a + 3] = [target[0], target[1], mug[2]]       # standing on the top
+    mujoco.mj_forward(w.model, w.data)
+    ctx = placement.Context(w, s, rm, shape, False)
+    hits = placement._camera_rays(ctx, pl.xyz, pl.yaw, pl.surface_z, set(pl.support_geoms))
+    assert any(h[1].startswith("task_mug") for h in hits), hits    # the camera does see it
+    again = placement.place(w, s, rm, "worktop", False, "so101/")
+    assert again.at_scene_objects and again.staging is None
+    assert np.allclose(again.xyz[:2], w.scene_staging.frame_pos[:2])
+
+
 def test_occupied_worktop_is_refused():
     w, s = make_world(scene_xml(WORKTOP))
     add(w, "so101", place(w, s, "so101", "worktop"))
@@ -120,7 +205,7 @@ def test_arm_refused_when_every_spot_intersects_the_scene():
     # would stand the arm on): no arm fits under it
     slab = '<geom name="slab" type="box" size="0.7 0.5 0.01" pos="1.5 0 0.91"/>'
     w, s = make_world(scene_xml(WORKTOP + slab))
-    with pytest.raises(placement.Refused, match="no clear spot on the worktop for so101.*slab"):
+    with pytest.raises(placement.Refused, match="placement refused: .*so101.*interpenetration: .*slab"):
         place(w, s, "so101", "worktop")
     assert w.robots == {}
 
@@ -150,6 +235,8 @@ def test_floor_placement_supports_travel_and_faces_open_floor():
     w, s = make_world(scene_xml(WORKTOP))
     pl = place(w, s, "myagv", "floor")
     assert abs(pl.surface_z) < 1e-6
+    again = place(w, s, "myagv", "floor")      # repeatable for identical inputs
+    assert np.array_equal(again.xyz, pl.xyz) and again.yaw == pl.yaw
     fmap = placement.Context(w, s, load("myagv"), robot_model.shape(load("myagv")), True).full_map(0.0)
     runs = {k: placement._open_run(fmap, s.static_map, 0.0, pl.xyz[:2], k * math.pi / 8)
             for k in range(16)}
@@ -174,6 +261,55 @@ def test_floor_without_room_to_travel_is_refused():
     floor = '<geom name="floor" type="box" size="0.4 0.4 0.05" pos="0 0 -0.05"/>'
     w, s = make_world(scene_xml(walls, floor=floor))
     with pytest.raises(placement.Refused, match="travel|support"):
+        place(w, s, "myagv", "floor")
+    assert w.robots == {}
+
+
+def platform(hx, hy):
+    """A floor of hx x hy half-extents and nothing around it: beyond it is unsupported."""
+    return f'<geom name="floor" type="box" size="{hx} {hy} 0.05" pos="0 0 -0.05"/>'
+
+
+def test_floor_refused_without_side_travel():
+    # a strip 0.66 m wide: the myAGV fits, drives along it and turns on it, but has not
+    # 0.25 m to either side
+    w, s = make_world(scene_xml(floor=platform(2.0, 0.33)))
+    with pytest.raises(placement.Refused, match="travel"):
+        place(w, s, "myagv", "floor")
+    assert w.robots == {}
+
+
+def test_floor_refused_without_back_travel():
+    # 1.0 x 0.95 m: room for the footprint, 0.5 m forward and 0.25 m to each side, not for
+    # 0.25 m back as well, whichever way it faces
+    w, s = make_world(scene_xml(floor=platform(0.5, 0.475)))
+    with pytest.raises(placement.Refused, match="travel"):
+        place(w, s, "myagv", "floor")
+    assert w.robots == {}
+
+
+STICK = """<mujoco><worldbody><body name="base"><freejoint name="root"/>
+  <geom type="box" size="0.3 0.05 0.03" pos="0.3 0 0.03" mass="1"/></body></worldbody></mujoco>"""
+
+
+def test_floor_refused_without_room_to_turn_in_place():
+    # a 0.6 m robot turning about one end sweeps a 1.2 m circle; the strip, 0.9 m wide, has
+    # room for its forward, back and side runs but not for that circle
+    stick = robot_model.RobotModel(robot=types.SimpleNamespace(id="stick"),
+                                   spec=mujoco.MjSpec.from_string(STICK), root="base",
+                                   floating=True)
+    w, s = make_world(scene_xml(floor=platform(3.0, 0.45)))
+    with pytest.raises(placement.Refused, match="travel"):
+        placement.place(w, s, stick, "floor", True, "stick/")
+    assert w.robots == {}
+
+
+def test_floor_refused_without_support():
+    # a grating of 8 cm bars and 8 cm gaps: no footprint is supported anywhere
+    bars = "".join(f'<geom type="box" size="0.04 1.5 0.05" pos="{-1.5 + 0.16 * k:.2f} 0 -0.05"/>'
+                   for k in range(20))
+    w, s = make_world(scene_xml(floor=bars))
+    with pytest.raises(placement.Refused, match="support"):
         place(w, s, "myagv", "floor")
     assert w.robots == {}
 

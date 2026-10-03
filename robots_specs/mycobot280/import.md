@@ -57,8 +57,8 @@ load check) performs steps 2–5 and reproduces `model.xml` byte for byte.
    power-on pose).
 6. `<contact><exclude>` pairs: every pair of gripper bodies (their convex hulls overlap by
    construction), each arm body with its grandchild, and `joint1`/`joint2`, `g_base`/`joint2`
-   (`g_base` and `joint1` are welded to the world when the arm stands alone, so MuJoCo's
-   parent filter does not apply to them).
+   (`g_base` and `joint1` are welded to the world, so MuJoCo's parent filter does not apply
+   to them).
 
 The model was checked with MuJoCo 3.14.0: it loads, has no contacts at `home`, and each
 actuator reaches its target within 0.0075 rad in 3 s of simulation (timestep 0.002 s) for
@@ -79,7 +79,7 @@ Joint names, axes, zero offsets and arm/gripper limits are identical in the mode
   as an open chain with mimics and the model keeps that open chain (fingers stay parallel through
   the mimic relations, not a closed loop).
 
-## Estimates (not manufacturer figures)
+## Estimates (not manufacturer data)
 
 * **Arm link inertials** (`joint2` … `joint6_flange`): taken from the official myCobot 280
   JetsonNano MJCF, whose link frames equal the Pi URDF's (checked: same joint-origin rotations),
@@ -90,14 +90,18 @@ Joint names, axes, zero offsets and arm/gripper limits are identical in the mode
   0.010 / 0.004 / 0.005 kg (links 3 / 2 / 1). Inertia from each link's collision hull.
 * **Conflict:** the model's arm mass is 1.28 kg (+0.11 kg gripper), while the manufacturer gives
   860 g for the 280 Pi; the JetsonNano MJCF's moving links alone already weigh 0.93 kg. No
-  per-link Pi figure resolves this; the base links only matter when the arm rides the myAGV.
+  per-link Pi figure resolves this; the base links are welded to the world, so their masses do
+  not affect the simulated arm.
 * **Actuators**: servo stiffness `kp` 80 N·m/rad (arm) and 5 N·m/rad (gripper), critically
   damped; torque limits ±2 (J1), ±3 (J2, J3), ±1.5 (J4), ±1 (J5, J6) and ±0.3 N·m (gripper).
   The manufacturer publishes no servo torque; the limits hold the 250 g payload at the 280 mm
   reach (≈1.3 N·m at J2) with margin. Joint armature 0.005, damping 0.05, friction loss 0.01.
-* **Joint speed**: the boot commands `send_angles(…, 25)` (speed 25 of 1..100) and gripper speed
-  80; the manufacturer does not document the deg/s these map to, so the model has no velocity
-  limit — the simulator must pace motions, and no joint speed figure is claimed here.
+* **Joint speed** (amended 2026-10-03): the boot commands `send_angles(…, 25)` (speed 25 of
+  1..100) and `set_gripper_value(…, 80)`; the manufacturer does not document the deg/s these
+  map to, and the model has no velocity limit. Estimate used to pace commanded motions: speed
+  25 = **40 deg/s** per arm joint (25 % of an assumed top joint speed of about 160 deg/s for
+  the 280 series, a figure in no pinned source), and the gripper crosses its whole
+  `gripper_controller` range (0.89 rad) in **about 0.5 s** at speed 80.
 * **Contact**: friction 0.8 (arm), 1.0 with condim 4 (gripper fingers); estimates.
 
 ## Manufacturer figures preserved

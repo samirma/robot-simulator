@@ -20,9 +20,6 @@ also covers the editable finders pointing at ``/a/old/sim/upstream``.
 
 ``--check`` exits 1 if the venv has moved and 0 if not, changing nothing. Stdlib only:
 it has to run when the venv it repairs cannot.
-
-There is a copy of this file in ``robot_console/tools/`` -- the console must install and
-run with no simulator checkout, so it cannot import this one.
 """
 
 from __future__ import annotations  # macOS's /usr/bin/python3 is 3.9

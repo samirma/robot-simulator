@@ -1,69 +1,76 @@
 #!/usr/bin/env python3
-"""Writes the AiNex action groups the simulator provides, as the vendor's `.d6a` files.
+"""Writes the AiNex's estimated action groups as the vendor's `.d6a` files.
 
 The boot plays `/home/ubuntu/software/ainex_controller/ActionGroups/<name>.d6a` (an SQLite
 table `ActionGroup`: index, move time in ms, then the 24 servo pulses) on /app/set_action.
-Those files ship on the robot's image and are in no pinned source, so the simulator
-provides its own groups -- an ESTIMATE, documented in simulator/README.md, not the
-vendor's data. Each frame is given as joint offsets (rad) from the boot's init pose and
-converted to pulses with the controller's own servo map, so the groups stay within the
-servo ranges and keep both feet planted (arm and head motions only):
+Those files ship on the robot's image and are in no pinned source, so no vendor group can
+be played (the vendor's names answer as the controller answers an unknown name). The
+groups served are the robot specification's ESTIMATES, `robots_specs/ainex/action_groups.yml`
+(named by `motions[action_group].command.estimated_groups` of ros.yml; format in
+robots_specs/SCHEMA.md, "Estimated action groups"): each frame is offsets (rad) from the
+recorded init pose, the `/ainex_controller/init_pose` parameter, a joint it does not name
+staying at its init angle, converted to pulses with the controller's own servo map
+(`servo_controller.yaml`): clamp(0, 1000, round(init + angle * sign * 1000 / 240 deg)).
 
-* `wave`         right arm raised and waved three times, then lowered
-* `raise_hands`  both arms raised overhead and lowered
-* `nod`          head tilts down and up twice
-
-    ainex_actions.py <servo_controller.yaml> <init_pose.yaml> <output dir>
+    ainex_actions.py <servo_controller.yaml> <output dir>
 """
 
-import math
 import os
 import sqlite3
 import sys
+from pathlib import Path
 
 import yaml
 
-TICKS_PER_RAD = 180 / 3.1415926 / 240 * 1000
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # wire/
 
-GROUPS = {
-    "wave": [
-        (600, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_yaw": 0.0}),
-        (400, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_pitch": 0.6}),
-        (400, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_pitch": -0.2}),
-        (400, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_pitch": 0.6}),
-        (400, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_pitch": -0.2}),
-        (400, {"r_sho_pitch": -1.2, "r_sho_roll": -1.3, "r_el_pitch": 0.6}),
-        (600, {}),
-    ],
-    "raise_hands": [
-        (800, {"r_sho_roll": -1.4, "l_sho_roll": 1.4}),
-        (800, {"r_sho_roll": -2.4, "l_sho_roll": 2.4}),
-        (800, {"r_sho_roll": -1.4, "l_sho_roll": 1.4}),
-        (800, {}),
-    ],
-    "nod": [
-        (400, {"head_tilt": -0.4}),
-        (400, {"head_tilt": 0.1}),
-        (400, {"head_tilt": -0.4}),
-        (400, {}),
-    ],
-}
+import common  # noqa: E402
+
+TICKS_PER_RAD = 180 / 3.1415926 / 240 * 1000     # ainex_controller's ENCODER_TICKS_PER_RADIAN
 
 
-def main(ctl_file, pose_file, out_dir):
-    with open(ctl_file) as fh:
-        ctl = yaml.safe_load(fh)["controllers"]
-    with open(pose_file) as fh:
-        pose = yaml.safe_load(fh)["init_pose"]
-    servo = {}
-    for c in ctl.values():
+def groups(robot=None) -> dict:
+    """{name: [(time ms, {joint: offset rad})]} of the record's estimated action groups."""
+    robot = robot or common.owner()
+    row = common.motion_row(common.interface(robot), "action_group")
+    with open(robot.folder_path / row["command"]["estimated_groups"], encoding="utf-8") as fh:
+        doc = yaml.safe_load(fh)
+    return {name: [(int(f["time_ms"]), dict(f.get("offsets_rad") or {})) for f in g["frames"]]
+            for name, g in doc["groups"].items()}
+
+
+def init_pose(robot=None) -> dict:
+    """The recorded init pose (rad by joint), the `/ainex_controller/init_pose` parameter."""
+    return common.param(common.interface(robot or common.owner()), "/ainex_controller/init_pose")
+
+
+def servo_map(controllers: dict) -> dict:
+    """joint -> (servo id, init pulse, pulses per rad with the servo's direction)."""
+    out = {}
+    for c in controllers.values():
         if c.get("type") != "JointPositionController" or "servo" not in c:
             continue
         s = c["servo"]
         sign = -1.0 if s["min"] > s["max"] else 1.0
-        servo[c["joint_name"]] = (int(s["id"]), float(s["init"]), sign * TICKS_PER_RAD)
+        out[c["joint_name"]] = (int(s["id"]), float(s["init"]), sign * TICKS_PER_RAD)
+    return out
+
+
+def frame_pulses(servo: dict, pose: dict, offsets: dict) -> list:
+    """The 24 servo pulses of one frame."""
+    pulses = [500] * 24
+    for joint, (sid, init, tpr) in servo.items():
+        angle = pose.get(joint, 0.0) + offsets.get(joint, 0.0)
+        pulses[sid - 1] = max(0, min(1000, int(round(init + angle * tpr))))
+    return pulses
+
+
+def main(ctl_file, out_dir):
+    with open(ctl_file) as fh:
+        servo = servo_map(yaml.safe_load(fh)["controllers"])
+    pose = init_pose()
     os.makedirs(out_dir, exist_ok=True)
-    for name, frames in GROUPS.items():
+    for name, frames in groups().items():
         path = os.path.join(out_dir, name + ".d6a")
         if os.path.exists(path):
             os.remove(path)
@@ -71,15 +78,11 @@ def main(ctl_file, pose_file, out_dir):
         cols = ", ".join(f"Servo{i} INTEGER" for i in range(1, 25))
         db.execute(f"CREATE TABLE ActionGroup ([Index] INTEGER PRIMARY KEY, Time INTEGER, {cols})")
         for k, (ms, offs) in enumerate(frames, start=1):
-            pulses = [500] * 24
-            for joint, (sid, init, tpr) in servo.items():
-                angle = pose.get(joint, 0.0) + offs.get(joint, 0.0)
-                pulses[sid - 1] = max(0, min(1000, int(round(init + angle * tpr))))
             db.execute(f"INSERT INTO ActionGroup VALUES ({k}, {ms}, " +
-                       ", ".join(str(p) for p in pulses) + ")")
+                       ", ".join(str(p) for p in frame_pulses(servo, pose, offs)) + ")")
         db.commit()
         db.close()
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:4])
+    main(*sys.argv[1:3])

@@ -4,9 +4,10 @@
 
 The page (``web/view.html`` with its inline styles + ``web/console.js``; no external assets, so
 it works on robot networks without internet access) is static: it is handed the websocket URL,
-the optional robot/namespace selection and the packaged profiles (``/profiles.json``, the
-same profiles teleop and fleet use) and does discovery, validation, cameras and controls in
-the browser. The server binds to 127.0.0.1 and serves only those files.
+the optional robot/namespace selection and the packaged profiles (``/profiles.json``: the
+same profiles teleop and fleet use, with the controls, measured reads and 3D ``model`` the
+page needs) and does discovery, validation, cameras, the model and controls in the browser. The
+server binds to 127.0.0.1 and serves only those files.
 """
 
 from __future__ import annotations
@@ -20,9 +21,7 @@ import webbrowser
 from importlib import resources
 from typing import List, Optional
 
-from robot_console.profiles import (
-    SUPPORTED_IDS, ProfileError, all_profiles_json, check_namespace_allowed, select_id,
-)
+from robot_console.profiles import SUPPORTED_IDS, ProfileError, all_profiles_json, check_namespace_allowed, select_id
 from robot_console.rosbridge import DEFAULT_URL, check_url
 
 STATIC = {"/": ("view.html", "text/html; charset=utf-8"),

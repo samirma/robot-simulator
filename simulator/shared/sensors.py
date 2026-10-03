@@ -15,14 +15,14 @@ import io
 import math
 import queue
 import threading
-import time
 from dataclasses import dataclass
 
 import mujoco
 import numpy as np
 
+import mjutil
+
 MAX_GEOM = 20000
-PROFILE = bool(__import__("os").environ.get("RSIM_PROFILE"))
 # Largest near clipping plane of a model (robot) camera, metres. MuJoCo puts the near plane
 # at vis.map.znear x stat.extent, and the extent of a composed household world is tens of
 # metres, which put it several centimetres in front of the lens and cut away whatever is
@@ -97,7 +97,6 @@ class RenderJob:
     height: int
     rgb: bool = True
     depth: bool = False
-    geomgroup: tuple | None = None
     callback: object = None      # fn(result dict | Exception)
 
 
@@ -161,7 +160,6 @@ class RenderThread(threading.Thread):
                 pass
 
     def render(self, job: RenderJob) -> dict:
-        t0 = time.perf_counter()
         # The world's configuration now (acquisition time), rebuilt on this thread's own
         # MjData: the physics thread only copies a few arrays.
         snap = self.world.snapshot()
@@ -174,7 +172,7 @@ class RenderThread(threading.Thread):
         model, data = self.mirror.update(snap)
         stamp, simtime = snap["stamp"], snap["time"]
         cam, fovy = camera_from_view(job.camera, model)
-        gg = job.geomgroup or self.world.scene.geomgroup
+        gg = self.world.scene.geomgroup
         for i in range(6):
             self.opt.geomgroup[i] = int(gg[i]) if i < len(gg) else 0
         mujoco.mjv_updateScene(model, data, self.opt, None, cam,
@@ -186,17 +184,11 @@ class RenderThread(threading.Thread):
                 c = self.scn.camera[eye]
                 c.frustum_top = c.frustum_near * math.tan(math.radians(float(fovy)) / 2)
                 c.frustum_bottom = -c.frustum_top
-        t1 = time.perf_counter()
         rect = mujoco.MjrRect(0, 0, job.width, job.height)
         mujoco.mjr_render(rect, self.scn, self.con)
-        t2 = time.perf_counter()
         rgb = np.empty((job.height, job.width, 3), np.uint8) if job.rgb else None
         depth = np.empty((job.height, job.width), np.float32) if job.depth else None
         mujoco.mjr_readPixels(rgb, depth, rect, self.con)
-        if PROFILE:
-            print(f"render {self.name}: update {1000 * (t1 - t0):.1f} ms, render "
-                  f"{1000 * (t2 - t1):.1f} ms, read {1000 * (time.perf_counter() - t2):.1f} ms",
-                  flush=True)
         out = {"stamp": stamp, "sim_time": simtime}
         if rgb is not None:
             out["rgb"] = np.flipud(rgb)
@@ -250,26 +242,14 @@ def png_bytes(rgb: np.ndarray) -> bytes:
 # ---------------------------------------------------------------- readings
 
 
-def _quat_conj_rot(q, v):
-    """Rotate v by the inverse of unit quaternion q (w, x, y, z)."""
-    res = np.zeros(3)
-    qc = np.array([q[0], -q[1], -q[2], -q[3]])
-    mujoco.mju_rotVecQuat(res, np.asarray(v, float), qc)
-    return res
-
-
-def joint_readings(world, inst, prefix_extra: str = "") -> dict:
+def joint_readings(world, inst) -> dict:
     """{joint: [position, velocity, effort]} of the robot's hinge and slide joints, by
-    their names in the robot's model (a composite arm's without its `arm/` prefix
-    when `prefix_extra` is `arm/`). Effort is the actuator force at the joint."""
+    their names in the robot's model. Effort is the actuator force at the joint."""
     m, d = world.model, world.data
     out = {}
-    for name, j in world.robot_elements(inst, mujoco.mjtObj.mjOBJ_JOINT, prefix_extra):
+    for name, j in world.robot_elements(inst, mujoco.mjtObj.mjOBJ_JOINT):
         if m.jnt_type[j] not in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
             continue
-        if prefix_extra == "" and "/" in name:
-            # another component's joint (a composite's arm/...), unless asked for
-            pass
         qa, va = m.jnt_qposadr[j], m.jnt_dofadr[j]
         out[name] = [float(d.qpos[qa]), float(d.qvel[va]), float(d.qfrc_actuator[va])]
     return out
@@ -323,21 +303,6 @@ def site_readings(world, inst, names, imu: bool = False) -> dict:
     return out
 
 
-def subtree(m, root_name: str) -> set:
-    root = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, root_name)
-    own = set()
-    if root < 0:
-        return own
-    for b in range(m.nbody):
-        p = b
-        while p > 0:
-            if p == root:
-                own.add(b)
-                break
-            p = m.body_parentid[p]
-    return own
-
-
 def lidar_scan(m, d, inst, site: str, angle_min: float, angle_max: float, samples: int,
                range_min: float, range_max: float, own=None) -> np.ndarray:
     """Planar ranges from the lidar site's frame (x forward, z up), counter-clockwise
@@ -357,7 +322,8 @@ def lidar_scan(m, d, inst, site: str, angle_min: float, angle_max: float, sample
     # Exclude this robot's own geometry: rays start at its root body's tree. mj_multiRay
     # excludes one body; own-body hits are filtered by walking past them.
     if own is None:
-        own = subtree(m, inst.prefix + inst.rm.root)
+        own = mjutil.subtree(m, mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY,
+                                                  inst.prefix + inst.rm.root))
     group = np.array([1, 1, 1, 1, 1, 1], np.uint8)
     try:  # MuJoCo >= 3.5 adds a `normal` output before nray
         mujoco.mj_multiRay(m, d, origin, vec.flatten(), group, 1, -1, geomid, dist, None,

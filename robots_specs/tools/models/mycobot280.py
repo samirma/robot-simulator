@@ -146,7 +146,6 @@ def visual_parts(filename):
 
 
 world = ET.SubElement(mj, "worldbody")
-contact_excl = []
 
 
 def emit(link, body):

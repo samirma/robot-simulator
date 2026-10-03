@@ -1,7 +1,6 @@
 id: mycobot280
 name: "Elephant Robotics myCobot 280 Pi + myCobot Adaptive Gripper (mycobot_ros2 humble, slider control)"
 dialect: ros2
-kind: arm
 teleop: none
 sources:
   mycobot_ros2:
@@ -29,7 +28,7 @@ boot_note: >-
   The hardware node's executable resolves through the entry point
   `slider_control_adaptive_gripper = mycobot_280.slider_control_adaptive_gripper:main`
   (mycobot_ros2:mycobot_280/mycobot_280pi/setup.py#L63), i.e. the module
-  mycobot_280/mycobot_280/slider_control_adaptive_gripper.py of the sibling mycobot_280 package (built in the same
+  mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py of the sibling mycobot_280 package (built in the same
   workspace); it differs from the Pi copy only in parameter defaults (#L40-L41), which the launch overrides. The node
   (rclpy name control_slider, renamed slider_control_adaptive_gripper by the launch) opens pymycobot MyCobot280 on the
   serial port, sets fresh mode (#L45-L47), subscribes to joint_states (#L26-L31) and for every message sends
@@ -78,7 +77,7 @@ topics:
     direction: in
     rate_hz: null
     optional: false
-    source: "mycobot_ros2:mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L26-L31"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L26-L31"
     note: >-
       The command input of the boot: the hardware node subscribes (queue 10) and executes every message
       (#L54-L66). Index-based, names are ignored: position[0..5] = the 6 arm joints in rad (converted to degrees,
@@ -89,7 +88,7 @@ topics:
       rate is not in the pinned sources). No real-hardware feedback is published by this boot; real measured
       /joint_states (names joint2_to_joint1 .. joint6output_to_joint6, rad) only come from the optional listen_real
       (30 Hz, mycobot_ros2:mycobot_280/mycobot_280pi/mycobot_280pi/listen_real.py#L88-L135), follow_display (30 Hz)
-      or listen_real_service (50 Hz timer, mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L65-L99) nodes
+      or listen_real_service (50 Hz timer, mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L65-L99) nodes
       of other launches, which would ALSO drive this node if run together.
   # ---- rviz2 tool publishers (boot #L71-L78, config mycobot_pi.rviz) ----------------------
   - name: /initialpose
@@ -126,39 +125,39 @@ services:
   - name: /set_angles
     type: mycobot_interfaces/srv/SetAngles
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L67-L68"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L67-L68"
     note: "Request joint_1..joint_6 (float32, degrees) + speed (int8) (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/SetAngles.srv#L1-L9); calls send_angles(angles, speed) (#L104-L129). Not in the boot: started by teleop_keyboard.launch.py (mycobot_ros2:mycobot_280/mycobot_280pi/launch/teleop_keyboard.launch.py#L54-L64)."
   - name: /get_angles
     type: mycobot_interfaces/srv/GetAngles
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L73-L74"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L73-L74"
     note: "Empty request; response joint_1..joint_6 float32 degrees (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L1-L7), from get_angles() (#L166-L184)."
   - name: /set_coords
     type: mycobot_interfaces/srv/SetCoords
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L69-L70"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L69-L70"
     note: "Request x,y,z,rx,ry,rz (float32, mm/deg) + speed + model (int8) (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/SetCoords.srv#L1-L10); send_coords (#L131-L143). Not used as a console control (Cartesian reachability not bounded by a documented single range)."
   - name: /get_coords
     type: mycobot_interfaces/srv/GetCoords
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L71-L72"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L71-L72"
     note: "Empty request; response x,y,z,rx,ry,rz float32 (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetCoords.srv#L1-L7)."
   - name: /set_gripper
     type: mycobot_interfaces/srv/GripperStatus
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L75-L76"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L75-L76"
     note: "Request status (bool) (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GripperStatus.srv#L1-L3): true -> set_gripper_state(0, 80, 1) open, false -> set_gripper_state(1, 80, 1) close (#L186-L201); type 1 = adaptive gripper, flag 0 open / 1 close per https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/2_API.html#101-set_gripper_stateflag-speed-_type_1none-is_torquenone"
   - name: /set_pump_status
     type: mycobot_interfaces/srv/PumpStatus
     optional: true
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L77-L78"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L77-L78"
     note: "Suction-pump IO (status, pin1, pin2) (mycobot_ros2:mycobot_280/mycobot_interfaces/srv/PumpStatus.srv#L1-L5); not applicable to the adaptive gripper, not a console control."
 actions: []
 cameras: []
 cameras_note: "The boot starts no camera. The Pi package has an opencv_camera node publishing camera/image (sensor_msgs/msg/Image, bgr8, 0.1 s timer, mycobot_ros2:mycobot_280/mycobot_280pi/mycobot_280pi/opencv_camera.py#L21-L39), but no Pi launch starts it and the ROS 2 docs page does not mention it; it is not part of this profile."
 stop: []
 stop_note: "No velocity-driven motion exists (teleop none) and the boot exposes no stop/cancel endpoint. pymycobot has stop()/pause() (https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/2_API.html section 3) but no ROS node in the pinned sources exposes them. All controls are single finite joint/gripper targets."
-watchdog: "None found in source: the hardware node executes each /joint_states message once (mycobot_ros2:mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66) and the arm holds the last target; no command timeout exists."
+watchdog: "None found in source: the hardware node executes each /joint_states message once (mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66) and the arm holds the last target; no command timeout exists."
 controls:
   - id: arm_gripper_target
     label: "Arm joints + gripper target"
@@ -175,10 +174,19 @@ controls:
       - {name: j4, label: "J4 joint5_to_joint4", min: -2.6179, max: 2.6179, default: 0.0, unit: rad, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L183-L185"}
       - {name: j5, label: "J5 joint6_to_joint5", min: -2.7052, max: 2.7925, default: 0.0, unit: rad, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L191-L193"}
       - {name: j6, label: "J6 joint6output_to_joint6", min: -3.14159, max: 3.14159, default: 0.0, unit: rad, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L199-L201"}
-      - {name: gripper, label: "Gripper (gripper_controller)", min: -0.74, max: 0.15, default: 0.0, unit: rad, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L322-L324", note: "Mapped linearly to set_gripper_value 0..100 (-0.74 -> 0, 0.15 -> 100; 0.0 -> 83) by mycobot_ros2:mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L58-L62; the mapping is not clamped, so the URDF range is the bound. Value range 0~100 per https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/2_API.html#102-set_gripper_valuegripper_value-speed-gripper_typenone-is_torquenone"}
+      - {name: gripper, label: "Gripper (gripper_controller)", min: -0.74, max: 0.15, default: 0.0, unit: rad, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L322-L324", note: "Mapped linearly to set_gripper_value 0..100 (-0.74 -> 0, 0.15 -> 100; 0.0 -> 83) by mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L58-L62; the mapping is not clamped, so the URDF range is the bound. Value range 0~100 per https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/2_API.html#102-set_gripper_valuegripper_value-speed-gripper_typenone-is_torquenone"}
     stop: null
     prerequisites: [/joint_states, /robot_description]
-    source: "mycobot_ros2:mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66"
+    sole_publisher: true
+    sole_publisher_source: "mycobot_ros2:mycobot_280/mycobot_280pi/launch/slider_control_adaptive_gripper.launch.py#L34-L38,#L64-L69"
+    sole_publisher_note: >-
+      Incompatible prerequisite: the control needs the boot with gui:=false. With the default gui:=true
+      joint_state_publisher_gui publishes its slider state on /joint_states continuously and the hardware node executes
+      every message, so page targets would be overwritten at once; the optional listen_real / listen_real_service /
+      follow_display nodes publish measured /joint_states on the same topic and would re-command the arm as well. The
+      page asks rosapi for the publishers of /joint_states when the target validates and leaves the control unavailable,
+      naming them, while any node other than ROS infrastructure publishes it.
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L50-L66"
     note: >-
       One message = one finite target: arm via send_angles(deg, speed 25, _async=True), gripper via
       set_gripper_value(v, speed 80, gripper_type=1); both speeds are fixed in code (no speed field). Positions are
@@ -204,7 +212,9 @@ controls:
       - {name: speed, label: "Speed", min: 1, max: 100, default: 50, unit: "%", integer: true, source: "https://docs.elephantrobotics.com/docs/mycobot_280_pi_en/3-FunctionsAndApplications/6.developmentGuide/python/2_API.html#33-send_anglesangles-speed", note: "Default 50 as used by teleop_keyboard (mycobot_ros2:mycobot_280/mycobot_280pi/mycobot_280pi/teleop_keyboard.py#L87)."}
     stop: null
     prerequisites: [/set_angles]
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L104-L129"
+    ok_field: flag
+    ok_field_source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/SetAngles.srv#L9 (response bool flag: false when send_angles raised, listen_real_service.py#L123-L128)"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L129"
     note: "Only present when the optional listen_real_service node runs (teleop_keyboard.launch.py). Degree limits = URDF radians converted, matching the vendor send_angle ranges (API section 3.2). Single finite target (send_angles, non-blocking)."
   - id: gripper_open
     label: "Gripper open (service)"
@@ -215,7 +225,9 @@ controls:
     fields: []
     stop: null
     prerequisites: [/set_gripper]
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L191-L192"
+    ok_field: flag
+    ok_field_source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GripperStatus.srv#L3 (response bool flag: false when the call raised, listen_real_service.py#L196-L200)"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L191-L192"
     note: "set_gripper_state(0, 80, 1) = adaptive gripper open at speed 80. Only with the optional listen_real_service node."
   - id: gripper_close
     label: "Gripper close (service)"
@@ -226,11 +238,67 @@ controls:
     fields: []
     stop: null
     prerequisites: [/set_gripper]
-    source: "mycobot_ros2:mycobot_280/mycobot_280/listen_real_service.py#L193-L194"
+    ok_field: flag
+    ok_field_source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GripperStatus.srv#L3 (response bool flag: false when the call raised, listen_real_service.py#L196-L200)"
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L193-L194"
     note: "set_gripper_state(1, 80, 1) = adaptive gripper close at speed 80. Only with the optional listen_real_service node."
+reads:
+  - id: get_angles
+    service: /get_angles
+    type: mycobot_interfaces/srv/GetAngles
+    request: {}
+    invalid_if_all_zero: true
+    source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L166-L184"
+    note: >-
+      Measured joint angles in degrees read from the arm (pymycobot get_angles(), #L169) by the optional
+      listen_real_service node (teleop_keyboard.launch.py, not the boot), so the read is offered only when /get_angles
+      is on the wire. When the arm cannot be read the node answers the response defaults, all zeros (#L172-L180); the
+      vendor's own publisher likewise discards a reading whose first angles are all 0 (#L85-L86), so an all-zero answer
+      is shown as no reading. Called only when the user clicks the read button.
+    values:
+      - {control: set_angles, field: j1, path: joint_1, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L2"}
+      - {control: set_angles, field: j2, path: joint_2, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L3"}
+      - {control: set_angles, field: j3, path: joint_3, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L4"}
+      - {control: set_angles, field: j4, path: joint_4, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L5"}
+      - {control: set_angles, field: j5, path: joint_5, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L6"}
+      - {control: set_angles, field: j6, path: joint_6, source: "mycobot_ros2:mycobot_280/mycobot_interfaces/srv/GetAngles.srv#L7"}
+      - {control: arm_gripper_target, field: j1, path: joint_1, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+      - {control: arm_gripper_target, field: j2, path: joint_2, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+      - {control: arm_gripper_target, field: j3, path: joint_3, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+      - {control: arm_gripper_target, field: j4, path: joint_4, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+      - {control: arm_gripper_target, field: j5, path: joint_5, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+      - {control: arm_gripper_target, field: j6, path: joint_6, scale: 57.2957795, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/slider_control_adaptive_gripper.py#L54-L57 (rad = deg * pi/180)"}
+reads_note: >-
+  A read maps each answered value to a control field as field = (raw - offset) / scale (offset 0, scale 1 when not
+  given). The page calls a read service only when the user clicks its button; it is never called on load.
 uncertainties:
   - "The ROS 2 docs page for the 280 Pi documents slider_control.launch.py (no gripper) but not the adaptive-gripper launch; slider_control_adaptive_gripper.launch.py is taken from the pinned Pi package as the equivalent boot for this end effector. Both present the same endpoint set."
   - "The executables slider_control_adaptive_gripper and listen_real_service of mycobot_280pi resolve to modules of the sibling mycobot_280 package (mycobot_ros2:mycobot_280/mycobot_280pi/setup.py#L61-L63), whose defaults are /dev/ttyUSB0 @ 115200. The adaptive-gripper launch passes port/baud (#L80-L90) so it works; teleop_keyboard.launch.py passes none (params commented out, mycobot_ros2:mycobot_280/mycobot_280pi/launch/teleop_keyboard.launch.py#L59-L62), so on a Pi the service node opens the wrong port unless port/baud are overridden. The service controls are therefore gated on /set_angles and /set_gripper being present."
   - "The boot has no hardware feedback: /joint_states and /tf reflect the commanded or slider state, never measured angles. Real feedback requires listen_real / listen_real_service / follow_display, which publish on the same /joint_states the slider node executes (feedback loop if combined)."
   - "Standard-node behaviour (robot_state_publisher /robot_description transient_local, /tf on joint_states, joint_state_publisher_gui publish rate and mimic-joint handling) comes from upstream ROS 2 Humble packages, not the pinned repo."
   - "Which end of the gripper_controller range (0 or 100 gripper value) is open vs closed is not stated in the pinned sources or the fetched API text; the control exposes the raw URDF joint range."
+
+model:
+  source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf"
+  note: >-
+    Kinematic description for the page's 3D model, taken from the pinned vendor URDF the boot loads: joint origins, axes,
+    limits and the gripper's mimic joints as written there; links are drawn as sticks between joint origins. Each commanded
+    joint names the control fields that command it: arm_gripper_target in rad (the URDF joint angle), set_angles in degrees
+    (send_angles takes degrees; scale = pi/180). The boot reports no joint positions (feedback null).
+  root: g_base
+  feedback: null
+  joints:
+    - {name: g_base_to_joint1, type: fixed, parent: g_base, child: joint1, xyz: [0, 0, 0], rpy: [0, 0, 0], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L146-L152"}
+    - {name: joint2_to_joint1, type: revolute, parent: joint1, child: joint2, xyz: [0, 0, 0.13956], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.9321, max: 2.9321, command: [{control: arm_gripper_target, field: j1}, {control: set_angles, field: j1, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L155-L161"}
+    - {name: joint3_to_joint2, type: revolute, parent: joint2, child: joint3, xyz: [0, 0, -0.001], rpy: [0, 1.5708, -1.5708], axis: [0, 0, 1], min: -2.4434, max: 2.4434, command: [{control: arm_gripper_target, field: j2}, {control: set_angles, field: j2, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L164-L170"}
+    - {name: joint4_to_joint3, type: revolute, parent: joint3, child: joint4, xyz: [-0.1104, 0, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.6179, max: 2.6179, command: [{control: arm_gripper_target, field: j3}, {control: set_angles, field: j3, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L173-L179"}
+    - {name: joint5_to_joint4, type: revolute, parent: joint4, child: joint5, xyz: [-0.096, 0, 0.06462], rpy: [0, 0, -1.5708], axis: [0, 0, 1], min: -2.6179, max: 2.6179, command: [{control: arm_gripper_target, field: j4}, {control: set_angles, field: j4, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L183-L189"}
+    - {name: joint6_to_joint5, type: revolute, parent: joint5, child: joint6, xyz: [0, -0.07318, -0.001], rpy: [1.5708, -1.5708, 0], axis: [0, 0, 1], min: -2.7052, max: 2.7925, command: [{control: arm_gripper_target, field: j5}, {control: set_angles, field: j5, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L191-L197"}
+    - {name: joint6output_to_joint6, type: revolute, parent: joint6, child: joint6_flange, xyz: [0, 0.0456, 0], rpy: [-1.5708, 0, 0], axis: [0, 0, 1], min: -3.14159, max: 3.14159, command: [{control: arm_gripper_target, field: j6}, {control: set_angles, field: j6, scale: 0.0174532925, source: "mycobot_ros2:mycobot_280/mycobot_280/mycobot_280/listen_real_service.py#L104-L120"}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L199-L205"}
+    - {name: joint6output_to_gripper_base, type: fixed, parent: joint6_flange, child: gripper_base, xyz: [0, 0, 0.034], rpy: [1.579, 0, 0], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L207-L214"}
+    - {name: gripper_controller, type: revolute, parent: gripper_base, child: gripper_left3, xyz: [-0.012, 0.005, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.74, max: 0.15, command: [{control: arm_gripper_target, field: gripper}], source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L322-L328"}
+    - {name: gripper_base_to_gripper_left2, type: revolute, parent: gripper_base, child: gripper_left2, xyz: [-0.005, 0.027, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.8, max: 0.5, mimic: {joint: gripper_controller, multiplier: 1, offset: 0}, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L330-L337"}
+    - {name: gripper_left3_to_gripper_left1, type: revolute, parent: gripper_left3, child: gripper_left1, xyz: [-0.027, 0.016, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.5, max: 0.5, mimic: {joint: gripper_controller, multiplier: -1, offset: 0}, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L339-L346"}
+    - {name: gripper_base_to_gripper_right3, type: revolute, parent: gripper_base, child: gripper_right3, xyz: [0.012, 0.005, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.15, max: 0.7, mimic: {joint: gripper_controller, multiplier: -1, offset: 0}, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L348-L355"}
+    - {name: gripper_base_to_gripper_right2, type: revolute, parent: gripper_base, child: gripper_right2, xyz: [0.005, 0.027, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.5, max: 0.8, mimic: {joint: gripper_controller, multiplier: -1, offset: 0}, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L357-L364"}
+    - {name: gripper_right3_to_gripper_right1, type: revolute, parent: gripper_right3, child: gripper_right1, xyz: [0.027, 0.016, 0], rpy: [0, 0, 0], axis: [0, 0, 1], min: -0.5, max: 0.5, mimic: {joint: gripper_controller, multiplier: 1, offset: 0}, source: "mycobot_ros2:mycobot_description/urdf/mycobot_280_pi/mycobot_280_pi_adaptive_gripper.urdf#L366-L373"}

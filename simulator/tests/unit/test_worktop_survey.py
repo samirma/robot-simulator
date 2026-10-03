@@ -98,3 +98,13 @@ def test_counter_mount_against_the_back_edge_facing_the_room():
     assert front and np.allclose(front[0].xy, [0.0, -0.3 + ws.MOUNT["so101"].footprint / 2])
     assert abs(front[0].yaw - math.pi / 2) < 1e-12
     assert ws.worktop(f).name == "counter/top"
+
+
+def test_a_robocasa_kitchen_with_no_counter_region_has_no_worktop():
+    """Spec §2.2: on RoboCasa the worktop is the roomiest counter region; a scene with
+    none has no worktop -- the table-height survey is not a fallback."""
+    f = facts(scene())
+    for regions in ([], None):
+        rc = ws.Facts("robocasa", f.model, f.data, regions=regions)
+        assert ws.worktop(rc) is None
+        assert ws.candidates(rc, "so101") == [] and ws.candidates(rc, "mycobot280") == []

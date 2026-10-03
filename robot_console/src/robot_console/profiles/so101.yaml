@@ -1,7 +1,6 @@
 id: so101
 name: "TheRobotStudio SO-101 arm (ros2_so_arm real-hardware bringup + usb_cam wrist camera)"
 dialect: ros2
-kind: arm
 teleop: none
 sources:
   ros2_so_arm:
@@ -422,3 +421,28 @@ uncertainties:
   - "/usb_cam/set_camera_info comes from camera_info_manager (image_common 5.1.8, Jazzy's release), a dependency of the pinned usb_cam, not usb_cam itself."
   - "The mounting of a wrist camera is not documented by ros2_so_arm; the approved camera boot uses usb_cam source defaults (/dev/video0, 640x480 @30, yuyv -> yuv422_yuy2, frame_id default_cam)."
   - "Namespaced bringup appears internally inconsistent upstream (controller_manager reads absolute /robot_description; robot_state_publisher publishes namespaced)."
+
+model:
+  source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro"
+  note: >-
+    Kinematic description for the page's 3D model, taken from the pinned vendor URDF macro (prefix "", parent world at the origin):
+    joint origins, axes and limits as written there. Links are drawn as sticks between joint origins; the moving jaw is drawn to its
+    centre of mass. Each commanded joint names the control field that commands it (rad, the URDF joint angle).
+  root: base_link
+  feedback:
+    topic: /joint_states
+    type: sensor_msgs/msg/JointState
+    measured: true
+    source: "ros2_so_arm:so_arm101_description/control/ros2_controllers.yaml#L8-L9"
+    note: >-
+      joint_state_broadcaster publishes the hardware interface's position state of the six joints (so_arm101.ros2_control.xacro#L27-L85); names carry the {joint_prefix} of a namespaced bringup.
+  joints:
+    - {name: shoulder_pan_joint, type: revolute, parent: base_link, child: shoulder_link, xyz: [0.0388353, 0, 0.0624], rpy: [3.14159, 0, -3.14159], axis: [0, 0, 1], min: -1.91986, max: 1.91986, reported: "{joint_prefix}shoulder_pan_joint", command: [{control: arm_trajectory, field: shoulder_pan}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L532-L541"}
+    - {name: shoulder_lift_joint, type: revolute, parent: shoulder_link, child: upper_arm_link, xyz: [-0.0303992, -0.0182778, -0.0542], rpy: [-1.5708, -1.5708, 0], axis: [0, 0, 1], min: -1.74533, max: 1.74533, reported: "{joint_prefix}shoulder_lift_joint", command: [{control: arm_trajectory, field: shoulder_lift}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L559-L565"}
+    - {name: elbow_flex_joint, type: revolute, parent: upper_arm_link, child: lower_arm_link, xyz: [-0.11257, -0.028, 0], rpy: [0, 0, 1.5708], axis: [0, 0, 1], min: -1.69, max: 1.54, reported: "{joint_prefix}elbow_flex_joint", command: [{control: arm_trajectory, field: elbow_flex}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L584-L593"}
+    - {name: wrist_flex_joint, type: revolute, parent: lower_arm_link, child: wrist_link, xyz: [-0.1349, 0.0052, 0], rpy: [0, 0, -1.57], axis: [0, 0, 1], min: -1.6, max: 1.6, reported: "{joint_prefix}wrist_flex_joint", command: [{control: arm_trajectory, field: wrist_flex}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L611-L620"}
+    - {name: wrist_roll_joint, type: revolute, parent: wrist_link, child: gripper_link, xyz: [0, -0.0611, 0.0181], rpy: [-1.57, 3.14, 0], axis: [0, 0, 1], min: -2.3, max: 2.3, reported: "{joint_prefix}wrist_roll_joint", command: [{control: arm_trajectory, field: wrist_roll}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L638-L644"}
+    - {name: gripper_frame_joint, type: fixed, parent: gripper_link, child: gripper_frame_link, xyz: [-0.0079, -0.000218121, -0.0981274], rpy: [0, 3.14159, 0], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L662-L667"}
+    - {name: gripper_joint, type: revolute, parent: gripper_link, child: jaw_link, xyz: [0.0202, 0.0188, -0.0234], rpy: [1.5708, 0.18, 0], axis: [0, 0, 1], min: 0, max: 1.7, reported: "{joint_prefix}gripper_joint", command: [{control: gripper, field: position}], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L670-L676"}
+  tips:
+    - {link: jaw_link, xyz: [-0.00157495, -0.0300244, 0.0192755], source: "ros2_so_arm:so_arm101_description/urdf/so_arm101_macro.xacro#L493-L494 (inertial origin: the link is drawn to its centre of mass)"}

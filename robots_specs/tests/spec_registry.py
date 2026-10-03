@@ -25,7 +25,9 @@ class Robot:
     file: Path
     urdf: str | None = None
     mjcf: str | None = None
+    model: str | None = None
     ros: str | None = None
+    bullets: dict[str, str] = field(default_factory=dict)
     revisions: list[str] = field(default_factory=list)
     sha256: dict[str, str] = field(default_factory=dict)
 
@@ -56,6 +58,8 @@ def robots() -> list[Robot]:
                   section=body, file=path)
         r.urdf = _code(bullets.get("Official URDF", ""))
         r.mjcf = _code(bullets.get("Official MJCF", ""))
+        r.model = _code(bullets.get("MuJoCo model", ""))
+        r.bullets = bullets
         r.ros = _code(bullets.get("ROS interface", ""))
         r.revisions = re.findall(r"revision\s+`([0-9a-f]{40})`", body)
         for key, val in bullets.items():

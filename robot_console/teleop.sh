@@ -5,7 +5,8 @@
 #   teleop.sh [--robot <id>] [--namespace <name>] [--url ws://host:port]
 #
 # Opens a local window that owns keyboard focus. Keys: W/S forward/back, A/D strafe,
-# Q/E rotate, Space stop, Enter enable commands, Esc quit; AiNex: arrow keys move the head.
+# Q/E rotate, Space stop, Enter re-enable commands after a failed stop, Esc quit; AiNex:
+# arrow keys move the head. Commands are enabled once the start-up stop was delivered.
 # Run with --help for details. The first run installs the console's venv.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_bootstrap.sh"

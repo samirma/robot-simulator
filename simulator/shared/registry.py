@@ -21,8 +21,6 @@ REPO_ROOT = Path(os.environ.get("RSIM_REPO_ROOT", str(SIM_ROOT.parent)))
 SPECS = REPO_ROOT / "robots_specs"
 SPEC = SPECS / "high_level_spec.md"
 
-KINDS = ("mobile_base", "arm", "humanoid", "mobile_manipulator")
-
 
 class RegistryError(ValueError):
     pass
@@ -31,10 +29,9 @@ class RegistryError(ValueError):
 class Robot:
     """One robot file of the robot specification."""
 
-    def __init__(self, rid: str, name: str, section: str, fields: Dict[str, str]):
+    def __init__(self, rid: str, name: str, fields: Dict[str, str]):
         self.id = rid
         self.name = name
-        self.section = section
         self.fields = fields
         self.kind = _code(fields.get("kind", "")) or ""
         self.folder = _code(fields.get("folder", "")) or f"robots_specs/{rid}/"
@@ -88,7 +85,7 @@ def _parse(text: str) -> Optional[Robot]:
         key = m.group(1).strip().rstrip(":").strip().lower()
         fields[key] = " ".join(m.group(2).split())
     rid = _code(fields.get("robot id", ""))
-    return Robot(rid, name, name, fields) if rid else None
+    return Robot(rid, name, fields) if rid else None
 
 
 _cache: Dict[str, Tuple[tuple, List[Robot]]] = {}
@@ -141,15 +138,21 @@ def listing(indent: str = "  ") -> str:
 # ---------------------------------------------------------------- required files
 
 
-_MESH_EXT = (".stl", ".obj", ".dae", ".msh", ".png")
+def _xml_text(path: Path) -> Optional[str]:
+    """An XML file's text without its comments (a reference commented out is no reference),
+    or None when it cannot be read."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return re.sub(r"<!--.*?-->", "", text, flags=re.S)
 
 
 def _model_files(model: Path) -> List[Path]:
     """Every file an MJCF references (meshes, textures, includes), resolved."""
     out: List[Path] = []
-    try:
-        text = model.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    text = _xml_text(model)
+    if text is None:
         return out
     meshdir = re.search(r"meshdir\s*=\s*\"([^\"]*)\"", text)
     texdir = re.search(r"texturedir\s*=\s*\"([^\"]*)\"", text)
@@ -166,10 +169,10 @@ def _model_files(model: Path) -> List[Path]:
 
 
 def _urdf_files(urdf: Path) -> List[Path]:
+    """Every file a URDF references (meshes), resolved."""
     out: List[Path] = []
-    try:
-        text = urdf.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    text = _xml_text(urdf)
+    if text is None:
         return out
     for m in re.finditer(r"filename\s*=\s*\"([^\"]+)\"", text):
         ref = m.group(1)
@@ -207,12 +210,3 @@ def missing_files(robot: Robot) -> List[str]:
             except ValueError:
                 missing.append(str(p))
     return sorted(dict.fromkeys(missing))
-
-
-if __name__ == "__main__":  # python registry.py [list|missing <id>]
-    import sys
-
-    if len(sys.argv) > 2 and sys.argv[1] == "missing":
-        print("\n".join(missing_files(get(sys.argv[2]))))
-    else:
-        print(listing())

@@ -4,7 +4,8 @@
 Stock: /robot_state_publisher with the boot's robot_description (`xacro` of the URDF) and
 parameters. Simulated: /slider_control_adaptive_gripper, the node that forwards every
 /joint_states message to the arm (pymycobot `send_angles(angles, 25)` and
-`set_gripper_value(v, 80)`), here to the arm's position servos in the simulation.
+`set_gripper_value(v, 80)`), here to the arm's position servos in the simulation, and
+/rviz2 (headless) when the record serves it.
 """
 
 from __future__ import annotations
@@ -63,7 +64,11 @@ def plan(robot, iface, describe):
     p.add("/robot_state_publisher", ["ros2", "run", "robot_state_publisher",
                                      "robot_state_publisher", "--ros-args", "-r",
                                      "__node:=robot_state_publisher", "--params-file", f])
-    _plan.ros2_emulated(p, ["/slider_control_adaptive_gripper"])
+    # rviz2, which the boot starts, is a desktop viewer: headless here, it presents the
+    # endpoints the record gives it (the tool topics it advertises) and draws nothing
+    served = {n["name"] for n in common.served(iface.get("nodes"))}
+    _plan.ros2_emulated(p, ["/slider_control_adaptive_gripper"] +
+                        (["/rviz2"] if "/rviz2" in served else []))
     return p
 
 
@@ -80,7 +85,7 @@ class Slider:
 
     def __init__(self, node):
         self.node = node
-        arm_row = next(m for m in node.iface["motions"] if m["id"] == "arm")
+        arm_row = common.motion_row(node.iface, "arm")
         self.limits = []
         for f in arm_row["command"]["fields"]:
             if f["field"].startswith("position["):

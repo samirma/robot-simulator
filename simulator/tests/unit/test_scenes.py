@@ -29,6 +29,8 @@ def test_other_engines_source_is_refused_naming_that_engine():
 @pytest.mark.parametrize("text,msg", [("robocasa:61-1", "layout 61 out of range 1-60"),
                                       ("robocasa:1-0", "style 0 out of range 1-60"),
                                       ("robocasa:1", "<layout>-<style>"),
+                                      ("robocasa:a-b", "layout 1-60, style 1-60"),
+                                      ("ithor:x", "1-12 kitchens, 201-212"),
                                       ("test:2", "range 1-1"),
                                       ("nosuch:1", "unknown source"),
                                       ("ithor", "<source>:<id>")])

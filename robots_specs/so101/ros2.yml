@@ -37,7 +37,9 @@ sources:
 - id: ros2_control
   url: https://github.com/ros-controls/ros2_control
   revision: b7f1a5d420443c7a079f4c81e80d5e39759acf4c
-  role: 'dependency: controller_manager / ros2_control_node, release 4.48.1 (Jazzy binary 4.48.1-1)'
+  role: 'dependency: controller_manager / ros2_control_node, release 4.48.1 (amended 2026-10-02: the Jazzy binary
+    4.48.1-1 is only in the ros2-testing repository; the main repository and its snapshots up to 2026-09-11 carry
+    4.48.0-1, so the wire image builds this revision)'
 - id: robot_state_publisher
   url: https://github.com/ros/robot_state_publisher
   revision: d1b994d2d2eb19e4d2886be57211114134f25b50
@@ -58,12 +60,26 @@ sources:
 - id: geometry2
   url: https://github.com/ros2/geometry2
   revision: f702874b1c8535d6a038230ab2cda0ba5d521ebd
-  role: 'dependency: tf2_ros broadcasters used by robot_state_publisher, release 0.36.23 (Jazzy binary 0.36.23-1)'
+  role: 'dependency: tf2_ros broadcasters used by robot_state_publisher, release 0.36.23 (amended 2026-10-02: the
+    Jazzy binary 0.36.23-1 is only in the ros2-testing repository; the main repository and its snapshots up to
+    2026-09-11 carry 0.36.22-1, so the wire image builds tf2 and tf2_ros from this revision)'
 - id: pal_statistics
   url: https://github.com/pal-robotics/pal_statistics
   revision: fb01203897860844c038663b813a7ca7de7ba520
   role: 'dependency: pal_statistics introspection publishers used by controller_manager, release 2.8.2 (Jazzy binary
     2.8.2-1)'
+- id: rclcpp
+  url: https://github.com/ros2/rclcpp
+  revision: 3aa906a2c7ad13d1623b31a55731993f56538e72
+  branch: jazzy
+  role: 'dependency: rclcpp QoS-override parameters and rclcpp_lifecycle (the controllers'' lifecycle nodes), release
+    28.1.22, the Jazzy branch''s newest, read for behaviour'
+- id: rcl
+  url: https://github.com/ros2/rcl
+  revision: 22c0b957140035c675f0a061daaab5fd6b2080e7
+  branch: jazzy
+  role: 'dependency: rcl_lifecycle (each lifecycle node''s ~/transition_event publisher), release 9.2.11, the Jazzy
+    branch''s newest, read for behaviour'
 boot:
   summary: 'ros2_so_arm''s so_arm101_description controllers_bringup.launch.py with hardware_type:=real (ros2_control_node
     as /controller_manager with the Feetech STS3215 bus via feetech_ros2_driver/FeetechHardwareInterface, /robot_state_publisher,
@@ -413,6 +429,85 @@ topics:
   optional: true
   source: https://github.com/ros-physical-ai/ros2_so_arm/blob/e166df9d51f43b24da9b99047c6c51c306bda74f/so_arm101_description/control/ros2_controllers.yaml#L11
   notes: Exists only if forward_position_controller is loaded and activated by hand (not in the boot).
+- name: /joint_state_broadcaster/transition_event
+  type: lifecycle_msgs/msg/TransitionEvent
+  direction: out
+  nodes:
+  - /joint_state_broadcaster
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L77-L79
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp_lifecycle/src/lifecycle_node_interface_impl.cpp#L84
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/rcl_lifecycle.c#L217-L233
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L40
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L99-L113
+  notes: One message per lifecycle transition (configure and activate when the spawner loads the controller). The
+    controller's lifecycle node is created with its communication interface disabled, so it has no lifecycle
+    services, but rcl_lifecycle still creates the ~/transition_event publisher (default publisher options reliable,
+    volatile, depth 10). Added 2026-10-02; the record omitted these topics.
+- name: /joint_trajectory_controller/transition_event
+  type: lifecycle_msgs/msg/TransitionEvent
+  direction: out
+  nodes:
+  - /joint_trajectory_controller
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L77-L79
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp_lifecycle/src/lifecycle_node_interface_impl.cpp#L84
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/rcl_lifecycle.c#L217-L233
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L40
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L99-L113
+  notes: One message per lifecycle transition (configure and activate when the spawner loads the controller). The
+    controller's lifecycle node is created with its communication interface disabled, so it has no lifecycle
+    services, but rcl_lifecycle still creates the ~/transition_event publisher (default publisher options reliable,
+    volatile, depth 10). Added 2026-10-02; the record omitted these topics.
+- name: /gripper_controller/transition_event
+  type: lifecycle_msgs/msg/TransitionEvent
+  direction: out
+  nodes:
+  - /gripper_controller
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L77-L79
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp_lifecycle/src/lifecycle_node_interface_impl.cpp#L84
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/rcl_lifecycle.c#L217-L233
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L40
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L99-L113
+  notes: One message per lifecycle transition (configure and activate when the spawner loads the controller). The
+    controller's lifecycle node is created with its communication interface disabled, so it has no lifecycle
+    services, but rcl_lifecycle still creates the ~/transition_event publisher (default publisher options reliable,
+    volatile, depth 10). Added 2026-10-02; the record omitted these topics.
+- name: /forward_position_controller/transition_event
+  type: lifecycle_msgs/msg/TransitionEvent
+  direction: out
+  nodes:
+  - /forward_position_controller
+  rate: non_periodic
+  optional: true
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/ros-controls/ros2_control/blob/b7f1a5d420443c7a079f4c81e80d5e39759acf4c/controller_interface/src/controller_interface_base.cpp#L77-L79
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp_lifecycle/src/lifecycle_node_interface_impl.cpp#L84
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/rcl_lifecycle.c#L217-L233
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L40
+  - https://github.com/ros2/rcl/blob/22c0b957140035c675f0a061daaab5fd6b2080e7/rcl_lifecycle/src/com_interface.c#L99-L113
+  notes: Exists only if forward_position_controller is loaded by hand (not in the boot); otherwise as for the
+    other controllers.
 - name: /image_raw
   type: sensor_msgs/msg/Image
   direction: out
@@ -470,8 +565,10 @@ topics:
   rate: non_periodic
   optional: true
   source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/compressed_depth_image_transport/include/compressed_depth_image_transport/compressed_depth_publisher.hpp#L57
-  notes: compressedDepth plugin (optional plugin); advertises but encodes only depth encodings, so it publishes
-    nothing for this colour stream.
+  frame_id: default_cam
+  notes: 'compressedDepth plugin (optional plugin); advertises but encodes only depth encodings, so it publishes
+    nothing for this colour stream; it would carry the raw image header (compressed_depth_image_transport/src/codec.cpp#L215;
+    amended 2026-10-03: frame recorded).'
 - name: /image_raw/theora
   type: theora_image_transport/msg/Packet
   direction: out
@@ -490,7 +587,9 @@ topics:
   rate_basis: source
   optional: true
   source: https://github.com/ros-perception/image_transport_plugins/blob/bcc913e69d3db54b90b989c6b79c1b22d50e79c8/zstd_image_transport/include/zstd_image_transport/zstd_publisher.hpp#L60
-  notes: zstd plugin (optional plugin); one compressed frame per image while subscribed.
+  frame_id: default_cam
+  notes: 'zstd plugin (optional plugin); one compressed frame per image while subscribed, carrying the raw
+    image header (zstd_image_transport/src/zstd_publisher.cpp#L148; amended 2026-10-03: frame recorded).'
 services:
 - name: /controller_manager/list_controllers
   type: controller_manager_msgs/srv/ListControllers
@@ -1281,23 +1380,26 @@ parameters:
 - node: /robot_state_publisher
   name: qos_overrides./joint_states.subscription.depth
   value: 5
-  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
-  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
-- node: /robot_state_publisher
-  name: qos_overrides./joint_states.subscription.durability
-  value: volatile
-  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
-  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  notes: read-only QoS override parameter declared by rclcpp for this subscription. with_default_policies() declares
+    history, depth and reliability only, so the subscription has no durability override (amended 2026-10-02; the
+    record listed qos_overrides./joint_states.subscription.durability, which the node never declares)
 - node: /robot_state_publisher
   name: qos_overrides./joint_states.subscription.history
   value: keep_last
-  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
-  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  notes: read-only QoS override parameter declared by rclcpp for this subscription (with_default_policies)
 - node: /robot_state_publisher
   name: qos_overrides./joint_states.subscription.reliability
   value: best_effort
-  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
-  notes: read-only QoS override parameter declared by rclcpp for this publisher/subscription
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L141
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  notes: read-only QoS override parameter declared by rclcpp for this subscription (with_default_policies)
 - node: /robot_state_publisher
   name: qos_overrides./tf.publisher.depth
   value: 100

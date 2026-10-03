@@ -4,12 +4,12 @@ downloading the outer archive.
 
     fetch_drive_zip_members.py --drive-id ID --outer-bytes N \
         --member yahboomcar_ws.zip --member-sha256 HEX --cache FILE \
-        --prefix yahboomcar_ws/src/.../meshes/ --dest DIR  REL [REL ...]
+        --dest DIR  REL [REL ...]
 
 The outer zip's central directory is read with HTTP Range requests, then only the
 member's own bytes are range-downloaded, verified against --member-sha256 and kept at
---cache (so a second run downloads nothing). Each REL is extracted from the member as
-<prefix><REL> to <dest>/<REL>. Standard library only.
+--cache (so a second run downloads nothing). Each REL (a path inside the member) is
+extracted to <dest>/<REL>. Standard library only.
 """
 import argparse
 import hashlib
@@ -23,6 +23,9 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from fetch_meshes import sha256 as sha256_file  # noqa: E402
 
 UA = "Mozilla/5.0 (fetch_drive_zip_members.py)"
 CHUNK = 1 << 20
@@ -122,14 +125,6 @@ def find_member(cd, name):
     die(f"{name} is not in the archive")
 
 
-def sha256_file(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(CHUNK), b""):
-            h.update(block)
-    return h.hexdigest()
-
-
 def download_member(a):
     url = resolve_url(a.drive_id, a.outer_bytes)
     log(f"reading the central directory of Drive file {a.drive_id}")
@@ -182,7 +177,6 @@ def main():
     p.add_argument("--member", required=True)
     p.add_argument("--member-sha256", required=True)
     p.add_argument("--cache", required=True)
-    p.add_argument("--prefix", default="")
     p.add_argument("--dest", required=True)
     p.add_argument("files", nargs="+")
     a = p.parse_args()
@@ -195,9 +189,9 @@ def main():
     with zipfile.ZipFile(a.cache) as z:
         for rel in a.files:
             try:
-                data = z.read(a.prefix + rel)
+                data = z.read(rel)
             except KeyError:
-                die(f"{a.prefix + rel} is not in {a.member}")
+                die(f"{rel} is not in {a.member}")
             target = os.path.join(a.dest, rel)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "wb") as f:
