@@ -3,8 +3,10 @@ stands where the reference project stood it, with the reference's six objects at
 reference's poses and the same scene objects cleared; and the scene `start` loads, with
 no robot, is the reference's default scene with its robot left out -- on MolmoSpaces the
 same bodies, geoms and meshes, the six objects at the same poses and pixel-identical
-renders; on RoboCasa the reference kitchen's fixtures and six objects, plus RoboCasa's own
-kitchen objects, which the reference did not load.
+renders; on RoboCasa the reference kitchen's fixtures -- every one where the reference has
+it but those RoboCasa's own fixture placement sets on a counter, which the reference left
+where the layout put them -- and six objects, plus RoboCasa's own kitchen objects, which
+the reference did not load.
 
 The reference is run from a checkout of github.com/samirma/robot-simulator rev 34547ae
 -- the one named by `RSIM_REF_DIR`, or else extracted from this repository's own history
@@ -135,6 +137,15 @@ def test_start_scene_is_the_reference_scene_without_its_robot(engine, tmp_path, 
         assert mine == ref[kind], (kind, sorted(set(mine) ^ set(ref[kind]))[:20])
     moved = [n for n, pos in ref["positions"].items()
              if np.max(np.abs(np.subtract(ours["positions"][n], pos))) > 1e-6]
+    if engine == "robocasa":
+        # except the fixtures RoboCasa's own fixture placement sets on a counter (a toaster,
+        # a knife block...), which the reference left where the layout put them (on 1-1, at
+        # the world origin): each stands off the floor now (§2.1, amended 2026-10-03)
+        placed = ours["placed_fixtures"]
+        assert placed, "RoboCasa placed no fixture"
+        moved = [n for n in moved if not any(n.startswith(f + "_") for f in placed)]
+        for f in placed:
+            assert ours["positions"][f + "_main"][2] > 0.5, (f, ours["positions"][f + "_main"])
     assert moved == [], moved[:20]
     # the six objects at the reference's poses, and the same scene objects cleared
     assert set(ours["objects"]) == set(ref["objects"]) and len(ref["objects"]) == 6

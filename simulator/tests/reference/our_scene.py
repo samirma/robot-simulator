@@ -46,6 +46,9 @@ def main() -> int:
         w = sim.world
         out = scene_views.describe(w.model, w.data)
         out["cleared"] = list(w.scene_staging.cleared) if w.scene_staging is not None else []
+        # RoboCasa: the fixtures its own fixture placement set on others (spec §2.1)
+        arena = w.scene.extra.get("arena")
+        out["placed_fixtures"] = sorted(getattr(arena, "fixture_placements", None) or [])
         if args.views is not None:
             out["views"] = scene_views.render(w.model, w.data, args.engine, args.views)
     print(json.dumps(out), flush=True)

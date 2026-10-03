@@ -98,7 +98,12 @@ own kitchen objects on its counters:
   `mujoco.MjSpec.from_file`.
 * **RoboCasa**: robosuite `5ce6643f` + robocasa `v1.0`; the kitchen built from
   `KitchenArena(layout, style, rng=default_rng(0))` with an empty robot list inside a
-  robosuite `ManipulationTask` (multi-CCD on, sleeping islands off). Its asset files are
+  robosuite `ManipulationTask` (multi-CCD on, sleeping islands off), its fixtures placed
+  as RoboCasa's kitchen environment places them when it loads a kitchen
+  (`scenes.place_fixtures`: the fixtures a layout sets on others -- a toaster, toaster
+  oven, coffee machine, knife block, paper towel, plant -- sampled onto their counter with
+  RoboCasa's own fixture samplers, from the arena's random stream; the reference skipped
+  that step and left them at the world origin, inside the corner walls, or on the floor). Its asset files are
   the same downloads the reference extracted into its checkout; here they go to the
   generated `robocasa/assets/` tree and `robocasa.models.assets_root` points there.
   RoboCasa's collision hulls (group 0) are hidden, visuals (groups 1, 2) shown. Its bare
@@ -107,7 +112,23 @@ own kitchen objects on its counters:
   its own sampler (the Lightwheel set `setup` installs, plus any registry `run.sh assets`
   fetched), each upright on a free spot of a counter top (`Counter.get_reset_regions()`),
   about eight per square metre of counter and at most 24, not touching one another -- the
-  same draw for the same layout and style. They are loose objects like any other.
+  same draw for the same layout and style. They are loose objects like any other, and they
+  stay where they are set (spec §2.1, amended 2026-10-03):
+  * RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of the scene
+    as one problem. RoboCasa's lightest objects (a 1.2 g straw and sugar cube, 3-7 g shrimp,
+    marshmallows, cookie-dough balls) came off their first contacts with the counters at
+    up to 5.6 m/s and knocked the others over: on `robocasa:3-5` 23 of 24 objects moved,
+    six onto the floor, and on `robocasa:5-2` the solve diverged. The same scene XML is
+    still under MuJoCo 3.3.6 and later (MolmoSpaces runs 3.5.0), which solve by constraint
+    island by default, and unstable again there with islands disabled. So a RoboCasa scene
+    is solved by island (`scenes.solve_by_island`: on 3.3.1 the island flag, which works
+    with the CG solver). Timestep, cone, `impratio` and the objects' own figures are
+    RoboCasa's.
+  * An object that cannot stand still upright -- a dish brush or whisk set on its end tips
+    over, a marshmallow keeps rolling -- is drawn again: `robocasa_objects.stands_still`
+    sets each candidate alone on a flat top the way the counters get it, under the scene's
+    solver, and keeps it only if it has tilted less than 10 degrees after 1 s and moves
+    less than 2 mm in the 2 s after.
 
 Scene equivalence with the reference is checked by
 `tests/integration/test_reference_parity.py` against a checkout of the reference: the

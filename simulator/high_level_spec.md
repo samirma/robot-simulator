@@ -70,7 +70,13 @@ it fetches the worktop objects' meshes the same way (§4).
   bare `setup` suffices for `--scene ithor:1`.
 * **RoboCasa** — MuJoCo with RoboCasa kitchens, a **scene provider only**: no robosuite
   robot, controller or observation stack enters the model. Scene source `robocasa`, whose
-  scene id is `<layout>-<style>`; default scene `robocasa:1-1`. **RoboCasa's own kitchen
+  scene id is `<layout>-<style>`; default scene `robocasa:1-1`. Its fixtures stand where
+  RoboCasa's kitchen environment stands them (amended 2026-10-03): the fixtures a layout
+  sets on others -- a toaster, toaster oven, coffee machine, knife block, paper towel or
+  plant on a counter -- are placed with RoboCasa's own fixture samplers, as its environment
+  does when it loads a kitchen (the reference built the arena without that step and left
+  them at the world origin, inside the corner walls, or on the floor). Physics is
+  RoboCasa's, solved by constraint island (below). **RoboCasa's own kitchen
   objects** (amended 2026-10-02) stand on the counters of every RoboCasa scene as well: its
   bare kitchen holds fixtures only, its objects come from its task environments, so the
   simulator draws graspable objects from RoboCasa's object library with RoboCasa's own
@@ -78,7 +84,12 @@ it fetches the worktop objects' meshes the same way (§4).
   each upright on a free spot of a counter top (`Counter.get_reset_regions()`), about eight
   per square metre of counter and at most 24, not touching one another. The draw is a
   deterministic function of the layout and style. They are loose objects like any other:
-  those within the six worktop objects' area are cleared (§2.2).
+  those within the six worktop objects' area are cleared (§2.2). Like MolmoSpaces' objects
+  they stay where they are set (amended 2026-10-03): a RoboCasa scene is solved by
+  constraint island, as MuJoCo does by default from 3.3.6 on (RoboCasa pins 3.3.1, whose
+  whole-scene solve threw its lightest objects off the counters), and an object that does
+  not stand still upright on a flat top -- one that tips over or keeps rolling -- is drawn
+  again.
 * Both engines also provide the scene source `test`: a flat floor with one worktop at a
   fixed height, identical on both engines, used for cross-engine comparison (§5).
 
@@ -391,10 +402,12 @@ in this document means these.
   MolmoSpaces scene as `start` loads it, with no robot, equals the reference's default
   scene with its robot left out (its apple-on-plate staging included): the same bodies,
   geoms and meshes, the same six objects at the same poses, and pixel-identical renders.
-  A RoboCasa scene is the reference's kitchen (the same fixtures, the same six objects at
-  the same poses) plus RoboCasa's own kitchen objects (§2.1), which the reference did not
-  load; verify they stand on the counters, are the same on every start, and that every
-  RoboCasa object lies on a counter top.
+  A RoboCasa scene is the reference's kitchen (the same fixtures, every one where the
+  reference has it but those RoboCasa's own fixture placement sets on a counter (§2.1,
+  amended 2026-10-03), the same six objects at the same poses) plus RoboCasa's own kitchen
+  objects (§2.1), which the reference did not load; verify they stand on the counters, are the same on every start, and that every
+  RoboCasa object lies on a counter top and, from the first second on, stays where it is
+  (amended 2026-10-03).
 * **Evidence** — every robot id has a passing evidence case (see **Terms**) on each engine.
   A motion passes when the recorded feedback shows the commanded displacement within the
   acceptance bounds and the robot comes to rest after its stop command (a drive or walk) or,

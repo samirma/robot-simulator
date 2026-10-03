@@ -110,6 +110,7 @@ class RenderThread(threading.Thread):
         self.scn = None
         self.version = -1
         self.opt = mujoco.MjvOption()
+        self.opt.flags[mujoco.mjtVisFlag.mjVIS_ISLAND] = 0   # textures, not island colours
 
     def _ensure(self, model, version):
         if version == self.version:

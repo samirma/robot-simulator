@@ -807,6 +807,9 @@ def run_viewer(sim: Simulation):
     with handle.lock():
         for i in range(6):
             handle.opt.geomgroup[i] = int(gg[i]) if i < len(gg) else 0
+        # A scene solved by constraint island (RoboCasa, `scenes.solve_by_island`) would be
+        # drawn island-coloured -- flat colours, no textures -- with this flag at its default
+        handle.opt.flags[mujoco.mjtVisFlag.mjVIS_ISLAND] = 0
     while handle.is_running() and not sim.shutdown_event.is_set():
         with w.lock:
             if w.version != version:

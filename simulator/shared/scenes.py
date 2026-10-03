@@ -314,10 +314,98 @@ def point_robocasa_assets() -> None:
         robocasa.models.assets_root = root
 
 
+#: how often RoboCasa builds a kitchen again when a fixture finds no place (Kitchen._load_model)
+FIXTURE_BUILD_ATTEMPTS = 50
+
+
+def place_fixtures(arena, rng) -> bool:
+    """RoboCasa's own fixture placement, as its `Kitchen._load_model` does it after building
+    the `KitchenArena` (its steps 1 and 2; spec §2.1, amended 2026-10-03): the fixtures a
+    layout places on others -- a toaster oven, knife block, paper towel or plant on a counter,
+    a coffee machine with its auxiliary -- are sampled onto their fixture with RoboCasa's
+    samplers (`env_utils.get_single_fixture_sampler`), paired auxiliaries first, each tried
+    three times (six for a pair). Without it they stay at the world origin, inside the
+    corner walls. False when one finds no place; RoboCasa then builds the kitchen again."""
+    from collections import defaultdict
+
+    import robocasa.utils.env_utils as EnvUtils
+    import robosuite.utils.transform_utils as T
+    from robocasa.environments.kitchen.kitchen import Kitchen
+    from robocasa.models.fixtures.fixture import Fixture
+    from robocasa.utils.errors import PlacementError
+
+    class _Kitchen:
+        """What RoboCasa's fixture samplers ask of the kitchen environment."""
+        get_fixture = Kitchen.get_fixture
+
+        def __init__(self):
+            self.rng, self.mujoco_arena = rng, arena
+            self.fixture_cfgs = arena.get_fixture_cfgs()
+            self.fixtures = {cfg["name"]: cfg["model"] for cfg in self.fixture_cfgs}
+            self.objects = {}
+
+    env = _Kitchen()
+    tries = 3
+    placements = {}
+
+    def base_of(name):
+        return name.partition("_auxiliary_")[0] if "_auxiliary_" in name else name
+
+    pairs = defaultdict(dict)
+    for name in env.fixtures:
+        matched = False
+        for base, _aux in Fixture.BASE_TO_AUXILIARY_FIXTURES.items():
+            if name.startswith(base) and "_auxiliary" not in name:
+                pairs[name]["base"] = name
+                matched = True
+            elif name.startswith(base) and "_auxiliary" in name:
+                pairs[base_of(name)]["aux"] = name
+                matched = True
+        if not matched:
+            for aux in Fixture.BASE_TO_AUXILIARY_FIXTURES.values():
+                if name.startswith(aux):
+                    pairs[base_of(name)]["aux"] = name
+    pairs = {k: v for k, v in pairs.items() if "base" in v and "aux" in v}
+    paired = {n for pair in pairs.values() for n in pair.values() if n in env.fixtures}
+
+    def cfg(name):
+        return next(c for c in env.fixture_cfgs if c["name"] == name)
+
+    for pair in pairs.values():
+        sampler = EnvUtils.get_single_fixture_sampler(env, [cfg(pair["base"]), cfg(pair["aux"])])
+        for _ in range(tries * 2):
+            try:
+                placements.update(sampler.sample(placed_objects=placements))
+                break
+            except PlacementError:
+                for n in pair.values():
+                    placements.pop(n, None)
+        else:
+            return False
+    for name, fixture in env.fixtures.items():
+        if name in paired:
+            continue
+        sampler = EnvUtils.get_single_fixture_sampler(env, cfg(name))
+        for _ in range(tries):
+            try:
+                placements.update(sampler.sample(placed_objects=placements))
+                break
+            except PlacementError:
+                continue
+        else:
+            return False
+    for pos, quat, fixture in placements.values():
+        fixture.set_pos(pos)
+        fixture.set_euler(T.mat2euler(T.quat2mat(T.convert_quat(quat, "xyzw"))))
+    arena.fixture_placements = placements
+    return True
+
+
 def build_kitchen_arena(layout: int, style: int, seed: int = 0, objects: bool = False):
-    """The reference's kitchen build, unchanged: `KitchenArena` with an empty robot list
-    inside a `ManipulationTask`, fixtures only, compiled from its XML. With `objects`,
-    RoboCasa's own kitchen objects stand on its counters as well (`robocasa_objects`)."""
+    """The reference's kitchen build -- `KitchenArena` with an empty robot list inside a
+    `ManipulationTask` -- with its fixtures placed as RoboCasa's kitchen environment places
+    them (`place_fixtures`), compiled from its XML. With `objects`, RoboCasa's own kitchen
+    objects stand on its counters as well (`robocasa_objects`), clear of those fixtures."""
     import mujoco
     import numpy as np
 
@@ -326,8 +414,15 @@ def build_kitchen_arena(layout: int, style: int, seed: int = 0, objects: bool = 
     from robocasa.models.scenes.kitchen_arena import KitchenArena
     from robosuite.models.tasks import ManipulationTask
 
-    arena = KitchenArena(layout_id=layout, style_id=style, rng=np.random.default_rng(seed))
-    arena.set_origin([0, 0, 0])
+    rng = np.random.default_rng(seed)
+    for _ in range(FIXTURE_BUILD_ATTEMPTS):
+        arena = KitchenArena(layout_id=layout, style_id=style, rng=rng)
+        arena.set_origin([0, 0, 0])
+        if place_fixtures(arena, rng):
+            break
+    else:
+        raise SceneError(f"robocasa:{layout}-{style}: RoboCasa could not place its fixtures "
+                         f"in {FIXTURE_BUILD_ATTEMPTS} builds")
     fixtures = [cfg["model"] for cfg in arena.get_fixture_cfgs()]
     print(f"layout {layout}, style {style}: {len(fixtures)} fixtures", file=sys.stderr)
     loose = []
@@ -350,10 +445,44 @@ def build_kitchen_arena(layout: int, style: int, seed: int = 0, objects: bool = 
     return arena, mujoco.MjSpec.from_string(task.get_xml())
 
 
+def solve_by_island(spec) -> None:
+    """Have MuJoCo solve each island of touching bodies on its own (spec §2.1, amended
+    2026-10-03). RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of
+    the scene as one problem: RoboCasa's lightest objects (a 1.2 g straw and sugar cube, 3-7 g
+    shrimp and marshmallows) came off their first contacts with the counters at metres per
+    second and knocked the others over. From 3.3.6 on MuJoCo solves by island by default
+    (MolmoSpaces runs 3.5.0); on 3.3.1 that is the island flag, which works with the CG
+    solver. Nothing else of the scene changes."""
+    import mujoco
+
+    if hasattr(mujoco.mjtEnableBit, "mjENBL_ISLAND"):   # MuJoCo < 3.3.6: islands are opt-in
+        spec.option.solver = mujoco.mjtSolver.mjSOL_CG
+        spec.option.enableflags |= int(mujoco.mjtEnableBit.mjENBL_ISLAND)
+
+
+def flatten_cube_textures(spec) -> None:
+    """Declare RoboCasa's single-image cube textures (a flat colour or brushed metal on
+    every face of a cabinet panel or knob) as the 2D textures they look like. The MuJoCo
+    window's OpenGL context rejects their cube maps (`OpenGL error 0x501 in or before
+    mjr_makeContext`) and then shows the whole kitchen untextured; offscreen rendering was
+    unaffected. A cube texture built from six images is left as it is."""
+    import mujoco
+
+    for tex in spec.textures:
+        if (tex.type == mujoco.mjtTexture.mjTEXTURE_CUBE and tex.file
+                and not any(tex.cubefiles)):
+            tex.type = mujoco.mjtTexture.mjTEXTURE_2D
+
+
 def load_robocasa(sid: str):
+    """The reference's kitchen with RoboCasa's own objects on its counters, solved by
+    constraint island so the objects stay where they are set (`solve_by_island`), its
+    textures drawable in the MuJoCo window (`flatten_cube_textures`)."""
     lay, sty = (int(x) for x in sid.split("-"))
     with contextlib.redirect_stdout(sys.stderr):
         arena, spec = build_kitchen_arena(lay, sty, objects=True)
+    solve_by_island(spec)
+    flatten_cube_textures(spec)
     return spec, arena
 
 
