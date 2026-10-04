@@ -121,10 +121,6 @@ class Control:
     fields: Tuple[Field, ...]
     stop: Optional[Tuple[Op, ...]]    # the documented stop/cancel (the page never sends it)
     prerequisites: Tuple[str, ...]
-    ok_field: str = ""        # call: the documented response field that is false on failure
-    # publish: incompatible with any other (non-infrastructure) publisher of its topic, whose
-    # messages would re-command the robot (checked through rosapi when the target validates)
-    sole_publisher: bool = False
     group: str = ""           # the profile group the page lists it in ("" = a card of its own)
 
 
@@ -153,7 +149,6 @@ class Read:
     values: Tuple[ReadValue, ...]
     ok_field: str = ""                # answer field that is false when the read failed
     invalid: Tuple[float, ...] = ()   # raw values that mean "not read"
-    invalid_if_all_zero: bool = False
     poll_s: Optional[float] = None    # the page polls it (model feedback) at about this period
 
     def parse(self, answer: Any) -> Dict[Tuple[str, str], Optional[float]]:
@@ -163,8 +158,7 @@ class Read:
             raise ValueError(f"{self.service} answered {answer}")
         raws = [read_path(answer, v.path) for v in self.values]
         nums = [float(r) if isinstance(r, (int, float)) and not isinstance(r, bool) else None for r in raws]
-        none = self.invalid_if_all_zero and all(n == 0 for n in nums)
-        return {(v.control, v.field): None if none or n is None or n in self.invalid
+        return {(v.control, v.field): None if n is None or n in self.invalid
                 else (n - v.offset) / v.scale for v, n in zip(self.values, nums)}
 
 
@@ -353,7 +347,6 @@ def _read(r: Mapping[str, Any]) -> Read:
     return Read(id=r["id"], service=r["service"], type=r["type"],
                 request=r.get("request") or {}, ok_field=str(r.get("ok_field", "")),
                 invalid=tuple(float(x) for x in r.get("invalid") or ()),
-                invalid_if_all_zero=bool(r.get("invalid_if_all_zero", False)),
                 poll_s=_opt_float(r.get("poll_s")),
                 values=tuple(ReadValue(control=v["control"], field=v["field"], path=str(v["path"]),
                                        offset=float(v.get("offset", 0)), scale=float(v.get("scale", 1)))
@@ -408,8 +401,7 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
             type=c["type"], template=c.get("template", {}),
             fields=tuple(_field(f) for f in c.get("fields") or []),
             stop=_ops(c["stop"]) if c.get("stop") else None,
-            prerequisites=tuple(c.get("prerequisites") or ()), ok_field=str(c.get("ok_field", "")),
-            sole_publisher=bool(c.get("sole_publisher", False)), group=str(c.get("group") or "")))
+            prerequisites=tuple(c.get("prerequisites") or ()), group=str(c.get("group") or "")))
         for f in controls[-1].fields:
             _check_field(f"{raw['id']}.controls.{c['id']}.{f.name}", f)
         if controls[-1].group and controls[-1].group not in {g.id for g in groups}:

@@ -362,7 +362,7 @@
   }
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
-    lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(), conflicts: new Map(),
+    lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(),
     padGroup: null, model: null, groups: [], poll: null, mo: null, changing: false });
 
   // ------------------------------------------------------------------ DOM helpers
@@ -654,11 +654,10 @@
   function parseRead(r, v) {
     if (!v || typeof v !== "object" || (r.ok_field && v[r.ok_field] === false)) throw new Error(`the service answered ${JSON.stringify(v).slice(0, 120)}`);
     const raws = r.values.map((m) => readPath(v, m.path));
-    const allZero = !!r.invalid_if_all_zero && raws.every((z) => Number(z) === 0);
     const vals = {};
     r.values.forEach((m, i) => {
       const raw = Number(raws[i]);
-      const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw) && !allZero;
+      const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw);
       (vals[m.control] = vals[m.control] || {})[m.field] = ok ? (raw - Number(m.offset || 0)) / (m.scale == null ? 1 : Number(m.scale)) : null;
     });
     return vals;
@@ -780,8 +779,7 @@
       } else if (c.kind === "call") {
         setStatus(c.id, "sending", "pending: waiting for the service answer…");
         conn.call(name, payload, 10000).then((v) => {
-          // A documented response field (the profile's ok_field) that is false is a failure.
-          const bad = v && ((c.ok_field && v[c.ok_field] === false) || v.result === false || v.success === false);
+          const bad = v && (v.result === false || v.success === false);
           if (bad) setStatus(c.id, "failed", "the service answered " + JSON.stringify(v));
           else setStatus(c.id, "done", "the service answered " + JSON.stringify(v).slice(0, 120));
         }, (e) => setStatus(c.id, "failed", e.message));
@@ -1042,7 +1040,6 @@
       const got = typeOf(g, e.kind, wire);
       if (!(e.kind === "action" && got === null) && normType(got) !== normType(e.type)) { reason = `prerequisite ${wire} has type ${got}, expected ${e.type}`; break; }
     }
-    if (!reason && S.conflicts.has(c.id)) reason = S.conflicts.get(c.id);
     const numeric = c.fields.filter((f) => !f.choices);
     // A control of a profile group is one compact row of the group's joint list.
     const row = !!c.group && (t.profile.groups || []).some((x) => x.id === c.group) && numeric.length > 0 && numeric.length === c.fields.length;
@@ -2152,8 +2149,6 @@
       return;
     }
     const t = S.target;
-    await checkSolePublishers(t, conn);
-    if (S.conn !== conn || S.target !== t) return;
     $("target").textContent = t.label; $("target-pill").dataset.state = "ok";
     $("robot").value = t.profile.id; $("namespace").value = t.namespace; syncNsField(); $("namespace").value = t.namespace;
     setValidation("ok", `${t.label} validated`,
@@ -2163,22 +2158,6 @@
     renderControls(); updateLock();
     startPoll(t, conn);                                         // validated: the read-only position poll
     if (S.mo && S.mo.t === t) moQueue(S.mo, () => moStartup(S.mo));   // validated: the start-up stop
-  }
-
-  // A publish control its profile marks `sole_publisher` is incompatible with any other node
-  // publishing its topic, whose messages would re-command the robot (e.g. a slider GUI publishing
-  // the topic a hardware node executes). rosapi names the publishers when the target validates (a
-  // read, nothing is sent to the robot); rosbridge's own node is ROS infrastructure and is ignored.
-  async function checkSolePublishers(t, conn) {
-    S.conflicts = new Map();
-    for (const c of t.profile.controls) {
-      if (!c.sole_publisher || c.kind !== "publish") continue;
-      const topic = t.wire(c.name);
-      try {
-        const pubs = ((await conn.call("/rosapi/publishers", { topic })).publishers || []).filter((n) => !INFRA.nodes.includes(n));
-        if (pubs.length) S.conflicts.set(c.id, `${topic} is also published by ${pubs.join(", ")}, whose messages would re-command the robot (incompatible prerequisite; see the profile)`);
-      } catch (e) { S.conflicts.set(c.id, `cannot check which nodes publish ${topic}: ${e.message}`); }
-    }
   }
 
   // Connection loss sends nothing: the controls are disabled and the page stays disconnected

@@ -1,7 +1,6 @@
 """The packaged profiles: complete, source-traced, typed in their dialect, bounded."""
 
 import copy
-import dataclasses
 import math
 import re
 
@@ -144,12 +143,6 @@ def test_reads_parse_documented_invalid_answers():
     x3 = load("rosmaster_x3_plus").reads[0]
     got = x3.parse({"angles": [80.0, 120.0, 10.0, 45.0, -1, 60.0]})
     assert got[("arm_pose", "j2")] == 120.0 and got[("arm_pose", "j5")] is None and got[("gripper", "angle")] == 60.0
-    # A node that answers all zeros when it cannot read the arm (invalid_if_all_zero): no packaged
-    # read documents that answer, so the ROSMASTER's read carries the flag here.
-    zeros = dataclasses.replace(x3, invalid=(), invalid_if_all_zero=True)
-    assert set(zeros.parse({"angles": [0.0] * 6}).values()) == {None}
-    got = zeros.parse({"angles": [0.0, 120.0, 10.0, 45.0, 0.0, 60.0]})
-    assert got[("arm_pose", "j1")] == 0.0 and got[("arm_pose", "j2")] == 120.0     # one zero is a reading
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -404,20 +397,6 @@ def test_profile_loader_refuses_inconsistent_maps_groups_and_polls():
     with pytest.raises(ValueError, match="at most one read is polled"):
         parse_profile(bad)
     assert parse_profile(raw).controls == load("ainex").controls
-
-
-def test_sole_publisher_controls_are_traced_topic_publishes():
-    """A control incompatible with other publishers of its topic says why, from the sources. No
-    packaged control is marked; the page's check runs on a marked variant (test_view_page.py)."""
-    marked = {(p.id, c.id) for p in load_all() for c in p.controls if c.sole_publisher}
-    assert marked == set()
-    for pid, cid in marked:
-        p = load(pid)
-        c = next(c for c in p.controls if c.id == cid)
-        raw = next(r for r in p.raw["controls"] if r["id"] == cid)
-        assert c.kind == "publish"
-        m = TRACE.match(raw["sole_publisher_source"])
-        assert m and m["key"] in p.sources and raw["sole_publisher_note"]
 
 
 @pytest.mark.parametrize("unknown", ["turtlebot", "so100"])

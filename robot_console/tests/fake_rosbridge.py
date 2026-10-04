@@ -166,7 +166,7 @@ class FakeRosbridge:
         s = dict(INFRA[self.dialect]["services"])
         for r in self.spec["services"]:
             s[r["name"]] = r["type"]
-        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type", "publishers"]
+        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type"]
         if self.dialect == "ros2":
             rosapi += ["action_servers", "get_ros_version"]
         for n in rosapi:
@@ -185,13 +185,6 @@ class FakeRosbridge:
             return {"type": self._topics().get(args.get("topic"), "")}
         if name == "/rosapi/nodes":
             return {"nodes": ["/rosbridge_websocket", "/rosapi", "/robot"]}
-        if name == "/rosapi/publishers":
-            # A row may list its publishing nodes; else the robot publishes its `out` topics.
-            row = next((r for r in self.spec["topics"] if r["name"] == args.get("topic")), None)
-            if row is None:
-                return {"publishers": []}
-            pubs = row.get("publishers", ["/robot"] if row.get("direction", "out") == "out" else [])
-            return {"publishers": list(pubs)}
         if name == "/rosapi/action_servers" and self.dialect == "ros2":
             return {"action_servers": [a["name"] for a in self.spec["actions"]]}
         if name == "/rosapi/get_ros_version" and self.dialect == "ros2":

@@ -13,7 +13,6 @@ pinned Google Drive archive. MuJoCo reads no COLLADA and no STL over 200000 face
 some files are also derived, deterministically and with the standard library only, under
 `<id>/derived_meshes/` (same relative path); the derived files are in the manifest too:
 
-* `<rel>.stl` from `<rel>.dae`: every triangle, one binary STL (collision geometry);
 * `<rel>.dae.mtl` + `<rel>.dae.m<k>.obj` from `<rel>.dae`: the visual mesh split into one
   OBJ per COLLADA material (positions, the file's normals and texture coordinates), and
   one MTL holding each material's own diffuse colour, opacity and texture image;
@@ -127,8 +126,6 @@ def origin_of(rel: str):
         m = re.match(r"(.+\.stl)\.part\d+\.stl$", sub, re.I)
         if m:
             return ("derive", f"{rid}/{m.group(1)}", "split")
-        if sub.endswith(".stl"):
-            return ("derive", f"{rid}/{sub[:-len('.stl')]}.dae", "stl")
         raise Refused(f"{rel}: not a derived file name fetch_meshes.py knows")
     for _rid, local, key, up in SOURCES:
         if rel.startswith(local):
@@ -241,27 +238,6 @@ def _node_matrix(node, ns):
             continue
         m = _mat_mul(m, t)
     return m
-
-
-def dae_triangles(path: Path) -> list[tuple[tuple[float, ...], ...]]:
-    """Every triangle of a COLLADA file's visual scene, in metres: the positions of
-    `dae_visual`'s triangles, material groups in order of first use."""
-    return [tuple(corner[0] for corner in tri) for _, tris in dae_visual(path) for tri in tris]
-
-
-def write_stl(path: Path, tris, source_name: str) -> None:
-    """Binary STL, byte-for-byte deterministic for a given input."""
-    header = f"derived from {source_name} by robots_specs/tools/fetch_meshes.py".encode()[:80]
-    with open(path, "wb") as f:
-        f.write(header.ljust(80, b"\0"))
-        f.write(struct.pack("<I", len(tris)))
-        for a, b, c in tris:
-            u = [b[i] - a[i] for i in range(3)]
-            v = [c[i] - a[i] for i in range(3)]
-            n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]
-            ln = math.sqrt(sum(x * x for x in n))
-            n = [x / ln for x in n] if ln > 0 else [0.0, 0.0, 0.0]
-            f.write(struct.pack("<12fH", *n, *a, *b, *c, 0))
 
 
 # ------------------------------------------------------------------ visual parts
@@ -494,10 +470,7 @@ def derive(src_rel: str, kind: str, stage: Path) -> None:
     rid, rest = src_rel.split("/", 1)
     out_dir = stage / rid / DERIVED_DIR / Path(rest).parent
     src = SPECS / src_rel
-    if kind == "stl":
-        out_dir.mkdir(parents=True, exist_ok=True)
-        write_stl(out_dir / (Path(rest).stem + ".stl"), dae_triangles(src), src.name)
-    elif kind == "visual":
+    if kind == "visual":
         write_visual(src, src_rel, out_dir)
     elif kind == "split":
         write_split(src, out_dir)

@@ -784,48 +784,23 @@ def test_numbers_read_the_same_in_every_locale(view):
     assert ",3" not in page.locator(".pad-readout").inner_text()
 
 
-def test_all_zero_answer_is_no_reading(view, monkeypatch):
-    """A read marked invalid_if_all_zero (a node that answers its response defaults, all zeros,
-    when it cannot read the arm) shows an all-zero answer as no reading, which cannot be copied
-    into the targets; a single zero is a reading. No packaged read is marked, so the page is
-    handed a ROSMASTER whose /CurrentAngle read is."""
-    x3 = load("rosmaster_x3_plus")
-    serve_variants(monkeypatch, dataclasses.replace(x3, reads=tuple(
-        dataclasses.replace(r, invalid=(), invalid_if_all_zero=True) for r in x3.reads)))
-    srv, page = view(wire_spec(x3))
-    started(page)
-    srv.set_service("/CurrentAngle", lambda args: {"angles": [0.0] * 6})
-    control(page, "arm_pose").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'invalid'")
-    assert {read_value(page, "arm_pose", f).get_attribute("data-state") for f in ("j1", "j2", "gripper")} == {"invalid"}
-    assert read_value(page, "gripper", "angle").get_attribute("data-state") == "invalid"
-    assert control(page, "arm_pose").get_by_role("button", name="Use measured").is_disabled()
-    srv.set_service("/CurrentAngle", lambda args: {"angles": [0.0, 120.0, 10.0, 45.0, 90.0, 60.0]})
-    control(page, "arm_pose").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'read'")
-    assert "+120.0 deg" in read_value(page, "arm_pose", "j2").inner_text()
-    assert len(srv.calls("/CurrentAngle")) == 2 and srv.published("/TargetAngle") == []
-
-
 # ------------------------------------------------------------------ sending, done and failed states
 
 def phase(page, cid):
     return control(page, cid).get_attribute("data-phase")
 
 
-def ainex_stand_with_a_field(ok_field="ok"):
-    """No packaged call control takes a value or documents a response field that is false on
-    failure (the AiNex's Stand is a std_srvs/Empty call), so these tests hand the page an AiNex
-    whose Stand call takes a bounded `duration` and answers `ok_field`."""
+def ainex_stand_with_a_field():
+    """No packaged call control takes a value (the AiNex's Stand is a std_srvs/Empty call), so
+    these tests hand the page an AiNex whose Stand call takes a bounded `duration`."""
     p = load("ainex")
     duration = Field(name="duration", label="Duration", min=0.2, max=2.0, default=0.5, unit="s")
     return dataclasses.replace(p, controls=tuple(
-        dataclasses.replace(c, template={"duration": "$duration"}, fields=(duration,), ok_field=ok_field)
+        dataclasses.replace(c, template={"duration": "$duration"}, fields=(duration,))
         if c.id == "init_pose" else c for c in p.controls))
 
 
-def test_each_control_shows_its_sending_done_and_failed_state(view, monkeypatch):
-    serve_variants(monkeypatch, ainex_stand_with_a_field())
+def test_each_control_shows_its_sending_done_and_failed_state(view):
     srv, page = view(wire_spec(load("ainex")))
     started(page)
     assert phase(page, "init_pose") is None                                   # nothing sent yet
@@ -833,11 +808,10 @@ def test_each_control_shows_its_sending_done_and_failed_state(view, monkeypatch)
     control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_timeout(200)
     assert phase(page, "init_pose") == "sending" and status(page, "init_pose").startswith("sending")
-    # The documented response field (the profile's ok_field) is false: the call failed.
-    srv.set_service("/walking/init_pose", lambda args: {"ok": False})
+    srv.set_service("/walking/init_pose", "fail")                             # a service error: the call failed
     control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_function("document.querySelector('[data-control=init_pose]').dataset.phase === 'failed'")
-    srv.set_service("/walking/init_pose", lambda args: {"ok": True})
+    srv.set_service("/walking/init_pose", lambda args: {})
     control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_function("document.querySelector('[data-control=init_pose]').dataset.phase === 'done'")
     drag(page, "head_pan", "position", 0.5, 0.6, steps=5, step_ms=40)
@@ -932,30 +906,6 @@ def test_unsupported_controls_remain_unavailable(view, monkeypatch):
     assert not disabled(page2, "arm_pose")
     assert control(page2, "arm_pose").locator('[data-testid="read"]').count() == 0     # its read is absent
     only_startup(srv2, page2, "rosmaster_x3_plus")
-
-
-def test_incompatible_prerequisite_leaves_the_control_unavailable(view, monkeypatch):
-    """A publish control marked sole_publisher (a boot that executes every message on its topic)
-    is unavailable while another node publishes that topic, and names it; rosbridge's own node (an
-    earlier page's publication) is infrastructure. No packaged control is marked, so the page is
-    handed a ROSMASTER whose arm pose is (its other /TargetAngle control is not)."""
-    x3 = load("rosmaster_x3_plus")
-    serve_variants(monkeypatch, dataclasses.replace(x3, controls=tuple(
-        dataclasses.replace(c, sole_publisher=True) if c.id == "arm_pose" else c for c in x3.controls)))
-
-    def spec_with(pubs):
-        s = wire_spec(x3)
-        next(r for r in s["topics"] if r["name"] == "/TargetAngle")["publishers"] = pubs
-        return s
-    srv, page = view(spec_with(["/transport_main"]))
-    assert page.locator('[data-testid="target"]').inner_text() == "rosmaster_x3_plus"
-    reason = control(page, "arm_pose").locator('[data-testid="unavailable"]').inner_text()
-    assert "/transport_main" in reason and "re-command" in reason
-    assert disabled(page, "arm_pose") and not disabled(page, "gripper")
-    only_startup(srv, page, "rosmaster_x3_plus")
-    srv2, page2 = view(spec_with(["/rosbridge_websocket"]))
-    assert not disabled(page2, "arm_pose")
-    assert control(page2, "arm_pose").locator('[data-testid="unavailable"]').count() == 0
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)

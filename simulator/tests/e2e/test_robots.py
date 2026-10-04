@@ -54,10 +54,8 @@ def robot(request, sim, logdir):
     sp.at_ready = readiness(WIRE_PORT, rid) + outputs_at_ready(sp)
     sp.sim = sim
     sp.placement = placement
-    sp.ended_by_test = False      # test_limits ends a robot whose node ends, as recorded
     yield sp
-    code = sp.stop()
-    assert code == 0 or sp.ended_by_test
+    assert sp.stop() == 0
     assert wait_no_containers(f"label=rsim.sim_port={sim.port}") == []
 
 
