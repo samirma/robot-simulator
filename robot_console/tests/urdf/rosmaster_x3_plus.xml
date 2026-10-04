@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The vendor kinematics behind the rosmaster_x3_plus profile's `model`: console spec §2.2 makes the robot's
+     URDF the reference for the page's 3D model. Each <excerpt> is lines `lines` of `path` in the
+     pinned source exactly as written there (indentation aside): every joint of the file, or every
+     static transform of a launch file (drawn="false": a fixed frame the model does not draw), and
+     the inertial origins the model draws links to. test_view_urdf.py reads them with URDF semantics
+     and checks the profile's model rows against them; live/test_live_urdf.py (opt in) checks them
+     against the pinned files. -->
+<vendor robot="rosmaster_x3_plus">
+  <file source="yahboomcar_ws" path="src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf"
+        archive_sha256="13d752e04cba3e34116912c3903bbe194e5ca5185c304036fb0ddedb59937162"
+        sha256="17c7c8fac92774f0d0cd093fb7500704d3b5149998cb8b60c958f5352646919c">
+    <excerpt lines="33-37">
+      <joint name="base_joint" type="fixed">
+          <parent link="base_footprint"/>
+          <child link="base_link"/>
+          <origin xyz="0.0 0.0 0.076" rpy="0 0 0"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="38-42" drawn="false">
+      <joint name="base_imu" type="fixed">
+          <parent link="base_link"/>
+          <child link="imu_link"/>
+          <origin xyz="0.001 0.017 0.0322" rpy="0 3.1415 1.5707"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="71-75">
+      <joint name="astra_joint" type="fixed">
+          <origin xyz="-0.043645 0 0.41955" rpy="0 0 0"/>
+          <parent link="base_link"/>
+          <child link="camera_link"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="104-108">
+      <joint name="laser_joint" type="fixed">
+          <origin xyz="0.10478 0 0.0471" rpy="0 0 0"/>
+          <parent link="base_link"/>
+          <child link="laser_link"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="138-144">
+      <joint name="arm_joint1" type="revolute">
+          <origin xyz="0.09825 0 0.102" rpy="0 0 0"/>
+          <parent link="base_link"/>
+          <child link="arm_link1"/>
+          <axis xyz="0 0 -1"/>
+          <limit lower="-1.5708" upper="1.5708" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="173-179">
+      <joint name="arm_joint2" type="revolute">
+          <origin xyz="0 0 0.0405" rpy="-1.5708 0 0"/>
+          <parent link="arm_link1"/>
+          <child link="arm_link2"/>
+          <axis xyz="0 0 -1"/>
+          <limit lower="-1.5708" upper="1.5708" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="208-214">
+      <joint name="arm_joint3" type="revolute">
+          <origin xyz="0 -0.0829 0" rpy="0 0 0"/>
+          <parent link="arm_link2"/>
+          <child link="arm_link3"/>
+          <axis xyz="0 0 -1"/>
+          <limit lower="-1.5708" upper="1.5708" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="243-249">
+      <joint name="arm_joint4" type="revolute">
+          <origin xyz="0 -0.0829 0" rpy="0 0 0"/>
+          <parent link="arm_link3"/>
+          <child link="arm_link4"/>
+          <axis xyz="0 0 -1"/>
+          <limit lower="-1.5708" upper="1.5708" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="278-284">
+      <joint name="arm_joint5" type="revolute">
+          <origin xyz="-0.00215 -0.17455 0" rpy="1.5708 0 0"/>
+          <parent link="arm_link4"/>
+          <child link="arm_link5"/>
+          <axis xyz="0 0 1"/>
+          <limit lower="-1.5708" upper="3.14159" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="314-320">
+      <joint name="grip_joint" type="revolute">
+          <origin xyz="-0.0035 -0.012625 -0.0685" rpy="0 -1.5708 0"/>
+          <parent link="arm_link5"/>
+          <child link="rlink1"/>
+          <axis xyz="0 0 1"/>
+          <limit lower="-1.54" upper="0" effort="100" velocity="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="349-355">
+      <joint name="rlink_joint2" type="continuous">
+          <origin xyz="0.03 -0.00075429 0" rpy="0 0 0"/>
+          <parent link="rlink1"/>
+          <child link="rlink2"/>
+          <axis xyz="0 0 1"/>
+          <mimic joint="grip_joint" multiplier="-1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="384-390">
+      <joint name="rlink_joint3" type="continuous">
+          <origin xyz="-0.0035 -0.0045 -0.0505" rpy="0 -1.5708 0"/>
+          <parent link="arm_link5"/>
+          <child link="rlink3"/>
+          <axis xyz="0 0 1"/>
+          <mimic joint="grip_joint" multiplier="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="419-425">
+      <joint name="llink_joint1" type="continuous">
+          <origin xyz="-0.0035 0.012375 -0.0685" rpy="0 -1.5708 0"/>
+          <parent link="arm_link5"/>
+          <child link="llink1"/>
+          <axis xyz="0 0 1"/>
+          <mimic joint="grip_joint" multiplier="-1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="449-455">
+      <joint name="llink_joint2" type="continuous">
+          <origin xyz="0.03 0.00065104 0" rpy="0 0 0"/>
+          <parent link="llink1"/>
+          <child link="llink2"/>
+          <axis xyz="0 0 1"/>
+          <mimic joint="grip_joint" multiplier="1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="479-485">
+      <joint name="llink_joint3" type="continuous">
+          <origin xyz="-0.0035 0.0045 -0.0505" rpy="0 -1.5708 0"/>
+          <parent link="arm_link5"/>
+          <child link="llink3"/>
+          <axis xyz="0 0 1"/>
+          <mimic joint="grip_joint" multiplier="-1"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="510-514">
+      <joint name="mono_joint" type="fixed">
+          <origin xyz="-0.0481 -0.05145 -0.0022" rpy="1.5708 0 0"/>
+          <parent link="arm_link4"/>
+          <child link="mono_link"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="323" inertial="rlink2">
+      <origin xyz="0.021158 0.0063295 -0.0030251" rpy="0 0 0"/>
+    </excerpt>
+    <excerpt lines="358" inertial="rlink3">
+      <origin xyz="0.014355 1.1499E-05 -0.0033992" rpy="0 0 0"/>
+    </excerpt>
+    <excerpt lines="428" inertial="llink2">
+      <origin xyz="0.021159 -0.0063248 -0.0030251" rpy="0 0 0"/>
+    </excerpt>
+    <excerpt lines="458" inertial="llink3">
+      <origin xyz="0.014354 -7.4795E-05 -0.0033992" rpy="0 0 0"/>
+    </excerpt>
+  </file>
+</vendor>

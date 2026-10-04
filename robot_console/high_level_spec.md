@@ -7,8 +7,8 @@ sibling source tree. No other document or code in the console may contradict thi
 This document defines only the console's requirements, subject to the shared goal and
 project boundary in [`../high_level_spec.md`](../high_level_spec.md). The designated robot
 reference is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md)
-together with its robot files `../robots_specs/<id>.md` (amended 2026-10-02: the robot
-sections moved into those files), referred to below as the **robot specification**. It
+together with its robot files `../robots_specs/<id>.md`, referred to below as the
+**robot specification**. It
 identifies robots and pinned interface sources. The console independently derives and
 packages the interface facts it needs from those sources. The simulator's specification
 and implementation are not authoritative for the console.
@@ -56,9 +56,9 @@ documented prerequisites; incompatible or missing prerequisites leave it unavail
 with a visible reason. Profiles must ship with the console and be inspectable without
 robot firmware or the workspace's robot asset folders.
 
-`--robot` selects one of these profiles. When omitted, select automatically only if
-discovery uniquely identifies a supported profile and target; otherwise refuse commands
-and ask for explicit selection. An explicit profile must still pass typed validation.
+`--robot` selects one of these profiles. When it is omitted, the console selects a profile
+automatically only if discovery uniquely identifies a supported profile and target;
+otherwise it refuses commands and asks for explicit selection. An explicit profile must still pass typed validation.
 `teleop.sh` refuses an unknown id, an arm id, or an automatically identified arm target,
 listing the teleoperable ids (`myagv`, `ainex`, `rosmaster_x3_plus`).
 
@@ -86,13 +86,12 @@ teleop.sh [--robot <id>] [--namespace <name>] [--url ws://…]
     strafes through its gait);
   * `Q`/`E`: rotate left (counter-clockwise) and right (clockwise).
 * **Head keys** (`ainex` only): the arrow keys move the head within its documented
-  limits — Left/Right pan, Up/Down tilt — in the direction of the key as the robot's
-  model turns it (amended 2026-10-02: Left turns the head to the robot's left, which is a
-  negative `head_pan` on the model's −Z axis). They are not motion keys and never request the
-  walking stop.
+  limits — Left/Right pan, Up/Down tilt — in the key's direction as seen on the robot's
+  model: Left turns the head to the robot's left, which is a negative `head_pan` about the
+  model's −Z axis. They are not motion keys and never request the walking stop.
 * **Other keys.** `Space` stops (below). `Esc` quits as an ordinary exit. Commands are
-  enabled automatically once the start-up stop has been delivered (amended 2026-10-02): no key is
-  needed to start controlling the robot. `Enter` explicitly re-enables commands after a
+  enabled automatically once the start-up stop has been delivered; no key is needed to
+  start controlling the robot. `Enter` explicitly re-enables commands after a
   failed stop, including a failed start-up stop.
 * **Motion lifecycle.** Motion is hold-to-move: release of a motion key removes its
   contribution, and release of the last motion key requests the profile's documented
@@ -137,15 +136,19 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
 * Robot selection, and namespace selection where supported, follows §1.1. Without a
   validated target the page shows the reason and a robot selector, and offers no controls.
 * Controls are live as soon as the target passes typed validation; there is no arm or
-  enable step. Nothing is sent before validation or on load.
+  enable step. Nothing is sent before validation or on load, with one exception: once the
+  target is validated, the page may poll the profile's documented read-only joint-position
+  query about once per second, so that the model follows a robot that publishes no joint
+  states. This poll never commands motion and stops on connection loss or target change.
   A value the user changes is sent to the validated target immediately:
   * a topic-publish control publishes while its slider, or the AiNex head pad, is dragged,
     at about 10 messages per second.
+* The page supports performing actions, as `teleop.sh` does.
 * The page shows a 3D model of the selected target's embodiment in its current pose,
-  updated from the joint positions the robot reports (amended 2026-10-02): when an arm
-  joint moves, the same joint in the model turns by the same angle. Each movable joint
-  that a catalog control commands can be clicked in the model to change that control's
-  value.
+  updated from the joint positions the robot reports: when an arm joint moves, the same
+  joint in the model turns by the same angle. Each movable joint that a catalog control
+  commands can be clicked in the model to change that control's value. The model is built
+  from the robot's URDF.
 * Every joint and topic that a control commands can be edited on the page and shows the
   robot's current value, where the profile documents feedback for it.
 * Every control commands a single finite target. Values are clamped to the documented
@@ -221,8 +224,8 @@ disable and require explicit re-enablement plus fresh input. Test lost teleop co
 without claiming a stop was delivered.
 
 For the page, on ROS 1 and ROS 2 wires, verify that:
-* nothing is sent before validation or on load, and the page has no arm switch, stop
-  button or `Esc` behaviour;
+* nothing is sent before validation or on load, apart from the read-only joint-position
+  poll after validation, and the page has no arm switch, stop button or `Esc` behaviour;
 * dragging a topic-publish or action control streams throttled values and delivers the
   final value;
 * action goals preempt one another, and their connections stay bounded;
@@ -237,5 +240,4 @@ Verify that no base-drive or walking command is exposed.
 Verify `python -m robot_console.fleet` passes on a matching wire and exits non-zero on
 wrong types, missing required endpoints, ambiguous candidates (naming the candidates
 found), a wire with no supported robot and an unreachable wire.
-Verify that unknown robot ids are refused (amended 2026-10-02: the robot specification no
-longer defines an assembly, so a former assembly id is an ordinary unknown id).
+Verify that unknown robot ids are refused.

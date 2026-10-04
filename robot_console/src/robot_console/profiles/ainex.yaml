@@ -216,7 +216,10 @@ topics:
     rate_hz: null
     optional: false
     source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L47"
-    note: "raw servo pulses 0..1000 + duration s; used by ainex_controller MotionManager (motion_manager.py#L20,#L32-L42)"
+    note: >-
+      {duration s, position: [{id, position 0..1000 pulses}]} (ainex:src/ainex_driver/ros_robot_controller/msg/SetBusServosPosition.msg#L1-L2,
+      msg/BusServoPosition.msg#L1-L2), passed to the board as given (node #L121-L126); used by ainex_controller's
+      MotionManager (motion_manager.py#L20,#L23-L42) and by the page's per-servo controls (one servo id per message)
   - name: /ros_robot_controller/enable_reception
     type: std_msgs/Bool
     direction: in
@@ -565,9 +568,43 @@ head:
       (ainex.urdf.xacro#L845-L847). Positive = higher pulse = up (app 'up' 500 vs 'down' 300, app_node.py#L144-L146).
     policy: "slew 1.0 rad/s; duration 0.2 s per command"
 
+# The page lists the controls of one group together, as one compact joint list, under the group's label
+# and note. Every servo of the body has one control: the head through the controller's head topics, the
+# other 22 servos through the board driver's set_position topic, one servo id per message.
+groups:
+  - id: head
+    label: "Head"
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156-L157,#L337-L343"
+  - id: left_arm
+    label: "Left arm"
+    note: &arm_note >-
+      Stand (init pose) and action groups also command these servos and overwrite these targets;
+      walking with arm swing sets the shoulder pitch too.
+    source: &arm_source "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L186-L209,#L309-L316,#L375-L384"
+  - id: right_arm
+    label: "Right arm"
+    note: *arm_note
+    source: *arm_source
+  - id: left_leg
+    label: "Left leg"
+    note: &leg_note >-
+      Walking, Stand (init pose) and action groups also command these servos and overwrite these targets.
+    source: &leg_source "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L186-L209,#L297-L308,#L375-L384"
+  - id: right_leg
+    label: "Right leg"
+    note: *leg_note
+    source: *leg_source
+groups_note: >-
+  Group notes: the gait loop sends the leg servos and, with arm swing, both shoulder pitches (ainex_controller.py#L186-L209,
+  #L195); Stand (/walking/init_pose) sends the arm servos outside the gait (#L309-L316) and restarts the gait module, which
+  brings the legs and shoulder pitches back to its init position (#L297-L308); an action group plays every servo column of its
+  .d6a and then Stand (#L375-L384; ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L85-L90).
+  A direct set_position does not change the gait's own joint state (#L194-L201), so it holds until one of these runs.
+
 controls:
   - id: head_pan
     label: "Head pan"
+    group: head
     kind: publish
     name: /head_pan_controller/command
     type: ainex_interfaces/HeadState
@@ -580,6 +617,7 @@ controls:
     source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L156,#L337-L339"
   - id: head_tilt
     label: "Head tilt"
+    group: head
     kind: publish
     name: /head_tilt_controller/command
     type: ainex_interfaces/HeadState
@@ -590,6 +628,297 @@ controls:
     stop: null
     prerequisites: [/head_tilt_controller/command]
     source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L157,#L341-L343"
+  # ---- one control per body servo: /ros_robot_controller/bus_servo/set_position with a single servo id.
+  # position (rad) goes on the wire as the controller's angle2pulse: pulse = init + round(rad * coef), coef =
+  # +-180/3.1415926/240*1000 (negative when the servo's min > max) from servo_controller.yaml
+  # (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L24-L25,#L92-L104,#L320-L322). Limits: the
+  # servo's 0..1000 pulses in rad, within the URDF's +-2.09, rounded inward to 0.001 rad. Default: init_pose.yaml.
+  - id: l_sho_pitch
+    label: "Left shoulder pitch"
+    group: left_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 13, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_sho_pitch (servo 13)", min: -0.523, max: 2.09, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L62-L71", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1207-L1227", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L8", to_wire: {offset: 875, scale: -238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 13: init 875, pulses 1000..0 (flipped: min > max); limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: &servo_duration "console policy, as the head controls: 0.2..2 s, default 0.5. Documented range 0.02..30 s (ainex:src/ainex_tutorial/scripts/serial_servo/serial_servo_move_demo.py#L14); the board takes int(duration*1000) ms (ainex:src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L438-L440)"}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L55"
+  - id: l_sho_roll
+    label: "Left shoulder roll"
+    group: left_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 15, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_sho_roll (servo 15)", min: -2.09, max: 2.09, default: 1.293, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L72-L81", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1264-L1284", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L9", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 15: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L56"
+  - id: l_el_pitch
+    label: "Left elbow pitch"
+    group: left_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 17, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_el_pitch (servo 17)", min: -2.09, max: 2.09, default: -0.1, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L82-L91", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1321-L1341", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L10", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 17: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L58"
+  - id: l_el_yaw
+    label: "Left elbow yaw"
+    group: left_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 19, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_el_yaw (servo 19)", min: -2.09, max: 2.09, default: -1.926, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L92-L101", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1378-L1398", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L11", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 19: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L60"
+  - id: l_gripper
+    label: "Left hand (gripper)"
+    group: left_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 21, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_gripper (servo 21)", min: -2.09, max: 2.09, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L102-L111", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1435-L1455", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L12", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 21: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L62"
+  - id: r_sho_pitch
+    label: "Right shoulder pitch"
+    group: right_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 14, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_sho_pitch (servo 14)", min: -2.09, max: 0.523, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L172-L181", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L922-L942", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L19", to_wire: {offset: 125, scale: -238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 14: init 125, pulses 1000..0 (flipped: min > max); limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L54"
+  - id: r_sho_roll
+    label: "Right shoulder roll"
+    group: right_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 16, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_sho_roll (servo 16)", min: -2.09, max: 2.09, default: -1.293, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L182-L191", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L979-L999", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L20", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 16: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L57"
+  - id: r_el_pitch
+    label: "Right elbow pitch"
+    group: right_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 18, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_el_pitch (servo 18)", min: -2.09, max: 2.09, default: 0.1, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L192-L201", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1036-L1056", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L21", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 18: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L59"
+  - id: r_el_yaw
+    label: "Right elbow yaw"
+    group: right_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 20, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_el_yaw (servo 20)", min: -2.09, max: 2.09, default: 1.926, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L202-L211", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1093-L1113", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L22", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 20: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L61"
+  - id: r_gripper
+    label: "Right hand (gripper)"
+    group: right_arm
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 22, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_gripper (servo 22)", min: -2.09, max: 2.09, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L212-L221", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1150-L1170", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L23", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 22: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L63"
+  - id: l_hip_yaw
+    label: "Left hip yaw"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 11, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_hip_yaw (servo 11)", min: -2.09, max: 2.09, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L52-L61", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L433-L453", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L6", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 11: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L48"
+  - id: l_hip_roll
+    label: "Left hip roll"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 9, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_hip_roll (servo 9)", min: -2.09, max: 2.09, default: 0.016, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L42-L51", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L490-L510", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L5", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 9: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L49"
+  - id: l_hip_pitch
+    label: "Left hip pitch"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 7, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_hip_pitch (servo 7)", min: -2.09, max: 2.09, default: -0.828, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L32-L41", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L547-L567", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L4", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 7: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L50"
+  - id: l_knee
+    label: "Left knee"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 5, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_knee (servo 5)", min: -1.005, max: 2.09, default: 1.192, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L22-L31", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L604-L624", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L7", to_wire: {offset: 240, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 5: init 240, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L51"
+  - id: l_ank_pitch
+    label: "Left ankle pitch"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 3, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_ank_pitch (servo 3)", min: -2.09, max: 2.09, default: 0.625, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L12-L21", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L661-L681", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L2", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 3: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L52"
+  - id: l_ank_roll
+    label: "Left ankle roll"
+    group: left_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 1, position: "$position"}]}
+    fields:
+      - {name: position, label: "l_ank_roll (servo 1)", min: -2.09, max: 2.09, default: 0.016, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L2-L11", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L718-L738", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L3", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 1: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L53"
+  - id: r_hip_yaw
+    label: "Right hip yaw"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 12, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_hip_yaw (servo 12)", min: -2.09, max: 2.09, default: 0, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L162-L171", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L91-L111", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L17", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 12: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L42"
+  - id: r_hip_roll
+    label: "Right hip roll"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 10, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_hip_roll (servo 10)", min: -2.09, max: 2.09, default: -0.016, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L152-L161", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L148-L168", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L16", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 10: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L43"
+  - id: r_hip_pitch
+    label: "Right hip pitch"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 8, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_hip_pitch (servo 8)", min: -2.09, max: 2.09, default: 0.828, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L142-L151", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L205-L225", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L15", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 8: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L44"
+  - id: r_knee
+    label: "Right knee"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 6, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_knee (servo 6)", min: -2.09, max: 1.005, default: -1.192, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L132-L141", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L262-L282", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L18", to_wire: {offset: 760, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 6: init 760, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L45"
+  - id: r_ank_pitch
+    label: "Right ankle pitch"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 4, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_ank_pitch (servo 4)", min: -2.09, max: 2.09, default: -0.625, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L122-L131", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L319-L339", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L13", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 4: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L46"
+  - id: r_ank_roll
+    label: "Right ankle roll"
+    group: right_leg
+    kind: publish
+    name: /ros_robot_controller/bus_servo/set_position
+    type: ros_robot_controller/SetBusServosPosition
+    template: {duration: "$duration", position: [{id: 2, position: "$position"}]}
+    fields:
+      - {name: position, label: "r_ank_roll (servo 2)", min: -2.09, max: 2.09, default: -0.016, unit: rad, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L112-L121", limit_source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L376-L396", default_source: "ainex:src/ainex_driver/ainex_kinematics/config/init_pose.yaml#L14", to_wire: {offset: 500, scale: 238.7324187, integer: true, min: 0, max: 1000, source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L92-L104,#L320-L322"}, note: "servo 2: init 500, pulses 0..1000; limits = that range in rad, within the URDF's +-2.09; default = init pose"}
+      - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: *servo_duration}
+    stop: null
+    prerequisites: [/ros_robot_controller/bus_servo/set_position]
+    source: "ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L47"
   - id: init_pose
     label: "Stand (init pose)"
     kind: call
@@ -647,15 +976,60 @@ reads:
       axis's position comes from the read value of the control that publishes the same topic field). Request
       {id: [...]}, response {success, position: [{id, position}]} (ros_robot_controller/srv/GetBusServosPosition.srv,
       msg/BusServoPosition.msg) with a servo left out when it could not be read (#L130-L136). Pulses map to the controls' rad with the controller's relation
-      pulse = 500 + rad * 180/pi/240*1000 (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L25,#L320-L322;
-      init 500, not flipped, ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L241). Called only
-      when the user clicks the read button.
+      pulse = 500 + rad * 180/3.1415926/240*1000 (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L25,#L320-L326;
+      init 500, not flipped, ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L241). The page
+      reads the head through joint_positions below.
     values:
-      - {control: head_pan, field: position, path: "position[id=23].position", offset: 500, scale: 238.7324146, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L231"}
-      - {control: head_tilt, field: position, path: "position[id=24].position", offset: 500, scale: 238.7324146, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L232-L241"}
+      - {control: head_pan, field: position, path: "position[id=23].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L231"}
+      - {control: head_tilt, field: position, path: "position[id=24].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L232-L241"}
+  - id: joint_positions
+    service: /ros_robot_controller/bus_servo/get_position
+    type: ros_robot_controller/GetBusServosPosition
+    request: {id: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]}
+    ok_field: success
+    poll_s: 1.0
+    poll_policy: >-
+      console policy: the documented read-only joint-position query the page polls once the target is validated
+      (console spec §2.2, amended 2026-10-03), one call at a time, about every second, never before validation, stopped on
+      connection loss or target change. It only reads (the node answers from bus_servo_read_position, #L128-L137); on the
+      hardware every servo is one serial round trip, retried on a 0.1 s timeout
+      (ainex:src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L446-L465), so the
+      next call waits for the answer.
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L48,#L128-L137"
+    note: >-
+      Bus-servo readback of all 24 servos: the model's feedback and each control's measured value. The vendor reads servos
+      the same way (MotionManager.get_servos_position, ainex:src/ainex_driver/ainex_kinematics/src/ainex_kinematics/motion_manager.py#L19,#L44-L58;
+      the controller's pulse2angle, ainex_controller.py#L324-L326). Each value maps back with its servo's init and coefficient
+      from servo_controller.yaml (the inverse of the controls' to_wire map); a servo left out of the answer has no value.
+    values:
+      - {control: l_ank_roll, field: position, path: "position[id=1].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L2-L11"}
+      - {control: r_ank_roll, field: position, path: "position[id=2].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L112-L121"}
+      - {control: l_ank_pitch, field: position, path: "position[id=3].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L12-L21"}
+      - {control: r_ank_pitch, field: position, path: "position[id=4].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L122-L131"}
+      - {control: l_knee, field: position, path: "position[id=5].position", offset: 240, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L22-L31"}
+      - {control: r_knee, field: position, path: "position[id=6].position", offset: 760, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L132-L141"}
+      - {control: l_hip_pitch, field: position, path: "position[id=7].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L32-L41"}
+      - {control: r_hip_pitch, field: position, path: "position[id=8].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L142-L151"}
+      - {control: l_hip_roll, field: position, path: "position[id=9].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L42-L51"}
+      - {control: r_hip_roll, field: position, path: "position[id=10].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L152-L161"}
+      - {control: l_hip_yaw, field: position, path: "position[id=11].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L52-L61"}
+      - {control: r_hip_yaw, field: position, path: "position[id=12].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L162-L171"}
+      - {control: l_sho_pitch, field: position, path: "position[id=13].position", offset: 875, scale: -238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L62-L71"}
+      - {control: r_sho_pitch, field: position, path: "position[id=14].position", offset: 125, scale: -238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L172-L181"}
+      - {control: l_sho_roll, field: position, path: "position[id=15].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L72-L81"}
+      - {control: r_sho_roll, field: position, path: "position[id=16].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L182-L191"}
+      - {control: l_el_pitch, field: position, path: "position[id=17].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L82-L91"}
+      - {control: r_el_pitch, field: position, path: "position[id=18].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L192-L201"}
+      - {control: l_el_yaw, field: position, path: "position[id=19].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L92-L101"}
+      - {control: r_el_yaw, field: position, path: "position[id=20].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L202-L211"}
+      - {control: l_gripper, field: position, path: "position[id=21].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L102-L111"}
+      - {control: r_gripper, field: position, path: "position[id=22].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L212-L221"}
+      - {control: head_pan, field: position, path: "position[id=23].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L222-L231"}
+      - {control: head_tilt, field: position, path: "position[id=24].position", offset: 500, scale: 238.7324187, source: "ainex:src/ainex_driver/ainex_kinematics/config/servo_controller.yaml#L232-L241"}
 reads_note: >-
   A read maps each answered value to a control field as field = (raw - offset) / scale. The page calls a read service
-  only when the user clicks its button; it is never called on load.
+  only when the user clicks its button, except a read with poll_s, which it calls about every poll_s seconds once the
+  target is validated (console spec §2.2, amended 2026-10-03); nothing is read before validation or on load.
 
 model:
   source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro"
@@ -663,38 +1037,43 @@ model:
     Kinematic description for the page's 3D model, taken from the pinned vendor URDF: joint origins, axes and limits as written
     there (head_pan turns about -Z, so a negative head_pan turns the head to the robot's left, #L786-L787). Links are drawn as sticks
     between joint origins, terminal links to their centre of mass; torso and head as boxes bounding their meshes. The fixed camera
-    and imu frames are not drawn (the URDF attaches the camera to body_link, not to the head). The boot reports no joint positions
-    (no /joint_states; servo positions are only readable by calling the /ros_robot_controller/bus_servo/get_position service,
-    see reads.head_position, which the page calls only on a click), so the model has no feedback and draws
-    the head at the page's targets.
+    and imu frames are not drawn (the URDF attaches the camera to body_link, not to the head). The boot publishes no joint
+    positions (no /joint_states, so feedback is null); the page polls reads.joint_positions instead and draws each joint at the
+    measured value of the control field that commands it. Every joint is commanded by the control of its servo, in the URDF
+    joint's own rad: the controller sends the same goal_position to the Gazebo joint controller or, through angle2pulse, to
+    the servo (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L196-L203). That is shown for the gait's
+    joints (legs, shoulder pitch). Open for the other arm joints: the vendor's standing pose (init_pose.yaml#L9, l_sho_roll
+    1.293) drawn on the URDF's axes holds the arms raised, while the vendor's Gazebo spawn puts them down at l_sho_roll -1.403
+    (ainex:src/ainex_simulations/ainex_gazebo/launch/spwan_model.launch#L5); whether the shoulder-roll servos turn with the
+    URDF axis is not documented, so check it on the hardware.
   root: base_link
   feedback: null
   joints:
     - {name: base_link_to_body, type: fixed, parent: base_link, child: body_link, xyz: [0, 0, 0], rpy: [0, 0, 0], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L14-L17"}
-    - {name: r_hip_yaw, type: revolute, parent: body_link, child: r_hip_yaw_link, xyz: [0, -0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L91-L111"}
-    - {name: r_hip_roll, type: revolute, parent: r_hip_yaw_link, child: r_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L148-L168"}
-    - {name: r_hip_pitch, type: revolute, parent: r_hip_roll_link, child: r_hip_pitch_link, xyz: [0.0190366, -0.02, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L205-L225"}
-    - {name: r_knee, type: revolute, parent: r_hip_pitch_link, child: r_knee_link, xyz: [-0.000372039, 5e-05, -0.0968862], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L262-L282"}
-    - {name: r_ank_pitch, type: revolute, parent: r_knee_link, child: r_ank_pitch_link, xyz: [0.00103699, 0, -0.0890766], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L319-L339"}
-    - {name: r_ank_roll, type: revolute, parent: r_ank_pitch_link, child: r_ank_roll_link, xyz: [-0.0190366, 0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L376-L396"}
-    - {name: l_hip_yaw, type: revolute, parent: body_link, child: l_hip_yaw_link, xyz: [0, 0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L433-L453"}
-    - {name: l_hip_roll, type: revolute, parent: l_hip_yaw_link, child: l_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L490-L510"}
-    - {name: l_hip_pitch, type: revolute, parent: l_hip_roll_link, child: l_hip_pitch_link, xyz: [0.019037, 0.02, 0], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L547-L567"}
-    - {name: l_knee, type: revolute, parent: l_hip_pitch_link, child: l_knee_link, xyz: [-0.00037204, -5e-05, -0.096886], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L604-L624"}
-    - {name: l_ank_pitch, type: revolute, parent: l_knee_link, child: l_ank_pitch_link, xyz: [0.001037, 0, -0.089077], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L661-L681"}
-    - {name: l_ank_roll, type: revolute, parent: l_ank_pitch_link, child: l_ank_roll_link, xyz: [-0.019037, -0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L718-L738"}
+    - {name: r_hip_yaw, type: revolute, parent: body_link, child: r_hip_yaw_link, xyz: [0, -0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, command: [{control: r_hip_yaw, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L91-L111"}
+    - {name: r_hip_roll, type: revolute, parent: r_hip_yaw_link, child: r_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, command: [{control: r_hip_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L148-L168"}
+    - {name: r_hip_pitch, type: revolute, parent: r_hip_roll_link, child: r_hip_pitch_link, xyz: [0.0190366, -0.02, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: r_hip_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L205-L225"}
+    - {name: r_knee, type: revolute, parent: r_hip_pitch_link, child: r_knee_link, xyz: [-0.000372039, 5.0e-05, -0.0968862], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: r_knee, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L262-L282"}
+    - {name: r_ank_pitch, type: revolute, parent: r_knee_link, child: r_ank_pitch_link, xyz: [0.00103699, 0, -0.0890766], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, command: [{control: r_ank_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L319-L339"}
+    - {name: r_ank_roll, type: revolute, parent: r_ank_pitch_link, child: r_ank_roll_link, xyz: [-0.0190366, 0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: r_ank_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L376-L396"}
+    - {name: l_hip_yaw, type: revolute, parent: body_link, child: l_hip_yaw_link, xyz: [0, 0.029, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, command: [{control: l_hip_yaw, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L433-L453"}
+    - {name: l_hip_roll, type: revolute, parent: l_hip_yaw_link, child: l_hip_roll_link, xyz: [-0.01955, 0, -0.0255], rpy: [0, 0, 0], axis: [-1, 0, 0], min: -2.09, max: 2.09, command: [{control: l_hip_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L490-L510"}
+    - {name: l_hip_pitch, type: revolute, parent: l_hip_roll_link, child: l_hip_pitch_link, xyz: [0.019037, 0.02, 0], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, command: [{control: l_hip_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L547-L567"}
+    - {name: l_knee, type: revolute, parent: l_hip_pitch_link, child: l_knee_link, xyz: [-0.00037204, -5.0e-05, -0.096886], rpy: [0, 0, 0], axis: [0, 1, 0], min: -2.09, max: 2.09, command: [{control: l_knee, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L604-L624"}
+    - {name: l_ank_pitch, type: revolute, parent: l_knee_link, child: l_ank_pitch_link, xyz: [0.001037, 0, -0.089077], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: l_ank_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L661-L681"}
+    - {name: l_ank_roll, type: revolute, parent: l_ank_pitch_link, child: l_ank_roll_link, xyz: [-0.019037, -0.02, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: l_ank_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L718-L738"}
     - {name: head_pan, type: revolute, parent: body_link, child: head_pan_link, xyz: [-0.00410029, 0, 0.1078], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.09, max: 2.09, command: [{control: head_pan, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L776-L796"}
     - {name: head_tilt, type: revolute, parent: head_pan_link, child: head_tilt_link, xyz: [0.00904595, -0.0185734, 0.0281579], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: head_tilt, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L833-L853"}
-    - {name: r_sho_pitch, type: revolute, parent: body_link, child: r_sho_pitch_link, xyz: [-5.46274e-05, -0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L922-L942"}
-    - {name: r_sho_roll, type: revolute, parent: r_sho_pitch_link, child: r_sho_roll_link, xyz: [0.0200035, -0.021506, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L979-L999"}
-    - {name: r_el_pitch, type: revolute, parent: r_sho_roll_link, child: r_el_pitch_link, xyz: [-0.0200035, -0.0741099, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1036-L1056"}
-    - {name: r_el_yaw, type: revolute, parent: r_el_pitch_link, child: r_el_yaw_link, xyz: [0.000397813, -0.0170183, 0.0190702], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1093-L1113"}
-    - {name: r_gripper, type: revolute, parent: r_el_yaw_link, child: r_gripper_link, xyz: [0.0198902, -0.0892356, -0.0190702], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1150-L1170"}
-    - {name: l_sho_pitch, type: revolute, parent: body_link, child: l_sho_pitch_link, xyz: [-5.4627e-05, 0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1207-L1227"}
-    - {name: l_sho_roll, type: revolute, parent: l_sho_pitch_link, child: l_sho_roll_link, xyz: [0.020003, 0.021507, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1264-L1284"}
-    - {name: l_el_pitch, type: revolute, parent: l_sho_roll_link, child: l_el_pitch_link, xyz: [-0.020003, 0.074109, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1321-L1341"}
-    - {name: l_el_yaw, type: revolute, parent: l_el_pitch_link, child: l_el_yaw_link, xyz: [0.00039506, 0.017019, 0.019072], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1378-L1398"}
-    - {name: l_gripper, type: revolute, parent: l_el_yaw_link, child: l_gripper_link, xyz: [0.019893, 0.089232, -0.019072], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1435-L1455"}
+    - {name: r_sho_pitch, type: revolute, parent: body_link, child: r_sho_pitch_link, xyz: [-5.46274e-05, -0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: r_sho_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L922-L942"}
+    - {name: r_sho_roll, type: revolute, parent: r_sho_pitch_link, child: r_sho_roll_link, xyz: [0.0200035, -0.021506, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: r_sho_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L979-L999"}
+    - {name: r_el_pitch, type: revolute, parent: r_sho_roll_link, child: r_el_pitch_link, xyz: [-0.0200035, -0.0741099, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: r_el_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1036-L1056"}
+    - {name: r_el_yaw, type: revolute, parent: r_el_pitch_link, child: r_el_yaw_link, xyz: [0.000397813, -0.0170183, 0.0190702], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, command: [{control: r_el_yaw, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1093-L1113"}
+    - {name: r_gripper, type: revolute, parent: r_el_yaw_link, child: r_gripper_link, xyz: [0.0198902, -0.0892356, -0.0190702], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: r_gripper, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1150-L1170"}
+    - {name: l_sho_pitch, type: revolute, parent: body_link, child: l_sho_pitch_link, xyz: [-5.4627e-05, 0.052491, 0.087448], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: l_sho_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1207-L1227"}
+    - {name: l_sho_roll, type: revolute, parent: l_sho_pitch_link, child: l_sho_roll_link, xyz: [0.020003, 0.021507, 0], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: l_sho_roll, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1264-L1284"}
+    - {name: l_el_pitch, type: revolute, parent: l_sho_roll_link, child: l_el_pitch_link, xyz: [-0.020003, 0.074109, 0], rpy: [0, 0, 0], axis: [0, -1, 0], min: -2.09, max: 2.09, command: [{control: l_el_pitch, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1321-L1341"}
+    - {name: l_el_yaw, type: revolute, parent: l_el_pitch_link, child: l_el_yaw_link, xyz: [0.00039506, 0.017019, 0.019072], rpy: [0, 0, 0], axis: [0, 0, 1], min: -2.09, max: 2.09, command: [{control: l_el_yaw, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1378-L1398"}
+    - {name: l_gripper, type: revolute, parent: l_el_yaw_link, child: l_gripper_link, xyz: [0.019893, 0.089232, -0.019072], rpy: [0, 0, 0], axis: [1, 0, 0], min: -2.09, max: 2.09, command: [{control: l_gripper, field: position}], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L1435-L1455"}
   tips:
     - {link: r_ank_roll_link, xyz: [0.0285085, -0.0128729, -0.017671], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L342-L345 (inertial origin: the link is drawn to its centre of mass)"}
     - {link: l_ank_roll_link, xyz: [0.028508, 0.012873, -0.017671], source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L684-L687 (inertial origin: the link is drawn to its centre of mass)"}

@@ -4,17 +4,34 @@
 #
 # Hiwonder ships its action groups (left_shot, greet, ...) as .d6a files on the robot image
 # only; none is in any pinned source (ros.yml boot.data_files), so no vendor group can be
-# played from the record. The groups below are arm and head motions defined here so that the
-# action-group motion has a playable, documented example. They are not Hiwonder motions.
+# played from the record. The groups below are defined here so that the action-group motion
+# has playable, documented groups. They are not Hiwonder motions:
+#
+# * `wave`, `raise_hands` and `nod`: arm and head motions with this record's own names.
+# * stand-ins under the vendor's own names (amended 2026-10-03): one group for every name the
+#   pinned vendor code plays (each group's `vendor_source` is the line that names it), so a
+#   client that plays a vendor name gets a visible motion resembling what the name says. They
+#   are invented: the vendor files' content is unknown. The pinned code also names `three` and
+#   `four`, only in commented-out lines (hand_gesture_control_node.py#L66-L68); they have no
+#   group. The documentation's action-editing lesson (chapter 5.1.3) also opens a forward
+#   walking group and one the reader makes; no pinned source plays them, so they have none.
 schema_version: 1
 robot_id: ainex
 basis: estimate
 reason: >-
-  No vendor action group is in a pinned source. These groups are invented motions of the
-  arms and head only, with both feet left at the init pose, so the robot stays standing. Each
-  joint target stays inside the URDF limit (+-2.09 rad) and inside the servo pulse range
-  0-1000 under servo_controller.yaml's init/direction mapping (checked 2026-10-03 against
-  Hiwonder/ainex@e8fe2a8).
+  No vendor action group is in a pinned source. These groups are invented motions. `wave`,
+  `raise_hands` and `nod` move only the arms and head, both feet left at the init pose. The
+  stand-ins under the vendor's names (amended 2026-10-03) also move the legs, conservatively:
+  their leg offsets were computed by inverse kinematics on model.xml for a pelvis shifted,
+  raised, lowered, pitched or yawed over planted flat soles, or for one foot lifted at most
+  4.5 cm with the pelvis first moved over the other foot; checked in a MuJoCo simulation of
+  model.xml on a flat floor to leave the robot standing where it was (2026-10-03). Every group
+  ends at the init pose, legs and head included, because the controller returns only the arms
+  and grippers after a group (ainex_controller.py#L262-L318). Each joint target stays inside
+  the URDF limit (+-2.09 rad) and inside the servo pulse range 0-1000 under `servos`,
+  servo_controller.yaml's init/direction mapping (checked 2026-10-03 against
+  Hiwonder/ainex@e8fe2a8; it allows only -0.52..2.09 rad for l_sho_pitch, -2.09..0.52 for
+  r_sho_pitch, -1.0..2.09 for l_knee and -2.09..1.0 for r_knee).
 player:
   # How the vendor's controller plays a group: /app/set_action <name> (ros.yml motions[action_group]).
   path: /home/ubuntu/software/ainex_controller/ActionGroups/<name>.d6a
@@ -32,6 +49,32 @@ frames_are: >-
 pulse_source:
   - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml
   - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L24
+# servo_controller.yaml's mapping (added 2026-10-03), joint: [servo id, init pulse, sign]
+servos:
+  l_ank_roll: [1, 500, 1]
+  r_ank_roll: [2, 500, 1]
+  l_ank_pitch: [3, 500, 1]
+  r_ank_pitch: [4, 500, 1]
+  l_knee: [5, 240, 1]
+  r_knee: [6, 760, 1]
+  l_hip_pitch: [7, 500, 1]
+  r_hip_pitch: [8, 500, 1]
+  l_hip_roll: [9, 500, 1]
+  r_hip_roll: [10, 500, 1]
+  l_hip_yaw: [11, 500, 1]
+  r_hip_yaw: [12, 500, 1]
+  l_sho_pitch: [13, 875, -1]
+  r_sho_pitch: [14, 125, -1]
+  l_sho_roll: [15, 500, 1]
+  r_sho_roll: [16, 500, 1]
+  l_el_pitch: [17, 500, 1]
+  r_el_pitch: [18, 500, 1]
+  l_el_yaw: [19, 500, 1]
+  r_el_yaw: [20, 500, 1]
+  l_gripper: [21, 500, 1]
+  r_gripper: [22, 500, 1]
+  head_pan: [23, 500, 1]
+  head_tilt: [24, 500, 1]
 smoke_example: wave
 groups:
   wave:
@@ -58,3 +101,293 @@ groups:
       - {time_ms: 400, offsets_rad: {head_tilt: 0.1}}
       - {time_ms: 400, offsets_rad: {head_tilt: -0.4}}
       - {time_ms: 400, offsets_rad: {}}
+  # ---- stand-ins under the vendor names (amended 2026-10-03), in the order: postures,
+  # gestures, kicks, steps in place, get-ups, carrying and placing
+  stand:
+    description: >-
+      rises from the init (walk-ready) crouch to a taller stance (pelvis 1.5 cm up, knees
+      straighter), arms at the sides and head level, holds it, and settles back into the init
+      pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hand_gesture_control/hand_gesture_control_node.py#L28
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol/visual_patrol_node.py#L56
+    frames:
+      - {time_ms: 800, offsets_rad: &stand_0 {l_hip_pitch: 0.158, l_knee: -0.335, l_ank_pitch: -0.176, r_hip_pitch: -0.158, r_knee: 0.335, r_ank_pitch: 0.176}}
+      - {time_ms: 1000, offsets_rad: *stand_0}
+      - {time_ms: 800, offsets_rad: {}}
+  walk_ready:
+    description: >-
+      lowers into a deeper walking-ready crouch (pelvis 1.5 cm down) with both elbows bent
+      forward as for the gait's arm swing, holds it, and returns to the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol/visual_patrol_node.py#L44
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/kick_ball/kick_ball_node.py#L80
+    frames:
+      - {time_ms: 600, offsets_rad: &walk_ready_0 {l_hip_pitch: -0.124, l_knee: 0.266, l_ank_pitch: 0.141, r_hip_pitch: 0.124, r_knee: -0.266, r_ank_pitch: -0.141, l_el_yaw: -0.5, r_el_yaw: 0.5}}
+      - {time_ms: 800, offsets_rad: *walk_ready_0}
+      - {time_ms: 600, offsets_rad: {}}
+  greet:
+    description: >-
+      a bow (torso pitched 0.3 rad forward at the hips, head down) and back up, then the right
+      hand raised beside the head and waved twice, then the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hand_gesture_control/hand_gesture_control_node.py#L62
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_app/scripts/app_node.py#L790
+    frames:
+      - {time_ms: 700, offsets_rad: &greet_0 {l_hip_yaw: 0.005, l_hip_pitch: -0.312, l_knee: -0.067, l_ank_pitch: -0.079, r_hip_yaw: -0.005, r_hip_pitch: 0.312, r_knee: 0.067, r_ank_pitch: 0.079, head_tilt: -0.3}}
+      - {time_ms: 500, offsets_rad: *greet_0}
+      - {time_ms: 600, offsets_rad: {}}
+      - {time_ms: 600, offsets_rad: {r_sho_roll: -2.0, r_el_yaw: 1.3}}
+      - {time_ms: 350, offsets_rad: {r_sho_roll: -2.0, r_el_pitch: 0.5, r_el_yaw: 1.3}}
+      - {time_ms: 350, offsets_rad: {r_sho_roll: -2.0, r_el_pitch: -0.3, r_el_yaw: 1.3}}
+      - {time_ms: 350, offsets_rad: {r_sho_roll: -2.0, r_el_pitch: 0.5, r_el_yaw: 1.3}}
+      - {time_ms: 350, offsets_rad: {r_sho_roll: -2.0, r_el_pitch: -0.3, r_el_yaw: 1.3}}
+      - {time_ms: 600, offsets_rad: {}}
+  twist:
+    description: >-
+      the hips twist the torso 0.25 rad left and right twice, feet planted, the arms swinging
+      with it (right arm forward on the left twist), then the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hand_gesture_control/hand_gesture_control_node.py#L64
+    frames:
+      - {time_ms: 500, offsets_rad: {l_hip_yaw: 0.238, l_hip_roll: -0.08, l_hip_pitch: -0.036, l_ank_pitch: -0.047, l_ank_roll: -0.016, r_hip_yaw: 0.241, r_hip_roll: -0.068, r_hip_pitch: -0.057, r_ank_pitch: -0.046, r_ank_roll: -0.004, l_sho_pitch: -0.45, r_sho_pitch: 0.45}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.241, l_hip_roll: 0.068, l_hip_pitch: 0.057, l_ank_pitch: 0.046, l_ank_roll: 0.004, r_hip_yaw: -0.238, r_hip_roll: 0.08, r_hip_pitch: 0.036, r_ank_pitch: 0.047, r_ank_roll: 0.016, l_sho_pitch: 0.45, r_sho_pitch: -0.45}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: 0.238, l_hip_roll: -0.08, l_hip_pitch: -0.036, l_ank_pitch: -0.047, l_ank_roll: -0.016, r_hip_yaw: 0.241, r_hip_roll: -0.068, r_hip_pitch: -0.057, r_ank_pitch: -0.046, r_ank_roll: -0.004, l_sho_pitch: -0.45, r_sho_pitch: 0.45}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.241, l_hip_roll: 0.068, l_hip_pitch: 0.057, l_ank_pitch: 0.046, l_ank_roll: 0.004, r_hip_yaw: -0.238, r_hip_roll: 0.08, r_hip_pitch: 0.036, r_ank_pitch: 0.047, r_ank_roll: 0.016, l_sho_pitch: 0.45, r_sho_pitch: -0.45}}
+      - {time_ms: 500, offsets_rad: {}}
+  hand_open:
+    description: >-
+      both arms opened out to the sides (0.8 rad), forearms turned outward and grippers opened,
+      held, then the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_tutorial/scripts/gait_control/gait_control_demo.py#L30
+    frames:
+      - {time_ms: 600, offsets_rad: &hand_open_0 {l_sho_roll: 0.8, l_el_pitch: 0.4, l_gripper: 0.6, r_sho_roll: -0.8, r_el_pitch: 0.4, r_gripper: -0.6}}
+      - {time_ms: 1000, offsets_rad: *hand_open_0}
+      - {time_ms: 600, offsets_rad: {}}
+  hand_back:
+    description: >-
+      both arms swung back (0.5 rad) behind the body, clear of the head camera's view, held, then
+      the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hurdles/hurdles_node.py#L53
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/climb_stairs/climb_stairs_node.py#L73
+    frames:
+      - {time_ms: 600, offsets_rad: &hand_back_0 {l_sho_pitch: -0.5, r_sho_pitch: -0.5}}
+      - {time_ms: 1000, offsets_rad: *hand_back_0}
+      - {time_ms: 600, offsets_rad: {}}
+  raise_right_hand:
+    description: >-
+      the right arm raised sideways overhead, held, and lowered to the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/cross_detect/cross_detect_node.py#L30
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/cross_detect/cross_detect_node.py#L165
+    frames:
+      - {time_ms: 700, offsets_rad: &raise_right_hand_0 {r_sho_roll: -2.6}}
+      - {time_ms: 1000, offsets_rad: *raise_right_hand_0}
+      - {time_ms: 700, offsets_rad: {}}
+  left_shot:
+    description: >-
+      a small kick with the left foot: weight over the right foot, left foot lifted 2.5 cm, drawn
+      back and swung 5 cm forward, returned and set down, weight centred, init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_tutorial/scripts/gait_control/run_action_demo.py#L22
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/kick_ball/kick_ball_node.py#L20
+    frames:
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.069, l_hip_roll: -0.253, l_hip_pitch: -0.177, l_knee: 0.361, l_ank_pitch: 0.192, l_ank_roll: -0.262, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.072, l_hip_roll: -0.262, l_hip_pitch: -0.09, l_knee: 0.422, l_ank_pitch: 0.341, l_ank_roll: -0.272, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 250, offsets_rad: {l_hip_yaw: -0.071, l_hip_roll: -0.261, l_hip_pitch: -0.513, l_knee: 0.287, l_ank_pitch: -0.218, l_ank_roll: -0.27, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.069, l_hip_roll: -0.253, l_hip_pitch: -0.177, l_knee: 0.361, l_ank_pitch: 0.192, l_ank_roll: -0.262, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.06, l_hip_roll: -0.222, l_hip_pitch: -0.02, l_knee: 0.029, l_ank_pitch: 0.014, l_ank_roll: -0.23, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 600, offsets_rad: {}}
+  right_shot:
+    description: >-
+      the mirror of left_shot: a small kick with the right foot, standing on the left
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_tutorial/scripts/gait_control/run_action_demo.py#L23
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/kick_ball/kick_ball_node.py#L21
+    frames:
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.069, r_hip_roll: 0.253, r_hip_pitch: 0.177, r_knee: -0.361, r_ank_pitch: -0.192, r_ank_roll: 0.262}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.072, r_hip_roll: 0.262, r_hip_pitch: 0.09, r_knee: -0.422, r_ank_pitch: -0.341, r_ank_roll: 0.272}}
+      - {time_ms: 250, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.071, r_hip_roll: 0.261, r_hip_pitch: 0.513, r_knee: -0.287, r_ank_pitch: 0.218, r_ank_roll: 0.27}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.069, r_hip_roll: 0.253, r_hip_pitch: 0.177, r_knee: -0.361, r_ank_pitch: -0.192, r_ank_roll: 0.262}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.06, r_hip_roll: 0.222, r_hip_pitch: 0.02, r_knee: -0.029, r_ank_pitch: -0.014, r_ank_roll: 0.23}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 600, offsets_rad: {}}
+  climb_stairs:
+    description: >-
+      a high step in place with each foot in turn (right, then left): weight over the other foot,
+      foot lifted 3.5 cm and moved 2 cm forward as onto a stair, back and set down where it was;
+      the robot does not climb
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/climb_stairs/climb_stairs_node.py#L21
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/climb_stairs/climb_stairs_node.py#L124
+    frames:
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.074, r_hip_roll: 0.272, r_hip_pitch: 0.245, r_knee: -0.506, r_ank_pitch: -0.27, r_ank_roll: 0.282}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.074, r_hip_roll: 0.271, r_hip_pitch: 0.393, r_knee: -0.481, r_ank_pitch: -0.097, r_ank_roll: 0.281}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.074, r_hip_roll: 0.272, r_hip_pitch: 0.245, r_knee: -0.506, r_ank_pitch: -0.27, r_ank_roll: 0.282}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.06, r_hip_roll: 0.222, r_hip_pitch: 0.02, r_knee: -0.029, r_ank_pitch: -0.014, r_ank_roll: 0.23}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.074, l_hip_roll: -0.272, l_hip_pitch: -0.245, l_knee: 0.506, l_ank_pitch: 0.27, l_ank_roll: -0.282, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.074, l_hip_roll: -0.271, l_hip_pitch: -0.393, l_knee: 0.481, l_ank_pitch: 0.097, l_ank_roll: -0.281, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.074, l_hip_roll: -0.272, l_hip_pitch: -0.245, l_knee: 0.506, l_ank_pitch: 0.27, l_ank_roll: -0.282, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.06, l_hip_roll: -0.222, l_hip_pitch: -0.02, l_knee: 0.029, l_ank_pitch: 0.014, l_ank_roll: -0.23, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 600, offsets_rad: {}}
+  descend_stairs:
+    description: >-
+      a lowering step in place with each foot in turn (right, then left): the support knee bends
+      1.5 cm while the other foot reaches 3 cm forward and down as to a lower step, then back and
+      set down where it was; the robot does not descend
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/climb_stairs/climb_stairs_node.py#L22
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/climb_stairs/climb_stairs_node.py#L135
+    frames:
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.064, r_hip_roll: 0.236, r_hip_pitch: 0.103, r_knee: -0.204, r_ank_pitch: -0.107, r_ank_roll: 0.245}}
+      - {time_ms: 500, offsets_rad: {l_hip_yaw: 0.065, l_hip_roll: 0.238, l_hip_pitch: -0.094, l_knee: 0.183, l_ank_pitch: 0.098, l_ank_roll: 0.246, r_hip_yaw: 0.074, r_hip_roll: 0.271, r_hip_pitch: 0.457, r_knee: -0.452, r_ank_pitch: -0.004, r_ank_roll: 0.281}}
+      - {time_ms: 500, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.064, r_hip_roll: 0.236, r_hip_pitch: 0.103, r_knee: -0.204, r_ank_pitch: -0.107, r_ank_roll: 0.245}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.059, r_hip_roll: 0.22, r_knee: 0.009, r_ank_pitch: 0.005, r_ank_roll: 0.227}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.064, l_hip_roll: -0.236, l_hip_pitch: -0.103, l_knee: 0.204, l_ank_pitch: 0.107, l_ank_roll: -0.245, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 500, offsets_rad: {l_hip_yaw: -0.074, l_hip_roll: -0.271, l_hip_pitch: -0.457, l_knee: 0.452, l_ank_pitch: 0.004, l_ank_roll: -0.281, r_hip_yaw: -0.065, r_hip_roll: -0.238, r_hip_pitch: 0.094, r_knee: -0.183, r_ank_pitch: -0.098, r_ank_roll: -0.246}}
+      - {time_ms: 500, offsets_rad: {l_hip_yaw: -0.064, l_hip_roll: -0.236, l_hip_pitch: -0.103, l_knee: 0.204, l_ank_pitch: 0.107, l_ank_roll: -0.245, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.059, l_hip_roll: -0.22, l_knee: -0.009, l_ank_pitch: -0.005, l_ank_roll: -0.227, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 600, offsets_rad: {}}
+  hurdles:
+    description: >-
+      a high-knee step in place with each foot in turn (right, then left): foot lifted 4.5 cm and
+      swung 3 cm forward as over a hurdle, back and set down where it was
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hurdles/hurdles_node.py#L19
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/hurdles/hurdles_node.py#L101
+    frames:
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.081, r_hip_roll: 0.294, r_hip_pitch: 0.308, r_knee: -0.641, r_ank_pitch: -0.344, r_ank_roll: 0.305}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.08, r_hip_roll: 0.293, r_hip_pitch: 0.539, r_knee: -0.586, r_ank_pitch: -0.058, r_ank_roll: 0.304}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.081, r_hip_roll: 0.294, r_hip_pitch: 0.308, r_knee: -0.641, r_ank_pitch: -0.344, r_ank_roll: 0.305}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.06, r_hip_roll: 0.222, r_hip_pitch: 0.02, r_knee: -0.029, r_ank_pitch: -0.014, r_ank_roll: 0.23}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: 0.058, l_hip_roll: 0.214, l_hip_pitch: 0.036, l_knee: -0.09, l_ank_pitch: -0.046, l_ank_roll: 0.222, r_hip_yaw: 0.058, r_hip_roll: 0.216, r_hip_pitch: -0.025, r_knee: 0.067, r_ank_pitch: 0.036, r_ank_roll: 0.223}}
+      - {time_ms: 600, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.081, l_hip_roll: -0.294, l_hip_pitch: -0.308, l_knee: 0.641, l_ank_pitch: 0.344, l_ank_roll: -0.305, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.08, l_hip_roll: -0.293, l_hip_pitch: -0.539, l_knee: 0.586, l_ank_pitch: 0.058, l_ank_roll: -0.304, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.081, l_hip_roll: -0.294, l_hip_pitch: -0.308, l_knee: 0.641, l_ank_pitch: 0.344, l_ank_roll: -0.305, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 300, offsets_rad: {l_hip_yaw: -0.06, l_hip_roll: -0.222, l_hip_pitch: -0.02, l_knee: 0.029, l_ank_pitch: 0.014, l_ank_roll: -0.23, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 400, offsets_rad: {l_hip_yaw: -0.058, l_hip_roll: -0.216, l_hip_pitch: 0.025, l_knee: -0.067, l_ank_pitch: -0.036, l_ank_roll: -0.223, r_hip_yaw: -0.058, r_hip_roll: -0.214, r_hip_pitch: -0.036, r_knee: 0.09, r_ank_pitch: 0.046, r_ank_roll: -0.222}}
+      - {time_ms: 600, offsets_rad: {}}
+  lie_to_stand:
+    description: >-
+      stand-in for getting up from lying face down, played from standing: a deep crouch (pelvis
+      3.5 cm down) with both arms forward as if pushing off the floor, then the rise to the init
+      pose; it does not raise a fallen robot
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/fall_rise/fall_rise_node.py#L23
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/fall_rise/fall_rise_node.py#L159
+    frames:
+      - {time_ms: 800, offsets_rad: &lie_to_stand_0 {l_hip_roll: 0.004, l_hip_pitch: -0.263, l_knee: 0.568, l_ank_pitch: 0.305, l_ank_roll: 0.005, r_hip_roll: -0.004, r_hip_pitch: 0.263, r_knee: -0.568, r_ank_pitch: -0.305, r_ank_roll: -0.005, l_sho_pitch: 0.5, l_el_yaw: -0.6, r_sho_pitch: 0.5, r_el_yaw: 0.6}}
+      - {time_ms: 500, offsets_rad: *lie_to_stand_0}
+      - {time_ms: 1000, offsets_rad: {}}
+  recline_to_stand:
+    description: >-
+      stand-in for getting up from lying face up, played from standing: a deep crouch (pelvis 3.5
+      cm down) with both arms swung back as if pushing off the floor behind, then the rise to the
+      init pose; it does not raise a fallen robot
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/fall_rise/fall_rise_node.py#L24
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/fall_rise/fall_rise_node.py#L162
+    frames:
+      - {time_ms: 800, offsets_rad: &recline_to_stand_0 {l_hip_roll: 0.004, l_hip_pitch: -0.263, l_knee: 0.568, l_ank_pitch: 0.305, l_ank_roll: 0.005, r_hip_roll: -0.004, r_hip_pitch: 0.263, r_knee: -0.568, r_ank_pitch: -0.305, r_ank_roll: -0.005, l_sho_pitch: -0.5, r_sho_pitch: -0.5}}
+      - {time_ms: 500, offsets_rad: *recline_to_stand_0}
+      - {time_ms: 1000, offsets_rad: {}}
+  move_up:
+    description: >-
+      picks up with both hands: a crouch (2.5 cm) with both forearms forward and down, grippers
+      open, grippers closed, then up with the forearms raised to the chest, held, init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/autonomous_transport/autonomous_transport_node.py#L28
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/autonomous_transport/autonomous_transport_node.py#L303
+    frames:
+      - {time_ms: 700, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, l_gripper: 0.6, r_sho_pitch: 0.5, r_el_yaw: 0.7, r_gripper: -0.6}}
+      - {time_ms: 400, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, r_sho_pitch: 0.5, r_el_yaw: 0.7}}
+      - {time_ms: 700, offsets_rad: &move_up_2 {l_sho_pitch: 0.5, l_el_yaw: -1.5, r_sho_pitch: 0.5, r_el_yaw: 1.5}}
+      - {time_ms: 800, offsets_rad: *move_up_2}
+      - {time_ms: 600, offsets_rad: {}}
+  put_down:
+    description: >-
+      puts down with both hands: forearms raised forward, a crouch (2.5 cm) lowering them,
+      grippers opened, then up to the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/autonomous_transport/autonomous_transport_node.py#L29
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/autonomous_transport/autonomous_transport_node.py#L308
+    frames:
+      - {time_ms: 600, offsets_rad: {l_sho_pitch: 0.5, l_el_yaw: -1.4, r_sho_pitch: 0.5, r_el_yaw: 1.4}}
+      - {time_ms: 800, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, r_sho_pitch: 0.5, r_el_yaw: 0.7}}
+      - {time_ms: 400, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, l_gripper: 0.6, r_sho_pitch: 0.5, r_el_yaw: 0.7, r_gripper: -0.6}}
+      - {time_ms: 800, offsets_rad: {}}
+  place_block:
+    description: >-
+      places a block: a bow (0.25 rad) with both forearms lowered forward and the head down,
+      grippers opened, then the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L43
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L255
+    frames:
+      - {time_ms: 700, offsets_rad: {l_hip_yaw: 0.004, l_hip_pitch: -0.263, l_knee: -0.052, l_ank_pitch: -0.065, r_hip_yaw: -0.004, r_hip_pitch: 0.263, r_knee: 0.052, r_ank_pitch: 0.065, l_sho_pitch: 0.5, l_el_yaw: -0.6, r_sho_pitch: 0.5, r_el_yaw: 0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: &place_block_1 {l_hip_yaw: 0.004, l_hip_pitch: -0.263, l_knee: -0.052, l_ank_pitch: -0.065, r_hip_yaw: -0.004, r_hip_pitch: 0.263, r_knee: 0.052, r_ank_pitch: 0.065, l_sho_pitch: 0.5, l_el_yaw: -0.6, l_gripper: 0.6, r_sho_pitch: 0.5, r_el_yaw: 0.6, r_gripper: -0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: *place_block_1}
+      - {time_ms: 700, offsets_rad: {}}
+  right_hand_put_block:
+    description: >-
+      the right forearm reaches forward and down (head down), the right gripper opens to let a
+      block go, then the init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_sort/color_sort_node.py#L20
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_sort/color_sort_node.py#L104
+    frames:
+      - {time_ms: 600, offsets_rad: {r_sho_pitch: 0.5, r_el_yaw: 0.9, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: &right_hand_put_block_1 {r_sho_pitch: 0.5, r_el_yaw: 0.9, r_gripper: -0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: *right_hand_put_block_1}
+      - {time_ms: 600, offsets_rad: {}}
+  left_hand_put_block:
+    description: >-
+      the mirror of right_hand_put_block with the left arm
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_sort/color_sort_node.py#L21
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/color_sort/color_sort_node.py#L124
+    frames:
+      - {time_ms: 600, offsets_rad: {l_sho_pitch: 0.5, l_el_yaw: -0.9, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: &left_hand_put_block_1 {l_sho_pitch: 0.5, l_el_yaw: -0.9, l_gripper: 0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: *left_hand_put_block_1}
+      - {time_ms: 600, offsets_rad: {}}
+  crawl_left:
+    description: >-
+      picks up a block on the left: a crouch (2.5 cm, head down) with the left forearm forward
+      and down, gripper open, gripper closed, then up with the forearm raised, held, init pose
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L41
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L223
+    frames:
+      - {time_ms: 700, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, l_gripper: 0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, l_sho_pitch: 0.5, l_el_yaw: -0.7, head_tilt: -0.3}}
+      - {time_ms: 700, offsets_rad: &crawl_left_2 {l_sho_pitch: 0.5, l_el_yaw: -1.5}}
+      - {time_ms: 600, offsets_rad: *crawl_left_2}
+      - {time_ms: 600, offsets_rad: {}}
+  crawl_right:
+    description: >-
+      the mirror of crawl_left with the right arm
+    vendor_source:
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L42
+      - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_example/scripts/visual_patrol_pick_up/visual_patrol_pick_up_node.py#L235
+    frames:
+      - {time_ms: 700, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, r_sho_pitch: 0.5, r_el_yaw: 0.7, r_gripper: -0.6, head_tilt: -0.3}}
+      - {time_ms: 400, offsets_rad: {l_hip_pitch: -0.197, l_knee: 0.422, l_ank_pitch: 0.226, r_hip_pitch: 0.197, r_knee: -0.422, r_ank_pitch: -0.226, r_sho_pitch: 0.5, r_el_yaw: 0.7, head_tilt: -0.3}}
+      - {time_ms: 700, offsets_rad: &crawl_right_2 {r_sho_pitch: 0.5, r_el_yaw: 1.5}}
+      - {time_ms: 600, offsets_rad: *crawl_right_2}
+      - {time_ms: 600, offsets_rad: {}}

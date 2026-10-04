@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The vendor kinematics behind the myagv profile's `model`: console spec §2.2 makes the robot's
+     URDF the reference for the page's 3D model. Each <excerpt> is lines `lines` of `path` in the
+     pinned source exactly as written there (indentation aside): every joint of the file, or every
+     static transform of a launch file (drawn="false": a fixed frame the model does not draw), and
+     the inertial origins the model draws links to. test_view_urdf.py reads them with URDF semantics
+     and checks the profile's model rows against them; live/test_live_urdf.py (opt in) checks them
+     against the pinned files. -->
+<vendor robot="myagv">
+  <file source="myagv_ros" path="myagv_urdf/urdf/myAGV.urdf"
+        revision="c71f3cc574e5ed1973a925238eabe88662cfa701"
+        sha256="afdac8fa76d01d15ca91b9ec6bc488e1c53a1abf50f417f67f92f6ac84fa43e7">
+    <excerpt lines="28-33">
+      <joint name="base_up" type="continuous">
+          <origin xyz="0.0 0.0 0.0" rpy="0 0 0"/>
+          <parent link="base_footprint"/>
+          <child link="base_up"/>
+          <axis xyz="0 0 1"/>
+      </joint>
+    </excerpt>
+  </file>
+  <file source="myagv_ros" path="myagv_odometry/launch/myagv_active.launch"
+        revision="c71f3cc574e5ed1973a925238eabe88662cfa701"
+        sha256="d9142554b1df529ec5edf9474caab5fc56b880001ba1ca9361685f31515239a7">
+    <excerpt lines="9">
+      <node name="base2camera_link" pkg="tf" type="static_transform_publisher" args="0.13 0 0.131 0 0 0 /base_footprint /camera_link 50"/>
+    </excerpt>
+    <excerpt lines="10" drawn="false">
+      <node name="base2imu_link" pkg="tf" type="static_transform_publisher" args="0 0 0 0 3.14159 3.14159 /base_footprint /imu_link 50"/>
+    </excerpt>
+    <excerpt lines="11">
+      <node name="base2laser_link" pkg="tf" type="static_transform_publisher"  args="0.065 0.0 0.08 3.14159265 0.0 0.0 /base_footprint /laser_frame 10" />
+    </excerpt>
+  </file>
+</vendor>

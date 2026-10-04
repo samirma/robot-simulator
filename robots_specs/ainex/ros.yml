@@ -104,8 +104,13 @@ boot:
         action groups played by /app/set_action. NOT in any pinned source: they ship on the
         robot image. Format (motion_manager.py): SQLite table ActionGroup, one row per frame,
         column 1 = frame duration (ms), columns 2.. = pulse (0-1000) of servo id 1, 2, ...
-        Names referenced by the pinned code: walk_ready, stand, hand_back, left_shot,
-        right_shot, twist, greet, three, four, hand_open.
+        Names the pinned code plays (amended 2026-10-03: the list was incomplete; each
+        name's source line is its group's vendor_source in action_groups.yml): stand,
+        walk_ready, greet, twist, hand_open, hand_back, raise_right_hand, left_shot,
+        right_shot, climb_stairs, descend_stairs, hurdles, lie_to_stand, recline_to_stand,
+        move_up, put_down, place_block, right_hand_put_block, left_hand_put_block,
+        crawl_left, crawl_right; three and four appear only in commented-out lines
+        (hand_gesture_control_node.py#L66-L68).
     - source: ainex_docs
       path: /home/ubuntu/software/lab_tool/lab_config.yaml
       role: LAB colour thresholds read by color_detection. NOT in any pinned source.
@@ -638,13 +643,16 @@ motions:
         amended 2026-10-03: no vendor action group is playable from the pinned sources. No .d6a
         file is in Hiwonder/ainex@e8fe2a8 (the files ship on the robot image, see
         boot.data_files); left_shot is a name the pinned code plays (run_action_demo.py#L22,
-        gait_control_demo.py), not data this record holds. Where the robot image's files are
-        absent, as in simulation, the controller answers every vendor name (left_shot, greet,
-        ...) as unknown: it prints 'can not find aciton file' (motion_manager.py#L74-L99),
-        stops walking and only returns arms and grippers to the init pose. The playable groups
-        this record defines are ESTIMATES, not vendor data, in action_groups.yml (wave,
-        raise_hands, nod: arm and head motions from the init pose); smoke_example `wave` is one
-        of them.
+        gait_control_demo.py), not data this record holds. For a name with no file the
+        controller answers as for an unknown name: it prints 'can not find aciton file'
+        (motion_manager.py#L74-L99), stops walking and only returns arms and grippers to the
+        init pose. The playable groups this record defines are ESTIMATES, not vendor data, in
+        action_groups.yml: wave, raise_hands and nod (arm and head motions from the init pose),
+        and, amended 2026-10-03, a stand-in under every vendor name the pinned code plays
+        (left_shot, greet, stand, ...; boot.data_files lists them), an invented motion
+        resembling the name, so a vendor name plays a visible motion and leaves the robot
+        standing at the init pose. Any other name (e.g. three) is still unknown.
+        smoke_example `wave` is one of the record's own groups.
       estimated_groups: action_groups.yml
     end_state: >-
       Walking is stopped, every frame of the .d6a is sent (each frame's duration in ms, then a

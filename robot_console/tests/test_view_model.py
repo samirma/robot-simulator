@@ -21,7 +21,11 @@ COMMANDED = {
     "mycobot280": {**{("arm_gripper_target", f"j{i + 1}"): n for i, n in enumerate(_COBOT)},
                    **{("set_angles", f"j{i + 1}"): n for i, n in enumerate(_COBOT)},
                    ("arm_gripper_target", "gripper"): "gripper_controller"},
-    "ainex": {("head_pan", "position"): "head_pan", ("head_tilt", "position"): "head_tilt"},
+    # every AiNex servo: its control (named as the joint) commands the joint, in the joint's rad
+    "ainex": {(j, "position"): j for j in (
+        "head_pan", "head_tilt", "l_sho_pitch", "l_sho_roll", "l_el_pitch", "l_el_yaw", "l_gripper", "r_sho_pitch",
+        "r_sho_roll", "r_el_pitch", "r_el_yaw", "r_gripper", "l_hip_yaw", "l_hip_roll", "l_hip_pitch", "l_knee",
+        "l_ank_pitch", "l_ank_roll", "r_hip_yaw", "r_hip_roll", "r_hip_pitch", "r_knee", "r_ank_pitch", "r_ank_roll")},
     "rosmaster_x3_plus": {**{("arm_pose", f"j{i}"): f"arm_joint{i}" for i in range(1, 6)},
                           ("arm_pose", "gripper"): "grip_joint", ("gripper", "angle"): "grip_joint"},
     "myagv": {},
@@ -118,9 +122,32 @@ def test_ainex_head_pan_turns_about_minus_z_and_its_label_says_so():
     assert "- = left" in label and "+ = left" not in label
 
 
+def test_ainex_model_feedback_is_the_polled_read_of_every_commanded_field():
+    """The AiNex boot publishes no joint states (feedback null); the profile's polled read measures
+    the field that commands each movable joint, so the model can follow the robot (console spec
+    §2.2, amended 2026-10-03). Bindings are the identity: the controller's rad is the URDF joint's
+    (ainex_controller.py#L196-L203 sends the same goal_position to Gazebo and, as pulses, to the servo)."""
+    p = load("ainex")
+    m = p.raw["model"]
+    assert m["feedback"] is None
+    (r,) = [r for r in p.reads if r.poll_s]
+    measured = {(v.control, v.field) for v in r.values}
+    movable = [j for j in m["joints"] if j["type"] != "fixed"]
+    for j in movable:
+        (b,) = j["command"]
+        assert (b["control"], b["field"]) in measured and "scale" not in b and "offset" not in b, j["name"]
+    assert len(movable) == 24
+
+
 def test_the_page_receives_every_model():
     j = all_profiles_json()
     assert [p["id"] for p in j["profiles"]] == list(SUPPORTED_IDS)
     for p in j["profiles"]:
         assert p["model"] == load(p["id"]).raw["model"]
+        assert [g["id"] for g in p["groups"]] == [g["id"] for g in load(p["id"]).raw.get("groups") or []]
+    ainex = next(p for p in j["profiles"] if p["id"] == "ainex")
+    knee = next(c for c in ainex["controls"] if c["id"] == "l_knee")
+    assert knee["group"] == "left_leg" and knee["fields"][0]["to_wire"] == {
+        "offset": 240.0, "scale": 238.7324187, "integer": True, "min": 0.0, "max": 1000.0}
+    assert [r["poll_s"] for r in ainex["reads"]] == [None, 1.0]
 

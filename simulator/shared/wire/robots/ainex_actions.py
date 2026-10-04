@@ -4,12 +4,16 @@
 The boot plays `/home/ubuntu/software/ainex_controller/ActionGroups/<name>.d6a` (an SQLite
 table `ActionGroup`: index, move time in ms, then the 24 servo pulses) on /app/set_action.
 Those files ship on the robot's image and are in no pinned source, so no vendor group can
-be played (the vendor's names answer as the controller answers an unknown name). The
-groups served are the robot specification's ESTIMATES, `robots_specs/ainex/action_groups.yml`
-(named by `motions[action_group].command.estimated_groups` of ros.yml; format in
-robots_specs/SCHEMA.md, "Estimated action groups"): each frame is offsets (rad) from the
-recorded init pose, the `/ainex_controller/init_pose` parameter, a joint it does not name
-staying at its init angle, converted to pulses with the controller's own servo map
+be played as the vendor made it. The groups served are the robot specification's
+ESTIMATES, `robots_specs/ainex/action_groups.yml` (named by
+`motions[action_group].command.estimated_groups` of ros.yml; format in
+robots_specs/SCHEMA.md, "Estimated action groups"), every one of them: the record's own
+`wave`, `raise_hands` and `nod`, and its stand-ins under the vendor's names (left_shot,
+greet, stand, ...; amended 2026-10-03), so a vendor name plays the stand-in through the
+vendor player; any other name answers as the controller answers an unknown name. Each
+frame is offsets (rad) from the recorded init pose, the `/ainex_controller/init_pose`
+parameter, a joint it does not name staying at its init angle, converted to pulses with
+the controller's own servo map
 (`servo_controller.yaml`): clamp(0, 1000, round(init + angle * sign * 1000 / 240 deg)).
 
     ainex_actions.py <servo_controller.yaml> <output dir>

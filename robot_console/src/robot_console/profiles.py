@@ -60,6 +60,28 @@ class Op:
 
 
 @dataclasses.dataclass(frozen=True)
+class WireMap:
+    """A field's documented unit mapping onto the wire, the inverse of a read's: the template gets
+    offset + scale * value, rounded to an integer when ``integer`` (the vendor rounds the scaled
+    value, then adds its integer offset), and that wire value must lie within ``min``..``max``."""
+
+    offset: float = 0.0
+    scale: float = 1.0
+    integer: bool = False
+    min: Optional[float] = None
+    max: Optional[float] = None
+
+    def apply(self, value: float) -> float:
+        """The wire value of field value ``value``; ValueError when it is outside the wire range."""
+        x = self.offset + (round(self.scale * value) if self.integer else self.scale * value)
+        if self.integer:
+            x = int(round(x))
+        if (self.min is not None and x < self.min) or (self.max is not None and x > self.max):
+            raise ValueError(f"{value} maps to {x}, outside {self.min}..{self.max} on the wire")
+        return x
+
+
+@dataclasses.dataclass(frozen=True)
 class Field:
     name: str
     label: str
@@ -69,6 +91,20 @@ class Field:
     unit: str = ""
     integer: bool = False
     choices: Optional[Tuple[str, ...]] = None
+    to_wire: Optional[WireMap] = None  # documented field -> wire mapping (None: sent as entered)
+
+    def wire(self, value: float) -> float:
+        """The value the template gets for field value ``value``."""
+        return self.to_wire.apply(value) if self.to_wire else value
+
+
+@dataclasses.dataclass(frozen=True)
+class Group:
+    """Controls the page lists together (e.g. the servos of one limb), with a note shown above them."""
+
+    id: str
+    label: str
+    note: str = ""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -89,6 +125,7 @@ class Control:
     # publish: incompatible with any other (non-infrastructure) publisher of its topic, whose
     # messages would re-command the robot (checked through rosapi when the target validates)
     sole_publisher: bool = False
+    group: str = ""           # the profile group the page lists it in ("" = a card of its own)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,7 +142,9 @@ class ReadValue:
 @dataclasses.dataclass(frozen=True)
 class Read:
     """A documented read service returning measured joint positions. The page calls it once per
-    click of its read button; teleop reads the AiNex head position through it."""
+    click of its read button, or, for the read with ``poll_s`` (the profile's documented read-only
+    joint-position query, console spec §2.2 as amended 2026-10-03), about every ``poll_s`` seconds
+    once the target is validated; teleop reads the AiNex head position through it."""
 
     id: str
     service: str
@@ -115,6 +154,7 @@ class Read:
     ok_field: str = ""                # answer field that is false when the read failed
     invalid: Tuple[float, ...] = ()   # raw values that mean "not read"
     invalid_if_all_zero: bool = False
+    poll_s: Optional[float] = None    # the page polls it (model feedback) at about this period
 
     def parse(self, answer: Any) -> Dict[Tuple[str, str], Optional[float]]:
         """{(control, field): value in the field's unit, or None when not read}; ValueError when
@@ -213,6 +253,7 @@ class Profile:
     head: Optional[Mapping[str, HeadAxis]]
     controls: Tuple[Control, ...]
     reads: Tuple[Read, ...]
+    groups: Tuple[Group, ...] = ()
     raw: Mapping[str, Any] = dataclasses.field(repr=False, compare=False, default_factory=dict)
 
     # ---- names
@@ -269,14 +310,38 @@ def _ops(rows: Any) -> Tuple[Op, ...]:
     return tuple(out)
 
 
+def _opt_float(v: Any) -> Optional[float]:
+    return None if v is None else float(v)
+
+
+def _wire_map(r: Optional[Mapping[str, Any]]) -> Optional[WireMap]:
+    if r is None:
+        return None
+    return WireMap(offset=float(r.get("offset", 0)), scale=float(r.get("scale", 1)),
+                   integer=bool(r.get("integer", False)), min=_opt_float(r.get("min")), max=_opt_float(r.get("max")))
+
+
 def _field(r: Mapping[str, Any]) -> Field:
     ch = r.get("choices")
     return Field(name=r["name"], label=str(r.get("label", r["name"])),
-                 min=None if r.get("min") is None else float(r["min"]),
-                 max=None if r.get("max") is None else float(r["max"]),
+                 min=_opt_float(r.get("min")), max=_opt_float(r.get("max")),
                  default=r.get("default"), unit=str(r.get("unit", "")),
                  integer=bool(r.get("integer", False)),
-                 choices=tuple(ch) if ch is not None else None)
+                 choices=tuple(ch) if ch is not None else None, to_wire=_wire_map(r.get("to_wire")))
+
+
+def _check_field(where: str, f: Field) -> None:
+    """A mapped field's documented limits map inside the wire range; it is numeric and bounded."""
+    w = f.to_wire
+    if w is None:
+        return
+    if f.choices is not None or f.min is None or f.max is None or w.scale == 0:
+        raise ValueError(f"{where}: to_wire needs a bounded numeric field and a non-zero scale")
+    for v in (f.min, f.max):
+        try:
+            w.apply(v)
+        except ValueError as exc:
+            raise ValueError(f"{where}: documented limit {exc}") from None
 
 
 def _axes(rows: Mapping[str, Any]) -> Dict[str, Axis]:
@@ -289,6 +354,7 @@ def _read(r: Mapping[str, Any]) -> Read:
                 request=r.get("request") or {}, ok_field=str(r.get("ok_field", "")),
                 invalid=tuple(float(x) for x in r.get("invalid") or ()),
                 invalid_if_all_zero=bool(r.get("invalid_if_all_zero", False)),
+                poll_s=_opt_float(r.get("poll_s")),
                 values=tuple(ReadValue(control=v["control"], field=v["field"], path=str(v["path"]),
                                        offset=float(v.get("offset", 0)), scale=float(v.get("scale", 1)))
                              for v in r["values"]))
@@ -333,6 +399,8 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
                             field=v["field"], min=float(v["min"]), max=float(v["max"]),
                             rate=float(v["rate"]))
                 for k, v in hd.items()}
+    groups = tuple(Group(id=g["id"], label=str(g.get("label", g["id"])), note=str(g.get("note") or ""))
+                   for g in raw.get("groups") or [])
     controls = []
     for c in raw.get("controls") or []:
         controls.append(Control(
@@ -341,14 +409,22 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
             fields=tuple(_field(f) for f in c.get("fields") or []),
             stop=_ops(c["stop"]) if c.get("stop") else None,
             prerequisites=tuple(c.get("prerequisites") or ()), ok_field=str(c.get("ok_field", "")),
-            sole_publisher=bool(c.get("sole_publisher", False))))
+            sole_publisher=bool(c.get("sole_publisher", False)), group=str(c.get("group") or "")))
+        for f in controls[-1].fields:
+            _check_field(f"{raw['id']}.controls.{c['id']}.{f.name}", f)
+        if controls[-1].group and controls[-1].group not in {g.id for g in groups}:
+            raise ValueError(f"{raw['id']}.controls.{c['id']}: unknown group {controls[-1].group!r}")
+    reads = tuple(_read(r) for r in raw.get("reads") or [])
+    polled = [r for r in reads if r.poll_s is not None]
+    if len(polled) > 1 or any(r.poll_s <= 0 for r in polled):
+        raise ValueError(f"{raw['id']}: at most one read is polled, with a positive poll_s")
     return Profile(
         id=raw["id"], name=raw.get("name", raw["id"]), dialect=dia,
         teleop=raw.get("teleop", "none"), sources=raw.get("sources") or {}, boot=raw.get("boot"),
         namespace=nsr, owned_prefixes=tuple(raw.get("owned_prefixes") or ()),
         endpoints=tuple(eps), cameras=cams, stop=_ops(raw.get("stop")),
         watchdog=str(raw.get("watchdog", "")), teleop_base=base, teleop_walk=walk, head=head,
-        controls=tuple(controls), reads=tuple(_read(r) for r in raw.get("reads") or []), raw=raw)
+        controls=tuple(controls), reads=reads, groups=groups, raw=raw)
 
 
 @functools.lru_cache(maxsize=None)
@@ -415,9 +491,10 @@ def expand_endpoint(p: Profile, e: Endpoint) -> List[Tuple[str, str, str]]:
 
 def profile_json(p: Profile) -> dict:
     """What the page needs of a profile: the typed interface it validates, its cameras, its
-    bounded controls (never their stop: the page stops nothing), its measured reads and the
-    ``model`` section for its 3D model (the embodiment's joint tree from the pinned vendor URDF,
-    the control fields that command each joint and the documented joint-position feedback)."""
+    bounded controls (never their stop: the page stops nothing) with their groups and wire maps,
+    its measured reads (one of them possibly polled) and the ``model`` section for its 3D model
+    (the embodiment's joint tree from the pinned vendor URDF, the control fields that command
+    each joint and the documented joint-position feedback)."""
     return {
         "id": p.id, "name": p.name, "dialect": p.dialect,
         "namespace": dataclasses.asdict(p.namespace) if p.namespace else None,
@@ -428,6 +505,7 @@ def profile_json(p: Profile) -> dict:
         "cameras": [dict(topic=c.topic, type=c.type, encodings=list(c.encodings), stale_after_s=c.stale_after_s)
                     for c in p.cameras],
         "controls": [{k: v for k, v in dataclasses.asdict(c).items() if k != "stop"} for c in p.controls],
+        "groups": [dataclasses.asdict(g) for g in p.groups],
         "reads": [dataclasses.asdict(r) for r in p.reads],
         "model": p.raw.get("model"),
     }

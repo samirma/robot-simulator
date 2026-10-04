@@ -286,9 +286,13 @@ OrbbecSDK_ROS1 `v1.4.2`, `7ef885a4`, whose `msg/` and `srv/` files are the same 
 `v1.2.9`, `9569cc31`, the release the vendor's driver sources equal), and the AiNex board's
 IMU report rate -- and the AiNex's playable action groups, `robots_specs/ainex/action_groups.yml`
 (the vendor's `.d6a` files are in no pinned source; `shared/wire/robots/ainex_actions.py`
-writes the record's groups `wave`, `raise_hands` and `nod` where the vendor player reads
-them, and a vendor name such as the record's example `left_shot` answers as the controller
-answers an unknown name: 'can not find aciton file', then back to the init pose).
+writes every group of the record where the vendor player reads them: its own `wave`,
+`raise_hands` and `nod`, and its stand-ins under the vendor's names (amended 2026-10-03:
+`left_shot`, `greet`, `stand`, `walk_ready`, `twist`, `hand_open`, `hand_back`, ... -- every
+name the pinned code plays), so `/app/set_action` with a vendor name plays a visible
+estimated motion and leaves the robot standing at the init pose; any other name answers as
+the controller answers an unknown name: 'can not find aciton file', then back to the init
+pose).
 
 What the simulator itself adapts, in wire behaviour:
 

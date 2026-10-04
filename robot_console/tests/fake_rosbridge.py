@@ -80,6 +80,9 @@ class FakeRosbridge:
         self.paused: set = set()
         self.frame_encoding: Dict[str, str] = {}
         self.goals: Dict[str, dict] = {}          # ros2 goal id -> {client, action, t_end, done}
+        # services a test declares read-only queries (e.g. a profile's polled joint-position read):
+        # calls of them are not counted by command_ops()
+        self.read_only: set = set()
         self._stop = threading.Event()
         self._server = serve(self._handle, "127.0.0.1", port, compression=None, max_size=None)
         self.port = self._server.socket.getsockname()[1]
@@ -126,12 +129,14 @@ class FakeRosbridge:
             return [o for o in self.ops if o.get("op") == op]
 
     def command_ops(self) -> List[dict]:
-        """Every op that could command a robot (anything but rosapi calls and subscriptions)."""
+        """Every op that could command a robot (anything but rosapi calls, subscriptions and calls
+        of the services declared ``read_only``)."""
         with self.ops_lock:
             return [o for o in self.ops if o.get("op") in
                     ("publish", "advertise", "send_action_goal", "cancel_action_goal",
                      "advertise_service", "advertise_action")
-                    or (o.get("op") == "call_service" and not o["service"].startswith("/rosapi/"))]
+                    or (o.get("op") == "call_service" and not o["service"].startswith("/rosapi/")
+                        and o["service"] not in self.read_only)]
 
     def wait_for(self, pred: Callable[[], bool], timeout: float = 5.0) -> bool:
         end = time.monotonic() + timeout

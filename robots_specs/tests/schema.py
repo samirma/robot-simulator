@@ -8,6 +8,7 @@ for an estimated `<id>/action_groups.yml`.
 
 from __future__ import annotations
 
+import math
 import re
 import sys
 from pathlib import Path
@@ -354,11 +355,30 @@ def validate_action_groups(path: str | Path) -> list[str]:
     urdf = ET.parse(path.parent / iface["model"]["urdf"]).getroot()
     limits = {j.get("name"): (float(j.find("limit").get("lower")), float(j.find("limit").get("upper")))
               for j in urdf.iter("joint") if j.find("limit") is not None}
+    # the servo map (optional): joint -> [servo id, init pulse, sign]; targets stay in 0-1000
+    servos = doc.get("servos")
+    if servos is not None:
+        ok = isinstance(servos, dict) and all(
+            isinstance(v, list) and len(v) == 3 and all(isinstance(x, int) and not isinstance(x, bool) for x in v)
+            and 0 <= v[1] <= 1000 and v[2] in (1, -1) for v in servos.values())
+        if e.need(ok, f"{p}: servos must map each joint to [servo id, init pulse 0-1000, sign +-1]"):
+            ids = [v[0] for v in servos.values()]
+            e.need(len(set(ids)) == len(ids), f"{p}: servos: servo ids repeat")
+            e.need(set(servos) == set(pose), f"{p}: servos must map exactly the init-pose joints")
+        else:
+            servos = None
+    pinned = [f"{s['url']}/blob/{s['revision']}/" for s in iface.get("sources") or []
+              if s.get("url") and s.get("revision")]
     groups = doc.get("groups")
     e.need(isinstance(groups, dict) and groups, f"{p}: groups missing")
     for name, g in (groups or {}).items():
         w = f"{p}: groups.{name}"
         e.need(isinstance(g.get("description"), str) and g["description"], f"{w}.description missing")
+        if "vendor_source" in g:
+            urls = g["vendor_source"] if isinstance(g["vendor_source"], list) else [g["vendor_source"]]
+            e.need(urls and all(isinstance(u, str) and any(u.startswith(b) for b in pinned) and "#L" in u
+                                for u in urls),
+                   f"{w}.vendor_source must be pinned line URLs of a recorded source")
         frames = g.get("frames")
         e.need(isinstance(frames, list) and frames, f"{w}.frames missing")
         for i, f in enumerate(frames or []):
@@ -372,6 +392,15 @@ def validate_action_groups(path: str | Path) -> list[str]:
                 lo, hi = limits[joint]
                 e.need(lo <= pose[joint] + off <= hi,
                        f"{w}.frames[{i}]: {joint} target {pose[joint] + off:.3f} outside the URDF limit [{lo}, {hi}]")
+                if servos and joint in servos:
+                    _, init, sign = servos[joint]
+                    pulse = init + (pose[joint] + off) * sign * 1000 / math.radians(240)
+                    e.need(-0.5 <= pulse <= 1000.5,
+                           f"{w}.frames[{i}]: {joint} target {pose[joint] + off:.3f} is pulse {pulse:.0f}, "
+                           f"outside the servo pulse range 0-1000")
+        last = (frames or [{}])[-1]
+        e.need(isinstance(last, dict) and not any((last.get("offsets_rad") or {}).values()),
+               f"{w}: the last frame must be the init pose (offsets_rad: {{}})")
     e.need(doc.get("smoke_example") in (groups or {}), f"{p}: smoke_example is not one of the groups")
     motion = next((m for m in iface.get("motions") or [] if m.get("id") == "action_group"), {})
     cmd = motion.get("command") or {}

@@ -1,0 +1,627 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The vendor kinematics behind the ainex profile's `model`: console spec §2.2 makes the robot's
+     URDF the reference for the page's 3D model. Each <excerpt> is lines `lines` of `path` in the
+     pinned source exactly as written there (indentation aside): every joint of the file, or every
+     static transform of a launch file (drawn="false": a fixed frame the model does not draw), and
+     the inertial origins the model draws links to. test_view_urdf.py reads them with URDF semantics
+     and checks the profile's model rows against them; live/test_live_urdf.py (opt in) checks them
+     against the pinned files. -->
+<vendor robot="ainex">
+  <file source="ainex" path="src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro"
+        revision="e8fe2a816797cf83054135160df5a82ec3596a69"
+        sha256="692f73120640595028c1f765d1b82f27056a223f9c3e7b5480b95d3a2d7bea00">
+    <excerpt lines="14-17">
+      <joint name="base_link_to_body" type="fixed">
+        <parent link="base_link"/>
+        <child link="body_link"/>
+      </joint>
+    </excerpt>
+    <excerpt lines="91-111">
+      <joint
+        name="r_hip_yaw"
+        type="revolute">
+        <origin
+          xyz="0 -0.029 0"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="r_hip_yaw_link" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="148-168">
+      <joint
+        name="r_hip_roll"
+        type="revolute">
+        <origin
+          xyz="-0.01955 0 -0.0255"
+          rpy="0 0 0" />
+        <parent
+          link="r_hip_yaw_link" />
+        <child
+          link="r_hip_roll_link" />
+        <axis
+          xyz="-1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="205-225">
+      <joint
+        name="r_hip_pitch"
+        type="revolute">
+        <origin
+          xyz="0.0190366011774447 -0.0200000000007891 0"
+          rpy="0 0 0" />
+        <parent
+          link="r_hip_roll_link" />
+        <child
+          link="r_hip_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="262-282">
+      <joint
+        name="r_knee"
+        type="revolute">
+        <origin
+          xyz="-0.000372039419212393 4.99999999942422E-05 -0.0968862318156413"
+          rpy="0 0 0" />
+        <parent
+          link="r_hip_pitch_link" />
+        <child
+          link="r_knee_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="319-339">
+      <joint
+        name="r_ank_pitch"
+        type="revolute">
+        <origin
+          xyz="0.0010369887037887 0 -0.0890765640232094"
+          rpy="0 0 0" />
+        <parent
+          link="r_knee_link" />
+        <child
+          link="r_ank_pitch_link" />
+        <axis
+          xyz="0 1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="376-396">
+      <joint
+        name="r_ank_roll"
+        type="revolute">
+        <origin
+          xyz="-0.0190366011761311 0.0199999999998644 0"
+          rpy="0 0 0" />
+        <parent
+          link="r_ank_pitch_link" />
+        <child
+          link="r_ank_roll_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="433-453">
+      <joint
+        name="l_hip_yaw"
+        type="revolute">
+        <origin
+          xyz="0 0.029 0"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="l_hip_yaw_link" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="490-510">
+      <joint
+        name="l_hip_roll"
+        type="revolute">
+        <origin
+          xyz="-0.01955 0 -0.0255"
+          rpy="0 0 0" />
+        <parent
+          link="l_hip_yaw_link" />
+        <child
+          link="l_hip_roll_link" />
+        <axis
+          xyz="-1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="547-567">
+      <joint
+        name="l_hip_pitch"
+        type="revolute">
+        <origin
+          xyz="0.019037 0.02 0"
+          rpy="0 0 0" />
+        <parent
+          link="l_hip_roll_link" />
+        <child
+          link="l_hip_pitch_link" />
+        <axis
+          xyz="0 1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="604-624">
+      <joint
+        name="l_knee"
+        type="revolute">
+        <origin
+          xyz="-0.00037204 -5E-05 -0.096886"
+          rpy="0 0 0" />
+        <parent
+          link="l_hip_pitch_link" />
+        <child
+          link="l_knee_link" />
+        <axis
+          xyz="0 1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="661-681">
+      <joint
+        name="l_ank_pitch"
+        type="revolute">
+        <origin
+          xyz="0.001037 0 -0.089077"
+          rpy="0 0 0" />
+        <parent
+          link="l_knee_link" />
+        <child
+          link="l_ank_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="718-738">
+      <joint
+        name="l_ank_roll"
+        type="revolute">
+        <origin
+          xyz="-0.019037 -0.02 0"
+          rpy="0 0 0" />
+        <parent
+          link="l_ank_pitch_link" />
+        <child
+          link="l_ank_roll_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="776-796">
+      <joint
+        name="head_pan"
+        type="revolute">
+        <origin
+          xyz="-0.00410029363273529 0 0.107800000000251"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="head_pan_link" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="833-853">
+      <joint
+        name="head_tilt"
+        type="revolute">
+        <origin
+          xyz="0.00904594549071587 -0.0185733521405788 0.0281579437975029"
+          rpy="0 0 0" />
+        <parent
+          link="head_pan_link" />
+        <child
+          link="head_tilt_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${damping}"
+          friction="${friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="857-869" drawn="false">
+      <joint
+        name="camera"
+        type="fixed">
+        <origin
+          xyz="0.0430140359009206 0 0.152356120938238"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="camera_link" />
+        <axis
+          xyz="0 0 0" />
+      </joint>
+    </excerpt>
+    <excerpt lines="873-885" drawn="false">
+      <joint
+        name="imu"
+        type="fixed">
+        <origin
+          xyz="-0.0459897867959335 -0.0100999999918824 0.0702999210083745"
+          rpy="${M_PI/2} 0 -${M_PI/2}" />
+        <parent
+          link="body_link" />
+        <child
+          link="imu_link" />
+        <axis
+          xyz="0 0 0" />
+      </joint>
+    </excerpt>
+    <excerpt lines="922-942">
+      <joint
+        name="r_sho_pitch"
+        type="revolute">
+        <origin
+          xyz="-5.46273713767254E-05 -0.0524909514103703 0.0874480463620076"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="r_sho_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="979-999">
+      <joint
+        name="r_sho_roll"
+        type="revolute">
+        <origin
+          xyz="0.020003499818653 -0.021505961295104 0"
+          rpy="0 0 0" />
+        <parent
+          link="r_sho_pitch_link" />
+        <child
+          link="r_sho_roll_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1036-1056">
+      <joint
+        name="r_el_pitch"
+        type="revolute">
+        <origin
+          xyz="-0.0200034998200733 -0.0741099367526448 0"
+          rpy="0 0 0" />
+        <parent
+          link="r_sho_roll_link" />
+        <child
+          link="r_el_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1093-1113">
+      <joint
+        name="r_el_yaw"
+        type="revolute">
+        <origin
+          xyz="0.000397813054181526 -0.0170183162715326 0.0190701823981362"
+          rpy="0 0 0" />
+        <parent
+          link="r_el_pitch_link" />
+        <child
+          link="r_el_yaw_link" />
+        <axis
+          xyz="0 0 1" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1150-1170">
+      <joint
+        name="r_gripper"
+        type="revolute">
+        <origin
+          xyz="0.0198901817590543 -0.0892355537647637 -0.0190701818667893"
+          rpy="0 0 0" />
+        <parent
+          link="r_el_yaw_link" />
+        <child
+          link="r_gripper_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1207-1227">
+      <joint
+        name="l_sho_pitch"
+        type="revolute">
+        <origin
+          xyz="-5.4627E-05 0.052491 0.087448"
+          rpy="0 0 0" />
+        <parent
+          link="body_link" />
+        <child
+          link="l_sho_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1264-1284">
+      <joint
+        name="l_sho_roll"
+        type="revolute">
+        <origin
+          xyz="0.020003 0.021507 0"
+          rpy="0 0 0" />
+        <parent
+          link="l_sho_pitch_link" />
+        <child
+          link="l_sho_roll_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1321-1341">
+      <joint
+        name="l_el_pitch"
+        type="revolute">
+        <origin
+          xyz="-0.020003 0.074109 0"
+          rpy="0 0 0" />
+        <parent
+          link="l_sho_roll_link" />
+        <child
+          link="l_el_pitch_link" />
+        <axis
+          xyz="0 -1 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1378-1398">
+      <joint
+        name="l_el_yaw"
+        type="revolute">
+        <origin
+          xyz="0.00039506 0.017019 0.019072"
+          rpy="0 0 0" />
+        <parent
+          link="l_el_pitch_link" />
+        <child
+          link="l_el_yaw_link" />
+        <axis
+          xyz="0 0 1" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="1435-1455">
+      <joint
+        name="l_gripper"
+        type="revolute">
+        <origin
+          xyz="0.019893 0.089232 -0.019072"
+          rpy="0 0 0" />
+        <parent
+          link="l_el_yaw_link" />
+        <child
+          link="l_gripper_link" />
+        <axis
+          xyz="1 0 0" />
+        <limit
+          lower="-2.09"
+          upper="2.09"
+          effort="${motor_torque}"
+          velocity="${motor_vec}" />
+        <dynamics
+          damping="${arm_damping}"
+          friction="${arm_friction}" />
+      </joint>
+    </excerpt>
+    <excerpt lines="343-345" inertial="r_ank_roll_link">
+      <origin
+        xyz="0.0285084749683582 -0.0128728703698743 -0.0176710108439943"
+        rpy="0 0 0" />
+    </excerpt>
+    <excerpt lines="685-687" inertial="l_ank_roll_link">
+      <origin
+        xyz="0.028508 0.012873 -0.017671"
+        rpy="0 0 0" />
+    </excerpt>
+    <excerpt lines="800-802" inertial="head_tilt_link">
+      <origin
+        xyz="0.0113381465890742 0.0189172536781822 0.0221227280632388"
+        rpy="0 0 0" />
+    </excerpt>
+    <excerpt lines="1117-1119" inertial="r_gripper_link">
+      <origin
+        xyz="-0.0193851146126543 -0.00931114583486287 -0.00543047681687003"
+        rpy="0 0 0" />
+    </excerpt>
+    <excerpt lines="1402-1404" inertial="l_gripper_link">
+      <origin
+        xyz="-0.019384 0.0093137 -0.005426"
+        rpy="0 0 0" />
+    </excerpt>
+  </file>
+</vendor>

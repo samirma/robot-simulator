@@ -158,7 +158,16 @@ Interface values the controller board reports at run time, which no pinned sourc
   the raw value is taken to be millivolts. Neither the unit nor the report interval is in a
   pinned source (`ros.yml` `/ros_robot_controller/battery`).
 * **Action groups**: no vendor group is in a pinned source. `action_groups.yml` defines the
-  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only).
+  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only) and, amended
+  2026-10-03, a stand-in under each of the 21 vendor names the pinned code plays (`stand`,
+  `walk_ready`, `greet`, `twist`, `hand_open`, `hand_back`, `left_shot`, `right_shot`, ...;
+  each group's `vendor_source` cites the line). Their content is invented, resembling the
+  name: postures, gestures, small kicks and steps in place on one foot, crouches. Leg offsets
+  come from inverse kinematics on `model.xml` (pelvis shifted sideways at most 3.5 cm, raised
+  1.5 cm or lowered at most 3.5 cm, pitched at most 0.3 rad or yawed at most 0.25 rad over flat
+  soles; a free foot lifted at most 4.5 cm, the pelvis first over the other foot), every
+  group ends at the init pose, and each was checked in a MuJoCo simulation of `model.xml` on a
+  flat floor to leave the robot standing where it was.
 
 ## Items not established
 

@@ -180,11 +180,34 @@ def test_estimated_action_groups():
         assert not errors, "\n".join(errors)
 
 
+def test_vendor_names_have_stand_ins():
+    """Every vendor action-group name the pinned AiNex code plays has a stand-in group, an
+    estimate citing the vendor line that names it (amended 2026-10-03), and the record's
+    vendor example is one of them, so it plays."""
+    doc = yaml.safe_load((SPECS / "ainex" / "action_groups.yml").read_text())
+    iface = yaml.safe_load((SPECS / "ainex" / "ros.yml").read_text())
+    stand_ins = {n for n, g in doc["groups"].items() if g.get("vendor_source")}
+    played = {"stand", "walk_ready", "greet", "twist", "hand_open", "hand_back", "left_shot",
+              "right_shot", "lie_to_stand", "recline_to_stand", "move_up", "put_down",
+              "climb_stairs", "descend_stairs", "hurdles", "right_hand_put_block",
+              "left_hand_put_block", "raise_right_hand", "crawl_left", "crawl_right", "place_block"}
+    assert stand_ins == played
+    assert {"wave", "raise_hands", "nod"} <= set(doc["groups"]) - stand_ins
+    motion = next(m for m in iface["motions"] if m["id"] == "action_group")
+    assert motion["command"]["example"]["data"] in stand_ins
+
+
 @pytest.mark.parametrize("change, error", [
     (lambda d: d["groups"]["wave"]["frames"][0]["offsets_rad"].update(r_sho_roll=-9.0), "outside the URDF limit"),
     (lambda d: d.update(basis="manufacturer"), "basis: estimate"),
-    (lambda d: d.update(smoke_example="left_shot"), "smoke_example"),
-], ids=["beyond-limit", "not-an-estimate", "unknown-smoke-example"])
+    (lambda d: d.update(smoke_example="no_such_group"), "smoke_example"),
+    # r_sho_pitch forward beyond 0.52 rad drives servo 14 (init 125, flipped) below pulse 0
+    (lambda d: d["groups"]["wave"]["frames"][0]["offsets_rad"].update(r_sho_pitch=0.8), "servo pulse range"),
+    (lambda d: d["groups"]["nod"]["frames"].pop(), "last frame must be the init pose"),
+    (lambda d: d["groups"]["greet"].update(vendor_source="https://github.com/Hiwonder/ainex/blob/main/x.py#L1"),
+     "vendor_source"),
+], ids=["beyond-limit", "not-an-estimate", "unknown-smoke-example", "beyond-servo-range",
+        "not-ending-at-init", "unpinned-vendor-source"])
 def test_action_groups_rejects(tmp_path, change, error):
     src = SPECS / "ainex"
     dst = tmp_path / "ainex"

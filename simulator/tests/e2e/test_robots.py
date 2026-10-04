@@ -591,26 +591,60 @@ def ainex_walk(port, sim_port):
     return out, fwd
 
 
+def _up(q):
+    """The top body's z axis in the world, from its (w, x, y, z) quaternion."""
+    w, x, y, z = q
+    return np.array([2 * (x * z + w * y), 2 * (y * z - w * x), 1 - 2 * (x * x + y * y)])
+
+
+#: the most the AiNex's top body may tilt, end to end, over a group that leaves it standing
+#: (a fall tilts it by far more; the bows of the estimated groups tilt it ~0.3 rad only while
+#: they play)
+STANDING_TILT_RAD = 0.05
+
+
 def ainex_action_group(port, sim_port):
-    """The recorded example (no pinned source holds its .d6a, so, as the record says, the
-    controller only returns to the init pose), then the record's smoke example, one of its
-    estimated groups (robots_specs/ainex/action_groups.yml) -- it moves the right arm and
-    ends back at the init pose."""
+    """The recorded vendor example, `left_shot`: no pinned source holds its .d6a, so it plays
+    the record's stand-in under that name (amended 2026-10-03), a small kick on one foot --
+    its legs move, then the robot stands where it stood, upright, at its standing height,
+    every joint back at the init pose. Then the record's smoke example, one of its own
+    estimated groups (robots_specs/ainex/action_groups.yml) -- it moves the right arm and ends
+    back at the init pose."""
     out = []
     command = motion_row(wirecheck.interface("ainex"), "action_group")["command"]
     rb = Rosbridge("127.0.0.1", port)
     try:
-        j0 = motion.joints(sim_port, "ainex")
+        r0 = motion.readings(sim_port, "ainex")
+        j0 = {k: v["position"] for k, v in r0["joints"].items()}
         rb.advertise("/app/set_action", "std_msgs/String")
         time.sleep(0.5)
         t_ag = motion.tol("ainex", "action group")["absolute"]
+        t_h = motion.tol("ainex", "standing height")["absolute"]
         example = command["example"]
+        legs = [k for k in j0 if k[2:].startswith(("hip", "knee", "ank"))]
         rb.publish("/app/set_action", example)
-        time.sleep(2.0)
-        j1 = motion.joints(sim_port, "ainex")
-        off = {k: abs(j1[k] - j0[k]) for k in ("r_sho_roll", "r_sho_pitch", "r_el_pitch")}
-        if max(off.values()) > t_ag:
-            out.append(f"action group {example['data']!r}: not at the init pose {off}")
+        moved = 0.0
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < 6:
+            j = motion.joints(sim_port, "ainex")
+            moved = max(moved, max(abs(j[k] - j0[k]) for k in legs))
+            time.sleep(0.05)
+        time.sleep(1.0)
+        r1 = motion.readings(sim_port, "ainex")
+        j1 = {k: v["position"] for k, v in r1["joints"].items()}
+        if moved < 0.2:
+            out.append(f"action group {example['data']!r}: the legs moved only {moved:.2f} rad")
+        off = {k: round(abs(j1[k] - j0[k]), 3) for k in j0 if abs(j1[k] - j0[k]) > t_ag}
+        if off:
+            out.append(f"action group {example['data']!r}: not back at the init pose {off}")
+        b0, b1 = r0["base"], r1["base"]
+        tilt = math.acos(min(1.0, float(_up(b0["quat"]) @ _up(b1["quat"]))))
+        dz = b1["pos"][2] - b0["pos"][2]
+        dxy = math.hypot(b1["pos"][0] - b0["pos"][0], b1["pos"][1] - b0["pos"][1])
+        if abs(dz) > t_h or tilt > STANDING_TILT_RAD or dxy > 0.02:
+            out.append(f"action group {example['data']!r}: not standing where it stood "
+                       f"(height {dz:+.4f} m, tilt {tilt:.3f} rad, moved {dxy:.4f} m)")
+        j0 = j1
         rb.publish("/app/set_action", command["smoke_example"])
         moved = 0.0
         t0 = time.monotonic()

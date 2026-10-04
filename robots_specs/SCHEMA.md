@@ -215,8 +215,15 @@ motion's `command.estimated_groups`. `tests/schema.py` checks it (`validate_acti
 | `basis`, `reason` | always `estimate`, and why |
 | `player` | `{path, file_format, source}`: where and in what format the vendor player reads a group |
 | `frames_are`, `pulse_source` | how a frame becomes servo commands, and the files that mapping uses |
+| `servos` | optional: that mapping, `{<joint>: [servo id, init pulse, sign]}` (sign `-1` where the servo's min > max), copied from `pulse_source`; when present every target's pulse, `init + angle * sign * 1000 / (240 deg in rad)`, stays inside 0-1000 (amended 2026-10-03) |
 | `smoke_example` | a group name; equals the motion's `command.smoke_example.data` |
-| `groups` | `{<name>: {description, frames: [{time_ms, offsets_rad: {<joint>: rad}}]}}` — offsets from the recorded init pose; every target stays inside the URDF joint limits |
+| `groups` | `{<name>: {description, vendor_source?, frames: [{time_ms, offsets_rad: {<joint>: rad}}]}}` — offsets from the recorded init pose; every target stays inside the URDF joint limits; the last frame is the init pose (`offsets_rad: {}`) (amended 2026-10-03) |
+
+A group that carries `vendor_source` is a **stand-in under a vendor name** (amended
+2026-10-03): the vendor's code or documentation plays a group of that name, whose content no
+pinned source holds, so the record defines an invented motion resembling what the name says,
+still an estimate. `vendor_source` is the pinned URL, or list of URLs, of the line(s) that
+name it, at the revision of a recorded source.
 
 ## MuJoCo model conventions (`model.xml`)
 

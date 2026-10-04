@@ -18,9 +18,10 @@ import pytest
 
 import robot_console.view as view_mod
 from robot_console.discovery import SelectionError, fetch_graph, select_target
-from robot_console.profiles import SUPPORTED_IDS, load
+from robot_console.profiles import SUPPORTED_IDS, load, load_all
 from robot_console.rosbridge import Rosbridge
 from robot_console.view import make_server
+from test_profiles import AINEX_SERVOS, GET_POSITION, SET_POSITION, angle2pulse
 from wirespec import drop, merge, retype, wire_spec
 
 pytestmark = pytest.mark.browser
@@ -31,6 +32,9 @@ SO_GRIP = "/gripper_controller/gripper_cmd"
 HEAD_PAN = "/head_pan_controller/command"
 HEAD_TILT = "/head_tilt_controller/command"
 GOAL_CONNS_MAX = 3          # console.js: open goal connections per control
+# The profiles' documented read-only position queries, which the page polls once a target is
+# validated (console spec §2.2, amended 2026-10-03): not commands (FakeRosbridge.read_only).
+POLLED = {r.service for p in load_all() for r in p.reads if r.poll_s}
 
 
 @pytest.fixture(scope="module")
@@ -43,22 +47,23 @@ def browser():
 
 @pytest.fixture
 def view(fake, browser):
-    https, pages = [], []
+    https, contexts = [], []
 
-    def open_page(spec=None, srv=None, robot=None, namespace=None):
+    def open_page(spec=None, srv=None, robot=None, namespace=None, viewport=(1400, 1000), locale=None):
         srv = srv or fake(spec)
+        srv.read_only |= POLLED
         http = make_server(srv.url, robot, namespace, 0)
         threading.Thread(target=http.serve_forever, daemon=True).start()
         https.append(http)
-        page = browser.new_page(viewport={"width": 1400, "height": 1000})
-        pages.append(page)
+        ctx = browser.new_context(viewport={"width": viewport[0], "height": viewport[1]}, **({"locale": locale} if locale else {}))
+        contexts.append(ctx)
+        page = ctx.new_page()
         page.goto(f"http://127.0.0.1:{http.server_address[1]}/")
         page.wait_for_function("window.RC && window.RC.ready === true", timeout=15000)
         return srv, page
     yield open_page
-    for p in pages:
-        if not p.is_closed():
-            p.close()
+    for c in contexts:
+        c.close()
     for h in https:
         h.shutdown()
 
@@ -137,12 +142,13 @@ def test_cameras_live_and_only_profile_controls(view):
     assert ids == [c.id for c in load("ainex").controls]
     text = page.locator('[data-testid="controls"]').inner_text()
     assert "/walking/set_param" not in text and "/walking/command" not in text and "/cmd_vel" not in text
-    # Controls take only bounded numbers and listed choices: no free topic/message entry.
-    assert page.locator('#controls input:not([type="number"]):not([type="range"])').count() == 0
+    # Controls take only bounded numbers and listed choices: no free topic/message entry. (Numbers
+    # are text fields, so they read the same in every locale; each is a bounded field.)
+    assert page.locator('#controls input:not(input.num[data-field]):not([type="range"])').count() == 0
     assert page.locator("#controls textarea, #controls [contenteditable]").count() == 0
     for r in page.locator('#controls input[type="range"]').all():      # sliders span the documented limits
-        n = r.locator("xpath=ancestor::div[contains(concat(' ', @class, ' '), ' field ')][1]").locator('input[type="number"]')
-        assert (r.get_attribute("min"), r.get_attribute("max")) == (n.get_attribute("min"), n.get_attribute("max"))
+        n = r.locator("xpath=ancestor::div[contains(concat(' ', @class, ' '), ' field ')][1]").locator("input.num")
+        assert (r.get_attribute("min"), r.get_attribute("max")) == (n.get_attribute("data-min"), n.get_attribute("data-max"))
 
 
 @pytest.mark.parametrize("pid", [i for i in SUPPORTED_IDS if load(i).cameras])
@@ -506,27 +512,189 @@ def test_x3_measured_servo_angles_are_read_per_click_and_copied(view):
     assert len(srv.calls("/CurrentAngle")) == 1
 
 
-def test_ainex_measured_head_position_is_read_per_click(view):
+ALL_SERVOS = list(range(1, 25))
+# A standing AiNex (bent knees, arms down at the sides, head turned right): rad per joint.
+STANDING = {"head_pan": 0.82, "l_knee": 1.206, "r_knee": -1.206, "l_hip_pitch": -0.83, "r_hip_pitch": 0.83,
+            "l_ank_pitch": 0.62, "r_ank_pitch": -0.62, "l_sho_roll": -1.449, "r_sho_roll": 1.449}
+
+
+def serve_servos(srv, rads, missing=()):
+    """The board answers get_position with the pulses of `rads` (rad per joint, 0 elsewhere), as
+    the controller maps them (angle2pulse); servos in `missing` are left out of the answer. Returns
+    the pulse table, which the test may change (a servo that moved)."""
+    pulses = {AINEX_SERVOS[j][0]: angle2pulse(j, rads.get(j, 0.0)) for j in AINEX_SERVOS if j not in missing}
+    srv.set_service(GET_POSITION, lambda a: {"success": True, "position": [
+        {"id": i, "position": pulses[i]} for i in a["id"] if i in pulses]})
+    return pulses
+
+
+def polls(srv):
+    return srv.calls(GET_POSITION)
+
+
+def test_ainex_pose_is_polled_once_validated_and_shown_without_a_click(view, fake):
+    """Console spec §2.2 (amended 2026-10-03): once the target is validated the page asks the
+    documented read-only query about once a second, one call at a time, with every servo; the model
+    shows the robot's pose (head turned, knees bent, arms down) within about 2 s, the controls show
+    the measured values in rad and degrees, and targets not yet changed follow them. Nothing is
+    commanded."""
+    srv = fake(wire_spec(load("ainex")))
+    serve_servos(srv, STANDING)
+    t0 = time.monotonic()
+    srv, page = view(srv=srv)
+    page.wait_for_function("RC.state.model && RC.state.model.sources.r_knee === 'measured'", timeout=3000)
+    assert time.monotonic() - t0 < 2.5
+    m = model(page)
+    for j in ("head_pan", "r_knee", "l_knee", "l_sho_roll", "r_sho_roll"):
+        assert m["joints"][j] == pytest.approx(STANDING[j], abs=0.005), j
+        assert m["sources"][j] == "measured", j
+    assert {m["sources"][j] for j in AINEX_SERVOS} == {"measured"}
+    assert "Pose measured" in page.locator('[data-testid="model-pose"]').inner_text()
+    assert "s ago" in page.locator('[data-testid="model-pose"]').inner_text()
+    page.wait_for_function("document.querySelector('[data-control=head_pan] [data-testid=read-value]').dataset.state === 'live'")
+    assert "+0.82 rad (47°)" in read_value(page, "head_pan", "position").inner_text()
+    assert "−1.21 rad (−69°)" in read_value(page, "r_knee", "position").inner_text()
+    assert num(page, "r_knee", "position").input_value() == "-1.21"            # untouched targets follow
+    assert num(page, "head_pan", "position").input_value() == "0.82"
+    assert control(page, "head_pan").locator(".deg").inner_text() == "47°"
+    assert "measured" in page.locator('[data-group="left_leg"] .jg-meta').inner_text()
+    assert control(page, "head_pan").locator('[data-testid="read"]').count() == 0   # polled: no read button
+    page.wait_for_timeout(3200)
+    calls = polls(srv)
+    assert 4 <= len(calls) <= 7, len(calls)                                     # about one per second
+    assert all(c["args"] == {"id": ALL_SERVOS} for c in calls)
+    assert min(gaps(calls)) > 0.8, gaps(calls)
+    assert srv.command_ops() == [] and srv.published() == []
+
+
+def test_ainex_poll_waits_for_validation_and_stops_on_loss_and_target_change(view, fake):
+    srv, page = view(retype(wire_spec(load("ainex")), HEAD_PAN, "std_msgs/Float64"), robot="ainex")
+    page.wait_for_timeout(1500)
+    assert page.locator('[data-testid="target"]').inner_text() == "none" and polls(srv) == []   # never before validation
+    # Connection loss stops it.
     srv, page = view(wire_spec(load("ainex")))
-    pulses = {23: 739, 24: 400}                                              # pan ~ +1.0 rad, tilt ~ -0.42 rad
-    srv.set_service("/ros_robot_controller/bus_servo/get_position",
-                    lambda args: {"success": True, "position": [{"id": i, "position": pulses[i]} for i in args["id"]]})
-    page.wait_for_timeout(500)
-    assert srv.calls() == []
-    control(page, "head_pan").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=head_tilt] [data-testid=read-value]').dataset.state === 'read'")
-    assert [c["args"] for c in srv.calls()] == [{"id": [23, 24]}]
-    assert "+1.001 rad" in read_value(page, "head_pan", "position").inner_text()
-    assert "−0.419 rad" in read_value(page, "head_tilt", "position").inner_text()
-    control(page, "head_tilt").get_by_role("button", name="Use measured").click()
-    page.wait_for_timeout(400)
-    assert srv.published(HEAD_TILT)[-1]["msg"]["position"] == pytest.approx(-0.42)
-    assert srv.published(HEAD_PAN) == []
-    srv.set_service("/ros_robot_controller/bus_servo/get_position", lambda args: {"success": False, "position": []})
-    control(page, "head_pan").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=head_pan] [data-testid=read-status]').innerText.includes('failed')")
-    assert srv.calls("/walking/command") == []
+    serve_servos(srv, STANDING)
+    srv.wait_for(lambda: len(polls(srv)) >= 2, timeout=4)
+    srv.drop_all()
+    page.wait_for_function("RC.state.lost === true", timeout=8000)
+    n = len(polls(srv))
+    page.wait_for_timeout(2500)
+    assert len(polls(srv)) == n
+    page.wait_for_function("RC.state.model.sources.r_knee === 'target'", timeout=5000)   # no fresh measurement
+    # A target change stops it: the old target is asked nothing more, and so is a refused one.
+    srv, page = view(wire_spec(load("ainex")))
+    serve_servos(srv, STANDING)
+    srv.wait_for(lambda: len(polls(srv)) >= 2, timeout=4)
+    page.select_option('[data-testid="robot"]', "myagv")
+    page.click('[data-testid="select"]')
+    page.wait_for_function("document.querySelector('[data-testid=reason]').innerText.includes('myagv')", timeout=8000)
+    n = len(polls(srv))
+    page.wait_for_timeout(2500)
+    assert len(polls(srv)) == n
+    assert srv.command_ops() == []
+
+
+def test_ainex_servo_joint_sends_one_servo_in_pulses_and_the_model_follows(view, fake):
+    """The critic's acceptance on a fake wire: "Left elbow pitch" to +0.5 rad is exactly one message
+    with servo 17 at pulse 619; the model draws the target until a measurement asked for after the
+    change arrives, then the measurement. 2.2 rad is invalid and never sent. A leg joint streams
+    while dragged, every message one servo."""
+    srv = fake(wire_spec(load("ainex")))
+    pulses = serve_servos(srv, STANDING)
+    srv, page = view(srv=srv)
+    page.wait_for_function("RC.state.model.sources.l_el_pitch === 'measured'", timeout=3000)
+    f = num(page, "l_el_pitch", "position")
+    f.fill("0.5")
+    f.press("Enter")
+    page.wait_for_timeout(300)
+    assert [p["msg"] for p in srv.published(SET_POSITION)] == [{"duration": 0.5, "position": [{"id": 17, "position": 619}]}]
+    m = model(page)
+    assert m["joints"]["l_el_pitch"] == 0.5 and m["sources"]["l_el_pitch"] == "target" and "l_el_pitch" in m["clickable"]
+    assert m["labels"]["l_el_pitch"] == "Left elbow pitch"
+    pulses[17] = 619                                                         # the servo got there
+    page.wait_for_function("RC.state.model.sources.l_el_pitch === 'measured'", timeout=3000)
+    assert model(page)["joints"]["l_el_pitch"] == pytest.approx(0.5, abs=0.5 / 238.73)
+    assert "+0.50 rad (29°)" in read_value(page, "l_el_pitch", "position").inner_text()
+    f.fill("2.2")
+    f.press("Enter")
+    page.wait_for_timeout(300)
+    assert len(srv.published(SET_POSITION)) == 1
+    assert phase(page, "l_el_pitch") == "invalid" and "above documented maximum 2.09" in status(page, "l_el_pitch")
+    assert "1 invalid" in page.locator('[data-group="left_arm"] .jg-state').inner_text()
+    page.locator('[data-group="left_arm"] > summary').click()                 # collapsed: the state stays visible
+    assert not page.locator('[data-group="left_arm"]').evaluate("e => e.open")
+    assert page.locator('[data-group="left_arm"] .jg-state').is_visible()
+    # A leg joint: dragging streams single-servo messages, the last one the final value.
+    final = drag(page, "l_knee", "position", 0.6, 0.8, steps=20, step_ms=40)
+    page.wait_for_timeout(300)
+    knee = [p["msg"] for p in srv.published(SET_POSITION)][1:]
+    assert len(knee) >= 3 and all(len(k["position"]) == 1 and k["position"][0]["id"] == 5 for k in knee)
+    assert knee[-1]["position"][0]["position"] == angle2pulse("l_knee", final) and 0 <= min(
+        k["position"][0]["position"] for k in knee)
+    assert srv.published(HEAD_PAN) == [] and srv.calls("/walking/command") == []
     no_stop_ops(srv)
+
+
+def test_ainex_model_click_highlights_and_reveals_the_joints_control(view, fake):
+    """Clicking a joint in the model selects its control row (labelled as on the page) and scrolls
+    the controls to it; the page itself does not move, so the model stays under the pointer."""
+    srv = fake(wire_spec(load("ainex")))
+    serve_servos(srv, STANDING)
+    srv, page = view(srv=srv)
+    page.wait_for_function("RC.state.model.sources.r_knee === 'measured'", timeout=3000)
+    for joint, label in (("r_ank_roll", "Right ankle roll"), ("head_tilt", "Head tilt"), ("l_gripper", "Left hand (gripper)")):
+        select_in_model(page, joint)
+        scroll = page.evaluate("window.scrollY")
+        row = control(page, joint)
+        assert "hl" in row.get_attribute("class")
+        assert page.locator(".control.hl").count() == 1
+        page.wait_for_function("""j => { const r = document.querySelector(`[data-control=${j}]`).getBoundingClientRect(),
+            p = document.getElementById('control-panel').getBoundingClientRect();
+            return r.top >= p.top - 1 && r.bottom <= Math.min(p.bottom, innerHeight) + 1; }""", arg=joint, timeout=3000)
+        assert abs(page.evaluate("window.scrollY") - scroll) <= 2           # (sub-pixel rounding)
+        assert page.locator('[data-testid="model-sel"]').inner_text().startswith(f"{label} ({joint})")
+        assert model(page)["labels"][joint] == label
+    assert srv.command_ops() == []
+
+
+def test_model_is_large_beside_the_controls_and_marks_the_front(view, fake):
+    """1440x900: the model sits in the left column under the camera, at least 560 px wide, the
+    robot drawn over at least 60 % of its height. On a phone the page does not scroll sideways."""
+    srv = fake(wire_spec(load("ainex")))
+    serve_servos(srv, STANDING)
+    srv, page = view(srv=srv, viewport=(1440, 900))
+    page.wait_for_function("RC.state.model.sources.r_knee === 'measured'", timeout=3000)
+    cv = page.locator('[data-testid="model-canvas"]').bounding_box()
+    cam = page.locator('[data-testid="camera"]').bounding_box()
+    panel = page.locator("#control-panel").bounding_box()
+    assert cv["width"] >= 560 and cv["height"] >= 450, cv
+    assert cv["x"] + cv["width"] <= panel["x"] and cv["y"] >= cam["y"] + cam["height"]
+    x0, y0, x1, y1 = model(page)["drawn"]
+    assert (y1 - y0) >= 0.6 * cv["height"], (y1 - y0, cv["height"])
+    assert "front" in page.locator('[data-testid="model-canvas"]').get_attribute("aria-label")
+    srv2 = fake(wire_spec(load("ainex")))
+    serve_servos(srv2, STANDING)
+    srv2, phone = view(srv=srv2, viewport=(390, 844))
+    assert phone.evaluate("document.scrollingElement.scrollWidth") <= 390
+    assert phone.locator('[data-testid="model-canvas"]').bounding_box()["width"] <= 390 - 2 * 12
+    assert srv.command_ops() == [] and srv2.command_ops() == []
+
+
+def test_numbers_read_the_same_in_every_locale(view):
+    """A German browser shows "0,5" in number inputs; the page's fields show "0.5" like its
+    readouts, and a typed comma is read as the decimal separator."""
+    srv, page = view(wire_spec(load("ainex")), locale="de-DE")
+    assert num(page, "head_pan", "position").input_value() == "0"
+    assert num(page, "head_pan", "duration").input_value() == "0.5"
+    num(page, "head_pan", "position").fill("0,3")
+    num(page, "head_pan", "position").press("Enter")
+    page.wait_for_timeout(300)
+    assert [p["msg"] for p in srv.published(HEAD_PAN)] == [{"position": 0.3, "duration": 0.5}]
+    page.locator('[data-control="head_pan"] input[data-field="position"]').press("ArrowUp")   # steps and sends
+    page.wait_for_timeout(300)
+    assert num(page, "head_pan", "position").input_value() == "0.31"
+    assert srv.published(HEAD_PAN)[-1]["msg"]["position"] == 0.31
+    assert ",3" not in page.locator(".pad-readout").inner_text()
 
 
 def test_mycobot_all_zero_answer_is_no_reading(view):
@@ -918,8 +1086,9 @@ def test_model_follows_reported_joint_positions(view):
 
 
 def urdf_forward(model, q):
-    """Joint origins in the model's root frame, computed here from the URDF rows (origin xyz/rpy
-    then a rotation about the axis; mimic joints follow their joint)."""
+    """Child link origins in the model's root frame, computed here from the URDF rows (origin xyz/rpy,
+    then a rotation about the axis, or a slide along it for a prismatic joint; mimic joints follow
+    their joint)."""
     def rpy(r, p, y):
         cr, sr, cp, sp, cy, sy = math.cos(r), math.sin(r), math.cos(p), math.sin(p), math.cos(y), math.sin(y)
         return np.array([[cy * cp, cy * sp * sr - sy * cr, cy * sp * cr + sy * sr],
@@ -938,7 +1107,10 @@ def urdf_forward(model, q):
         if j["type"] != "fixed":
             m = j.get("mimic")
             angle = m["multiplier"] * q.get(m["joint"], 0.0) + m["offset"] if m else q.get(j["name"], 0.0)
-            Rc = Rc @ about(j["axis"], angle)
+            if j["type"] == "prismatic":
+                tc = tc + Rc @ (np.asarray(j["axis"], float) / np.linalg.norm(j["axis"]) * angle)
+            else:
+                Rc = Rc @ about(j["axis"], angle)
         frames[j["child"]] = (Rc, tc)
         out[j["name"]] = tc
     return out
@@ -960,6 +1132,35 @@ def test_model_pose_is_the_urdf_pose_of_the_reported_joints(view, robot, names, 
     assert set(world) == set(want)
     for j, p in want.items():
         assert world[j] == pytest.approx(list(p), abs=1e-9), j
+
+
+def test_a_prismatic_joint_slides_along_its_axis(view, monkeypatch):
+    """No packaged model has a prismatic joint, so the page is handed a myAGV model with a reported
+    prismatic joint (tilted origin, non-unit axis) and a frame after it: it slides, it does not turn."""
+    packaged = view_mod.all_profiles_json
+    extra = [{"name": "lift", "type": "prismatic", "parent": "base_up", "child": "lift_link", "xyz": [0.05, 0.02, 0.1],
+              "rpy": [0.3, -0.2, 1.1], "axis": [0, 3, 4], "min": 0, "max": 0.2, "reported": "lift"},
+             {"name": "lift_tool", "type": "fixed", "parent": "lift_link", "child": "tool", "xyz": [0.1, 0, 0.05],
+              "rpy": [0, 0, 0]}]
+
+    stub = dict(load("myagv").raw["model"], joints=load("myagv").raw["model"]["joints"] + extra)
+
+    def with_prismatic():
+        j = packaged()
+        next(x for x in j["profiles"] if x["id"] == "myagv")["model"] = stub
+        return j
+    monkeypatch.setattr(view_mod, "all_profiles_json", with_prismatic)
+    srv, page = view(wire_spec(load("myagv")))
+    stop = joint_states(srv, ["base_up", "lift"], [0.7, 0.15])
+    try:
+        page.wait_for_function("RC.state.model && RC.state.model.sources.lift === 'reported'", timeout=5000)
+        world = model(page)["world"]
+    finally:
+        stop.set()
+    want = urdf_forward(stub, {"base_up": 0.7, "lift": 0.15})
+    for j in ("lift", "lift_tool"):
+        assert world[j] == pytest.approx(list(want[j]), abs=1e-9), j
+    assert srv.command_ops() == []
 
 
 def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
@@ -990,11 +1191,13 @@ def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
 
 
 def test_ainex_head_joints_in_the_model_publish_the_head_controls(view):
-    srv, page = view(wire_spec(load("ainex")))
+    srv, page = view(wire_spec(load("ainex")))                              # the board answers no positions
+    page.wait_for_timeout(300)
     m = model(page)
-    assert set(m["clickable"]) == {"head_pan", "head_tilt"}
-    assert m["sources"]["head_pan"] == "target" and m["sources"]["r_knee"] == "zero"
-    assert "documents no joint-position topic" in page.locator('[data-testid="model-pose"]').inner_text()
+    assert set(m["clickable"]) == set(AINEX_SERVOS)                         # every servo's joint
+    assert {m["sources"][j] for j in AINEX_SERVOS} == {"target"}
+    assert m["joints"]["r_knee"] == pytest.approx(-1.192)                   # the standing default, not 0
+    assert "Pose not measured" in page.locator('[data-testid="model-pose"]').inner_text()
     x, y = select_in_model(page, "head_pan")
     page.mouse.move(x, y)
     page.mouse.down()

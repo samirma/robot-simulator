@@ -22,10 +22,14 @@ do):
   source holds, so nothing is ever detected.
 * /app stays in its boot state `idle`: /app/set_running true is refused; false stops the
   gait (/walking/command `stop`, as GaitManager.stop does) and answers success false.
-* Action groups: no .d6a file is in any pinned source, so the vendor's groups (left_shot,
-  greet, ...) cannot be played; those names answer as the vendor controller answers an
-  unknown name. The simulator writes its own groups `wave`, `raise_hands` and `nod`
-  (`ainex_actions.py`) -- SIMULATOR ESTIMATES, not vendor data.
+* Action groups: no .d6a file is in any pinned source, so the vendor's own groups cannot be
+  played. The simulator writes the record's estimated groups (`ainex_actions.py`,
+  robots_specs/ainex/action_groups.yml) where the vendor player reads them: `wave`,
+  `raise_hands`, `nod`, and a stand-in under every vendor name the pinned code plays
+  (left_shot, greet, stand, ...; amended 2026-10-03) -- ESTIMATES, not vendor data. They
+  play through the vendor path unchanged (/app/set_action -> ainex_controller ->
+  MotionManager.run_action -> bus servos); any other name answers as the controller answers
+  an unknown name.
 """
 
 from __future__ import annotations

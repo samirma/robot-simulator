@@ -102,7 +102,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .fld { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .fld-label { font-size: 12px; font-weight: 600; color: var(--muted); }
-select, input[type="number"], .fld input {
+select, input.num, .fld input {
   min-height: 38px; padding: 0 10px; border-radius: var(--r-sm);
   border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
   min-width: 0;
@@ -196,10 +196,16 @@ input::placeholder { color: var(--faint); }
 .validation[data-state="pending"] .v-icon { background: var(--info); }
 
 .workspace { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+/* left: what the robot sees and its pose (cameras, model); right: the controls */
+.view-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (min-width: 1100px) {
-  .workspace { grid-template-columns: minmax(0, 1fr) minmax(400px, 480px); }
+  .workspace { grid-template-columns: minmax(0, 1fr) minmax(420px, 500px); }
   .workspace.no-controls { grid-template-columns: minmax(0, 1fr) minmax(320px, 380px); }
-  .cameras-panel { position: sticky; top: calc(var(--topbar-h) + 16px); }
+  /* the controls stay beside the model and scroll on their own */
+  .control-panel {
+    position: sticky; top: calc(var(--topbar-h) + 16px); max-height: calc(100vh - var(--topbar-h) - 32px);
+    overflow-y: auto; overscroll-behavior: contain; padding: 2px 6px 12px 2px; scrollbar-gutter: stable;
+  }
 }
 .panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .panel-meta { color: var(--muted); font-size: 13px; }
@@ -309,13 +315,22 @@ input::placeholder { color: var(--faint); }
 /* a measured read is a snapshot the user asked for: shown in the info colour, never as live */
 .measured[data-state="read"] { color: var(--info); }
 .measured[data-state="read"]::before { background: var(--info); }
+/* a polled measurement older than three periods is stale */
+.measured[data-state="stale"] { color: var(--warn); }
+.measured[data-state="stale"]::before { background: var(--warn); }
+button.measured { border: 0; background: transparent; padding: 2px 5px; border-radius: 4px; cursor: pointer; }
+button.measured:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+button.measured:disabled { cursor: default; opacity: 1; }
 .num-wrap { display: inline-flex; align-items: center; border: 1px solid var(--border-strong); border-radius: var(--r-sm); background: var(--surface); flex: none; }
 .num-wrap:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
-.num-wrap input[type="number"] {
-  width: 88px; min-height: 34px; border: 0; background: transparent; text-align: right; padding: 0 6px 0 8px;
+.num-wrap input.num {
+  width: 80px; min-height: 34px; border: 0; background: transparent; text-align: right; padding: 0 6px 0 8px;
   font-family: var(--mono); font-size: 13px; outline: none;
 }
 .num-wrap .unit { padding: 0 8px 0 2px; color: var(--muted); font-size: 12px; min-width: 22px; }
+.num-wrap .deg { padding: 0 8px 0 0; margin-left: -4px; color: var(--faint); font-size: 11.5px; font-family: var(--mono); min-width: 50px; text-align: right; }
+.num-wrap .deg::before { content: "("; } .num-wrap .deg::after { content: ")"; }
+.num-wrap .deg:empty { visibility: hidden; }
 .field.invalid .num-wrap { border-color: var(--bad); background: var(--bad-bg); }
 .field-err { font-size: 12px; color: var(--bad); font-weight: 600; }
 .field-err:empty { display: none; }
@@ -382,9 +397,58 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 .status.dim { color: var(--muted); }
 @keyframes blink { 50% { opacity: .3; } }
 
+/* grouped joint lists (AiNex servos): a compact row per joint, collapsible groups */
+.jgroup { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow); min-width: 0; }
+.jgroup > summary {
+  list-style: none; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding: 12px 16px; cursor: pointer;
+  border-radius: var(--r-lg);
+}
+.jgroup > summary::-webkit-details-marker { display: none; }
+.jgroup > summary::before { content: "▸"; color: var(--muted); font-size: 12px; transition: transform .15s; align-self: center; }
+.jgroup[open] > summary::before { transform: rotate(90deg); }
+.jgroup > summary:hover .jg-title { text-decoration: underline; text-underline-offset: 3px; }
+.jg-title { font-size: 15px; font-weight: 700; }
+.jg-state { font-size: 12px; font-weight: 650; color: var(--info); }
+.jg-state[data-state="bad"] { color: var(--bad); }
+.jg-state:empty { display: none; }
+.jg-meta { margin-left: auto; font-size: 12px; color: var(--muted); }
+.jg-body { padding: 0 16px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.jg-note { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.jlist { display: flex; flex-direction: column; min-width: 0; }
+.control.jrow {
+  background: transparent; border: 0; border-top: 1px solid var(--border); border-radius: 0; box-shadow: none;
+  padding: 8px 6px; gap: 2px;
+}
+.control.jrow:first-child { border-top: 0; }
+.control.jrow.unavailable { background: var(--surface-2); }
+.jrow .ctl-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 2px 10px; }
+.jrow .field.main { gap: 0; min-width: 0; }
+.jrow .field-top { gap: 4px 8px; align-items: flex-start; }
+.row-id { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; line-height: 1.3; }
+.row-id label { display: contents; }
+.row-name { flex-basis: 100%; font-weight: 650; font-size: 13.5px; }
+.row-hint { font-weight: 400; font-size: 11px; color: var(--faint); font-family: var(--mono); }
+.row-id .measured { font-size: 11.5px; padding: 0 4px; margin-left: -4px; }
+.jrow .num-wrap input.num { width: 64px; min-height: 30px; }
+.jrow .slider-row { gap: 6px; }
+.jrow .limit { min-width: 44px; height: 22px; font-size: 11px; }
+.jrow .track, .jrow input[type="range"] { height: 24px; }
+.field.mini { flex-direction: row; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 2px 6px; padding-bottom: 1px; max-width: 150px; }
+.field.mini label { font-size: 11.5px; color: var(--muted); font-weight: 550; }
+.field.mini .num-wrap input.num { width: 44px; min-height: 26px; font-size: 12px; }
+.field.mini .field-err { flex-basis: 100%; text-align: right; }
+.jrow .field-err { font-size: 11.5px; }
+.jrow .status { font-size: 12px; }
+.jrow .status::before { margin-top: 5px; }
+.jrow .unavail { font-size: 12px; padding: 4px 8px; }
+/* the control (or field) of the joint selected in the model */
+.control.hl, .field.hl { background: color-mix(in srgb, var(--focus) 9%, transparent); box-shadow: inset 3px 0 0 var(--focus); border-radius: var(--r-sm); }
+.field.hl { padding: 4px 6px; margin: -4px -6px; }
+
 /* head pad (AiNex): dragging sends the pan/tilt targets */
 .head-group { display: flex; flex-direction: column; gap: 12px; }
 .pad-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow); }
+.pad-card.in-group { border: 0; box-shadow: none; padding: 0 0 4px; }
 .pad-card .ctl-kind { margin-bottom: 10px; }
 .pad {
   position: relative; width: 100%; aspect-ratio: 2.2 / 1; border-radius: var(--r); cursor: crosshair;
@@ -402,11 +466,13 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 .pad .pad-lbl { position: absolute; font-size: 11px; color: var(--faint); font-family: var(--mono); pointer-events: none; white-space: nowrap; }
 .pad-readout { margin-top: 8px; font-size: 12.5px; font-family: var(--mono); color: var(--muted); }
 
-/* 3D model: commanded joints are dark dots, ringed green when reported, amber when not */
-.model-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; }
+/* 3D model: commanded joints are dark dots, ringed green when reported or measured, amber when not */
+.model-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .model-empty { margin: 0; color: var(--muted); font-size: 13px; }
 #model-view { display: flex; flex-direction: column; gap: 8px; }
-.model-frame { position: relative; height: 260px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+.model-frame { position: relative; height: clamp(380px, 62vh, 680px); border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+.model-joints-wrap > summary { cursor: pointer; width: fit-content; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; border-radius: 4px; }
+.model-joints-wrap > summary:hover { color: var(--text); }
 #model-canvas { display: block; width: 100%; height: 100%; cursor: grab; touch-action: none; }
 #model-canvas:active { cursor: grabbing; }
 .model-pose { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; }
@@ -418,11 +484,12 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   border: 1px solid var(--border-strong); background: var(--surface); font-family: var(--mono); font-size: 11.5px; cursor: pointer;
 }
 .joint-chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); flex: none; }
-.joint-chip[data-src="reported"]::before { background: var(--ok); }
+.joint-chip[data-src="reported"]::before, .joint-chip[data-src="measured"]::before { background: var(--ok); }
 .joint-chip[aria-pressed="true"] { border-color: var(--focus); box-shadow: 0 0 0 1px var(--focus); }
 .joint-chip:disabled { cursor: not-allowed; opacity: .6; }
 .model-sel { font-size: 12.5px; color: var(--text); overflow-wrap: anywhere; }
-.model-sel:empty { display: none; }
+/* room kept for the selection and the caption, so selecting a joint never shifts the page */
+.model-sel, .model-pose { min-height: calc(2 * 1.45em); }
 
 /* ------------------------------------------------------------------ small screens */
 @media (max-width: 720px) {
@@ -441,9 +508,15 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   .fld-ns { flex: 1 1 140px; }
   .target-form .btn { flex: 1 1 auto; }
   #controls { grid-template-columns: minmax(0, 1fr); }
-  .num-wrap input[type="number"] { width: 76px; }
+  .num-wrap input.num { width: 70px; }
   .cameras-panel, .target-card, .live-card, .control, .pad-card, .model-card { padding: 12px; }
-  .model-frame { height: 240px; }
+  .control.jrow { padding: 8px 2px; }
+  .pad-card.in-group { padding: 0 0 4px; }
+  .jg-body { padding: 0 12px 10px; }
+  .jgroup > summary { padding: 10px 12px; }
+  .jrow .ctl-body { grid-template-columns: minmax(0, 1fr); }
+  .field.mini { max-width: none; justify-content: flex-start; }
+  .model-frame { height: 360px; }
   .target-row .section-title { display: none; }
   .measured .m-label { display: none; }
 }
@@ -512,6 +585,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   </section>
 
   <div class="workspace" id="workspace">
+    <div class="view-col">
     <section class="cameras-panel" aria-labelledby="cams-h">
       <div class="panel-head">
         <h2 id="cams-h" class="section-title">Cameras</h2>
@@ -520,6 +594,27 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
       <div id="no-cameras" data-testid="no-cameras" class="empty" style="display:none"></div>
       <div id="cameras" data-testid="cameras" data-count="0"></div>
     </section>
+
+    <section class="model-card" data-testid="model" aria-labelledby="model-h">
+      <div class="panel-head">
+        <h2 id="model-h" class="section-title">Model</h2>
+        <span class="panel-meta">drag a joint to move it · drag empty space to turn the view</span>
+      </div>
+      <p id="model-empty" class="model-empty">No validated target: no model is shown.</p>
+      <div id="model-view" hidden>
+        <div class="model-frame">
+          <canvas id="model-canvas" data-testid="model-canvas" tabindex="0"
+                  aria-label="3D model of the robot; the arrow on the floor marks its front. Drag empty space to turn the view; drag a joint, or select it and use the arrow keys, to change the control that commands it."></canvas>
+        </div>
+        <div id="model-pose" class="model-pose" data-testid="model-pose" role="status"></div>
+        <div id="model-sel" class="model-sel" data-testid="model-sel" aria-live="polite"></div>
+        <details id="model-joints-wrap" class="model-joints-wrap">
+          <summary id="model-joints-count">Joints the controls command</summary>
+          <div id="model-joints" class="model-joints" role="group" aria-label="Joints the controls command"></div>
+        </details>
+      </div>
+    </section>
+    </div>
 
     <section class="control-panel" id="control-panel" aria-labelledby="ctl-h" tabindex="-1">
       <div class="panel-head">
@@ -538,25 +633,13 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
           <strong>Changes are sent to the robot immediately, and nothing is stopped automatically.</strong>
           Sliders, the head pad and the model's joints send while you drag, a typed number when you
           commit it (Enter or leaving the field), and service and action-group buttons once per click.
-          ‘Read measured’ asks the robot for its measured positions once per click. Leaving, reloading
-          or closing this page and a lost connection send nothing: a running goal keeps running.
-          Base driving and walking are not offered here (use teleop.sh).
+          ‘Read measured’ asks the robot for its measured positions once per click; where the profile
+          documents a read-only position query, the page asks it about once a second after validation
+          (it commands nothing). Leaving, reloading or closing this page and a lost connection send
+          nothing: a running goal keeps running. Base driving and walking are not offered here
+          (use teleop.sh).
         </p>
       </div>
-
-      <section class="model-card" data-testid="model" aria-labelledby="model-h">
-        <div class="ctl-head"><h3 id="model-h">Model</h3></div>
-        <p id="model-empty" class="model-empty">No validated target: no model is shown.</p>
-        <div id="model-view" hidden>
-          <div class="model-frame">
-            <canvas id="model-canvas" data-testid="model-canvas" tabindex="0"
-                    aria-label="3D model of the robot. Drag empty space to turn the view; drag a joint, or select it and use the arrow keys, to change the control that commands it."></canvas>
-          </div>
-          <div id="model-pose" class="model-pose" data-testid="model-pose" role="status"></div>
-          <div id="model-joints" class="model-joints" role="group" aria-label="Joints the controls command"></div>
-          <div id="model-sel" class="model-sel" data-testid="model-sel" aria-live="polite"></div>
-        </div>
-      </section>
 
       <div id="controls" data-testid="controls"></div>
     </section>

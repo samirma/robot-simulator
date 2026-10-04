@@ -289,14 +289,31 @@
     }
     return tpl;
   }
+  // A typed number: "." or "," as the decimal separator, "−" as a minus (the page writes "." and
+  // shows "−"), so the value does not depend on the browser's locale.
+  function parseNum(raw) {
+    const s = String(raw == null ? "" : raw).trim().replace(/^[−–]/, "-").replace(",", ".");
+    return s === "" ? NaN : Number(s);
+  }
   function coerce(f, raw) {
     if (f.choices) { if (!f.choices.includes(raw)) throw new Error(`${f.name}: ${raw} is not one of ${f.choices.join(", ")}`); return raw; }
-    const v = Number(raw);
-    if (raw === "" || !Number.isFinite(v)) throw new Error(`${f.label}: not a number`);
+    const v = parseNum(raw);
+    if (!Number.isFinite(v)) throw new Error(`${f.label}: not a number`);
     if (f.min != null && v < f.min) throw new Error(`${f.label}: ${v} below documented minimum ${f.min}`);
     if (f.max != null && v > f.max) throw new Error(`${f.label}: ${v} above documented maximum ${f.max}`);
     if (f.integer && !Number.isInteger(v)) throw new Error(`${f.label}: must be an integer`);
     return v;
+  }
+  // Python's round(): halves go to the even neighbour (the vendor code the profiles cite rounds so).
+  function roundHalfEven(x) { const r = Math.round(x); return Math.abs(x % 1) === 0.5 && r % 2 ? r - 1 : r; }
+  // A field's documented mapping onto the wire (profiles.py WireMap, the inverse of a read):
+  // offset + scale * value, the scaled value rounded to an integer when `integer`; a value that
+  // maps outside the documented wire range is invalid and never sent.
+  function toWire(f, v) {
+    const w = f.to_wire; if (!w) return v;
+    const x = Number(w.offset || 0) + (w.integer ? roundHalfEven(Number(w.scale) * v) : Number(w.scale) * v);
+    if ((w.min != null && x < w.min) || (w.max != null && x > w.max)) throw new Error(`${f.label}: ${v} ${f.unit} maps to ${x}, outside ${w.min}..${w.max} on the wire`);
+    return x;
   }
 
   // ------------------------------------------------------------------ cameras
@@ -345,7 +362,7 @@
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
     lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(), conflicts: new Map(),
-    padGroup: null, model: null });
+    padGroup: null, model: null, groups: [], poll: null });
 
   // ------------------------------------------------------------------ DOM helpers
   function h(tag, props, ...kids) {
@@ -362,6 +379,9 @@
   }
   const exact = (v) => String(+Number(v).toFixed(6)).replace("-", "−");   // a documented limit, as documented
   const signed = (v, d) => (v > 0 ? "+" : v < 0 ? "−" : "±") + Math.abs(v).toFixed(d);
+  const degText = (rad) => { const d = Math.round(rad * 180 / Math.PI); return (d < 0 ? "−" : "") + Math.abs(d) + "°"; };
+  // A value with its unit, and degrees next to radians: "+0.82 rad (47°)".
+  const valueText = (v, unit, d) => `${signed(v, d)} ${unit}` + (unit === "rad" ? ` (${degText(v)})` : "");
   function decimals(f) {
     if (f.integer) return 0;
     const span = f.max - f.min;
@@ -549,7 +569,7 @@
             fs.mark.hidden = true;
           } else {
             if (cs.fb.measured) any = true;
-            fs.measVal.textContent = `${signed(v, decimals(fs.f) + 1)} ${fs.f.unit}`; fs.meas.dataset.state = "live";
+            fs.measVal.textContent = valueText(v, fs.f.unit, decimals(fs.f) + 1); fs.meas.dataset.state = "live";
             fs.meas.title = cs.fb.measured ? `measured ${cs.fb.map[fs.f.name]} on ${cs.fb.topic}`
               : `reported ${cs.fb.map[fs.f.name]} on ${cs.fb.topic}: what the robot publishes for this joint, not a measurement`;
             const p = Math.min(1, Math.max(0, (v - fs.f.min) / (fs.f.max - fs.f.min)));
@@ -557,31 +577,42 @@
           }
         }
       }
-      if (cs.reads.length && cs.readStatus) {
+      if (cs.reads.length) {
         const rv = readValues(cs);
         for (const fs of Object.values(cs.fields)) {
           if (!fs.read) continue;
           const r = rv[fs.f.name];
+          const polled = r && r.x.r.poll_s, age = r ? (now - r.x.last.at) / 1000 : 0;
           if (!r || r.v == null) {
             fs.readVal.textContent = "—"; fs.read.dataset.state = r ? "invalid" : "none";
-            fs.read.title = r ? `the last read of ${r.x.wire} gave no valid value for this field` : `not read yet: “${cs.readBtn.textContent}” asks the robot once`;
+            fs.read.title = r ? `the last read of ${r.x.wire} gave no valid value for this field`
+              : cs.polled.length ? `not measured yet: the page asks ${cs.polled[0].wire} about every ${cs.polled[0].r.poll_s} s`
+              : cs.readBtn ? `not read yet: “${cs.readBtn.textContent}” asks the robot once` : "not read yet";
           } else {
             any = true;
-            fs.readVal.textContent = `${signed(r.v, decimals(fs.f) + 1)} ${fs.f.unit}`; fs.read.dataset.state = "read";
-            fs.read.title = `measured: read from ${r.x.wire} ${((now - r.x.last.at) / 1000).toFixed(1)} s ago (not live)`;
+            fs.readVal.textContent = valueText(r.v, fs.f.unit, decimals(fs.f) + (cs.group ? 0 : 1));
+            fs.read.dataset.state = !polled ? "read" : pollFresh(r.x, now) ? "live" : "stale";
+            fs.read.title = polled
+              ? `measured by ${r.x.wire} ${age.toFixed(1)} s ago (asked about every ${r.x.r.poll_s} s)` + (fs.read.tagName === "BUTTON" ? "; click to make it the target (sends it)" : "")
+              : `measured: read from ${r.x.wire} ${age.toFixed(1)} s ago (not live)`;
           }
+          if (fs.read.tagName === "BUTTON") fs.read.disabled = !(r && r.v != null);
         }
-        cs.readStatus.textContent = readText(cs.reads, now);
+        if (cs.readStatus) cs.readStatus.textContent = readText(cs.reads, now);
       }
       if (cs.useMeasured) cs.useMeasured.disabled = !any;
     }
+    for (const gr of S.groups) syncGroup(gr, now);
   }
+  // A polled measurement is fresh while younger than three periods (and the connection is up).
+  const pollFresh = (x, now) => !!x.last && !S.lost && (now - x.last.at) / 1000 <= 3 * x.r.poll_s;
 
   // ------------------------------------------------------------------ measured reads
   // Read services the profile documents as returning measured joint positions (e.g. a servo
   // readback). The page calls one only when the user clicks its button, once per click, never
-  // on load or by itself; each answered value maps to a control field as
-  // field = (raw - offset) / scale. A reading is a snapshot, shown with its age, not live.
+  // on load or by itself, except the read the profile marks `poll_s` (polled positions, below);
+  // each answered value maps to a control field as field = (raw - offset) / scale. A reading is
+  // a snapshot, shown with its age.
   function readPath(v, path) {
     for (const seg of String(path).split(".")) {
       if (v == null) return undefined;
@@ -618,11 +649,11 @@
       : x.last ? `read from ${x.wire} ${((now - x.last.at) / 1000).toFixed(1)} s ago` : "").filter(Boolean).join("; ");
   }
   function doRead(x) {
-    const conn = S.conn;
-    if (!conn || S.lost || !S.target || x.busy) return;
-    const r = x.r;
+    const conn = S.conn, t = S.target;
+    if (!conn || S.lost || !t || x.busy) return Promise.resolve();
+    const r = x.r, sentAt = performance.now();
     x.busy = true; x.err = null;
-    conn.call(x.wire, r.request || {}, 5000).then((v) => {
+    const done = conn.call(x.wire, r.request || {}, 5000).then((v) => {
       if (r.ok_field && v && v[r.ok_field] === false) throw new Error(`the service answered ${JSON.stringify(v).slice(0, 120)}`);
       const raws = r.values.map((m) => readPath(v, m.path));
       const allZero = !!r.invalid_if_all_zero && raws.every((z) => Number(z) === 0);
@@ -632,11 +663,49 @@
         const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw) && !allZero;
         (vals[m.control] = vals[m.control] || {})[m.field] = ok ? (raw - Number(m.offset || 0)) / (m.scale == null ? 1 : Number(m.scale)) : null;
       });
-      x.last = { at: performance.now(), vals };
+      x.last = { at: performance.now(), sentAt, vals };
+      if (r.poll_s && S.target === t) followMeasured(vals);
     }).catch((e) => { x.err = e.message; })
-      .finally(() => { x.busy = false; tickFeedback(performance.now()); });
+      .finally(() => { x.busy = false; tickFeedback(performance.now()); scheduleModelDraw(); });
     tickFeedback(performance.now());
+    return done;
   }
+  // Targets the user has not changed on this page follow the polled measurement (nothing is
+  // sent), so a slider, the head pad or a joint dragged in the model starts where the robot is.
+  function followMeasured(vals) {
+    for (const [cid, fields] of Object.entries(vals)) {
+      const cs = S.controls.get(cid); if (!cs || cs.dead) continue;
+      for (const [name, v] of Object.entries(fields)) {
+        const fs = cs.fields[name];
+        if (fs && v != null && fs.pristine && !fs.held) setField(fs, v, false, true);
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------ polled positions
+  // The read the profile marks `poll_s` is its documented read-only joint-position query (console
+  // spec §2.2, amended 2026-10-03): once the target is validated the page calls it about every
+  // poll_s seconds, one call at a time, so the model and the measured values follow a robot that
+  // publishes no joint states. It commands nothing, is never called before validation, and stops
+  // on connection loss and on a target change.
+  let pollTimer = null;
+  function startPoll(t, conn) {
+    stopPoll();
+    const x = [...S.reads.values()].find((y) => y.r.poll_s && !y.reason);
+    if (!x || S.target !== t || S.conn !== conn || S.lost) return;
+    const live = () => S.poll === x && S.target === t && S.conn === conn && !S.lost;
+    S.poll = x;
+    const step = () => {
+      pollTimer = null;
+      if (!live()) return;
+      const t0 = performance.now();
+      doRead(x).finally(() => {
+        if (live() && !pollTimer) pollTimer = setTimeout(step, Math.max(0, x.r.poll_s * 1000 - (performance.now() - t0)));
+      });
+    };
+    step();
+  }
+  function stopPoll() { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; S.poll = null; }
 
   // ------------------------------------------------------------------ sending
   // Values changed on the page go to the robot at once; nothing is ever stopped or cancelled
@@ -691,7 +760,7 @@
     const c = cs.ctrl, t = S.target, conn = S.conn;
     if (!liveOk(cs)) return false;
     const values = {};
-    try { for (const f of c.fields) values[f.name] = coerce(f, cs.inputs[f.name].value); }
+    try { for (const f of c.fields) values[f.name] = toWire(f, coerce(f, cs.inputs[f.name].value)); }
     catch (e) { setStatus(c.id, "invalid", "not sent: " + e.message); return false; }
     let payload;
     try { payload = fill(c.template, values, jointPrefix(t.profile, t.namespace)); }
@@ -782,6 +851,7 @@
 
   function refreshControls() {
     for (const cs of S.controls.values()) cs.body.disabled = !liveOk(cs);
+    for (const gr of S.groups) syncGroup(gr, performance.now());
     if (S.padGroup) S.padGroup.sync();
     drawModel();
     syncLive();
@@ -822,27 +892,38 @@
   function validateField(fs) {
     const f = fs.f;
     let v = null, err = "";
-    try { v = coerce(f, fs.num.value); } catch (e) { err = e.message.startsWith(f.label + ": ") ? e.message.slice(f.label.length + 2) : e.message; }
+    try { v = coerce(f, fs.num.value); toWire(f, v); }
+    catch (e) { v = null; err = e.message.startsWith(f.label + ": ") ? e.message.slice(f.label.length + 2) : e.message; }
     fs.div.classList.toggle("invalid", !!err);
     fs.num.setAttribute("aria-invalid", String(!!err));
     fs.err.textContent = err;
-    if (v != null) {
-      if (Number(fs.range.value) !== v) fs.range.value = String(v);
-    }
+    if (v != null && fs.range && Number(fs.range.value) !== v) fs.range.value = String(v);
+    if (fs.deg) fs.deg.textContent = v != null ? degText(v) : "";
     for (const fn of fs.listeners) fn(v);
   }
-  function setField(fs, v, fromRange) {
+  // A change by the user: the field stops following the measurement, and the model draws its
+  // target until a measurement asked for after the change has arrived.
+  function touched(fs) { fs.pristine = false; fs.changedAt = performance.now(); }
+  // `quiet`: set by the page itself (a measurement followed), not a change by the user.
+  function setField(fs, v, fromRange, quiet) {
     const f = fs.f;
     v = Math.min(f.max, Math.max(f.min, Number(v)));
     let r = Number(v.toFixed(decimals(f)));
     if (r > f.max || r < f.min) r = v;            // never round past a documented limit
     if (f.integer) r = Math.round(r);
+    if (!quiet) touched(fs);
     fs.num.value = String(r);
-    if (!fromRange) fs.range.value = String(r);
+    if (!fromRange && fs.range) fs.range.value = String(r);
     validateField(fs);
   }
+  const stepOf = (f) => (f.integer ? 1 : Math.pow(10, -decimals(f)));
+  // Pointer releases end every hold (a slider, the head pad or a joint dragged in the model).
+  window.addEventListener("pointerup", () => { for (const cs of S.controls.values()) for (const fs of Object.values(cs.fields)) fs.held = false; }, true);
 
-  function buildField(c, f, cs) {
+  // mode "card": label, number and slider rows of a control card; "row": one compact line of a
+  // grouped joint list (the control's label, measured value, number, slider); "mini": a number
+  // only (a secondary field of a row, e.g. its duration).
+  function buildField(c, f, cs, mode = "card") {
     const id = `f-${c.id}-${f.name}`;
     if (f.choices) {
       let value = f.default != null && f.choices.includes(f.default) ? f.default : f.choices[0];
@@ -873,39 +954,69 @@
       cs.afterBuild.push(sync);
       return h("div", { class: "field" }, h("div", { class: "field-top" }, h("label", { text: f.label })), grid);
     }
-    const num = h("input", { type: "number", id, "data-field": f.name, min: f.min, max: f.max, step: f.integer ? 1 : "any",
-      "aria-describedby": id + "-lim" });
-    if (f.default != null) num.value = f.default;
-    const range = h("input", { type: "range", min: f.min, max: f.max, step: f.integer ? 1 : "any",
-      "aria-label": `${f.label} (${f.unit || "value"})`, tabindex: "-1" });
-    if (f.default != null) range.value = f.default;
-    const lo = h("button", { type: "button", class: "limit", title: `documented minimum ${exact(f.min)} ${f.unit}`, text: exact(f.min) });
-    const hi = h("button", { type: "button", class: "limit", title: `documented maximum ${exact(f.max)} ${f.unit}`, text: exact(f.max) });
-    const mark = h("span", { class: "meas-mark", hidden: true, "aria-hidden": "true" });
-    const div = h("div", { class: "field" },
-      h("div", { class: "field-top" },
-        h("label", { for: id, text: f.label }),
-        null,
-        h("span", { class: "num-wrap" }, num, h("span", { class: "unit", text: f.unit || "" }))),
-      h("div", { class: "slider-row", id: id + "-lim" }, lo, h("div", { class: "track" }, range, mark), hi),
-      h("div", { class: "field-err", role: "alert" }));
-    const fs = { f, div, num, range, mark, err: div.querySelector(".field-err"), listeners: [], meas: null, measVal: null, read: null, readVal: null };
-    if (cs.fb && cs.fb.map[f.name]) {
+    // A text field, not type=number: the value reads the same in every locale ("." decimals).
+    const num = h("input", { type: "text", class: "num", id, "data-field": f.name, "data-min": f.min, "data-max": f.max,
+      autocomplete: "off", spellcheck: "false", "aria-describedby": mode === "mini" ? null : id + "-lim" });
+    if (f.default != null) num.value = String(f.default);
+    const deg = f.unit === "rad" ? h("span", { class: "deg", "aria-hidden": "true" }) : null;
+    const wrap = h("span", { class: "num-wrap" }, num, h("span", { class: "unit", text: f.unit || "" }), deg);
+    let div, range = null, mark = null;
+    if (mode === "mini") {
+      div = h("div", { class: "field mini" }, h("label", { for: id, text: f.label }), wrap, h("div", { class: "field-err", role: "alert" }));
+    } else {
+      range = h("input", { type: "range", min: f.min, max: f.max, step: f.integer ? 1 : "any",
+        "aria-label": `${mode === "row" ? c.label : f.label} (${f.unit || "value"})`, tabindex: "-1" });
+      if (f.default != null) range.value = f.default;
+      const lo = h("button", { type: "button", class: "limit", title: `documented minimum ${exact(f.min)} ${f.unit}`, text: exact(f.min) });
+      const hi = h("button", { type: "button", class: "limit", title: `documented maximum ${exact(f.max)} ${f.unit}`, text: exact(f.max) });
+      mark = h("span", { class: "meas-mark", hidden: true, "aria-hidden": "true" });
+      // A row: the control's label over the field's label (and the measured value), the number beside them.
+      const label = mode === "row"
+        ? h("div", { class: "row-id" }, h("label", { for: id }, h("span", { class: "row-name", text: c.label }), h("span", { class: "row-hint", text: f.label })))
+        : h("label", { for: id, text: f.label });
+      div = h("div", { class: "field" + (mode === "row" ? " main" : "") },
+        h("div", { class: "field-top" }, label, wrap),
+        h("div", { class: "slider-row", id: id + "-lim" }, lo, h("div", { class: "track" }, range, mark), hi),
+        h("div", { class: "field-err", role: "alert" }));
+      lo.addEventListener("click", () => { setField(fs, f.min); trigger(cs); });
+      hi.addEventListener("click", () => { setField(fs, f.max); trigger(cs); });
+    }
+    const fs = { f, div, num, range, mark, deg, err: div.querySelector(".field-err"), listeners: [], meas: null, measVal: null,
+      read: null, readVal: null, pristine: true, changedAt: 0, held: false };
+    if (mode !== "mini" && cs.fb && cs.fb.map[f.name]) {
       fs.measVal = h("span", { class: "m-val", text: "—" });
       fs.meas = h("span", { class: "measured" }, h("span", { class: "m-label", text: fbWord(cs.fb) }), fs.measVal);
-      div.querySelector(".field-top").insertBefore(fs.meas, div.querySelector(".num-wrap"));
+      div.querySelector(".field-top").insertBefore(fs.meas, wrap);
     }
-    if (cs.reads.some((x) => x.r.values.some((m) => m.control === c.id && m.field === f.name))) {
+    if (mode !== "mini" && cs.reads.some((x) => x.r.values.some((m) => m.control === c.id && m.field === f.name))) {
       fs.readVal = h("span", { class: "m-val", text: "—" });
-      fs.read = h("span", { class: "measured read", "data-testid": "read-value" }, h("span", { class: "m-label", text: "measured" }), fs.readVal);
-      div.querySelector(".field-top").insertBefore(fs.read, div.querySelector(".num-wrap"));
+      if (mode === "row") {
+        // The measured value; clicking it makes it the target (and sends it, like "Use measured").
+        fs.read = h("button", { type: "button", class: "measured read", "data-testid": "read-value", disabled: true },
+          h("span", { class: "m-label", text: "measured" }), fs.readVal);
+        fs.read.addEventListener("click", () => { const r = readValues(cs)[f.name]; if (r && r.v != null) { setField(fs, r.v); trigger(cs); } });
+        div.querySelector(".row-id").append(fs.read);
+      } else {
+        fs.read = h("span", { class: "measured read", "data-testid": "read-value" }, h("span", { class: "m-label", text: "measured" }), fs.readVal);
+        div.querySelector(".field-top").insertBefore(fs.read, wrap);
+      }
     }
     // Typing only validates; a typed value is sent when committed (Enter or leaving the field).
-    num.addEventListener("input", () => validateField(fs));
+    // The arrow keys step it by its display resolution (Shift: ten steps) and send it.
+    num.addEventListener("input", () => { touched(fs); validateField(fs); });
     num.addEventListener("change", () => { validateField(fs); trigger(cs); });
-    range.addEventListener("input", () => { setField(fs, range.value, true); trigger(cs); });
-    lo.addEventListener("click", () => { setField(fs, f.min); trigger(cs); });
-    hi.addEventListener("click", () => { setField(fs, f.max); trigger(cs); });
+    num.addEventListener("keydown", (e) => {
+      const d = { ArrowUp: 1, ArrowDown: -1 }[e.key]; if (!d) return;
+      e.preventDefault();
+      const cur = parseNum(num.value);
+      setField(fs, (Number.isFinite(cur) ? cur : Number(f.default || 0)) + d * stepOf(f) * (e.shiftKey ? 10 : 1));
+      trigger(cs);
+    });
+    if (range) {
+      range.addEventListener("pointerdown", () => { fs.held = true; });
+      range.addEventListener("change", () => { fs.held = false; });
+      range.addEventListener("input", () => { setField(fs, range.value, true); trigger(cs); });
+    }
     cs.inputs[f.name] = num; cs.fields[f.name] = fs;
     cs.afterBuild.push(() => validateField(fs));
     return div;
@@ -923,58 +1034,69 @@
       if (!(e.kind === "action" && got === null) && normType(got) !== normType(e.type)) { reason = `prerequisite ${wire} has type ${got}, expected ${e.type}`; break; }
     }
     if (!reason && S.conflicts.has(c.id)) reason = S.conflicts.get(c.id);
+    const numeric = c.fields.filter((f) => !f.choices);
+    // A control of a profile group is one compact row of the group's joint list.
+    const row = !!c.group && (t.profile.groups || []).some((x) => x.id === c.group) && numeric.length > 0 && numeric.length === c.fields.length;
     const compact = !c.fields.length;
-    const div = h("div", { class: "control" + (compact ? " compact" : "") + (reason ? " unavailable" : ""), "data-control": c.id, "data-testid": "control" });
+    const div = h("div", { class: "control" + (row ? " jrow" : compact ? " compact" : "") + (reason ? " unavailable" : ""), "data-control": c.id, "data-testid": "control" });
+    const reads = reason ? [] : readsOf(c.id);
     const cs = { ctrl: c, div, inputs: {}, fields: {}, available: !reason, status: null, afterBuild: [], fb: reason ? null : feedbackFor(c, t),
-      reads: reason ? [] : readsOf(c.id),
+      reads, polled: reads.filter((x) => x.r.poll_s), group: row ? c.group : null,
       mode: sendMode(c), th: { pending: false, timer: null, busy: false, last: 0 }, goal: null, goals: [], sent: 0, dead: false };
-    div.append(h("div", { class: "ctl-head" },
-      h("div", {}, h("h3", { text: c.label }), h("div", { class: "ctl-kind", text: kindText(c) }))));
-    div.append(h("details", { class: "ctl-wire" }, h("summary", { text: "Interface" }),
-      h("dl", {},
-        h("dt", { text: "Name" }), h("dd", { text: t.wire(c.name) }),
-        h("dt", { text: "Type" }), h("dd", { text: c.type }),
-        cs.fb ? [h("dt", { text: cs.fb.measured ? "Measured" : "Reported" }), h("dd", { text: cs.fb.topic })] : null)));
+    if (!row) {
+      div.append(h("div", { class: "ctl-head" },
+        h("div", {}, h("h3", { text: c.label }), h("div", { class: "ctl-kind", text: kindText(c) }))));
+      div.append(h("details", { class: "ctl-wire" }, h("summary", { text: "Interface" }),
+        h("dl", {},
+          h("dt", { text: "Name" }), h("dd", { text: t.wire(c.name) }),
+          h("dt", { text: "Type" }), h("dd", { text: c.type }),
+          cs.fb ? [h("dt", { text: cs.fb.measured ? "Measured" : "Reported" }), h("dd", { text: cs.fb.topic })] : null)));
+    }
     if (reason) div.append(h("div", { class: "unavail", "data-testid": "unavailable", text: "unavailable: " + reason }));
     // Everything that edits or sends sits in one fieldset, disabled while the control is not live.
     cs.body = h("fieldset", { class: "ctl-body", disabled: true });
-    if (c.fields.length) cs.body.append(h("div", { class: "fields" }, c.fields.map((f) => buildField(c, f, cs))));
-    const numeric = c.fields.filter((f) => !f.choices);
-    if (numeric.length) {
-      const tools = h("div", { class: "ctl-tools" });
-      const reset = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Reset to defaults" });
-      reset.addEventListener("click", () => { for (const f of numeric) if (f.default != null) setField(cs.fields[f.name], f.default); trigger(cs); });
-      tools.append(reset);
-      if (cs.reads.length) {
-        // One call of each documented read service per click; never automatic.
-        cs.readBtn = h("button", { type: "button", class: "btn btn-sm btn-ghost", "data-testid": "read", text: "Read measured",
-          title: "ask the robot once for the measured positions: " + cs.reads.map((x) => x.wire).join(", ") });
-        cs.readBtn.addEventListener("click", () => { for (const x of cs.reads) doRead(x); });
-        tools.append(cs.readBtn);
+    if (row) {
+      cs.body.append(buildField(c, numeric[0], cs, "row"), ...numeric.slice(1).map((f) => buildField(c, f, cs, "mini")));
+    } else {
+      if (c.fields.length) cs.body.append(h("div", { class: "fields" }, c.fields.map((f) => buildField(c, f, cs))));
+      if (numeric.length) {
+        const tools = h("div", { class: "ctl-tools" });
+        const reset = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Reset to defaults" });
+        reset.addEventListener("click", () => { for (const f of numeric) if (f.default != null) setField(cs.fields[f.name], f.default); trigger(cs); });
+        tools.append(reset);
+        // One call of each documented read service per click; never automatic. A polled read
+        // refreshes the measured values by itself, so its controls have no read button.
+        const clickReads = cs.polled.length ? [] : cs.reads;
+        if (clickReads.length) {
+          cs.readBtn = h("button", { type: "button", class: "btn btn-sm btn-ghost", "data-testid": "read", text: "Read measured",
+            title: "ask the robot once for the measured positions: " + clickReads.map((x) => x.wire).join(", ") });
+          cs.readBtn.addEventListener("click", () => { for (const x of clickReads) doRead(x); });
+          tools.append(cs.readBtn);
+        }
+        if ((cs.fb && cs.fb.measured) || cs.reads.length) {
+          const from = [cs.fb && cs.fb.measured ? cs.fb.topic : null, ...cs.reads.map((x) => x.wire)].filter(Boolean).join(" / ");
+          cs.useMeasured = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Use measured", disabled: true,
+            title: `set targets to the positions measured on ${from}` });
+          cs.useMeasured.addEventListener("click", () => {
+            // A fresh measurement on the documented topic first, else the latest read.
+            const m = cs.fb && cs.fb.measured ? measuredOf(cs, performance.now()) : {}, rv = readValues(cs);
+            for (const k of Object.keys(cs.fields)) {
+              const v = m[k] != null ? m[k] : rv[k] ? rv[k].v : null;
+              if (v != null) setField(cs.fields[k], v);
+            }
+            trigger(cs);
+          });
+          tools.append(cs.useMeasured);
+        }
+        if (clickReads.length) { cs.readStatus = h("span", { class: "read-status", "data-testid": "read-status", role: "status" }); tools.append(cs.readStatus); }
+        cs.body.append(tools);
       }
-      if ((cs.fb && cs.fb.measured) || cs.reads.length) {
-        const from = [cs.fb && cs.fb.measured ? cs.fb.topic : null, ...cs.reads.map((x) => x.wire)].filter(Boolean).join(" / ");
-        cs.useMeasured = h("button", { type: "button", class: "btn btn-sm btn-ghost", text: "Use measured", disabled: true,
-          title: `set targets to the positions measured on ${from}` });
-        cs.useMeasured.addEventListener("click", () => {
-          // A fresh measurement on the documented topic first, else the latest read.
-          const m = cs.fb && cs.fb.measured ? measuredOf(cs, performance.now()) : {}, rv = readValues(cs);
-          for (const k of Object.keys(cs.fields)) {
-            const v = m[k] != null ? m[k] : rv[k] ? rv[k].v : null;
-            if (v != null) setField(cs.fields[k], v);
-          }
-          trigger(cs);
-        });
-        tools.append(cs.useMeasured);
+      if (cs.mode === "click" && !c.fields.some((f) => f.choices)) {
+        cs.button = h("button", { type: "button", class: "send", "data-testid": "send", "aria-describedby": `st-${c.id}`,
+          text: c.kind === "call" ? "Call" : "Send" });
+        cs.button.addEventListener("click", () => fire(cs));
+        cs.body.append(cs.button);
       }
-      if (cs.reads.length) { cs.readStatus = h("span", { class: "read-status", "data-testid": "read-status", role: "status" }); tools.append(cs.readStatus); }
-      cs.body.append(tools);
-    }
-    if (cs.mode === "click" && !c.fields.some((f) => f.choices)) {
-      cs.button = h("button", { type: "button", class: "send", "data-testid": "send", "aria-describedby": `st-${c.id}`,
-        text: c.kind === "call" ? "Call" : "Send" });
-      cs.button.addEventListener("click", () => fire(cs));
-      cs.body.append(cs.button);
     }
     div.append(cs.body);
     cs.statusEl = h("div", { class: "status dim", "data-testid": "status", id: `st-${c.id}`, role: "status" });
@@ -984,13 +1106,58 @@
     return cs;
   }
 
+  // A profile group: its controls as one collapsible joint list, with the group's note, how its
+  // controls send, their interface and a summary that keeps every row's failed, invalid and
+  // sending state visible while the group is collapsed.
+  function buildGroup(gd) {
+    const meta = h("span", { class: "jg-meta" }), state = h("span", { class: "jg-state", role: "status" });
+    const kind = h("div", { class: "ctl-kind" }), list = h("div", { class: "jlist" });
+    const dl = h("dl");
+    const body = h("div", { class: "jg-body" }, gd.note ? h("p", { class: "jg-note", text: gd.note }) : null, kind, list,
+      h("details", { class: "ctl-wire" }, h("summary", { text: "Interface" }), dl));
+    const el = h("details", { class: "jgroup", open: true, "data-group": gd.id, "data-testid": "group" },
+      h("summary", {}, h("span", { class: "jg-title", text: gd.label }), state, meta), body);
+    return { id: gd.id, def: gd, el, body, kind, list, dl, meta, state, members: [] };
+  }
+  function finishGroup(gr, t) {
+    gr.kind.textContent = [...new Set(gr.members.map((cs) => kindText(cs.ctrl)))].join(" / ") +
+      " · each row is one joint; values in rad (degrees in brackets)";
+    const seen = new Set();
+    for (const cs of gr.members) {
+      const key = cs.ctrl.name + " " + cs.ctrl.type; if (seen.has(key)) continue; seen.add(key);
+      gr.dl.append(h("dt", { text: "Name" }), h("dd", { text: t.wire(cs.ctrl.name) }), h("dt", { text: "Type" }), h("dd", { text: cs.ctrl.type }));
+    }
+    const x = gr.members.flatMap((cs) => cs.polled)[0];
+    if (x) gr.dl.append(h("dt", { text: "Measured" }), h("dd", { text: `${x.wire} (${x.r.type}), asked about every ${x.r.poll_s} s` }));
+    syncGroup(gr, performance.now());
+  }
+  function syncGroup(gr, now) {
+    const n = gr.members.length, ph = { failed: 0, invalid: 0, sending: 0 };
+    for (const cs of gr.members) {
+      const typedBad = Object.values(cs.fields).some((fs) => fs.div.classList.contains("invalid"));
+      const p = typedBad ? "invalid" : cs.status ? cs.status.phase : null;
+      if (p in ph) ph[p]++;
+    }
+    const x = gr.members.flatMap((cs) => cs.polled)[0];
+    let meta = `${n} joint${n === 1 ? "" : "s"}`;
+    if (x) meta += x.last ? ` · measured ${((now - x.last.at) / 1000).toFixed(1)} s ago` : " · not measured yet";
+    if (x && x.err) meta += " · last read failed";
+    if (gr.meta.textContent !== meta) gr.meta.textContent = meta;
+    gr.meta.title = x && x.err ? `read of ${x.wire} failed: ${x.err}` : "";
+    const parts = [];
+    for (const k of ["failed", "invalid", "sending"]) if (ph[k]) parts.push(`${ph[k]} ${k}`);
+    const st = parts.join(" · ");
+    if (gr.state.textContent !== st) gr.state.textContent = st;
+    gr.state.dataset.state = ph.failed || ph.invalid ? "bad" : ph.sending ? "warn" : "";
+  }
+
   // AiNex-style head: one pad drives both head targets; dragging it streams head_pan and
-  // head_tilt like their own sliders.
+  // head_tilt like their own sliders. In a profile group the pad heads the group's joint list.
   function padPair(p) {
     const ok = (id) => { const c = p.controls.find((x) => x.id === id); return c && c.fields.some((f) => f.name === "position" && !f.choices && f.min != null && f.max != null); };
     return ok("head_pan") && ok("head_tilt") ? { pan: "head_pan", tilt: "head_tilt" } : null;
   }
-  function buildPadGroup(pair) {
+  function buildPadGroup(pair, inGroup) {
     const wrap = h("div", { class: "head-group" });
     const pad = h("div", { class: "pad", tabindex: "0", role: "group",
       "aria-label": "Head pad: dragging or the arrow keys send the pan and tilt targets" });
@@ -998,9 +1165,9 @@
     const zx = h("span", { class: "pad-zero" }), zy = h("span", { class: "pad-zero h" });
     const readout = h("div", { class: "pad-readout", "aria-live": "polite" });
     pad.append(zx, zy, dot);
-    const card = h("div", { class: "pad-card" },
-      h("div", { class: "ctl-head" }, h("div", {}, h("h3", { text: "Head" }),
-        h("div", { class: "ctl-kind", text: "Drag to move the head: pan and tilt are sent as you drag (≈10 per s)." }))),
+    const kind = h("div", { class: "ctl-kind", text: "Drag to move the head: pan and tilt are sent as you drag (≈10 per s)." });
+    const card = h("div", { class: "pad-card" + (inGroup ? " in-group" : "") },
+      inGroup ? kind : h("div", { class: "ctl-head" }, h("div", {}, h("h3", { text: "Head" }), kind)),
       pad, readout);
     wrap.append(card);
     const g = { div: wrap, sync: () => {} };
@@ -1021,11 +1188,11 @@
       lbl(`↑ up ${exact(ft.max)}`, { top: "6px", left: `calc(${x0}% + 8px)` });
       lbl(`↓ down ${exact(ft.min)}`, { bottom: "6px", left: `calc(${x0}% + 8px)` });
       const paint = () => {
-        const pv = Number(P.num.value), tv = Number(T.num.value);
+        const pv = parseNum(P.num.value), tv = parseNum(T.num.value);
         const okP = Number.isFinite(pv) && pv >= fp.min && pv <= fp.max, okT = Number.isFinite(tv) && tv >= ft.min && tv <= ft.max;
         dot.hidden = !(okP && okT);
         if (okP && okT) { dot.style.left = `${xOf(pv) * 100}%`; dot.style.top = `${yOf(tv) * 100}%`; }
-        readout.textContent = `pan ${okP ? signed(pv, 2) : "invalid"} rad · tilt ${okT ? signed(tv, 2) : "invalid"} rad`;
+        readout.textContent = `pan ${okP ? valueText(pv, "rad", 2) : "invalid"} · tilt ${okT ? valueText(tv, "rad", 2) : "invalid"}`;
       };
       P.listeners.push(paint); T.listeners.push(paint); paint();
       const setFrom = (ev) => {
@@ -1035,17 +1202,18 @@
         trigger(PC); trigger(TC);
       };
       let drag = false;
-      pad.addEventListener("pointerdown", (ev) => { if (!live()) return; drag = true; try { pad.setPointerCapture(ev.pointerId); } catch (e) {} setFrom(ev); });
+      pad.addEventListener("pointerdown", (ev) => { if (!live()) return; drag = true; P.held = T.held = true; try { pad.setPointerCapture(ev.pointerId); } catch (e) {} setFrom(ev); });
       pad.addEventListener("pointermove", (ev) => { if (drag && live()) setFrom(ev); });
-      const end = () => { drag = false; };
+      const end = () => { drag = false; P.held = T.held = false; };
       pad.addEventListener("pointerup", end); pad.addEventListener("pointercancel", end);
       pad.addEventListener("keydown", (e) => {
         const st = e.shiftKey ? 0.2 : 0.05;
         const d = { ArrowLeft: [-st, 0], ArrowRight: [st, 0], ArrowUp: [0, st], ArrowDown: [0, -st] }[e.key];
         if (!d || !live()) return;
         e.preventDefault();
-        const pv = Number(P.num.value) || 0, tv = Number(T.num.value) || 0;
-        setField(P, pv + d[0]); setField(T, tv + d[1]);
+        const pv = parseNum(P.num.value) || 0, tv = parseNum(T.num.value) || 0;
+        if (d[0]) setField(P, pv + d[0]);
+        if (d[1]) setField(T, tv + d[1]);
         if (d[0]) trigger(PC); if (d[1]) trigger(TC);
       });
       g.sync();
@@ -1054,22 +1222,32 @@
   }
 
   function renderControls() {
-    const root = $("controls"); root.innerHTML = ""; S.controls.clear(); S.padGroup = null; S.reads = new Map();
+    const root = $("controls"); root.innerHTML = ""; S.controls.clear(); S.padGroup = null; S.reads = new Map(); S.groups = [];
     $("workspace").classList.toggle("no-controls", !S.target || !S.target.profile.controls.length);
     if (!S.target) { root.append(h("p", { class: "empty", text: "No validated target: no controls are offered." })); renderModel(); refreshControls(); return; }
     const t = S.target, g = S.graph;
     prepareReads(t, g);
     if (!t.profile.controls.length) root.append(h("p", { class: "empty", "data-testid": "no-controls", text: "This robot's profile lists no bounded page controls." }));
+    const groups = new Map((t.profile.groups || []).map((x) => [x.id, x]));
     const pair = padPair(t.profile);
-    let group = null;
+    let group = null, cur = null;
     for (const c of t.profile.controls) {
       const cs = buildControl(c, t, g);
-      if (pair && (c.id === pair.pan || c.id === pair.tilt)) {
-        if (!group) { group = buildPadGroup(pair); root.append(group.div); }
+      const isPad = pair && (c.id === pair.pan || c.id === pair.tilt);
+      if (cs.group) {                                           // a row of its group's joint list
+        if (!cur || cur.id !== cs.group) { cur = buildGroup(groups.get(cs.group)); S.groups.push(cur); root.append(cur.el); }
+        cur.list.append(cs.div); cur.members.push(cs);
+        if (isPad && !group) { group = buildPadGroup(pair, true); cur.list.before(group.div); }
+        continue;
+      }
+      cur = null;
+      if (isPad) {
+        if (!group) { group = buildPadGroup(pair, false); root.append(group.div); }
         group.div.append(cs.div);
       } else root.append(cs.div);
     }
     if (group) { group.init(); S.padGroup = group; }
+    for (const gr of S.groups) finishGroup(gr, t);
     for (const el of root.querySelectorAll(".control.compact")) {      // side by side only in runs of two or more
       const pair = [el.previousElementSibling, el.nextElementSibling].some((x) => x && x.matches(".control.compact"));
       if (!pair) el.classList.add("solo");
@@ -1082,11 +1260,15 @@
   // ------------------------------------------------------------------ 3D model
   // The validated target's embodiment from its profile's `model` (the joint tree of the pinned
   // vendor URDF), drawn on a plain canvas with an orthographic projection; dragging empty space
-  // turns the view. Each joint is posed from the joint position the robot reports where the
-  // profile documents feedback for it, otherwise at the page's target for it (or zero when no
-  // control commands it), and the page says which. A joint that a control commands can be
+  // turns the view, and an arrow on the floor marks the robot's front (+x of the root link,
+  // REP 103). Each joint is posed from the joint position the robot reports where the profile
+  // documents a joint-state topic for it; else from the polled measurement of the control field
+  // that commands it, except while the user is changing that field (drawn at the target until a
+  // measurement asked for after the change arrives); else at the page's target for it (or zero
+  // when no control commands it). The page says which. A joint that a control commands can be
   // clicked and dragged, or selected and moved with the arrow keys, to change that control's
-  // field: the same clamped, validated and throttled path as the control's own inputs.
+  // field: the same clamped, validated and throttled path as the control's own inputs. Clicking
+  // a joint highlights its control and scrolls it into view.
   let M = null;
   const ID3 = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
   const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -1118,7 +1300,7 @@
     return { m, joints, kids, byName: new Map(joints.map((j) => [j.name, j])),
       commanded: joints.filter((j) => !j.mimic && (j.command || []).length),
       fb: m.feedback ? { topic: t.wire(m.feedback.topic), type: m.feedback.type, measured: !!m.feedback.measured } : null,
-      yaw: Math.PI - 0.7, pitch: 0.5, fit: null, selected: null, drag: null, pts: new Map(), chips: new Map() };
+      yaw: Math.PI - 0.7, pitch: 0.3, fit: null, selected: null, drag: null, pts: new Map(), chips: new Map(), hl: null };
   }
   // A joint's command binding resolved to the field built on this page (null if not built).
   function bound(b) {
@@ -1131,6 +1313,24 @@
     if (J.active && liveOk(J.active.cs)) return J.active;
     return all.find((x) => liveOk(x.cs)) || all.find((x) => x.cs.available) || all[0] || null;
   }
+  // The joint's name on the page: its control's label where that control commands only this
+  // joint (an AiNex servo), else the commanding field's label (one joint of an arm trajectory).
+  function jointLabel(J) {
+    const b = editField(J);
+    if (!b) return J.name;
+    const n = M.commanded.filter((x) => (x.command || []).some((c) => c.control === b.cs.ctrl.id)).length;
+    return n === 1 ? b.cs.ctrl.label : b.fs.f.label;
+  }
+  // The latest polled measurement of a bound field: {v, x, sentAt}, or null.
+  function polledOf(b) {
+    let best = null;
+    for (const x of b.cs.polled || []) {
+      const vals = x.last && x.last.vals[b.cs.ctrl.id];
+      const v = vals ? vals[b.fs.f.name] : null;
+      if (v != null && (!best || x.last.at > best.x.last.at)) best = { v, x, sentAt: x.last.sentAt };
+    }
+    return best;
+  }
 
   function poseJoints(now) {
     const f = M.fb && S.feedback.get(M.fb.topic);
@@ -1140,8 +1340,12 @@
       if (fresh && J.wire && f.pos.has(J.wire)) { J.q = f.pos.get(J.wire); J.src = "reported"; continue; }
       const b = J.active || editField(J);
       if (!b) { J.q = 0; J.src = "zero"; continue; }
-      const v = Number(b.fs.num.value);                          // an invalid entry keeps the last pose
-      if (b.fs.num.value !== "" && Number.isFinite(v) && v >= b.fs.f.min && v <= b.fs.f.max) J.q = v * b.scale + b.offset;
+      const m = polledOf(b);
+      // Measured, unless the user is changing this joint: then its target until a measurement
+      // asked for after the change has arrived.
+      if (m && pollFresh(m.x, now) && !b.fs.held && m.sentAt > b.fs.changedAt) { J.q = m.v * b.scale + b.offset; J.src = "measured"; continue; }
+      const v = parseNum(b.fs.num.value);                        // an invalid entry keeps the last pose
+      if (Number.isFinite(v) && v >= b.fs.f.min && v <= b.fs.f.max) J.q = v * b.scale + b.offset;
       J.src = "target";
     }
     for (const J of M.joints) {
@@ -1151,14 +1355,21 @@
       J.src = o ? o.src : "zero";
     }
   }
+  // Each child link's frame with URDF joint semantics: the joint frame is the origin (translate by
+  // xyz, then rotate by rpy) in the parent's frame; a revolute or continuous joint then turns by q
+  // about its axis, a prismatic one slides q along it (both in the joint frame).
   function forward() {
     const frames = new Map([[M.m.root, { R: ID3, t: [0, 0, 0] }]]), todo = [M.m.root];
     while (todo.length) {
       const link = todo.pop(), T = frames.get(link);
       for (const J of M.kids.get(link) || []) {
-        let R = mm3(T.R, J.R0);
-        if (J.type !== "fixed" && J.axis) R = mm3(R, axisMat(J.axis, J.q));
-        J.T = { R, t: at3(T, J.xyz) };
+        const F = { R: mm3(T.R, J.R0), t: at3(T, J.xyz) };
+        if ((J.type === "revolute" || J.type === "continuous") && J.axis) F.R = mm3(F.R, axisMat(J.axis, J.q));
+        else if (J.type === "prismatic" && J.axis) {
+          const n = Math.hypot(J.axis[0], J.axis[1], J.axis[2]) || 1;
+          F.t = at3(F, J.axis.map((x) => x * J.q / n));
+        }
+        J.T = F;
         frames.set(J.child, J.T); todo.push(J.child);
       }
     }
@@ -1190,7 +1401,7 @@
   function projector(w, h) {
     const cy = Math.cos(M.yaw), sy = Math.sin(M.yaw), cp = Math.cos(M.pitch), sp = Math.sin(M.pitch);
     const d = [cp * cy, cp * sy, sp], r = [-sy, cy, 0], u = [-sp * cy, -sp * sy, cp];
-    const k = 0.45 * Math.min(w, h) / M.fit.radius, c = M.fit.center;
+    const k = 0.47 * Math.min(w, h) / M.fit.radius, c = M.fit.center;
     return (p) => { const v = [p[0] - c[0], p[1] - c[1], p[2] - c[2]]; return [w / 2 + k * dot3(v, r), h / 2 - k * dot3(v, u), dot3(v, d)]; };
   }
 
@@ -1200,7 +1411,8 @@
     modelQueued = true;
     requestAnimationFrame(() => { modelQueued = false; drawModel(); });
   }
-  const SRC_TEXT = { reported: "reported", target: "not reported: the page's target", zero: "not reported or commanded: drawn at 0" };
+  const SRC_TEXT = { reported: "reported", measured: "measured", target: "drawn at the page's target",
+    zero: "not reported or commanded: drawn at 0" };
   function drawModel() {
     if (!M) return;
     const cv = $("model-canvas"), w = cv.clientWidth, hgt = cv.clientHeight;
@@ -1214,15 +1426,25 @@
       const g = cv.getContext("2d"), P = projector(w, hgt), css = getComputedStyle(document.documentElement);
       const col = (n) => css.getPropertyValue(n).trim();
       g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, hgt); g.lineCap = "round";
-      const R = M.fit.radius, c = M.fit.center;                    // floor grid under the model
+      const R = M.fit.radius, c = M.fit.center, fl = M.fit.floor;   // floor grid under the model
       g.strokeStyle = col("--border"); g.lineWidth = 1;
       for (let i = -4; i <= 4; i++) {
-        for (const [a, b] of [[[c[0] + i * R / 4, c[1] - R, M.fit.floor], [c[0] + i * R / 4, c[1] + R, M.fit.floor]],
-          [[c[0] - R, c[1] + i * R / 4, M.fit.floor], [c[0] + R, c[1] + i * R / 4, M.fit.floor]]]) {
+        for (const [a, b] of [[[c[0] + i * R / 4, c[1] - R, fl], [c[0] + i * R / 4, c[1] + R, fl]],
+          [[c[0] - R, c[1] + i * R / 4, fl], [c[0] + R, c[1] + i * R / 4, fl]]]) {
           const A = P(a), B = P(b); g.beginPath(); g.moveTo(A[0], A[1]); g.lineTo(B[0], B[1]); g.stroke();
         }
       }
+      // The robot's front: +x of the root link, on the floor.
+      const F0 = P([0, 0, fl]), F1 = P([R * 0.8, 0, fl]), ang = Math.atan2(F1[1] - F0[1], F1[0] - F0[0]);
+      g.strokeStyle = g.fillStyle = col("--info"); g.lineWidth = 2;
+      g.beginPath(); g.moveTo(F0[0], F0[1]); g.lineTo(F1[0], F1[1]); g.stroke();
+      g.beginPath(); g.moveTo(F1[0], F1[1]);
+      for (const s of [-1, 1]) g.lineTo(F1[0] - 10 * Math.cos(ang + s * 0.45), F1[1] - 10 * Math.sin(ang + s * 0.45));
+      g.closePath(); g.fill();
+      g.font = "600 11px " + col("--font"); g.fillText("front", F1[0] + 8 * Math.cos(ang) - 12, F1[1] + 8 * Math.sin(ang) + 14);
       const items = segs.map(([a, b, kind]) => { const A = P(a), B = P(b); return { z: (A[2] + B[2]) / 2, kind, A, B }; });
+      const xs = items.flatMap((it) => [it.A[0], it.B[0]]), ys = items.flatMap((it) => [it.A[1], it.B[1]]);
+      M.drawn = xs.length ? [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] : null;   // the robot on the canvas
       M.pts.clear();
       for (const J of M.joints) {
         if (J.type === "fixed" || !J.T) continue;
@@ -1243,32 +1465,48 @@
             const e = P(at3(J.T, J.axis.map((x) => x * R * 0.3)));
             g.strokeStyle = col("--focus"); g.lineWidth = 2; g.beginPath(); g.moveTo(it.A[0], it.A[1]); g.lineTo(e[0], e[1]); g.stroke();
           }
-          g.fillStyle = col("--ink"); g.strokeStyle = col(sel ? "--focus" : J.src === "reported" ? "--ok" : "--warn");
-          g.lineWidth = 3; g.beginPath(); g.arc(it.A[0], it.A[1], sel ? 9 : 7, 0, 2 * Math.PI); g.fill(); g.stroke();
-          if (sel) { g.fillStyle = col("--text"); g.font = "12px " + col("--mono"); g.fillText(J.name, it.A[0] + 12, it.A[1] - 10); }
+          g.fillStyle = col("--ink"); g.strokeStyle = col(sel ? "--focus" : J.src === "reported" || J.src === "measured" ? "--ok" : "--warn");
+          g.lineWidth = 3; g.beginPath(); g.arc(it.A[0], it.A[1], sel ? 8 : 6, 0, 2 * Math.PI); g.fill(); g.stroke();
+          if (sel) {
+            const txt = `${jointLabel(J)} ${valueText(J.q, J.type === "prismatic" ? "m" : "rad", 2)}`;
+            g.font = "600 12.5px " + col("--font");
+            const tw = g.measureText(txt).width, x = Math.min(it.A[0] + 12, w - tw - 8), y = Math.max(it.A[1] - 12, 16);
+            g.fillStyle = col("--surface"); g.globalAlpha = 0.85; g.fillRect(x - 4, y - 13, tw + 8, 18); g.globalAlpha = 1;
+            g.fillStyle = col("--text"); g.fillText(txt, x, y);
+          }
         }
       }
     }
     syncModelText(now);
   }
   function syncModelText(now) {
-    const f = M.fb && S.feedback.get(M.fb.topic);
-    const n = { reported: 0, target: 0, zero: 0 };
+    const f = M.fb && S.feedback.get(M.fb.topic), x = S.poll;
+    const n = { reported: 0, measured: 0, target: 0, zero: 0 };
     for (const J of M.joints) if (J.type !== "fixed" && !J.mimic) n[J.src]++;
-    const why = M.fb ? (f && f.last != null ? `no fresh ${M.fb.topic}` : `no ${M.fb.topic} yet`) : "the profile documents no joint-position topic";
+    const why = M.fb ? (f && f.last != null ? `no fresh ${M.fb.topic}` : `no ${M.fb.topic} yet`)
+      : x ? (S.lost ? "connection lost"
+        : x.last && !Object.values(x.last.vals).some((o) => Object.values(o).some((v) => v != null)) ? `${x.wire} answered no positions`
+        : x.last ? `the last measurement is ${((now - x.last.at) / 1000).toFixed(1)} s old`
+        : x.err ? `reading ${x.wire} failed: ${x.err}` : `waiting for the first ${x.wire} answer`)
+      : "the profile documents no joint-position topic";
     const rest = [];
-    if (n.target) rest.push(`${n.target} commanded joint${n.target > 1 ? "s" : ""} drawn at the page's targets`);
+    if (n.target) rest.push(n.measured || n.reported ? `${n.target} joint${n.target > 1 ? "s" : ""} at the target you are changing`
+      : `${n.target} commanded joint${n.target > 1 ? "s" : ""} drawn at the page's targets`);
     if (n.zero) rest.push(`${n.zero} other joint${n.zero > 1 ? "s" : ""} at 0`);
-    const text = n.reported
-      ? `Pose reported on ${M.fb.topic}` + (M.fb.measured ? "" : " (what the robot publishes, not a measurement)") +
-        (rest.length ? `; not reported: ${rest.join(", ")}.` : ".")
-      : `Pose not reported (${why}): ${rest.join(", ") || "no movable joints"}.`;
+    let text;
+    if (n.reported) {
+      text = `Pose reported on ${M.fb.topic}` + (M.fb.measured ? "" : " (what the robot publishes, not a measurement)") +
+        (rest.length ? `; not reported: ${rest.join(", ")}.` : ".");
+    } else if (n.measured) {
+      text = `Pose measured ${((now - x.last.at) / 1000).toFixed(1)} s ago by ${x.wire} (asked about every ${x.r.poll_s} s)` +
+        (rest.length ? `; ${rest.join(", ")}.` : ".");
+    } else text = `Pose not ${x && !M.fb ? "measured" : "reported"} (${why}): ${rest.join(", ") || "no movable joints"}.`;
     const pose = $("model-pose");
     if (pose.textContent !== text) pose.textContent = text;
-    pose.dataset.state = n.reported && !n.target ? "reported" : n.reported ? "partial" : "not-reported";
+    pose.dataset.state = (n.reported || n.measured) && !n.target ? "reported" : n.reported || n.measured ? "partial" : "not-reported";
     for (const J of M.commanded) {
       const chip = M.chips.get(J.name), b = editField(J);
-      const txt = `${J.name} ${signed(Math.round(J.q * 100) / 100 || 0, 2)}`;
+      const txt = `${jointLabel(J)} ${signed(Math.round(J.q * 100) / 100 || 0, 2)}`;
       if (chip.firstChild.textContent !== txt) chip.firstChild.textContent = txt;
       chip.dataset.src = J.src; chip.setAttribute("aria-pressed", String(M.selected === J.name));
       chip.disabled = !(b && liveOk(b.cs));
@@ -1278,22 +1516,46 @@
     let st = "";
     if (J) {
       const b = editField(J);
-      st = `${J.name}: ${signed(J.q, 3)} rad, ${SRC_TEXT[J.src]}.`;
+      st = `${jointLabel(J)} (${J.name}): ${valueText(J.q, J.type === "prismatic" ? "m" : "rad", 3)}, ${SRC_TEXT[J.src]}.`;
       if (b) st += ` Commands ${b.cs.ctrl.label} › ${b.fs.f.label} = ${b.fs.num.value} ${b.fs.f.unit}` +
         (liveOk(b.cs) ? "; drag the joint or use the arrow keys to change it." : " (control not live).");
     }
     if (sel.textContent !== st) sel.textContent = st;
     // For tests and tools: the pose drawn, where each joint came from, each joint origin in the
-    // root frame, and the commanded joints' positions on the canvas (CSS px from its top-left).
-    S.model = { rendered: true, selected: M.selected, joints: {}, sources: {}, world: {}, clickable: M.commanded.map((x) => x.name), points: {} };
-    for (const x of M.joints) {
-      if (x.T) S.model.world[x.name] = x.T.t;
-      if (x.type !== "fixed") { S.model.joints[x.name] = x.q; S.model.sources[x.name] = x.src; }
+    // root frame, the commanded joints' positions on the canvas (CSS px from its top-left) and
+    // their labels on the page.
+    S.model = { rendered: true, selected: M.selected, joints: {}, sources: {}, world: {}, clickable: M.commanded.map((y) => y.name),
+      points: {}, labels: {}, measured_age: x && x.last ? (now - x.last.at) / 1000 : null, drawn: M.drawn || null };
+    for (const y of M.joints) {
+      if (y.T) S.model.world[y.name] = y.T.t;
+      if (y.type !== "fixed") { S.model.joints[y.name] = y.q; S.model.sources[y.name] = y.src; }
     }
+    for (const y of M.commanded) S.model.labels[y.name] = jointLabel(y);
     for (const [name, s] of M.pts) S.model.points[name] = [s[0], s[1]];
   }
 
-  function selectJoint(name) { if (M) { M.selected = name; drawModel(); } }
+  // Select joint `name` in the model and highlight the control (or field) that commands it;
+  // `reveal` also scrolls it into view: in the wide layout only the controls panel scrolls, so the
+  // model stays under the pointer.
+  function selectJoint(name, reveal) {
+    if (!M) return;
+    M.selected = name;
+    const J = name && M.byName.get(name), b = J && editField(J);
+    const el = b ? (b.cs.group ? b.cs.div : b.fs.div) : null;
+    if (M.hl && M.hl !== el) M.hl.classList.remove("hl");
+    M.hl = el;
+    if (el) { el.classList.add("hl"); if (reveal) revealControl(el); }
+    drawModel();
+  }
+  function revealControl(el) {
+    const grp = el.closest("details.jgroup"); if (grp && !grp.open) grp.open = true;
+    const panel = $("control-panel"), cs = getComputedStyle(panel);
+    const behavior = window.matchMedia && matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+    if (cs.position !== "sticky") { el.scrollIntoView({ block: "nearest", behavior }); return; }
+    const r = el.getBoundingClientRect(), pr = panel.getBoundingClientRect();
+    const top = Math.max(pr.top, 0), bottom = Math.min(pr.bottom, window.innerHeight);
+    if (r.top < top || r.bottom > bottom) panel.scrollBy({ top: r.top - top - Math.max(0, (bottom - top - r.height) / 2), behavior });
+  }
   // Set joint J's field to `v` (field units) through the control's own path; false if not live.
   function setJointField(J, b, v) {
     if (!b || !liveOk(b.cs) || !Number.isFinite(v)) return false;
@@ -1302,7 +1564,7 @@
   }
   function nudgeJoint(J, n) {
     const b = editField(J); if (!b) return;
-    setJointField(J, b, Number(b.fs.num.value) + n * (b.fs.f.max - b.fs.f.min) / 100);
+    setJointField(J, b, parseNum(b.fs.num.value) + n * (b.fs.f.max - b.fs.f.min) / 100);
   }
   function renderModel() {
     M = S.target ? buildModel(S.target) : null;
@@ -1310,17 +1572,23 @@
     $("model-view").hidden = !M; $("model-empty").hidden = !!M;
     $("model-empty").textContent = S.target ? "This robot's profile has no model." : "No validated target: no model is shown.";
     const list = $("model-joints"); list.innerHTML = "";
-    if (!M) { $("model-pose").textContent = ""; $("model-sel").textContent = ""; return; }
+    if (!M) { $("model-pose").textContent = ""; $("model-sel").textContent = ""; $("model-joints-wrap").hidden = true; return; }
+    $("model-joints-wrap").hidden = !M.commanded.length;
+    $("model-joints-wrap").open = M.commanded.length <= 8;
+    $("model-joints-count").textContent = `Joints the controls command (${M.commanded.length})`;
     for (const J of M.commanded) {
       const chip = h("button", { type: "button", class: "joint-chip", "data-joint": J.name, "aria-pressed": "false" }, h("span"));
-      chip.addEventListener("click", () => selectJoint(J.name));
+      chip.addEventListener("click", () => selectJoint(J.name, true));
       chip.addEventListener("keydown", (e) => {
         const k = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key]; if (!k) return;
         e.preventDefault(); M.selected = J.name; nudgeJoint(J, k * (e.shiftKey ? 5 : 1));
       });
       M.chips.set(J.name, chip); list.append(chip);
-      for (const b of J.command) {                               // the field changed last is the one shown
-        const x = bound(b); if (x) x.fs.listeners.push(() => { J.active = x; scheduleModelDraw(); });
+      for (const b of J.command) {
+        const x = bound(b); if (!x) continue;
+        x.fs.listeners.push(() => { J.active = x; scheduleModelDraw(); });   // the field changed last is the one shown
+        // Working on a joint's control selects that joint in the model.
+        x.fs.div.addEventListener("focusin", () => { if (M && M.selected !== J.name && M.byName.get(J.name) === J) selectJoint(J.name, false); });
       }
     }
     if (M.fb) subscribeFeedback(M.fb.topic, M.fb.type);
@@ -1330,18 +1598,20 @@
     const cv = $("model-canvas");
     const xy = (ev) => { const r = cv.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
     // A press on a joint picks the selected joint if it is under the pointer, else the nearest;
-    // a click without moving on joints drawn on top of each other picks the next of them.
+    // a click without moving on joints drawn on top of each other picks the next of them. A
+    // click (no drag) also brings the joint's control into view.
     cv.addEventListener("pointerdown", (ev) => {
       if (!M) return;
       const [x, y] = xy(ev);
       const near = [...M.pts].map(([name, s]) => [Math.hypot(s[0] - x, s[1] - y), name]).filter(([d]) => d < 14)
         .sort((a, b) => a[0] - b[0]).map(([, name]) => name);
       try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
-      ev.preventDefault(); cv.focus();
+      ev.preventDefault(); cv.focus({ preventScroll: true });
       if (near.length) {
         const prev = near.includes(M.selected) ? M.selected : null, J = M.byName.get(prev || near[0]), b = editField(J);
-        M.selected = J.name; M.drag = { J, b, x, y, v0: b ? Number(b.fs.num.value) : NaN, near, prev, moved: false };
-        drawModel();
+        M.drag = { J, b, x, y, v0: b ? parseNum(b.fs.num.value) : NaN, near, prev, moved: false };
+        if (b) b.fs.held = true;
+        selectJoint(J.name, false);
       } else M.drag = { x, y, yaw: M.yaw, pitch: M.pitch };
     });
     cv.addEventListener("pointermove", (ev) => {
@@ -1354,9 +1624,10 @@
     cv.addEventListener("pointerup", () => {
       const d = M && M.drag; if (!d) return;
       M.drag = null;
-      if (d.J && d.prev && !d.moved && d.near.length > 1) selectJoint(d.near[(d.near.indexOf(d.prev) + 1) % d.near.length]);
+      if (d.b) d.b.fs.held = false;
+      if (d.J && !d.moved) selectJoint(d.prev && d.near.length > 1 ? d.near[(d.near.indexOf(d.prev) + 1) % d.near.length] : d.J.name, true);
     });
-    const end = () => { if (M) M.drag = null; };
+    const end = () => { if (M && M.drag) { if (M.drag.b) M.drag.b.fs.held = false; M.drag = null; } };
     cv.addEventListener("pointercancel", end); cv.addEventListener("lostpointercapture", end);
     cv.addEventListener("keydown", (e) => {
       const k = M && { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1 }[e.key]; if (!k) return;
@@ -1409,6 +1680,7 @@
       `${t.profile.name} · ${t.profile.dialect === "ros2" ? "ROS 2" : "ROS 1"} · typed interface matches the packaged profile`, "");
     for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics));
     renderControls(); updateLock();
+    startPoll(t, conn);                                         // validated: the read-only position poll
   }
 
   // A publish control its profile marks `sole_publisher` is incompatible with any other node
@@ -1431,7 +1703,7 @@
   // until it is reloaded. Goals already sent keep running.
   function onLost(conn) {
     if (conn !== S.conn) return;
-    S.lost = true;
+    S.lost = true; stopPoll();
     setConn("bad", "DISCONNECTED - reload the page to connect again");
     if (S.target) $("target-pill").dataset.state = "bad";
     showBanner(`Connection to ${conn.url} lost. Controls disabled; nothing was sent and nothing was stopped. Reload the page to connect again.`);
@@ -1441,8 +1713,8 @@
   async function changeTarget() {
     if (S.lost) return;
     const old = S.conn;
-    retireControls(); showBanner("");
-    clearCameras(); clearFeedback(); S.controls.clear(); S.padGroup = null; $("controls").innerHTML = "";
+    stopPoll(); retireControls(); showBanner("");
+    clearCameras(); clearFeedback(); S.controls.clear(); S.padGroup = null; S.groups = []; $("controls").innerHTML = "";
     if (old) setTimeout(() => old.close(), 300);
     const id = $("robot").value || null; const nsRaw = $("namespace").value.trim();
     await connectAndSelect(id, nsAllowed() ? (nsRaw === "" ? null : nsRaw) : null);
