@@ -18,14 +18,21 @@ import dataclasses
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from robot_console.profiles import Op, Profile
+from robot_console.profiles import Op, Profile, describe_ops
 from robot_console.rosbridge import ServiceError, TransportError
 
 MOTION_KEYS = ("w", "s", "a", "d", "q", "e")
+#: (positive key, negative key, axis): opposite keys cancel (console spec §2.1).
+AXIS_KEYS = (("w", "s", "x"), ("a", "d", "y"), ("q", "e", "yaw"))
 HEAD_KEYS = ("left", "right", "up", "down")
 HEAD_AXIS = {"left": "pan", "right": "pan", "up": "tilt", "down": "tilt"}
+#: (positive key, negative key) per head axis. The vendor model's head_pan joint axis is -Z
+#: (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec
+#: §2.1 as amended 2026-10-02): a positive pan turns the head to the robot's right, so Left is negative.
+HEAD_DIRS = {"pan": ("right", "left"), "tilt": ("up", "down")}
 STOP_CALL_TIMEOUT_S = 3.0
 HEAD_PERIOD_S = 0.1          # console policy: head target re-sent at most at 10 Hz while held
+ADVERTISE_SETTLE_S = 0.6     # let a fresh ROS 1 publisher connect before the start-up stop
 
 #: Shown with every failed stop and with connection loss (console spec §2.1).
 REENABLE_LIMITATION = ("Re-enabling does not check or confirm that the robot stopped; "
@@ -121,7 +128,7 @@ class TeleopCore:
                 return 0.0
             v = a.speed * ((pos in h) - (neg in h))
             return max(-a.limit, min(a.limit, v))
-        return {"x": one("w", "s", "x"), "y": one("a", "d", "y"), "yaw": one("q", "e", "yaw")}
+        return {axis: one(pos, neg, axis) for pos, neg, axis in AXIS_KEYS}
 
     def command(self) -> dict:
         a = self.axes()
@@ -235,7 +242,7 @@ class TeleopCore:
 
     # ------------------------------------------------------------ stop
     def stop_ops(self) -> Sequence[Op]:
-        return self.p.teleop_walk.stop if self.p.teleop_walk else self.p.stop
+        return stop_ops(self.p)
 
     def request_stop(self, reason: str) -> Outcome:
         """Attempt the documented stop. An explicit failure disables commands."""
@@ -287,11 +294,8 @@ class TeleopCore:
         if self.held_head and self.p.head:
             dt = now - (self.head_last_at or now)
             self.head_last_at = now
-            # the vendor model's head_pan joint axis is -Z (ainex:src/ainex_simulations/
-            # ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec §2.1 as amended
-            # 2026-10-02): a positive pan turns the head to the robot's right, so Left is negative
-            dirs = {"pan": (("right" in self.held_head) - ("left" in self.held_head)),
-                    "tilt": (("up" in self.held_head) - ("down" in self.held_head))}
+            dirs = {axis: (pos in self.held_head) - (neg in self.held_head)
+                    for axis, (pos, neg) in HEAD_DIRS.items()}
             for axis, h in self.p.head.items():
                 d = dirs.get(axis, 0)
                 if not d:
@@ -338,14 +342,74 @@ class TeleopCore:
 
     def command_topics(self) -> List[tuple]:
         """(wire topic, type) this session publishes, to advertise before the first stop."""
-        out = []
-        if self.p.teleop_base:
-            out.append((self.w(self.p.teleop_base.topic), self.p.teleop_base.type))
-        if self.p.teleop_walk:
-            out.append((self.w(self.p.teleop_walk.param_topic), self.p.teleop_walk.param_type))
-        for o in self.stop_ops():
-            if o.op == "publish":
-                out.append((self.w(o.name), o.type))
-        for h in (self.p.head or {}).values():
-            out.append((self.w(h.topic), h.type))
-        return list(dict.fromkeys(out))
+        return [(self.w(t), ty) for t, ty in command_topics(self.p)]
+
+
+def stop_ops(p: Profile) -> Sequence[Op]:
+    """The documented stop teleop requests (the walking stop for a walking profile)."""
+    return p.teleop_walk.stop if p.teleop_walk else p.stop
+
+
+def command_topics(p: Profile) -> List[tuple]:
+    """(documented topic, type) teleop publishes, advertised before the start-up stop."""
+    out = []
+    if p.teleop_base:
+        out.append((p.teleop_base.topic, p.teleop_base.type))
+    if p.teleop_walk:
+        out.append((p.teleop_walk.param_topic, p.teleop_walk.param_type))
+    for o in stop_ops(p):
+        if o.op == "publish":
+            out.append((o.name, o.type))
+    for h in (p.head or {}).values():
+        out.append((h.topic, h.type))
+    return list(dict.fromkeys(out))
+
+
+def _ops_json(ops: Sequence[Op]) -> List[dict]:
+    return [dataclasses.asdict(o) for o in ops]
+
+
+def page_contract(p: Profile) -> Optional[dict]:
+    """The base motion the page offers for a teleoperable profile (console spec §2.2, §3: the
+    browser follows the same profile contracts), or None for an arm: teleop's keys, axes with
+    their recorded speeds, documented limits and units, its command and stop operations, rates,
+    head axes with the documented position read, its timing constants and the limitation texts
+    it shows. The page runs the same lifecycle as ``TeleopCore`` on this data."""
+    if p.is_arm or not (p.teleop_base or p.teleop_walk):
+        return None
+    tb, wk = p.teleop_base, p.teleop_walk
+    raw_axes = (p.raw.get("teleop_base") or p.raw.get("teleop_walk") or {}).get("axes") or {}
+    head = None
+    if p.head:
+        head = {}
+        for axis, h in p.head.items():
+            found = p.head_read(axis)
+            head[axis] = {"topic": h.topic, "type": h.type, "template": dict(h.template), "field": h.field,
+                          "min": h.min, "max": h.max, "rate": h.rate,
+                          "unit": str((p.raw.get("head") or {}).get(axis, {}).get("unit", "")),
+                          "read": {"read": found[0].id, "control": found[1].control, "field": found[1].field}
+                          if found else None}
+    return {
+        "kind": "base" if tb else "walk",
+        "motion_keys": list(MOTION_KEYS),
+        "axis_keys": [list(k) for k in AXIS_KEYS],
+        "axes": {k: {"speed": a.speed, "limit": a.limit, "field": a.field,
+                     "unit": str(raw_axes.get(k, {}).get("unit", ""))} for k, a in (tb or wk).axes.items()},
+        "rate_hz": (tb or wk).rate_hz,
+        "base": {"topic": tb.topic, "type": tb.type} if tb else None,
+        "walk": {"param_topic": wk.param_topic, "param_type": wk.param_type,
+                 "param_template": dict(wk.param_template), "start": _ops_json(wk.start),
+                 "enable": _ops_json(wk.enable)} if wk else None,
+        "stop": _ops_json(stop_ops(p)),
+        "stop_description": describe_ops(stop_ops(p)),
+        "head": head,
+        "head_keys": list(HEAD_KEYS),
+        "head_axis": dict(HEAD_AXIS),
+        "head_dirs": {k: list(v) for k, v in HEAD_DIRS.items()},
+        "head_period_s": HEAD_PERIOD_S,
+        "call_timeout_s": STOP_CALL_TIMEOUT_S,
+        "advertise_settle_s": ADVERTISE_SETTLE_S,
+        "command_topics": [list(x) for x in command_topics(p)],
+        "reenable_limitation": REENABLE_LIMITATION,
+        "no_delivery": no_delivery_statement(p),
+    }

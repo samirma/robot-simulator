@@ -2,12 +2,13 @@
 pinned vendor sources and bound to the catalog fields that command each joint with the
 documented unit mapping (independence from the simulator: test_independence.py)."""
 
+import dataclasses
 import math
 import re
 
 import pytest
 
-from robot_console.profiles import SUPPORTED_IDS, all_profiles_json, load
+from robot_console.profiles import SUPPORTED_IDS, all_profiles_json, load, load_all
 
 TRACE = re.compile(r"^(?P<key>[A-Za-z0-9_.-]+):(?P<path>[^#\s]+)#L\d+")
 
@@ -151,3 +152,37 @@ def test_the_page_receives_every_model():
         "offset": 240.0, "scale": 238.7324187, "integer": True, "min": 0.0, "max": 1000.0}
     assert [r["poll_s"] for r in ainex["reads"]] == [None, 1.0]
 
+
+
+def test_the_page_receives_teleops_base_motion_contract():
+    """Console spec §3: the browser follows the same profile contracts. The page's base motion is
+    built from teleop's own profile data and constants (teleop_core.page_contract): the recorded
+    speeds and documented limits, the command and the stop teleop sends, its rates, head axes and
+    head read; an arm gets none."""
+    from robot_console import teleop_core as tc
+    for p in load_all():
+        got = next(x for x in all_profiles_json()["profiles"] if x["id"] == p.id)["teleop"]
+        if p.is_arm:
+            assert got is None, p.id
+            continue
+        src = p.teleop_base or p.teleop_walk
+        assert got["kind"] == p.teleop
+        assert {k: (a["speed"], a["limit"]) for k, a in got["axes"].items()} == {k: (a.speed, a.limit) for k, a in src.axes.items()}
+        assert got["rate_hz"] == src.rate_hz
+        assert got["stop"] == [dataclasses.asdict(o) for o in tc.stop_ops(p)]
+        assert got["command_topics"] == [list(x) for x in tc.command_topics(p)]
+        assert got["axis_keys"] == [list(x) for x in tc.AXIS_KEYS] and got["motion_keys"] == list(tc.MOTION_KEYS)
+        assert (got["call_timeout_s"], got["head_period_s"], got["advertise_settle_s"]) == (
+            tc.STOP_CALL_TIMEOUT_S, tc.HEAD_PERIOD_S, tc.ADVERTISE_SETTLE_S)
+        assert got["reenable_limitation"] == tc.REENABLE_LIMITATION and got["no_delivery"] == tc.no_delivery_statement(p)
+        if p.teleop_walk:
+            w = got["walk"]
+            assert w["param_template"] == dict(p.teleop_walk.param_template)
+            assert [o["msg"] for o in w["start"]] == [o.msg for o in p.teleop_walk.start]
+            assert [o["msg"] for o in w["enable"]] == [o.msg for o in p.teleop_walk.enable]
+        assert (got["head"] is None) == (p.head is None)
+        for axis, h in (p.head or {}).items():
+            g = got["head"][axis]
+            assert (g["topic"], g["min"], g["max"], g["rate"], g["template"]) == (h.topic, h.min, h.max, h.rate, dict(h.template))
+            r, v = p.head_read(axis)
+            assert g["read"] == {"read": r.id, "control": v.control, "field": v.field}

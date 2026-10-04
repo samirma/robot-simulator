@@ -61,8 +61,9 @@ world is reset by restarting the simulation.
   ends `teleop.sh`;
 * open `view.sh` for a browser page showing the selected robot's cameras and the bounded
   controls its profile lists, live once the target validates: changed values are sent to
-  the robot immediately (streamed while dragging), and nothing is stopped automatically,
-  so a goal keeps running if the tab closes;
+  the robot immediately (streamed while dragging); for a mobile robot it also offers
+  `teleop.sh`'s hold-to-move base motion with the same stops, and nothing else is stopped
+  automatically, so a goal keeps running if the tab closes;
 * check a wire non-interactively with `python -m robot_console.fleet [--expect <id>]`, which
   validates the wire's robots against the profiles and their non-`optional` cameras, exits
   non-zero on failure and publishes nothing.

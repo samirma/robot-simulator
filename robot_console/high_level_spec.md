@@ -130,20 +130,32 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
 ```
 
 * One static page speaking rosbridge to `--url`. It shows the selected target's cameras
-  (§2.3) and only the bounded controls its profile's catalog lists (§1.1), such as a head
-  position, an arm trajectory, a gripper position or a listed bounded action. It offers no
-  generic topic publication or subscription and no base-drive or walking control.
+  (§2.3), only the bounded controls its profile's catalog lists (§1.1), such as a head
+  position, an arm trajectory, a gripper position or a listed bounded action, and, for a
+  teleoperable profile, the base motion below. It offers no generic topic publication or
+  subscription.
 * Robot selection, and namespace selection where supported, follows §1.1. Without a
   validated target the page shows the reason and a robot selector, and offers no controls.
 * Controls are live as soon as the target passes typed validation; there is no arm or
-  enable step. Nothing is sent before validation or on load, with one exception: once the
-  target is validated, the page may poll the profile's documented read-only joint-position
+  enable step. Nothing is sent before validation or on load, with two exceptions once the
+  target is validated: the page may poll the profile's documented read-only joint-position
   query about once per second, so that the model follows a robot that publishes no joint
-  states. This poll never commands motion and stops on connection loss or target change.
+  states (this poll never commands motion and stops on connection loss or target change);
+  and, for a teleoperable profile, it attempts the documented stop once before base motion
+  is enabled, as `teleop.sh` does at every start, and shows the outcome.
   A value the user changes is sent to the validated target immediately:
   * a topic-publish control publishes while its slider, or the AiNex head pad, is dragged,
     at about 10 messages per second.
-* The page supports performing actions, as `teleop.sh` does.
+* The page supports performing actions, as `teleop.sh` does. For a teleoperable profile
+  (`myagv`, `ainex`, `rosmaster_x3_plus`) it offers `teleop.sh`'s base motion and AiNex head
+  keys (§2.1) with the same profile speeds, limits and stop: the keys act while the page,
+  not an editable field, has keyboard focus, and on-page hold buttons do the same for
+  pointer and touch input. Motion is hold-to-move with §2.1's lifecycle: release of the last
+  motion input, `Space` or a Stop button, focus loss, and page hide or unload clear motion
+  intent and request the documented stop; a target change does so before leaving the old
+  target. An explicitly failed stop disables base motion until an explicit re-enable action
+  and fresh input, with §2.1's stated limitations. Connection loss clears motion intent and
+  states that no stop could be delivered. Arm profiles get no base motion.
 * The page shows a 3D model of the selected target's embodiment in its current pose,
   updated from the joint positions the robot reports: when an arm joint moves, the same
   joint in the model turns by the same angle. Each movable joint that a catalog control
@@ -155,17 +167,19 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
   limits, and a value outside them is shown as invalid and never sent. Where the profile
   documents measured joint positions, the page shows them and can copy them into the
   targets. Each control shows its sending, done and failed state.
-* The page never stops or cancels anything. It has no stop button or key, and it sends no
-  stop or cancel on release, focus loss, page hide or unload, target change or connection
-  loss. A goal keeps running if the tab is closed. The page states that changes are sent
-  immediately and that nothing is stopped automatically.
+* Apart from base motion, the page never stops or cancels anything: no bounded control has
+  a stop button or key, and the page sends no stop or cancel for one on release, focus
+  loss, page hide or unload, target change or connection loss. A goal keeps running if the
+  tab is closed. The page states that changes are sent immediately and that only base
+  motion is stopped automatically.
 * ROS 2 action goals use one rosbridge connection each, because stock rosbridge
   serializes a client's operations while its goal runs. A superseded goal's connection
   closes once the next goal is acknowledged (or after its own result), at most three are
   open per control, and the next goal waits at most 1 s for that acknowledgement.
 * Connection loss disables the controls. The page then shows the disconnected state and
-  connects again only when reloaded. A target change requires new validation, sends
-  nothing to the old target and leaves goals already sent running.
+  connects again only when reloaded. A target change requires new validation; apart from
+  the base-motion stop above, it sends nothing to the old target and leaves goals already
+  sent running.
 
 ### 2.3 Live cameras
 
@@ -225,18 +239,23 @@ without claiming a stop was delivered.
 
 For the page, on ROS 1 and ROS 2 wires, verify that:
 * nothing is sent before validation or on load, apart from the read-only joint-position
-  poll after validation, and the page has no arm switch, stop button or `Esc` behaviour;
+  poll and, for a teleoperable profile, the start-up stop after validation, and the page
+  has no arm switch or `Esc` behaviour;
 * dragging a topic-publish or action control streams throttled values and delivers the
   final value;
 * action goals preempt one another, and their connections stay bounded;
 * service and action-group controls send once per click;
 * out-of-range values are never sent, and pending and failed states are visible;
 * release, focus loss, page hide or close, a target change and connection loss send no stop
-  or cancel;
+  or cancel for a bounded control;
+* for each mobile profile, base motion on the page passes the `teleop.sh` checks above (key
+  direction, recorded speeds and documented limits, stop requests on release, `Space`, the
+  Stop button, focus loss and page hide, a failed stop requiring explicit re-enablement
+  plus fresh input, connection loss without claiming a stop), motion keys typed into an
+  editable field move nothing, and an arm profile offers no base motion;
 * connection loss disables the controls until reload;
 * after a target change, values go only to the newly validated target.
 
-Verify that no base-drive or walking command is exposed.
 Verify `python -m robot_console.fleet` passes on a matching wire and exits non-zero on
 wrong types, missing required endpoints, ambiguous candidates (naming the candidates
 found), a wire with no supported robot and an unreachable wire.

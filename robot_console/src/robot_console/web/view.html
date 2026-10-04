@@ -230,6 +230,8 @@ input::placeholder { color: var(--faint); }
   border: 1px solid var(--border);
 }
 #cameras[data-count="1"] .cam-view { max-height: calc(100vh - 300px); min-height: 220px; }
+/* with base motion the camera leaves room for the motion pad below it */
+.workspace.has-motion #cameras[data-count="1"] .cam-view { max-height: calc(100vh - 420px); }
 .cam canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
 .cam[data-state="live"] .cam-view { border-color: var(--ok-line); }
 .cam:not([data-state="live"]) canvas { filter: grayscale(1) brightness(.35) blur(1px); }
@@ -466,6 +468,67 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
 .pad .pad-lbl { position: absolute; font-size: 11px; color: var(--faint); font-family: var(--mono); pointer-events: none; white-space: nowrap; }
 .pad-readout { margin-top: 8px; font-size: 12.5px; font-family: var(--mono); color: var(--muted); }
 
+/* base motion (mobile profiles): hold buttons, STOP, the state readout and the key legend */
+.motion-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px 16px; box-shadow: var(--shadow); min-width: 0; }
+.motion-card[data-state="failed"], .motion-card[data-state="lost"] { border-color: var(--bad-line); }
+.motion-body { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px 22px; align-items: start; }
+.motion-pads { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-start; }
+.pad-col { display: flex; flex-direction: column; gap: 6px; }
+.pad-cap { font-size: 12px; font-weight: 650; color: var(--muted); }
+.dpad { display: grid; grid-template-columns: repeat(3, 62px); grid-auto-rows: 54px; gap: 6px; }
+.dpad.head { grid-template-columns: repeat(3, 44px); grid-auto-rows: 40px; }
+.hold, .stop-btn {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; padding: 0;
+  border-radius: var(--r-sm); cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.hold { border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); }
+.hold:hover:not(.off) { background: var(--surface-3); }
+.hold .glyph { font-size: 19px; line-height: 1; font-weight: 700; }
+.hold.small .glyph { font-size: 16px; }
+.hold kbd { font-size: 10.5px; color: var(--muted); }
+.hold.small kbd { display: none; }
+.hold[data-held="true"] { background: var(--ink); border-color: var(--ink); color: var(--on-ink); }
+.hold[data-held="true"] kbd { color: inherit; }
+.hold.off { opacity: .45; cursor: not-allowed; }
+.stop-btn { border: 2px solid var(--bad); background: var(--bad-bg); color: var(--bad); font-weight: 800; font-size: 13px; letter-spacing: .06em; }
+.stop-btn kbd { font-size: 10px; font-weight: 600; letter-spacing: 0; color: inherit; opacity: .8; }
+.stop-btn:hover:not(:disabled) { background: var(--bad); color: #fff; }
+.stop-btn:active:not(:disabled) { transform: translateY(1px); }
+.stop-btn:disabled { opacity: .45; cursor: not-allowed; }
+.motion-info { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.mo-state { display: flex; gap: 10px; align-items: flex-start; padding: 8px 12px; border-radius: var(--r); background: var(--surface-2); border: 1px solid var(--border); }
+.mo-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; margin-top: 5px; background: var(--faint); }
+.mo-text { display: flex; flex-direction: column; min-width: 0; }
+.mo-title { font-weight: 750; font-size: 15px; }
+.mo-detail { font-size: 12.5px; color: var(--muted); overflow-wrap: anywhere; min-height: calc(2 * 1.45em); }
+.mo-state[data-state="stopped"] { background: var(--ok-bg); border-color: var(--ok-line); }
+.mo-state[data-state="stopped"] .mo-dot { background: var(--ok); }
+.mo-state[data-state="moving"], .mo-state[data-state="head"] { background: var(--info-bg); border-color: var(--info-line); }
+.mo-state[data-state="moving"] .mo-dot, .mo-state[data-state="head"] .mo-dot { background: var(--info); animation: blink 1s steps(2) infinite; }
+.mo-state[data-state="startup"] .mo-dot, .mo-state[data-state="stopping"] .mo-dot { background: var(--info); }
+.mo-state[data-state="disabled"] { background: var(--warn-bg); border-color: var(--warn-line); }
+.mo-state[data-state="disabled"] .mo-dot { background: var(--warn); }
+.mo-state[data-state="failed"], .mo-state[data-state="lost"] { background: var(--bad-bg); border-color: var(--bad-line); }
+.mo-state[data-state="failed"] .mo-dot, .mo-state[data-state="lost"] .mo-dot { background: var(--bad); }
+.mo-state[data-state="failed"] .mo-detail, .mo-state[data-state="lost"] .mo-detail { color: var(--text); }
+.mo-cmd { font-size: 12.5px; color: var(--info); min-height: 1.45em; }
+.mo-actions:not(:has(button:not([hidden]))) { display: none; }
+.mo-limit { margin: 0; font-size: 12.5px; font-weight: 650; color: var(--bad); }
+.mo-note { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+.mo-note strong { color: var(--text); }
+.mo-legend { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 3px 10px; margin: 0; font-size: 12.5px; }
+.mo-legend dt { white-space: nowrap; display: flex; gap: 3px; align-items: flex-start; }
+.mo-legend dd { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.mo-legend kbd, .mo-note kbd {
+  display: inline-block; min-width: 20px; padding: 0 5px; text-align: center; border: 1px solid var(--border-strong);
+  border-bottom-width: 2px; border-radius: 4px; background: var(--surface); font-size: 11px; line-height: 18px;
+}
+.mo-logwrap > summary { cursor: pointer; width: fit-content; font-size: 12.5px; color: var(--muted); border-radius: 4px; }
+.mo-log { margin: 6px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; font-family: var(--mono); color: var(--muted); height: 9.5em; overflow-y: auto; }
+.mo-log li { overflow-wrap: anywhere; }
+.mo-log li.bad { color: var(--bad); font-weight: 650; }
+
 /* 3D model: commanded joints are dark dots, ringed green when reported or measured, amber when not */
 .model-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); padding: 14px 16px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 0; min-width: 0; }
 .model-empty { margin: 0; color: var(--muted); font-size: 13px; }
@@ -509,7 +572,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   .target-form .btn { flex: 1 1 auto; }
   #controls { grid-template-columns: minmax(0, 1fr); }
   .num-wrap input.num { width: 70px; }
-  .cameras-panel, .target-card, .live-card, .control, .pad-card, .model-card { padding: 12px; }
+  .cameras-panel, .target-card, .live-card, .control, .pad-card, .model-card, .motion-card { padding: 12px; }
+  .motion-body { grid-template-columns: minmax(0, 1fr); }
+  .dpad { grid-template-columns: repeat(3, 58px); }
   .control.jrow { padding: 8px 2px; }
   .pad-card.in-group { padding: 0 0 4px; }
   .jg-body { padding: 0 12px 10px; }
@@ -595,6 +660,8 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
       <div id="cameras" data-testid="cameras" data-count="0"></div>
     </section>
 
+    <section class="motion-card" id="motion-card" data-testid="motion" aria-labelledby="motion-h" hidden></section>
+
     <section class="model-card" data-testid="model" aria-labelledby="model-h">
       <div class="panel-head">
         <h2 id="model-h" class="section-title">Model</h2>
@@ -630,14 +697,15 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
           </span>
         </div>
         <p class="send-note" data-testid="send-note">
-          <strong>Changes are sent to the robot immediately, and nothing is stopped automatically.</strong>
+          <strong>Changes are sent to the robot immediately, and only base motion is stopped automatically.</strong>
           Sliders, the head pad and the model's joints send while you drag, a typed number when you
           commit it (Enter or leaving the field), and service and action-group buttons once per click.
           ‘Read measured’ asks the robot for its measured positions once per click; where the profile
           documents a read-only position query, the page asks it about once a second after validation
-          (it commands nothing). Leaving, reloading or closing this page and a lost connection send
-          nothing: a running goal keeps running. Base driving and walking are not offered here
-          (use teleop.sh).
+          (it commands nothing). For these controls, leaving, reloading or closing this page and a lost
+          connection send nothing: a running goal keeps running. A mobile robot's base motion (beside
+          the cameras) is hold-to-move, as in teleop.sh, and is stopped on release, Space, its Stop
+          button, focus loss, page hide and a target change.
         </p>
       </div>
 

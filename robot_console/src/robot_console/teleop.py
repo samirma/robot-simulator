@@ -31,11 +31,10 @@ from robot_console.profiles import (  # noqa: E402
 )
 from robot_console.rosbridge import DEFAULT_URL, Rosbridge, TransportError, check_url  # noqa: E402
 from robot_console.teleop_core import (  # noqa: E402
-    REENABLE_LIMITATION, Sender, TeleopCore, no_delivery_statement,
+    ADVERTISE_SETTLE_S, REENABLE_LIMITATION, Sender, TeleopCore, no_delivery_statement,
 )
 
 EXIT_OK, EXIT_NO_TARGET, EXIT_REFUSED, EXIT_UNREACHABLE, EXIT_CONN_LOST, EXIT_INPUT_LOST = 0, 1, 2, 3, 4, 5
-ADVERTISE_SETTLE_S = 0.6     # let a fresh ROS 1 publisher connect before the start-up stop
 #: Interruptions the process can handle (console spec §2.1): each ends teleop like an ordinary
 #: exit, clearing motion intent and attempting the documented stop.
 HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)

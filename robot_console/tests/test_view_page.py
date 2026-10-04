@@ -4,9 +4,12 @@ The page speaks rosbridge itself; the fake server records every op it sends, so 
 check what reached the wire, not only what the page displays. Contract: controls are live as
 soon as the target validates; changed values are sent at once (topic publishes and action
 goals streamed while dragging, throttled with the last value always delivered; services and
-action-group buttons once per click); limits are never exceeded; nothing is ever stopped or
-cancelled by the page. The 3D model is posed from the joint positions the robot reports (where
-the profile documents them) and its commanded joints edit their controls through the same path.
+action-group buttons once per click); limits are never exceeded; no bounded control is ever
+stopped or cancelled by the page. The 3D model is posed from the joint positions the robot
+reports (where the profile documents them) and its commanded joints edit their controls through
+the same path. For a mobile profile the page also offers teleop.sh's hold-to-move base motion
+(console spec §2.2 as amended 2026-10-04), tested at the end of this file; elsewhere, loading such
+a page sends its start-up stop and nothing else.
 """
 
 import math
@@ -20,6 +23,7 @@ import robot_console.view as view_mod
 from robot_console.discovery import SelectionError, fetch_graph, select_target
 from robot_console.profiles import SUPPORTED_IDS, load, load_all
 from robot_console.rosbridge import Rosbridge
+from robot_console.teleop_core import command_topics, stop_ops
 from robot_console.view import make_server
 from test_profiles import AINEX_SERVOS, GET_POSITION, SET_POSITION, angle2pulse
 from wirespec import drop, merge, retype, wire_spec
@@ -130,6 +134,42 @@ def gaps(ops):
     return [b["_t"] - a["_t"] for a, b in zip(ops, ops[1:])]
 
 
+def is_stop(p, o):
+    """`o` is base motion's documented stop (teleop's stop: the walking stop for the AiNex)."""
+    return any(o["op"] == ("publish" if s.op == "publish" else "call_service")
+               and (o.get("topic") or o.get("service")) == s.name and (o.get("msg") if s.op == "publish" else o.get("args")) == s.msg
+               for s in stop_ops(p))
+
+
+def stops(srv, p):
+    return [o for o in srv.command_ops() if is_stop(p, o)]
+
+
+def unprompted(srv, pid):
+    """The command ops apart from base motion's start-up stops (teleop's advertisements and the
+    documented stop, console spec §2.2): empty when the page sent nothing else."""
+    p = load(pid)
+    if p.is_arm:
+        return srv.command_ops()
+    adv = {t for t, _ in command_topics(p)}
+    return [o for o in srv.command_ops() if not is_stop(p, o) and not (o["op"] == "advertise" and o["topic"] in adv)]
+
+
+def started(page):
+    """Wait until base motion's start-up stop has been attempted."""
+    page.wait_for_function("RC.motion() && RC.motion().started === true", timeout=8000)
+
+
+def only_startup(srv, page, pid, loads=1):
+    """Nothing was sent but the read-only poll and, for a mobile profile, one start-up stop per
+    load (and, on a reload, the stops requested as the old page was hidden and unloaded)."""
+    if not load(pid).is_arm:
+        started(page)
+        n = len(stops(srv, load(pid)))
+        assert n == 1 if loads == 1 else n >= loads, n
+    assert unprompted(srv, pid) == []
+
+
 # ------------------------------------------------------------------ cameras and catalogue
 
 def test_cameras_live_and_only_profile_controls(view):
@@ -165,7 +205,7 @@ def test_every_profile_camera_is_shown_live_then_stale(view, pid):
     page.wait_for_function(f"document.querySelector('[data-testid=camera][data-topic=\"{p.cameras[0].topic}\"]')"
                            ".dataset.state === 'stale'", timeout=8000)
     assert "STALE" in cams.first.locator('[data-testid="camera-state"]').inner_text()
-    assert srv.command_ops() == []
+    only_startup(srv, page, pid)
 
 
 def cam_state(page):
@@ -194,7 +234,7 @@ def test_unsupported_and_malformed_frames_are_visible_states(view):
     assert "row step" in page.locator('[data-testid="camera"] .ov-detail').inner_text()
     page.wait_for_timeout(400)
     assert cam_state(page) == "failed"
-    assert srv.command_ops() == []
+    only_startup(srv, page, "ainex")
 
 
 def test_missing_profile_camera_is_a_visible_state(view, monkeypatch):
@@ -224,14 +264,16 @@ def test_no_cameras_is_a_visible_state(view):
     assert page.locator('[data-testid="control"]').count() == len(load("mycobot280").controls)
 
 
-def test_mobile_base_page_has_camera_and_no_controls(view):
+def test_mobile_base_page_has_camera_base_motion_and_no_bounded_controls(view):
+    """The myAGV's profile lists no bounded control: the page shows its camera and its base motion."""
     srv, page = view(wire_spec(load("myagv")))
     assert page.locator('[data-testid="target"]').inner_text() == "myagv"
     page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'live'")
     assert page.locator('[data-testid="camera"]').get_attribute("data-topic") == "/usb_cam/image_raw"
     assert page.locator('[data-testid="no-controls"]').count() == 1
-    assert "Camera only" in page.locator('[data-testid="live-card"]').inner_text()
-    assert srv.command_ops() == []
+    assert "No bounded controls" in page.locator('[data-testid="live-card"]').inner_text()
+    assert page.locator('[data-testid="motion"]').is_visible()
+    only_startup(srv, page, "myagv")
 
 
 # ------------------------------------------------------------------ validation gates the controls; nothing on load
@@ -268,6 +310,7 @@ def test_explicit_selection_cannot_bypass_type_checks(view, robot, name, bad):
 
 @pytest.mark.parametrize("robot", ["so101", "ainex", "mycobot280", "rosmaster_x3_plus"])
 def test_nothing_is_sent_on_load_or_reload(view, robot):
+    """Apart from the read-only poll and, for a mobile profile, the start-up stop of every load."""
     srv, page = view(wire_spec(load(robot), include_optional=True))
     assert page.locator('[data-testid="live-card"]').get_attribute("data-state") == "live"
     assert not disabled(page, load(robot).controls[0].id)               # live at once
@@ -275,23 +318,30 @@ def test_nothing_is_sent_on_load_or_reload(view, robot):
     page.reload()
     page.wait_for_function("window.RC && window.RC.ready === true")
     page.wait_for_timeout(800)
-    assert srv.command_ops() == []
+    only_startup(srv, page, robot, loads=2)
 
 
 @pytest.mark.parametrize("robot", ["so101", "ainex"])
-def test_page_states_the_sending_contract_and_has_no_arm_or_stop(view, robot):
+def test_page_states_the_sending_contract_and_has_no_arm_switch(view, robot):
+    """No arm switch, no Esc behaviour, no stop for a bounded control; only a mobile profile's
+    base motion has a STOP button (console spec §2.2 as amended 2026-10-04)."""
     srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
     note = page.locator('[data-testid="send-note"]').inner_text()
-    assert "Changes are sent to the robot immediately, and nothing is stopped automatically." in note
+    assert "Changes are sent to the robot immediately, and only base motion is stopped automatically." in note
     assert "keeps running" in note
     assert f"Controls live on {robot}" in page.locator('[data-testid="live-card"]').inner_text()
     for sel in ("#enable", '[data-testid="enable"]', '[data-testid="stop-all"]', '[data-testid="armed-pill"]',
-                '[data-testid="hold"]', '[data-testid="stop-status"]', '[data-testid="startup"]'):
+                '[data-testid="stop-status"]', '[data-testid="startup"]'):
         assert page.locator(sel).count() == 0, sel
-    assert "STOP" not in page.locator("body").inner_text()
+    assert page.locator('#controls button:has-text("stop"), #controls button:has-text("cancel")').count() == 0
+    if robot == "so101":
+        assert "STOP" not in page.locator("body").inner_text()
+        assert not page.locator('[data-testid="motion"]').is_visible()
+    else:
+        assert page.locator('[data-testid="motion"] [data-testid="stop"]').is_visible()
     page.keyboard.press("Escape")                                        # Esc does nothing
     page.wait_for_timeout(300)
-    assert srv.command_ops() == []
+    only_startup(srv, page, robot)
 
 
 # ------------------------------------------------------------------ topic publishes stream while dragging
@@ -496,7 +546,8 @@ def test_x3_measured_servo_angles_are_read_per_click_and_copied(view):
     srv, page = view(wire_spec(load("rosmaster_x3_plus")))
     srv.set_service("/CurrentAngle", lambda args: {"angles": [80.0, 120.0, 10.0, 45.0, -1, 60.0]})
     page.wait_for_timeout(600)
-    assert srv.calls("/CurrentAngle") == [] and srv.command_ops() == []      # nothing on load
+    assert srv.calls("/CurrentAngle") == []                                    # nothing on load
+    only_startup(srv, page, "rosmaster_x3_plus")
     control(page, "arm_pose").locator('[data-testid="read"]').click()
     page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'read'")
     assert [c["args"] for c in srv.calls("/CurrentAngle")] == [{"apply": "GetArmJoints"}]
@@ -564,7 +615,8 @@ def test_ainex_pose_is_polled_once_validated_and_shown_without_a_click(view, fak
     assert 4 <= len(calls) <= 7, len(calls)                                     # about one per second
     assert all(c["args"] == {"id": ALL_SERVOS} for c in calls)
     assert min(gaps(calls)) > 0.8, gaps(calls)
-    assert srv.command_ops() == [] and srv.published() == []
+    only_startup(srv, page, "ainex")
+    assert srv.published() == []
 
 
 def test_ainex_poll_waits_for_validation_and_stops_on_loss_and_target_change(view, fake):
@@ -591,7 +643,7 @@ def test_ainex_poll_waits_for_validation_and_stops_on_loss_and_target_change(vie
     n = len(polls(srv))
     page.wait_for_timeout(2500)
     assert len(polls(srv)) == n
-    assert srv.command_ops() == []
+    assert unprompted(srv, "ainex") == []         # the start-up stop and the target change's stop only
 
 
 def test_ainex_servo_joint_sends_one_servo_in_pulses_and_the_model_follows(view, fake):
@@ -631,7 +683,8 @@ def test_ainex_servo_joint_sends_one_servo_in_pulses_and_the_model_follows(view,
     assert len(knee) >= 3 and all(len(k["position"]) == 1 and k["position"][0]["id"] == 5 for k in knee)
     assert knee[-1]["position"][0]["position"] == angle2pulse("l_knee", final) and 0 <= min(
         k["position"][0]["position"] for k in knee)
-    assert srv.published(HEAD_PAN) == [] and srv.calls("/walking/command") == []
+    assert srv.published(HEAD_PAN) == [] and srv.calls("/walking/command") == [srv.calls("/walking/command")[0]]
+    assert is_stop(load("ainex"), srv.calls("/walking/command")[0])           # the start-up stop only
     no_stop_ops(srv)
 
 
@@ -642,6 +695,7 @@ def test_ainex_model_click_highlights_and_reveals_the_joints_control(view, fake)
     serve_servos(srv, STANDING)
     srv, page = view(srv=srv)
     page.wait_for_function("RC.state.model.sources.r_knee === 'measured'", timeout=3000)
+    started(page)
     for joint, label in (("r_ank_roll", "Right ankle roll"), ("head_tilt", "Head tilt"), ("l_gripper", "Left hand (gripper)")):
         select_in_model(page, joint)
         scroll = page.evaluate("window.scrollY")
@@ -654,7 +708,7 @@ def test_ainex_model_click_highlights_and_reveals_the_joints_control(view, fake)
         assert abs(page.evaluate("window.scrollY") - scroll) <= 2           # (sub-pixel rounding)
         assert page.locator('[data-testid="model-sel"]').inner_text().startswith(f"{label} ({joint})")
         assert model(page)["labels"][joint] == label
-    assert srv.command_ops() == []
+    only_startup(srv, page, "ainex")
 
 
 def test_model_is_large_beside_the_controls_and_marks_the_front(view, fake):
@@ -677,7 +731,10 @@ def test_model_is_large_beside_the_controls_and_marks_the_front(view, fake):
     srv2, phone = view(srv=srv2, viewport=(390, 844))
     assert phone.evaluate("document.scrollingElement.scrollWidth") <= 390
     assert phone.locator('[data-testid="model-canvas"]').bounding_box()["width"] <= 390 - 2 * 12
-    assert srv.command_ops() == [] and srv2.command_ops() == []
+    started(phone)
+    assert phone.evaluate("document.scrollingElement.scrollWidth") <= 390          # with the motion pad
+    only_startup(srv, page, "ainex")
+    only_startup(srv2, phone, "ainex")
 
 
 def test_numbers_read_the_same_in_every_locale(view):
@@ -787,6 +844,7 @@ def test_call_control_pending_and_failure_states(view):
 
 def test_ros1_call_control_pending_and_failure_states(view):
     srv, page = view(wire_spec(load("ainex")))
+    started(page)
     srv.set_service("/walking/init_pose", "hang")
     control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_timeout(200)
@@ -795,7 +853,7 @@ def test_ros1_call_control_pending_and_failure_states(view):
     control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_function("document.querySelector('[data-control=init_pose] .status').innerText.includes('failed')")
     assert len(srv.calls("/walking/init_pose")) == 2
-    assert srv.calls("/walking/command") == []
+    assert [c["args"] for c in srv.calls("/walking/command")] == [{"command": "stop"}]    # the start-up stop
     no_stop_ops(srv)
 
 
@@ -869,12 +927,19 @@ def test_controls_without_their_prerequisites_are_unavailable(view, pid):
     assert srv.command_ops() == []
 
 
-# ------------------------------------------------------------------ nothing is stopped automatically
+# ------------------------------------------------------------------ no bounded control is stopped automatically
 
-@pytest.mark.parametrize("robot", ["so101", "ainex"])
-def test_release_escape_focus_hide_and_close_send_no_stop(view, browser, robot):
+@pytest.mark.parametrize("robot", ["so101", "ainex", "rosmaster_x3_plus"])
+def test_release_escape_focus_hide_and_close_send_no_stop_for_bounded_controls(view, browser, robot):
+    """Console spec §2.2/§4: release, focus loss, page hide or close send no stop or cancel for a
+    bounded control. A mobile profile's base motion requests its own documented stop on focus loss
+    and page hide (and nothing else); an arm's page sends nothing at all."""
     srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
-    cid, field = ("arm_trajectory", "shoulder_pan") if robot == "so101" else ("head_pan", "position")
+    p = load(robot)
+    cid, field = {"so101": ("arm_trajectory", "shoulder_pan"), "ainex": ("head_pan", "position"),
+                  "rosmaster_x3_plus": ("arm_pose", "j1")}[robot]
+    if not p.is_arm:
+        started(page)
     drag(page, cid, field, 0.5, 0.6, steps=5, step_ms=40)               # release ends the drag
     page.wait_for_timeout(500)
     n = len(srv.command_ops())
@@ -886,9 +951,12 @@ def test_release_escape_focus_hide_and_close_send_no_stop(view, browser, robot):
     page.wait_for_timeout(300)
     page.close()                                                          # closing the tab
     time.sleep(0.5)
-    assert len(srv.command_ops()) == n
+    new = srv.command_ops()[n:]
+    if p.is_arm:
+        assert new == []
+    else:
+        assert new and all(is_stop(p, o) for o in new), new                # base motion's stops only
     no_stop_ops(srv)
-    assert srv.calls("/walking/command") == []                           # the AiNex walking stop
     if robot == "so101":
         latest = goals(srv, SO_ARM)[-1]
         assert srv.goals[latest["id"]]["done"] is False                  # the goal keeps running
@@ -924,27 +992,38 @@ def test_target_change_sends_nothing_and_rebinds_controls(view):
 def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
     """Every pair of ROS 1 profiles shares required names and none is namespace-capable, so two
     validated ROS 1 targets cannot share one wire: the change goes through a refused selection
-    and back. Each selection validates afresh on a new connection and sends nothing."""
+    and back. Each selection validates afresh on a new connection; the change sends nothing to the
+    old target but base motion's stop, before leaving it (console spec §2.2 as amended 2026-10-04),
+    and the new validated target gets its start-up stop."""
     srv, page = view(wire_spec(load("ainex")))
+    p = load("ainex")
+    started(page)
     num(page, "head_pan", "position").fill("0.2")
     num(page, "head_pan", "position").press("Enter")
     page.wait_for_timeout(300)
     assert [p["msg"]["position"] for p in srv.published(HEAD_PAN)] == [0.2]
-    n_clients, n_ops = len(srv.clients), len(srv.command_ops())
+    n_clients, n_ops, n_all = len(srv.clients), len(srv.command_ops()), len(srv.ops)
     page.select_option('[data-testid="robot"]', "myagv")
     page.click('[data-testid="select"]')
     page.wait_for_function("document.querySelector('[data-testid=reason]').innerText.includes('myagv')", timeout=8000)
     assert page.locator('[data-testid="target"]').inner_text() == "none"
     assert page.locator('[data-testid="control"]').count() == 0
     assert len(srv.clients) == n_clients + 1
+    after = srv.ops[n_all:]
+    (stop,) = srv.command_ops()[n_ops:]                                 # only base motion's stop...
+    assert is_stop(p, stop)
+    first_rosapi = next(i for i, o in enumerate(after) if o.get("service", "").startswith("/rosapi/"))
+    assert after.index(stop) < first_rosapi                             # ...before the new validation
+    assert page.locator('[data-testid="banner"]').is_hidden()           # it did not fail
     page.select_option('[data-testid="robot"]', "ainex")
     page.click('[data-testid="select"]')
     page.wait_for_function("document.querySelector('[data-testid=target]').innerText === 'ainex'", timeout=8000)
     assert len(srv.clients) == n_clients + 2
-    page.wait_for_timeout(500)
-    assert len(srv.command_ops()) == n_ops                              # the changes sent nothing
+    started(page)
+    page.wait_for_timeout(300)
+    assert len(stops(srv, p)) == 3                                      # start-up, target change, start-up
+    assert unprompted(srv, "ainex") == srv.published(HEAD_PAN)
     no_stop_ops(srv)
-    assert srv.calls("/walking/command") == []
     num(page, "head_pan", "position").fill("0.3")
     num(page, "head_pan", "position").press("Enter")
     page.wait_for_timeout(400)
@@ -955,6 +1034,8 @@ def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
 def test_connection_loss_disables_controls_sends_no_stop_and_never_reconnects(view, robot):
     srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
     cid, field = ("arm_trajectory", "shoulder_pan") if robot == "so101" else ("head_pan", "position")
+    if robot == "ainex":
+        started(page)
     drag(page, cid, field, 0.5, 0.6, steps=5, step_ms=40)
     page.wait_for_timeout(500)
     n_ops = len(srv.command_ops())
@@ -1045,7 +1126,7 @@ def test_reported_arm_angles_are_shown_in_the_controls_units(view):
         assert m["sources"]["arm_joint2"] == "reported" and m["joints"]["arm_joint2"] == 0.5
     finally:
         stop.set()
-    assert srv.command_ops() == []
+    only_startup(srv, page, "rosmaster_x3_plus")
 
 
 def test_model_follows_reported_joint_positions(view):
@@ -1160,7 +1241,7 @@ def test_a_prismatic_joint_slides_along_its_axis(view, monkeypatch):
     want = urdf_forward(stub, {"base_up": 0.7, "lift": 0.15})
     for j in ("lift", "lift_tool"):
         assert world[j] == pytest.approx(list(want[j]), abs=1e-9), j
-    assert srv.command_ops() == []
+    only_startup(srv, page, "myagv")
 
 
 def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
@@ -1192,7 +1273,7 @@ def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
 
 def test_ainex_head_joints_in_the_model_publish_the_head_controls(view):
     srv, page = view(wire_spec(load("ainex")))                              # the board answers no positions
-    page.wait_for_timeout(300)
+    started(page)
     m = model(page)
     assert set(m["clickable"]) == set(AINEX_SERVOS)                         # every servo's joint
     assert {m["sources"][j] for j in AINEX_SERVOS} == {"target"}
@@ -1225,7 +1306,7 @@ def test_model_renders_and_every_commanded_joint_is_clickable(view, robot):
     assert drawn
     for j in sorted(expected):
         select_in_model(page, j)
-    assert srv.command_ops() == []                                       # selecting sends nothing
+    only_startup(srv, page, robot)                                       # selecting sends nothing
 
 
 # ------------------------------------------------------------------ same contracts as Python
@@ -1256,3 +1337,501 @@ def test_page_selection_matches_python(view, case):
     shown = page.locator('[data-testid="target"]').inner_text()
     assert (shown if shown != "none" else None) == expected
     assert srv.command_ops() == []
+
+
+
+# ------------------------------------------------------------------ base motion (console spec §2.2, §4 as amended 2026-10-04)
+
+MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
+ARMS = ["so101", "mycobot280"]
+KEY_SIGN = {"w": (1, 0, 0), "s": (-1, 0, 0), "a": (0, 1, 0), "d": (0, -1, 0), "q": (0, 0, 1), "e": (0, 0, -1)}
+WALK = "/walking/command"
+
+
+def speeds(p):
+    ax = (p.teleop_base or p.teleop_walk).axes
+    return tuple(ax[k].speed for k in ("x", "y", "yaw"))
+
+
+def limits(p):
+    ax = (p.teleop_base or p.teleop_walk).axes
+    return tuple(ax[k].limit for k in ("x", "y", "yaw"))
+
+
+def axes_of(p, o):
+    """(x, y, yaw) of a base-motion command (a Twist, or the AiNex gait amplitudes), else None."""
+    if o["op"] != "publish":
+        return None
+    m = o["msg"]
+    if p.teleop_base and o["topic"] == p.teleop_base.topic:
+        return (m["linear"]["x"], m["linear"]["y"], m["angular"]["z"])
+    if p.teleop_walk and o["topic"] == p.teleop_walk.param_topic:
+        ax = p.teleop_walk.axes
+        return tuple(m[ax[k].field] for k in ("x", "y", "yaw"))
+    return None
+
+
+def motion_cmds(p, ops):
+    """The motion commands among `ops` (a stop is not one)."""
+    return [a for o in ops if not is_stop(p, o) and (a := axes_of(p, o)) is not None]
+
+
+def walk_calls(ops):
+    return [o["args"]["command"] for o in ops if o.get("op") == "call_service" and o.get("service") == WALK]
+
+
+def mo(page):
+    return page.evaluate("RC.motion()")
+
+
+def settled(page):
+    """Every motion event handled (and its sends answered)."""
+    page.wait_for_function("RC.motion() && RC.motion().pending === 0", timeout=8000)
+
+
+def mobile(view, pid, srv=None, **kw):
+    srv, page = view(wire_spec(load(pid)) if srv is None else None, srv=srv, **kw)
+    started(page)
+    return srv, page, load(pid)
+
+
+def blur(page):
+    page.evaluate("window.dispatchEvent(new Event('blur'))")
+
+
+def hide(page):
+    page.evaluate("Object.defineProperty(document, 'visibilityState', {value: 'hidden', configurable: true});"
+                  "document.dispatchEvent(new Event('visibilitychange'))")
+
+
+def refuse_stop(args):
+    """An AiNex controller whose walking stop errs (the call answers result false)."""
+    if args.get("command") == "stop":
+        raise RuntimeError("the gait refused to stop")
+    return {}
+
+
+# The transport rejects a base's stop on a usable connection: the page's websocket cannot send a
+# zero Twist on /cmd_vel while window.__rejectStop is set (the ROSMASTER's and myAGV's stop is a
+# publish, which no server acknowledges, so only the transport can fail it).
+REJECT_STOP_JS = """() => {
+    const send = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (d) {
+        const m = JSON.parse(d);
+        const zero = (v) => v && Object.values(v).every((p) => Object.values(p).every((x) => x === 0));
+        if (window.__rejectStop && m.op === 'publish' && m.topic === '/cmd_vel' && zero(m.msg)) throw new Error('the transport rejected the stop');
+        return send.call(this, d);
+    };
+}"""
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_base_motion_startup_stop_after_validation_without_resumed_motion(view, pid):
+    """Once the target validates the page advertises teleop's command topics, lets them settle,
+    attempts the documented stop once and shows the outcome, then enables base motion; a reload
+    with a key still held stops again and resumes nothing."""
+    srv, page, p = mobile(view, pid)
+    ops = srv.command_ops()
+    adv = [o for o in ops if o["op"] == "advertise"]
+    assert [o["topic"] for o in adv] == [t for t, _ in command_topics(p)]
+    rest = [o for o in ops if o["op"] != "advertise"]
+    assert len(rest) == len(stop_ops(p)) and all(is_stop(p, o) for o in rest), rest
+    validation = [o for o in srv.ops if o.get("service") in ("/rosapi/topics", "/rosapi/services")]
+    assert max(o["_t"] for o in validation) < adv[0]["_t"] <= rest[0]["_t"] - 0.5
+    state = page.locator('[data-testid="motion-state"]')
+    assert state.get_attribute("data-state") == "stopped" and "stop requested (start-up, after validation)" in state.inner_text()
+    assert mo(page)["enabled"] and not page.locator('[data-testid="reenable"]').is_visible()
+    page.keyboard.down("w")
+    page.wait_for_timeout(400)
+    assert motion_cmds(p, srv.command_ops())
+    n = len(srv.command_ops())
+    page.reload()
+    page.wait_for_function("window.RC && window.RC.ready === true")
+    started(page)
+    page.keyboard.up("w")                                                 # the old page's key
+    page.wait_for_timeout(600)
+    new = [o for o in srv.command_ops()[n:] if o["op"] != "advertise"]
+    first = next(i for i, o in enumerate(new) if is_stop(p, o))           # the unload's stop, or the start-up stop
+    assert motion_cmds(p, new[first:]) == [] and mo(page)["held"] == []   # nothing resumed
+    assert mo(page)["outcomes"][0]["text"].startswith("stop requested (start-up, after validation)")
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_base_motion_key_direction_recorded_speeds_and_documented_limits(view, pid):
+    """Each motion key commands its axis at the profile's recorded speed, re-sent at the profile's
+    rate while held; release requests the stop. Keys combine per axis, opposite keys cancel, and
+    nothing exceeds the documented limits. The AiNex walks through its gait: the walking enable
+    with the first press after enabling, then the parameters and start, as teleop does."""
+    srv, page, p = mobile(view, pid)
+    sx, sy, sw = speeds(p)
+    for i, (key, sign) in enumerate(KEY_SIGN.items()):
+        n = len(srv.command_ops())
+        page.keyboard.down(key)
+        page.wait_for_timeout(450)
+        assert mo(page)["state"] == "moving"
+        page.keyboard.up(key)
+        settled(page)
+        new = srv.command_ops()[n:]
+        assert set(motion_cmds(p, new)) == {(sign[0] * sx, sign[1] * sy, sign[2] * sw)}, (key, motion_cmds(p, new))
+        assert is_stop(p, new[-1]), "release of the last motion key requests the stop"
+        if p.teleop_walk:
+            assert walk_calls(new) == (["enable_control", "enable"] if i == 0 else []) + ["start", "stop"], walk_calls(new)
+            assert new[len(walk_calls(new)) - 2]["op"] == "publish"          # the parameters before start
+    # held: re-sent at the profile's rate
+    n = len(srv.command_ops())
+    page.keyboard.down("w")
+    t0 = time.monotonic()
+    page.wait_for_timeout(1500)
+    page.keyboard.up("w")
+    dur = time.monotonic() - t0
+    settled(page)
+    sent = [o for o in srv.command_ops()[n:] if axes_of(p, o) and not is_stop(p, o)]
+    rate = (p.teleop_base or p.teleop_walk).rate_hz
+    assert dur * rate * 0.6 <= len(sent) <= dur * rate + 2, (len(sent), dur, rate)
+    assert min(gaps(sent)) > 0.8 / rate, gaps(sent)
+    # combined keys, opposite keys cancel; within the documented limits
+    n = len(srv.command_ops())
+    for k in ("w", "a", "q"):
+        page.keyboard.down(k)
+        page.wait_for_timeout(250)
+    assert "x +" in page.locator('[data-testid="motion-cmd"]').inner_text()
+    page.keyboard.down("s")
+    page.wait_for_timeout(300)
+    page.keyboard.down("d")
+    page.keyboard.down("e")
+    page.wait_for_timeout(300)
+    cmds = motion_cmds(p, srv.command_ops()[n:])
+    assert (sx, sy, sw) in cmds and (0, sy, sw) in cmds, cmds
+    assert all(abs(v) <= lim for c in cmds for v, lim in zip(c, limits(p)))
+    assert all(abs(v) <= lim for c in motion_cmds(p, srv.command_ops()) for v, lim in zip(c, limits(p)))
+    m = len(srv.command_ops())
+    for k in ("w", "a", "q", "s", "d"):
+        page.keyboard.up(k)
+    settled(page)
+    assert not any(is_stop(p, o) for o in srv.command_ops()[m:])          # E still held
+    page.keyboard.up("e")
+    settled(page)
+    assert is_stop(p, srv.command_ops()[-1])
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_base_motion_stops_on_release_space_stop_button_focus_loss_and_page_hide(view, pid):
+    """Release of a hold button (also a touch cancelled), Space, the STOP button, focus loss and
+    page hide clear the intent and request the documented stop; a key still held afterwards moves
+    nothing (movement needs a fresh press)."""
+    srv, page, p = mobile(view, pid)
+    hold_w = page.locator('[data-testid="hold-w"]')
+    hold_w.scroll_into_view_if_needed()
+    # a hold button: pointer capture, release on pointerup (even off the button)
+    n = len(srv.command_ops())
+    box = hold_w.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.wait_for_timeout(350)
+    assert hold_w.get_attribute("data-held") == "true" and mo(page)["held"] == ["w"]
+    page.mouse.move(box["x"] - 120, box["y"] - 80)
+    page.wait_for_timeout(250)
+    assert mo(page)["held"] == ["w"]                                      # captured: still held
+    page.mouse.up()
+    settled(page)
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1])
+    assert "last motion button released" in mo(page)["outcomes"][-1]["text"]
+    # a touch that the browser cancels
+    n = len(srv.command_ops())
+    page.evaluate("""() => { const b = document.querySelector('[data-testid=hold-a]');
+        b.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 7, pointerType: 'touch', isPrimary: true, bubbles: true})); }""")
+    page.wait_for_timeout(350)
+    assert mo(page)["held"] == ["a"]
+    page.evaluate("""() => document.querySelector('[data-testid=hold-a]').dispatchEvent(
+        new PointerEvent('pointercancel', {pointerId: 7, pointerType: 'touch', bubbles: true}))""")
+    settled(page)
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1])
+
+    def held_then(action, reason):
+        n = len(srv.command_ops())
+        page.keyboard.down("w")
+        page.wait_for_timeout(350)
+        assert motion_cmds(p, srv.command_ops()[n:]), reason
+        action()
+        settled(page)
+        page.wait_for_timeout(450)                                        # W is still down
+        new = srv.command_ops()[n:]
+        assert is_stop(p, new[-1]) and motion_cmds(p, new[new.index(new[-1]):]) == [], reason
+        assert reason in mo(page)["log"][-1] and mo(page)["held"] == []
+        m = len(srv.command_ops())
+        page.keyboard.up("w")                                             # releasing the stale key sends nothing
+        page.wait_for_timeout(300)
+        assert srv.command_ops()[m:] == [], reason
+
+    held_then(lambda: page.keyboard.press(" "), "Space")
+    assert page.locator('[data-testid="motion-state"]').get_attribute("data-state") == "stopped"
+    held_then(lambda: page.locator('[data-testid="stop"]').click(), "Stop button")
+    held_then(lambda: blur(page), "window lost keyboard focus")
+    held_then(lambda: hide(page), "page hidden")
+    # page hide or unload: the stop goes out at once, best effort, and the page says it is not guaranteed
+    n = len(srv.command_ops())
+    page.keyboard.down("d")
+    page.wait_for_timeout(350)
+    page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+    page.wait_for_timeout(500)
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1])
+    assert "not guaranteed" in mo(page)["log"][-1]
+    assert "not guaranteed" in page.locator('[data-testid="motion"]').inner_text()
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_failed_stop_disables_base_motion_until_reenable_and_fresh_input(view, pid):
+    """An explicitly failed stop (the AiNex walking stop answers an error; a base's stop the
+    transport rejects) disables base motion with §2.1's limitation shown; keys and buttons move
+    nothing; re-enabling (the button, or Enter as in teleop) needs fresh input: a key held across it
+    does not resume motion."""
+    srv, page, p = mobile(view, pid)
+    if p.teleop_walk:
+        srv.set_service(WALK, refuse_stop)
+    else:
+        page.evaluate(REJECT_STOP_JS)
+        page.evaluate("window.__rejectStop = true")
+    page.keyboard.down("w")
+    page.wait_for_timeout(350)
+    page.keyboard.up("w")
+    page.wait_for_function("RC.motion().state === 'failed'", timeout=8000)
+    text = page.locator('[data-testid="motion-state"]').inner_text()
+    assert "Stop failed" in text and "STOP FAILED (last motion key released)" in text
+    assert "Re-enabling does not check or confirm that the robot stopped" in text
+    assert page.locator('[data-testid="motion-limit"]').is_visible() and page.locator('[data-testid="reenable"]').is_visible()
+    assert page.locator('[data-testid="hold-w"]').get_attribute("aria-disabled") == "true"
+    n = len(srv.command_ops())
+    page.keyboard.down("s")                                               # disabled: nothing moves
+    page.wait_for_timeout(300)
+    page.keyboard.up("s")
+    page.locator('[data-testid="hold-q"]').click(force=True)            # (aria-disabled)
+    settled(page)
+    assert motion_cmds(p, srv.command_ops()[n:]) == []
+    assert "disabled after a failed stop" in mo(page)["log"][-1]
+    # re-enable with a key held across it: not a fresh press
+    if p.teleop_walk:
+        srv.set_service(WALK, lambda args: {})
+    else:
+        page.evaluate("window.__rejectStop = false")
+    page.keyboard.down("w")
+    page.wait_for_timeout(200)
+    m = len(srv.command_ops())
+    if pid == "myagv":
+        page.evaluate("document.activeElement && document.activeElement.blur && document.activeElement.blur()")
+        page.keyboard.press("Enter")                                      # teleop's re-enable key
+    else:
+        page.locator('[data-testid="reenable"]').click()
+    page.wait_for_function("RC.motion().enabled === true", timeout=8000)
+    page.wait_for_timeout(500)
+    assert motion_cmds(p, srv.command_ops()[m:]) == [] and mo(page)["held"] == []
+    if p.teleop_walk:
+        assert walk_calls(srv.command_ops()[m:]) == ["enable_control", "enable"]   # teleop's enable, on the explicit action
+    assert "ENABLED" in mo(page)["log"][-1]
+    page.keyboard.up("w")
+    page.wait_for_timeout(200)
+    page.keyboard.down("w")                                               # fresh input moves again
+    page.wait_for_timeout(350)
+    page.keyboard.up("w")
+    settled(page)
+    new = srv.command_ops()[m:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1]) and mo(page)["outcomes"][-1]["ok"]
+
+
+def test_ainex_walking_stop_timeout_is_a_failure(view):
+    """A walking stop call that does not answer within teleop's 3 s fails explicitly."""
+    srv, page, p = mobile(view, "ainex")
+    page.keyboard.down("w")
+    page.wait_for_timeout(350)
+    srv.set_service(WALK, "hang")
+    page.keyboard.press(" ")
+    page.wait_for_timeout(1000)
+    assert mo(page)["state"] == "stopping"
+    page.wait_for_function("RC.motion().state === 'failed'", timeout=6000)
+    assert "did not answer within 3 s" in mo(page)["outcomes"][-1]["text"]
+    page.keyboard.up("w")
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_connection_loss_clears_motion_intent_and_claims_no_stop(view, pid):
+    srv, page, p = mobile(view, pid)
+    page.keyboard.down("w")
+    page.wait_for_timeout(350)
+    srv.drop_all()
+    page.wait_for_function("RC.state.lost === true", timeout=8000)
+    m = mo(page)
+    assert m["state"] == "lost" and m["held"] == [] and not m["enabled"]
+    assert m["log"][-1].startswith("CONNECTION LOST") and "stop requested" not in m["log"][-1]
+    text = page.locator('[data-testid="motion-state"]').inner_text()
+    assert "No connection" in text and "No stop could be delivered" in text and "stopping is NOT guaranteed" in text
+    banner = page.locator('[data-testid="banner"]').inner_text()
+    assert "nothing was stopped" in banner and "NOT guaranteed" in banner
+    assert page.locator('[data-testid="stop"]').is_disabled()
+    assert page.locator('[data-testid="hold-w"]').get_attribute("aria-disabled") == "true"
+    page.keyboard.up("w")
+    page.keyboard.press(" ")
+    page.wait_for_timeout(300)
+    assert mo(page)["state"] == "lost"
+
+
+@pytest.mark.parametrize("pid", MOBILE)
+def test_motion_keys_typed_into_editable_fields_move_nothing(view, pid):
+    """Keys act only while the page, not an editable field, has keyboard focus: typing in a number
+    field, the robot list or a slider sends no base motion or head command; a key held when focus
+    moves into a field is released (its stop requested)."""
+    srv, page, p = mobile(view, pid)
+    fields = ['[data-testid="robot"]']
+    if p.controls:
+        cid = next(c.id for c in p.controls if any(f.choices is None for f in c.fields))
+        fields += [f'[data-control="{cid}"] input.num', f'[data-control="{cid}"] input[type="range"]']
+    n_all = len(srv.ops)
+    n = len(srv.command_ops())
+    for sel in fields:
+        page.locator(sel).first.focus()
+        # (Space and Enter would open the list's popup)
+        for k in ("w", "s", "a", "d", "q", "e") + (() if "robot" in sel else (" ", "Enter")):
+            page.keyboard.down(k)
+            page.wait_for_timeout(40)
+            page.keyboard.up(k)
+    page.locator('[data-testid="robot"]').focus()
+    for k in ("ArrowLeft", "ArrowUp"):
+        page.keyboard.press(k)
+    settled(page)
+    page.wait_for_timeout(300)
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) == [] and not any(is_stop(p, o) for o in new) and walk_calls(new) == []
+    assert not [o for o in srv.ops[n_all:] if o.get("args") == {"id": [23, 24]}]    # no head-key read
+    assert mo(page)["log"][-1].startswith("base motion ENABLED")         # nothing happened since start-up
+    # with Meta (⌘) down the browser may not report key releases: the keys' holds end there
+    page.evaluate("document.activeElement.blur()")
+    n = len(srv.command_ops())
+    page.keyboard.down("w")
+    page.wait_for_timeout(300)
+    page.keyboard.down("Meta")
+    settled(page)
+    page.keyboard.up("Meta")
+    page.keyboard.up("w")
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1]) and "keyboard input lost" in mo(page)["outcomes"][-1]["text"]
+    # a held key whose focus moves into a field is released
+    page.evaluate("document.activeElement.blur()")
+    page.keyboard.down("w")
+    page.wait_for_timeout(350)
+    page.locator('[data-testid="robot"]').focus()
+    settled(page)
+    page.wait_for_timeout(300)
+    new = srv.command_ops()[n:]
+    assert motion_cmds(p, new) and is_stop(p, new[-1])
+    assert "keyboard focus moved to an editable field" in mo(page)["outcomes"][-1]["text"]
+    page.keyboard.up("w")
+
+
+@pytest.mark.parametrize("pid", ARMS)
+def test_arm_profiles_offer_no_base_motion(view, pid):
+    srv, page = view(so101_spec() if pid == "so101" else wire_spec(load(pid)))
+    assert page.evaluate("RC.motion()") is None
+    assert not page.locator('[data-testid="motion"]').is_visible()
+    assert page.locator('[data-testid^="hold-"]').count() == 0 and page.locator('[data-testid="stop"]').count() == 0
+    for k in ("w", "s", "a", "d", "q", "e", " ", "Enter", "ArrowLeft", "ArrowUp"):
+        page.keyboard.press(k)
+    page.keyboard.down("w")
+    blur(page)
+    hide(page)
+    page.evaluate("window.dispatchEvent(new Event('pagehide'))")
+    page.wait_for_timeout(600)
+    assert srv.command_ops() == []
+
+
+def test_ainex_head_keys_start_from_the_measured_head_and_stay_within_limits(view, fake):
+    """The arrow keys move the head as teleop's do: the head's position is read (the documented
+    read) when the first arrow of an axis is pressed, then the target slews at the profile's rate
+    in the key's direction (Left = a negative pan), published at most every 0.1 s with teleop's
+    head message, clamped to the documented limits; release stops the target changing and
+    requests no walking stop. An unknown position ignores the key. The page's head target shows
+    what the keys sent."""
+    srv = fake(wire_spec(load("ainex")))
+    pulses = serve_servos(srv, STANDING)                                   # head_pan 0.82 rad, tilt 0
+    srv, page, p = mobile(view, "ainex", srv=srv)
+    hp = p.head["pan"]
+    n_all, n = len(srv.ops), len(srv.published(HEAD_PAN))
+    page.keyboard.down("ArrowLeft")
+    page.wait_for_timeout(800)
+    page.keyboard.up("ArrowLeft")
+    settled(page)
+    reads = [o for o in srv.ops[n_all:] if o.get("service") == GET_POSITION and o["args"] == {"id": [23, 24]}]
+    assert len(reads) == 1                                                # read once, at the first press
+    pubs = srv.published(HEAD_PAN)[n:]
+    vals = [o["msg"]["position"] for o in pubs]
+    assert all(o["msg"] == dict(hp.template, position=o["msg"]["position"]) for o in pubs)   # teleop's message
+    start = (pulses[23] - 500) / 238.7324187                              # the measured pan
+    assert vals[0] < start and all(b < a for a, b in zip(vals, vals[1:])), (start, vals)
+    assert 0.4 <= start - vals[-1] <= 0.95, vals                          # ~1 rad/s for ~0.8 s
+    assert min(gaps(pubs)) >= 0.09, gaps(pubs)
+    assert float(num(page, "head_pan", "position").input_value()) == pytest.approx(vals[-1], abs=0.006)
+    page.wait_for_timeout(400)
+    assert len(srv.published(HEAD_PAN)) == n + len(pubs)                  # released: the target stops
+    assert walk_calls(srv.ops[n_all:]) == []                              # head keys never stop walking
+    # Right, held long enough to reach the documented limit: clamped there, never beyond
+    n = len(srv.published(HEAD_PAN))
+    page.keyboard.down("ArrowRight")
+    page.wait_for_timeout(1300)
+    page.keyboard.up("ArrowRight")
+    settled(page)
+    vals = [o["msg"]["position"] for o in srv.published(HEAD_PAN)[n:]]
+    assert max(vals) == hp.max and all(v <= hp.max for v in vals)
+    # Up tilts up
+    n = len(srv.published(HEAD_TILT))
+    page.keyboard.down("ArrowUp")
+    page.wait_for_timeout(400)
+    page.keyboard.up("ArrowUp")
+    settled(page)
+    tilt = [o["msg"]["position"] for o in srv.published(HEAD_TILT)[n:]]
+    assert tilt and tilt[-1] > 0 and all(v <= p.head["tilt"].max for v in tilt)
+    # an unknown head position ignores the key
+    del pulses[23]
+    n = len(srv.published(HEAD_PAN))
+    page.keyboard.down("ArrowLeft")
+    page.wait_for_timeout(400)
+    page.keyboard.up("ArrowLeft")
+    settled(page)
+    assert len(srv.published(HEAD_PAN)) == n
+    assert "head position unknown (pan)" in mo(page)["log"][-1] and "key ignored" in mo(page)["log"][-1]
+    # arrow keys keep their own meaning on the head pad, a joint chip and the model
+    pulses[23] = 500
+    n_all = len(srv.ops)
+    pad = page.locator(".pad")
+    pad.focus()
+    pad_before = float(num(page, "head_pan", "position").input_value())
+    page.keyboard.press("ArrowLeft")
+    page.wait_for_timeout(300)
+    assert srv.published(HEAD_PAN)[-1]["msg"] == {"position": pytest.approx(pad_before - 0.05), "duration": 0.5}   # the pad's step
+    assert not [o for o in srv.ops[n_all:] if o.get("args") == {"id": [23, 24]}]
+    no_stop_ops(srv)
+
+
+def test_page_motion_pad_layout_has_legend_and_state(view):
+    """The motion pad sits with the cameras, above the model: a D-pad of hold buttons around STOP,
+    the AiNex head buttons, the key legend with the recorded speeds and limits, and a state readout."""
+    srv, page, p = mobile(view, "ainex", viewport=(1440, 900))
+    card = page.locator('[data-testid="motion"]')
+    cam = page.locator('[data-testid="camera"]').bounding_box()
+    mdl = page.locator('[data-testid="model"]').bounding_box()
+    box = card.bounding_box()
+    assert cam["y"] + cam["height"] <= box["y"] and box["y"] + box["height"] <= mdl["y"]
+    assert box["x"] + box["width"] <= page.locator("#control-panel").bounding_box()["x"]
+    for k in ("w", "s", "a", "d", "q", "e", "up", "down", "left", "right"):
+        assert card.locator(f'[data-testid="hold-{k}"]').is_visible(), k
+    stop = card.locator('[data-testid="stop"]').bounding_box()
+    w, s = card.locator('[data-testid="hold-w"]').bounding_box(), card.locator('[data-testid="hold-s"]').bounding_box()
+    assert w["y"] < stop["y"] < s["y"]                                    # STOP in the middle of the pad
+    legend = card.inner_text()
+    for t in ("x_move_amplitude 0.01 m (documented limit 0.02 m)", "angle_move_amplitude 5 deg (documented limit 10 deg)",
+              "head pan left / right", "Space", "Enter"):
+        assert t in legend, t
+    assert page.locator('[data-testid="motion-state"]').get_attribute("data-state") == "stopped"
+    srv2, page2, _ = mobile(view, "myagv")
+    legend = page2.locator('[data-testid="motion"]').inner_text()
+    assert "forward / back: 0.2 m/s (documented limit 0.9 m/s)" in legend and "rotate" in legend
+    assert page2.locator('[data-testid="hold-left"]').count() == 0          # no head

@@ -5,9 +5,10 @@
 The page (``web/view.html`` with its inline styles + ``web/console.js``; no external assets, so
 it works on robot networks without internet access) is static: it is handed the websocket URL,
 the optional robot/namespace selection and the packaged profiles (``/profiles.json``: the
-same profiles teleop and fleet use, with the controls, measured reads and 3D ``model`` the
-page needs) and does discovery, validation, cameras, the model and controls in the browser. The
-server binds to 127.0.0.1 and serves only those files.
+same profiles teleop and fleet use, with the controls, measured reads, 3D ``model`` and, for a
+mobile robot, teleop's base motion contract the page needs) and does discovery, validation,
+cameras, the model, controls and base motion in the browser. The server binds to 127.0.0.1 and
+serves only those files.
 """
 
 from __future__ import annotations
@@ -33,8 +34,10 @@ def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="view.sh",
         description="Browser page with the selected robot's cameras and the bounded controls its "
-                    "profile lists. Changes are sent to the robot immediately and nothing is "
-                    "stopped automatically. No base-drive or walking control.",
+                    "profile lists and, for a mobile robot, teleop.sh's hold-to-move base motion. "
+                    "Changes are sent to the robot immediately, and only base motion is stopped "
+                    "automatically (on release, Space, STOP, focus loss, page hide and a target "
+                    "change; a stop when the page closes is not guaranteed).",
         epilog=f"Robot ids: {', '.join(SUPPORTED_IDS)}")
     ap.add_argument("--url", default=DEFAULT_URL, help=f"rosbridge websocket (default {DEFAULT_URL})")
     ap.add_argument("--robot", metavar="ID", help="robot profile (default: identify from the wire)")

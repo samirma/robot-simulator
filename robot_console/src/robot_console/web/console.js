@@ -1,6 +1,7 @@
 // Robot console page: rosbridge transport, typed discovery/validation (the same algorithm and
-// the same packaged profiles as robot_console/discovery.py), live cameras and bounded controls
-// whose changes are sent at once. Plain browser JavaScript, no external dependencies.
+// the same packaged profiles as robot_console/discovery.py), live cameras, bounded controls
+// whose changes are sent at once and, for a teleoperable profile, teleop.sh's hold-to-move base
+// motion with its stops. Plain browser JavaScript, no external dependencies.
 "use strict";
 (() => {
   const RC = (window.RC = {});        // RC.state and RC.ready: the page state, for tests and tools
@@ -362,7 +363,7 @@
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
     lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(), conflicts: new Map(),
-    padGroup: null, model: null, groups: [], poll: null });
+    padGroup: null, model: null, groups: [], poll: null, mo: null, changing: false });
 
   // ------------------------------------------------------------------ DOM helpers
   function h(tag, props, ...kids) {
@@ -648,21 +649,27 @@
     return xs.map((x) => x.busy ? `reading ${x.wire}…` : x.err ? `read of ${x.wire} failed: ${x.err}`
       : x.last ? `read from ${x.wire} ${((now - x.last.at) / 1000).toFixed(1)} s ago` : "").filter(Boolean).join("; ");
   }
+  // A read's answer as {control: {field: value in the field's unit, or null when not read}}
+  // (profiles.py Read.parse); throws when the answer reports a failed read.
+  function parseRead(r, v) {
+    if (!v || typeof v !== "object" || (r.ok_field && v[r.ok_field] === false)) throw new Error(`the service answered ${JSON.stringify(v).slice(0, 120)}`);
+    const raws = r.values.map((m) => readPath(v, m.path));
+    const allZero = !!r.invalid_if_all_zero && raws.every((z) => Number(z) === 0);
+    const vals = {};
+    r.values.forEach((m, i) => {
+      const raw = Number(raws[i]);
+      const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw) && !allZero;
+      (vals[m.control] = vals[m.control] || {})[m.field] = ok ? (raw - Number(m.offset || 0)) / (m.scale == null ? 1 : Number(m.scale)) : null;
+    });
+    return vals;
+  }
   function doRead(x) {
     const conn = S.conn, t = S.target;
     if (!conn || S.lost || !t || x.busy) return Promise.resolve();
     const r = x.r, sentAt = performance.now();
     x.busy = true; x.err = null;
     const done = conn.call(x.wire, r.request || {}, 5000).then((v) => {
-      if (r.ok_field && v && v[r.ok_field] === false) throw new Error(`the service answered ${JSON.stringify(v).slice(0, 120)}`);
-      const raws = r.values.map((m) => readPath(v, m.path));
-      const allZero = !!r.invalid_if_all_zero && raws.every((z) => Number(z) === 0);
-      const vals = {};
-      r.values.forEach((m, i) => {
-        const raw = Number(raws[i]);
-        const ok = raws[i] != null && Number.isFinite(raw) && !(r.invalid || []).includes(raw) && !allZero;
-        (vals[m.control] = vals[m.control] || {})[m.field] = ok ? (raw - Number(m.offset || 0)) / (m.scale == null ? 1 : Number(m.scale)) : null;
-      });
+      const vals = parseRead(r, v);
       x.last = { at: performance.now(), sentAt, vals };
       if (r.poll_s && S.target === t) followMeasured(vals);
     }).catch((e) => { x.err = e.message; })
@@ -708,8 +715,8 @@
   function stopPoll() { if (pollTimer) clearTimeout(pollTimer); pollTimer = null; S.poll = null; }
 
   // ------------------------------------------------------------------ sending
-  // Values changed on the page go to the robot at once; nothing is ever stopped or cancelled
-  // by the page. Topic publishes stream while a value is dragged; action goals stream at a
+  // Values changed on the page go to the robot at once; no bounded control is ever stopped or
+  // cancelled by the page. Topic publishes stream while a value is dragged; action goals stream at a
   // lower rate, each new goal preempting the previous one on the action server. Both use a
   // throttle with a leading and a trailing edge that reads the inputs when it fires, so the
   // last value is always sent. Service calls and choice buttons send once per click.
@@ -855,9 +862,10 @@
     if (S.padGroup) S.padGroup.sync();
     drawModel();
     syncLive();
+    syncMotion();
   }
   function updateLock() {
-    $("robot").disabled = S.lost; $("namespace").disabled = S.lost || !nsAllowed(); $("select").disabled = S.lost;
+    $("robot").disabled = S.lost; $("namespace").disabled = S.lost || !nsAllowed(); $("select").disabled = S.lost || S.changing;
   }
   function nsAllowed() {
     const id = $("robot").value; const p = S.profiles.find((x) => x.id === id);
@@ -874,6 +882,7 @@
     let state, title, hint;
     if (S.lost) { state = "fault"; title = "Controls disabled"; hint = "Disconnected. Reload the page to connect again."; }
     else if (!t) { state = "unavailable"; title = "Controls unavailable"; hint = "Validate a robot target first."; }
+    else if (!S.controls.size && S.mo) { state = "unavailable"; title = "No bounded controls"; hint = "This robot's profile lists no bounded page controls; its base motion is offered beside the cameras."; }
     else if (!S.controls.size) { state = "unavailable"; title = "Camera only"; hint = "This robot's profile lists no page controls."; }
     else { state = "live"; title = `Controls live on ${label}`; hint = `Values you change below are sent to ${label} at once.`; }
     const card = $("live-card");
@@ -1222,6 +1231,7 @@
   }
 
   function renderControls() {
+    renderMotion();
     const root = $("controls"); root.innerHTML = ""; S.controls.clear(); S.padGroup = null; S.reads = new Map(); S.groups = [];
     $("workspace").classList.toggle("no-controls", !S.target || !S.target.profile.controls.length);
     if (!S.target) { root.append(h("p", { class: "empty", text: "No validated target: no controls are offered." })); renderModel(); refreshControls(); return; }
@@ -1639,6 +1649,476 @@
     if (window.ResizeObserver) new ResizeObserver(() => drawModel()).observe(cv);
   })();
 
+  // ------------------------------------------------------------------ base motion
+  // teleop.sh's base motion and AiNex head keys (console spec §2.1, §2.2 as amended 2026-10-04),
+  // for a teleoperable profile only. The contract is the profile's `teleop` section, built by
+  // teleop_core.page_contract from the same profile data teleop uses (§3), and the state machine
+  // below is teleop_core.TeleopCore's: held keys commanded at their recorded speed within the
+  // documented limits (opposite keys cancel), re-sent at the profile's rate while held; the AiNex
+  // walks through its gait (start ops once, then the parameters); release of the last motion
+  // input, Space, the Stop button, focus loss, page hide and a target change clear the intent and
+  // request the documented stop; an explicitly failed stop (the transport rejects or cannot send
+  // it, or the stop service errs or times out; a publish is never acknowledged, so never fails)
+  // disables base motion until an explicit re-enable and fresh input; connection loss clears the
+  // intent and says that no stop could be delivered. Events are handled one at a time, in order,
+  // each finishing its sends (and their answers) before the next, as teleop's single loop does.
+  // Two deliberate differences, both from the page spec: teleop's walking enable calls (sent by
+  // teleop right after a delivered start-up stop) go out with the first fresh motion press
+  // instead, because the page sends nothing unprompted but the start-up stop; and keys act only
+  // while the page, not an editable field, has keyboard focus, with on-page hold buttons for
+  // pointer and touch input. Bounded controls are never stopped or cancelled.
+  const nowS = () => performance.now() / 1000;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const KEY_OF = { " ": "space", Enter: "enter", ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+  const keyName = (e) => KEY_OF[e.key] || (/^[a-z]$/i.test(e.key || "") ? e.key.toLowerCase() : null);
+  const isEditable = (el) => !!el && (el.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(el.tagName));
+  // Elements with arrow-key behaviour of their own: the head keys leave them alone.
+  const ownsArrows = (el) => !!(el && el.closest && el.closest(".joint-chip, #model-canvas, .pad, [role=radiogroup], .choices"));
+
+  function makeMotion(t, conn) {
+    const c = t.profile.teleop;
+    return { t, conn, c, enabled: false, connected: true, held: [], heldHead: [], walking: false,
+      enablePending: !!(c.walk && c.walk.enable.length), lastCmd: null, lastSentAt: 0,
+      headPos: {}, headLastAt: null, headSent: {}, headSendAt: {}, log: [], outcomes: [],
+      chain: Promise.resolve(), pending: 0, stopping: false, started: false, leaving: false, dead: false, ui: null };
+  }
+  // Run `fn` after every earlier event (teleop's loop handles one event at a time).
+  function moQueue(mo, fn) {
+    mo.pending++;
+    const p = mo.chain.then(() => (mo.dead || !mo.connected ? undefined : fn()))
+      .catch((e) => { console.error(e); })
+      .finally(() => { mo.pending--; syncMotion(); });
+    mo.chain = p;
+    return p;
+  }
+  function moLog(mo, text) {
+    mo.log.push({ text, at: Date.now() });
+    mo.log.splice(0, Math.max(0, mo.log.length - 12));
+    syncMotion();
+  }
+  const heldKeys = (list) => new Set(list.map((x) => x.key));
+  function moAxes(mo) {
+    const h = heldKeys(mo.held), out = {};
+    for (const [pos, neg, axis] of mo.c.axis_keys) {
+      const a = mo.c.axes[axis];
+      if (!a) { out[axis] = 0; continue; }
+      const v = a.speed * ((h.has(pos) ? 1 : 0) - (h.has(neg) ? 1 : 0));
+      out[axis] = Math.max(-a.limit, Math.min(a.limit, v));
+    }
+    return out;
+  }
+  function moCommand(mo) {
+    const a = moAxes(mo);
+    if (mo.c.base) return { linear: { x: a.x, y: a.y, z: 0.0 }, angular: { x: 0.0, y: 0.0, z: a.yaw } };
+    const msg = Object.assign({}, mo.c.walk.param_template);
+    for (const [axis, spec] of Object.entries(mo.c.axes)) msg[spec.field] = a[axis];
+    return msg;
+  }
+  // Documented ops: a publish is sent (never acknowledged), a call must answer within the
+  // timeout and not report failure (teleop_core._run_ops).
+  async function moRunOps(mo, ops, param) {
+    const texts = [];
+    for (const o of ops) {
+      if (o.op === "publish") {
+        mo.conn.publish(mo.t.wire(o.name), o.msg === "$param" ? param : o.msg, o.type);
+        texts.push(`published ${o.name} (no acknowledgement)`);
+      } else if (o.op === "call") {
+        const v = await mo.conn.call(mo.t.wire(o.name), o.msg, mo.c.call_timeout_s * 1000);
+        if (v && typeof v === "object" && (v.result === false || v.success === false)) throw new Error(`${o.name} answered ${JSON.stringify(v)}`);
+        texts.push(`${o.name} answered`);
+      }
+    }
+    return texts.join("; ");
+  }
+  async function moSendMotion(mo) {
+    if (!mo.held.length) return;
+    const cmd = moCommand(mo);
+    try {
+      if (mo.c.base) mo.conn.publish(mo.t.wire(mo.c.base.topic), cmd, mo.c.base.type);
+      else if (!mo.walking) { await moRunOps(mo, mo.c.walk.start, cmd); mo.walking = true; }
+      else mo.conn.publish(mo.t.wire(mo.c.walk.param_topic), cmd, mo.c.walk.param_type);
+    } catch (e) {
+      moLog(mo, `motion command failed: ${e.message}`);
+      await moRequestStop(mo, "motion command failed");
+      return;
+    }
+    mo.lastCmd = cmd; mo.lastSentAt = nowS();
+  }
+  function moDisabledReason(mo) {
+    if (!mo.connected) return "base motion is disabled: not connected";
+    if (!mo.outcomes.length) return "base motion is not enabled yet: waiting for the start-up stop";
+    if (!mo.outcomes[mo.outcomes.length - 1].ok) return "base motion is disabled after a failed stop: press Re-enable (or Enter), then press the keys again";
+    return "base motion is disabled: press Re-enable (or Enter) to enable it";
+  }
+  async function moKeyDown(mo, key, src) {
+    if (key === "space") return moClearAndStop(mo, "Space");
+    if (key === "enter") return moEnable(mo);
+    if (mo.c.motion_keys.includes(key)) {
+      if (!mo.enabled) { moLog(mo, moDisabledReason(mo)); return; }
+      if (mo.held.some((x) => x.key === key)) return;          // held already: not a fresh press
+      if (mo.enablePending && !(await moWalkEnable(mo))) return;
+      mo.held.push({ key, src });
+      await moSendMotion(mo);
+    } else if (mo.c.head && mo.c.head_keys.includes(key)) {
+      if (!mo.enabled) { moLog(mo, moDisabledReason(mo)); return; }
+      if (mo.heldHead.some((x) => x.key === key)) return;
+      const axis = mo.c.head_axis[key];
+      if (!mo.c.head[axis]) return;
+      if (!mo.heldHead.some((x) => mo.c.head_axis[x.key] === axis) && !(await moReadHead(mo, axis))) return;
+      mo.heldHead.push({ key, src });
+      mo.headLastAt = nowS();
+    }
+  }
+  async function moKeyUp(mo, src) {
+    const i = mo.held.findIndex((x) => x.src === src);
+    if (i >= 0) {
+      mo.held.splice(i, 1);
+      if (mo.held.length) await moSendMotion(mo);
+      else await moRequestStop(mo, `last motion ${src.startsWith("k") ? "key" : "button"} released`);
+      return;
+    }
+    const j = mo.heldHead.findIndex((x) => x.src === src);
+    if (j >= 0) mo.heldHead.splice(j, 1);                       // the head target stops changing
+  }
+  // Inputs that stop acting (the keys once an editable field has focus) are released.
+  async function moRelease(mo, pred, reason) {
+    const had = mo.held.length;
+    mo.held = mo.held.filter((x) => !pred(x.src)); mo.heldHead = mo.heldHead.filter((x) => !pred(x.src));
+    if (had && !mo.held.length) await moRequestStop(mo, reason);
+    else if (had !== mo.held.length) await moSendMotion(mo);
+  }
+  function moClearIntent(mo) { mo.held = []; mo.heldHead = []; }
+  function moClearAndStop(mo, reason) { moClearIntent(mo); return moRequestStop(mo, reason); }
+  // The walking enable teleop sends when it enables commands (TeleopCore.enable).
+  async function moWalkEnable(mo) {
+    try { await moRunOps(mo, mo.c.walk.enable); }
+    catch (e) { mo.enabled = false; moClearIntent(mo); moLog(mo, `enable failed: ${e.message}`); return false; }
+    mo.enablePending = false;
+    return true;
+  }
+  async function moEnable(mo) {
+    if (!mo.connected) { moLog(mo, "cannot enable: not connected"); return; }
+    if (mo.enabled) return;
+    moClearIntent(mo);                                          // only fresh presses after re-enabling count
+    if (mo.c.walk && mo.c.walk.enable.length) {
+      try { await moRunOps(mo, mo.c.walk.enable); }
+      catch (e) { moLog(mo, `enable failed: ${e.message}`); return; }
+      mo.enablePending = false;
+    }
+    mo.enabled = true;
+    moLog(mo, "base motion ENABLED: hold the motion keys or buttons to move");
+  }
+  // Attempt the documented stop; an explicit failure disables base motion.
+  async function moRequestStop(mo, reason) {
+    moClearIntent(mo);
+    mo.lastCmd = null; mo.stopping = true; syncMotion();
+    let out;
+    try {
+      const text = await moRunOps(mo, mo.c.stop);
+      mo.walking = false;
+      out = { ok: true, text: `stop requested (${reason}): ${text}` };
+    } catch (e) {
+      mo.enabled = false;
+      out = { ok: false, text: `STOP FAILED (${reason}): ${e.message}. Base motion disabled; press Re-enable (or Enter) and ` +
+        `press the keys again to continue. ${mo.c.reenable_limitation}` };
+    }
+    mo.stopping = false;
+    mo.outcomes.push(out); mo.outcomes.splice(0, Math.max(0, mo.outcomes.length - 20));
+    moLog(mo, out.text);
+    return out;
+  }
+  // Once the target is validated: advertise teleop's command topics, let a fresh ROS 1 publisher
+  // connect, attempt the documented stop once and show its outcome; a delivered stop enables
+  // base motion at once (teleop.py), a failed one leaves it disabled until Re-enable.
+  async function moStartup(mo) {
+    for (const [topic, type] of mo.c.command_topics) { try { mo.conn.advertise(mo.t.wire(topic), type); } catch (e) {} }
+    await sleep(mo.c.advertise_settle_s * 1000);
+    if (mo.dead || !mo.connected) return;
+    const out = await moRequestStop(mo, "start-up, after validation");
+    mo.started = true;
+    if (out.ok) { mo.enabled = true; moLog(mo, "base motion ENABLED: hold the motion keys or buttons to move"); }
+    else moLog(mo, "press Re-enable (or Enter) to enable base motion");
+  }
+  function moTick(mo) {
+    const now = nowS();
+    if (!(mo.enabled && mo.connected)) return undefined;
+    let p;
+    if (mo.held.length && now - mo.lastSentAt >= 1 / mo.c.rate_hz) p = moSendMotion(mo);
+    return Promise.resolve(p).then(() => {
+      if (mo.heldHead.length && mo.c.head) {
+        const t = nowS(), dt = t - (mo.headLastAt == null ? t : mo.headLastAt);
+        mo.headLastAt = t;
+        const h = heldKeys(mo.heldHead);
+        for (const [axis, hd] of Object.entries(mo.c.head)) {
+          const [pos, neg] = mo.c.head_dirs[axis] || [];
+          const d = (h.has(pos) ? 1 : 0) - (h.has(neg) ? 1 : 0);
+          if (!d) continue;
+          mo.headPos[axis] = Math.max(hd.min, Math.min(hd.max, mo.headPos[axis] + d * hd.rate * dt));
+          const last = mo.headSent[axis];
+          if (last == null || (Math.abs(last - mo.headPos[axis]) > 1e-6 && t - (mo.headSendAt[axis] || 0) >= mo.c.head_period_s)) moSendHead(mo, axis);
+        }
+      } else if (mo.headLastAt != null) mo.headLastAt = null;
+    });
+  }
+  // Start a head axis from the head's measured position (the profile's documented read), read
+  // when its first arrow key is pressed; while the position is unknown the key is ignored.
+  async function moReadHead(mo, axis) {
+    const hd = mo.c.head[axis], hr = hd.read;
+    let pos = null;
+    try {
+      const r = hr && (mo.t.profile.reads || []).find((x) => x.id === hr.read);
+      if (!r) throw new Error("the profile documents no position read");
+      const v = await mo.conn.call(mo.t.wire(r.service), r.request || {}, mo.c.call_timeout_s * 1000);
+      const vals = parseRead(r, v);
+      pos = vals[hr.control] ? vals[hr.control][hr.field] : null;
+      if (pos == null) throw new Error(`${r.service} reported no position for it`);
+    } catch (e) { moLog(mo, `head position unknown (${axis}): ${e.message}; key ignored`); return false; }
+    mo.headPos[axis] = Math.max(hd.min, Math.min(hd.max, pos));
+    return true;
+  }
+  function moSendHead(mo, axis) {
+    const hd = mo.c.head[axis], msg = Object.assign({}, hd.template);
+    msg[hd.field] = Math.round(mo.headPos[axis] * 1e4) / 1e4;
+    try { mo.conn.publish(mo.t.wire(hd.topic), msg, hd.type); }
+    catch (e) { moLog(mo, `head command failed: ${e.message}`); return; }
+    mo.headSent[axis] = mo.headPos[axis]; mo.headSendAt[axis] = nowS();
+    // The page's own head target (its slider and the head pad) shows what the keys sent.
+    for (const cs of S.controls.values()) {
+      if (cs.dead || cs.ctrl.kind !== "publish" || cs.ctrl.name !== hd.topic || !cs.fields[hd.field]) continue;
+      setField(cs.fields[hd.field], msg[hd.field]);
+    }
+  }
+  // Page hide or unload: the page may be gone before an answer, so the stop is sent at once,
+  // best effort, and is never confirmed.
+  function moUnload(mo, reason) {
+    if (!mo || mo.dead || !mo.connected) return;
+    moClearIntent(mo); mo.enabled = false;
+    try {
+      for (const o of mo.c.stop) {
+        if (o.op === "publish") mo.conn.publish(mo.t.wire(o.name), o.msg, o.type);
+        else if (o.op === "call") mo.conn.call(mo.t.wire(o.name), o.msg, mo.c.call_timeout_s * 1000).catch(() => {});
+      }
+      moLog(mo, `stop sent (${reason}), not confirmed: a stop when the page is hidden or closed is not guaranteed`);
+    } catch (e) { moLog(mo, `STOP NOT SENT (${reason}): ${e.message}. ${mo.c.no_delivery}`); }
+  }
+  function moConnectionLost(mo, reason) {
+    if (!mo || mo.dead || !mo.connected) return;
+    mo.connected = false; mo.enabled = false; moClearIntent(mo);
+    moLog(mo, `CONNECTION LOST (${reason}). ${mo.c.no_delivery}`);
+  }
+  // A target change: stop the old target before leaving it; resolves with the outcome (or null).
+  async function moLeave(mo, reason) {
+    if (!mo || mo.dead) return null;
+    mo.leaving = true; syncMotion();
+    const out = mo.connected ? await moQueue(mo, () => moClearAndStop(mo, reason)) : null;
+    mo.dead = true;
+    return out || null;
+  }
+
+  // The state the page shows (and tests read): moving, stopped, stop failed, no connection...
+  function motionState(mo) {
+    if (!mo.connected) return ["lost", "No connection", "No stop could be delivered. " + mo.c.no_delivery];
+    if (mo.leaving) return ["stopping", "Leaving this target", "stopping it first…"];
+    if (!mo.started) return ["startup", "Starting", "sending the start-up stop…"];
+    const last = mo.outcomes[mo.outcomes.length - 1];
+    if (!mo.enabled && last && !last.ok) return ["failed", "Stop failed: base motion disabled", last.text];
+    if (!mo.enabled) return ["disabled", "Disabled", moDisabledReason(mo)];
+    if (mo.stopping) return ["stopping", "Stopping", "the documented stop is on its way…"];
+    if (mo.held.length) return ["moving", "Moving", `held: ${mo.held.map((x) => x.key.toUpperCase()).join(" ")}`];
+    if (mo.heldHead.length) return ["head", "Moving the head", `held: ${mo.heldHead.map((x) => x.key).join(" ")}`];
+    return ["stopped", "Stopped", last ? last.text : ""];
+  }
+  RC.motion = () => {
+    const mo = S.mo;
+    if (!mo || mo.dead) return null;
+    const [state] = motionState(mo);
+    return { state, enabled: mo.enabled, connected: mo.connected, started: mo.started, walking: mo.walking,
+      held: mo.held.map((x) => x.key), heldHead: mo.heldHead.map((x) => x.key), axes: moAxes(mo), headPos: Object.assign({}, mo.headPos),
+      outcomes: mo.outcomes.map((o) => Object.assign({}, o)), log: mo.log.map((l) => l.text), pending: mo.pending };
+  };
+
+  const AXIS_TEXT = { x: ["forward", "back"], y: ["strafe left", "strafe right"], yaw: ["rotate left (counter-clockwise)", "rotate right (clockwise)"] };
+  const KEY_GLYPH = { w: "↑", s: "↓", a: "←", d: "→", q: "↺", e: "↻", up: "↑", down: "↓", left: "←", right: "→" };
+  const num3 = (v) => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(3);
+  function axisText(c, axis) {
+    const a = c.axes[axis]; if (!a) return "";
+    const what = c.walk ? `${a.field} ` : "";
+    return `${what}${exact(a.speed)} ${a.unit} (documented limit ${exact(a.limit)} ${a.unit})`;
+  }
+  function renderMotion() {
+    const card = $("motion-card"), mo = S.mo;
+    card.innerHTML = "";
+    card.hidden = !mo || mo.dead;
+    $("workspace").classList.toggle("has-motion", !card.hidden);
+    if (card.hidden) return;
+    const c = mo.c, walk = !!c.walk;
+    card.dataset.kind = c.kind;
+    const ui = (mo.ui = { holds: new Map() });
+    const hold = (key, title, extra) => {
+      const b = h("button", { type: "button", class: "hold" + (extra ? " " + extra : ""), "data-key": key, "data-testid": `hold-${key}`,
+        tabindex: "-1", title, "aria-label": title, "data-held": "false" },
+      h("span", { class: "glyph", "aria-hidden": "true", text: KEY_GLYPH[key] }), h("kbd", { text: key.length === 1 ? key.toUpperCase() : KEY_GLYPH[key] }));
+      wireHold(b, key);
+      ui.holds.set(key, b);
+      return b;
+    };
+    const axisTitle = (key) => {
+      for (const [pos, neg, axis] of c.axis_keys) {
+        if (key === pos || key === neg) return `${key.toUpperCase()}: ${AXIS_TEXT[axis][key === pos ? 0 : 1]}, ${axisText(c, axis)}; hold to move`;
+      }
+      return key;
+    };
+    ui.stop = h("button", { type: "button", class: "stop-btn", "data-testid": "stop", title: "Stop: request the documented stop (Space)" },
+      h("span", { text: "STOP" }), h("kbd", { text: "Space" }));
+    ui.stop.addEventListener("pointerdown", (ev) => { if (ev.button === 0 || ev.pointerType !== "mouse") stopButton(); });
+    ui.stop.addEventListener("click", (ev) => { if (ev.detail === 0) stopButton(); });    // keyboard activation
+    const dpad = h("div", { class: "dpad", role: "group", "aria-label": "Base motion: hold a button to move" },
+      hold("q", axisTitle("q")), hold("w", axisTitle("w")), hold("e", axisTitle("e")),
+      hold("a", axisTitle("a")), ui.stop, hold("d", axisTitle("d")),
+      h("span"), hold("s", axisTitle("s")), h("span"));
+    const pads = h("div", { class: "motion-pads" }, h("div", { class: "pad-col" }, h("div", { class: "pad-cap", text: walk ? "Walk" : "Drive" }), dpad));
+    if (c.head) {
+      const ht = (key) => {
+        const axis = c.head_axis[key], hd = c.head[axis];
+        const dir = { left: "pan left (the robot's left)", right: "pan right", up: "tilt up", down: "tilt down" }[key];
+        return `${KEY_GLYPH[key]}: head ${dir}, ${exact(hd.rate)} ${hd.unit}/s within ${exact(hd.min)}…${exact(hd.max)} ${hd.unit}; hold to move`;
+      };
+      pads.append(h("div", { class: "pad-col" }, h("div", { class: "pad-cap", text: "Head" }),
+        h("div", { class: "dpad head", role: "group", "aria-label": "Head: hold a button to move it" },
+          h("span"), hold("up", ht("up"), "small"), h("span"),
+          hold("left", ht("left"), "small"), h("span"), hold("right", ht("right"), "small"),
+          h("span"), hold("down", ht("down"), "small"), h("span"))));
+    }
+    ui.dot = h("span", { class: "mo-dot", "aria-hidden": "true" });
+    ui.title = h("span", { class: "mo-title" }); ui.detail = h("span", { class: "mo-detail" });
+    ui.state = h("div", { class: "mo-state", "data-testid": "motion-state", role: "status" }, ui.dot, h("span", { class: "mo-text" }, ui.title, ui.detail));
+    ui.cmd = h("div", { class: "mo-cmd mono", "data-testid": "motion-cmd" });
+    ui.reenable = h("button", { type: "button", class: "btn btn-sm", "data-testid": "reenable", hidden: true, text: "Re-enable base motion" });
+    ui.reenable.addEventListener("click", () => reenable());
+    ui.limit = h("p", { class: "mo-limit", "data-testid": "motion-limit", hidden: true, text: c.reenable_limitation });
+    const legend = h("dl", { class: "mo-legend" });
+    const row = (k, v) => legend.append(h("dt", {}, ...k.map((x) => h("kbd", { text: x }))), h("dd", { text: v }));
+    for (const [pos, neg, axis] of c.axis_keys) if (c.axes[axis]) row([pos.toUpperCase(), neg.toUpperCase()], `${AXIS_TEXT[axis].join(" / ")}: ${axisText(c, axis)}`);
+    if (c.head) {
+      row(["←", "→"], `head pan left / right, ${exact(c.head.pan.rate)} ${c.head.pan.unit}/s within ${exact(c.head.pan.min)}…${exact(c.head.pan.max)} ${c.head.pan.unit}`);
+      row(["↑", "↓"], `head tilt up / down, ${exact(c.head.tilt.rate)} ${c.head.tilt.unit}/s within ${exact(c.head.tilt.min)}…${exact(c.head.tilt.max)} ${c.head.tilt.unit}`);
+    }
+    row(["Space"], "stop (also the STOP button)");
+    row(["Enter"], "re-enable after a failed stop (also the Re-enable button)");
+    ui.log = h("ol", { class: "mo-log", "data-testid": "motion-log" });
+    const wire = h("dl", {},
+      h("dt", { text: "Command" }), h("dd", { text: c.base ? `${mo.t.wire(c.base.topic)} (${c.base.type}), ${c.rate_hz} per s while held`
+        : `${mo.t.wire(c.walk.param_topic)} (${c.walk.param_type}), ${c.rate_hz} per s while held, after ${c.walk.start.map((o) => o.op === "call" ? `${o.name} ${JSON.stringify(o.msg)}` : o.name).join(", ")}` }),
+      walk && c.walk.enable.length ? [h("dt", { text: "Enable" }), h("dd", { text: c.walk.enable.map((o) => `${o.name} ${JSON.stringify(o.msg)}`).join(", ") + " (with the first press after enabling)" })] : null,
+      h("dt", { text: "Stop" }), h("dd", { text: c.stop_description }),
+      h("dt", { text: "No stop" }), h("dd", { text: c.no_delivery }));
+    const info = h("div", { class: "motion-info" }, ui.state, ui.cmd, h("div", { class: "mo-actions" }, ui.reenable), ui.limit,
+      h("p", { class: "mo-note" }, h("strong", { text: "Hold to move; " }),
+        "releasing, Space, STOP, leaving the window, hiding the page or changing the target request the documented stop. " +
+        "Keys act while this page, not a number or text field, list or slider, has keyboard focus. A stop when the page is " +
+        "hidden or closed is sent if possible but not guaranteed, and a lost connection delivers none."),
+      legend,
+      h("details", { class: "mo-logwrap", open: true }, h("summary", { text: "Motion log" }), ui.log),
+      h("details", { class: "ctl-wire" }, h("summary", { text: "Interface" }), wire));
+    card.append(h("div", { class: "panel-head" },
+      h("h2", { id: "motion-h", class: "section-title", text: walk ? "Walking" : "Base motion" }),
+      h("span", { class: "panel-meta", text: `${mo.t.label} · hold to move, release to stop` })),
+    h("div", { class: "motion-body" }, pads, info));
+    syncMotion();
+  }
+  function syncMotion() {
+    const mo = S.mo, ui = mo && mo.ui;
+    if (!ui || mo.dead) return;
+    const [state, title, detail] = motionState(mo);
+    const card = $("motion-card");
+    card.dataset.state = state;
+    if (ui.title.textContent !== title) ui.title.textContent = title;
+    if (ui.detail.textContent !== detail) ui.detail.textContent = detail;
+    ui.state.dataset.state = state;
+    const a = moAxes(mo), u = (k) => (mo.c.axes[k] ? mo.c.axes[k].unit : "");
+    const cmd = mo.held.length ? `x ${num3(a.x)} ${u("x")} · y ${num3(a.y)} ${u("y")} · yaw ${num3(a.yaw)} ${u("yaw")}` : "";
+    if (ui.cmd.textContent !== cmd) ui.cmd.textContent = cmd;
+    const live = mo.connected && mo.enabled && !mo.leaving;
+    const held = new Set([...mo.held, ...mo.heldHead].map((x) => x.key));
+    for (const [key, b] of ui.holds) {
+      b.classList.toggle("off", !live); b.setAttribute("aria-disabled", String(!live));
+      b.dataset.held = String(held.has(key));
+    }
+    ui.stop.disabled = !mo.connected || mo.leaving;
+    ui.reenable.hidden = !(mo.connected && mo.started && !mo.enabled && !mo.leaving);
+    ui.limit.hidden = !(state === "failed");
+    const n = mo.log.length;
+    if (ui.log.dataset.n !== String(n) || ui.log.dataset.last !== String(n && mo.log[n - 1].at)) {
+      ui.log.dataset.n = String(n); ui.log.dataset.last = String(n && mo.log[n - 1].at);
+      ui.log.innerHTML = "";
+      for (const l of mo.log.slice(-8).reverse()) {
+        const bad = /FAIL|LOST|NOT /.test(l.text);
+        ui.log.append(h("li", { class: bad ? "bad" : "", text: `${new Date(l.at).toLocaleTimeString()}  ${l.text}` }));
+      }
+    }
+  }
+
+  // ---- input: keys while the page (not an editable field) has focus, hold buttons for pointers
+  const usable = () => { const mo = S.mo; return mo && !mo.dead && !mo.leaving && mo.connected ? mo : null; };
+  function press(key, src) { const mo = usable(); if (mo) moQueue(mo, () => moKeyDown(mo, key, src)); }
+  function release(src) { const mo = S.mo; if (mo && !mo.dead && mo.connected) moQueue(mo, () => moKeyUp(mo, src)); }
+  function stopNow(reason) { const mo = usable(); if (mo) moQueue(mo, () => moClearAndStop(mo, reason)); }
+  const stopButton = () => stopNow("Stop button");
+  function reenable() { const mo = usable(); if (mo) moQueue(mo, () => moEnable(mo)); }
+  function wireHold(b, key) {
+    b.addEventListener("pointerdown", (ev) => {
+      if (ev.pointerType === "mouse" && ev.button !== 0) return;
+      ev.preventDefault();
+      try { b.setPointerCapture(ev.pointerId); } catch (e) {}
+      press(key, "p" + ev.pointerId);
+    });
+    const end = (ev) => release("p" + ev.pointerId);
+    b.addEventListener("pointerup", end); b.addEventListener("pointercancel", end); b.addEventListener("lostpointercapture", end);
+    b.addEventListener("contextmenu", (ev) => ev.preventDefault());
+  }
+  window.addEventListener("keydown", (e) => {
+    // With Meta (⌘) down, macOS browsers do not report key releases: the keys' holds end (input loss).
+    if (e.key === "Meta" || e.key === "OS") {
+      const m = usable();
+      if (m) moQueue(m, () => moRelease(m, (src) => src.startsWith("k"), "keyboard input lost: key releases are not reported while ⌘ is held"));
+      return;
+    }
+    const mo = S.mo, k = keyName(e);
+    if (!k || !mo || mo.dead || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return;
+    const isMotion = mo.c.motion_keys.includes(k), isHead = mo.c.head_keys.includes(k);
+    if (!(isMotion || isHead || k === "space" || k === "enter")) return;
+    const el = e.target;
+    if (isEditable(el)) return;                                     // typing moves nothing
+    if (isHead && (!mo.c.head || e.defaultPrevented || ownsArrows(el))) return;
+    if (k === "enter" && el && el.closest && el.closest("button, a, summary, [role=button]")) return;
+    e.preventDefault();                                             // no scrolling, no button activation
+    if (e.repeat) return;                                           // key repeat is not a fresh press
+    if (k === "space") stopNow("Space");
+    else if (k === "enter") reenable();
+    else press(k, "k" + k);
+  });
+  window.addEventListener("keyup", (e) => {
+    const mo = S.mo, k = keyName(e);
+    if (!k || !mo || mo.dead) return;
+    if (k === "space" && !isEditable(e.target)) e.preventDefault();
+    if (mo.c.motion_keys.includes(k) || mo.c.head_keys.includes(k)) release("k" + k);
+  });
+  // Focus moving to an editable field: the keys no longer act, so their holds end.
+  document.addEventListener("focusin", (e) => {
+    const mo = usable();
+    if (mo && isEditable(e.target)) moQueue(mo, () => moRelease(mo, (src) => src.startsWith("k"), "keys released: keyboard focus moved to an editable field"));
+  });
+  window.addEventListener("blur", () => { const mo = usable(); if (mo) moQueue(mo, () => moClearAndStop(mo, "window lost keyboard focus")); });
+  document.addEventListener("visibilitychange", () => {
+    const mo = usable();
+    if (mo && document.visibilityState === "hidden") moQueue(mo, () => moClearAndStop(mo, "page hidden"));
+  });
+  window.addEventListener("pagehide", () => moUnload(usable(), "page hide or unload"));
+  setInterval(() => {
+    const mo = S.mo;
+    if (mo && !mo.dead && mo.connected && mo.enabled && !mo.pending && (mo.held.length || mo.heldHead.length || mo.headLastAt != null)) moQueue(mo, () => moTick(mo));
+  }, 1000 / 30);
+
   // ------------------------------------------------------------------ target lifecycle
   async function connectAndSelect(robotId, ns) {
     S.target = null; renderModel();
@@ -1679,8 +2159,10 @@
     setValidation("ok", `${t.label} validated`,
       `${t.profile.name} · ${t.profile.dialect === "ros2" ? "ROS 2" : "ROS 1"} · typed interface matches the packaged profile`, "");
     for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics));
+    if (t.profile.teleop) S.mo = makeMotion(t, conn);             // base motion: shown at once, enabled by the start-up stop
     renderControls(); updateLock();
     startPoll(t, conn);                                         // validated: the read-only position poll
+    if (S.mo && S.mo.t === t) moQueue(S.mo, () => moStartup(S.mo));   // validated: the start-up stop
   }
 
   // A publish control its profile marks `sole_publisher` is incompatible with any other node
@@ -1700,24 +2182,36 @@
   }
 
   // Connection loss sends nothing: the controls are disabled and the page stays disconnected
-  // until it is reloaded. Goals already sent keep running.
+  // until it is reloaded. Goals already sent keep running; base motion's intent is cleared and
+  // no stop could be delivered.
   function onLost(conn) {
     if (conn !== S.conn) return;
     S.lost = true; stopPoll();
+    const mo = S.mo && S.mo.conn === conn && !S.mo.dead ? S.mo : null;
+    if (mo) moConnectionLost(mo, "the websocket closed");
     setConn("bad", "DISCONNECTED - reload the page to connect again");
     if (S.target) $("target-pill").dataset.state = "bad";
-    showBanner(`Connection to ${conn.url} lost. Controls disabled; nothing was sent and nothing was stopped. Reload the page to connect again.`);
+    showBanner(`Connection to ${conn.url} lost. Controls disabled; nothing was sent and nothing was stopped. Reload the page to connect again.` +
+      (mo ? ` Base motion: ${mo.c.no_delivery}` : ""));
     refreshControls(); updateLock();
   }
 
+  // A target change validates afresh on a new connection. Base motion on the old target is
+  // stopped before leaving it (its outcome is shown if it failed); nothing else is sent to it.
   async function changeTarget() {
-    if (S.lost) return;
-    const old = S.conn;
-    stopPoll(); retireControls(); showBanner("");
-    clearCameras(); clearFeedback(); S.controls.clear(); S.padGroup = null; S.groups = []; $("controls").innerHTML = "";
-    if (old) setTimeout(() => old.close(), 300);
-    const id = $("robot").value || null; const nsRaw = $("namespace").value.trim();
-    await connectAndSelect(id, nsAllowed() ? (nsRaw === "" ? null : nsRaw) : null);
+    if (S.lost || S.changing) return;
+    S.changing = true; updateLock();
+    try {
+      const old = S.conn;
+      const out = await moLeave(S.mo, "target change");
+      if (S.lost) return;
+      S.mo = null; renderMotion();
+      stopPoll(); retireControls(); showBanner(out && !out.ok ? `Previous target ${out.text}` : "");
+      clearCameras(); clearFeedback(); S.controls.clear(); S.padGroup = null; S.groups = []; $("controls").innerHTML = "";
+      if (old) setTimeout(() => old.close(), 300);
+      const id = $("robot").value || null; const nsRaw = $("namespace").value.trim();
+      await connectAndSelect(id, nsAllowed() ? (nsRaw === "" ? null : nsRaw) : null);
+    } finally { S.changing = false; updateLock(); }
   }
   // ------------------------------------------------------------------ theme
   const THEMES = ["auto", "dark", "light"];
@@ -1737,7 +2231,8 @@
 
 
   // ------------------------------------------------------------------ wiring
-  // No arm switch, STOP, Esc or automatic stop/cancel: the page sends only what the user changes.
+  // No arm switch, Esc or stop/cancel of a bounded control: apart from base motion (above), the
+  // page sends only what the user changes.
   $("select").addEventListener("click", changeTarget);
   $("robot").addEventListener("change", () => { $("namespace").disabled = !nsAllowed() || S.lost; syncNsField(); });
 

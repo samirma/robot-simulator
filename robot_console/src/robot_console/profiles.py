@@ -491,10 +491,12 @@ def expand_endpoint(p: Profile, e: Endpoint) -> List[Tuple[str, str, str]]:
 
 def profile_json(p: Profile) -> dict:
     """What the page needs of a profile: the typed interface it validates, its cameras, its
-    bounded controls (never their stop: the page stops nothing) with their groups and wire maps,
-    its measured reads (one of them possibly polled) and the ``model`` section for its 3D model
-    (the embodiment's joint tree from the pinned vendor URDF, the control fields that command
-    each joint and the documented joint-position feedback)."""
+    bounded controls (never their stop: the page stops or cancels no bounded control) with their
+    groups and wire maps, its measured reads (one of them possibly polled), the ``model`` section
+    for its 3D model (the embodiment's joint tree from the pinned vendor URDF, the control fields
+    that command each joint and the documented joint-position feedback) and, for a teleoperable
+    profile, ``teleop``: the base motion contract teleop runs (``teleop_core.page_contract``)."""
+    from robot_console import teleop_core     # teleop_core imports this module
     return {
         "id": p.id, "name": p.name, "dialect": p.dialect,
         "namespace": dataclasses.asdict(p.namespace) if p.namespace else None,
@@ -508,6 +510,7 @@ def profile_json(p: Profile) -> dict:
         "groups": [dataclasses.asdict(g) for g in p.groups],
         "reads": [dataclasses.asdict(r) for r in p.reads],
         "model": p.raw.get("model"),
+        "teleop": teleop_core.page_contract(p),
     }
 
 

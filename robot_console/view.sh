@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Camera and bounded-control page for the robot on a rosbridge websocket.
+# Camera and bounded-control page (plus teleop.sh's hold-to-move base motion for a mobile
+# robot) for the robot on a rosbridge websocket.
 #
 #   view.sh [--url ws://host:port] [--robot <id>] [--namespace <name>] [--no-open] [--port N]
 #
