@@ -1,6 +1,7 @@
 """The packaged profiles: complete, source-traced, typed in their dialect, bounded."""
 
 import copy
+import dataclasses
 import math
 import re
 
@@ -14,7 +15,7 @@ from robot_console.profiles import (
 
 EXPECTED = {  # console spec §1.1
     "myagv": ("ros1", "base"), "ainex": ("ros1", "walk"), "rosmaster_x3_plus": ("ros1", "base"),
-    "so101": ("ros2", "none"), "mycobot280": ("ros2", "none"),
+    "so101": ("ros2", "none"),
 }
 # Pinned revisions identified by the robot specification (robots_specs/<id>.md).
 PINNED = {
@@ -22,7 +23,6 @@ PINNED = {
     "ainex": {"e8fe2a816797cf83054135160df5a82ec3596a69"},
     "rosmaster_x3_plus": {"9732c62247dfb57a899aea01e4fe72ed434bac6d"},
     "so101": {"e166df9d51f43b24da9b99047c6c51c306bda74f", "cb2ae6bc0a312de629f84fef933fb3e07dac1ef8"},
-    "mycobot280": {"d42ff61a78122c79246623391540d75738b03b23"},
 }
 TRACE = re.compile(r"^(?P<key>[A-Za-z0-9_.-]+):(?P<path>[^#\s]+)#L\d+")
 
@@ -103,14 +103,13 @@ def test_mobile_speeds_within_documented_limits_and_stop(pid):
 
 
 def test_camera_sets():
-    """Every mobile profile has a required raw camera stream; arms as their boots define."""
+    """Every mobile profile has a required raw camera stream; the arm as its boot defines."""
     cams = {p.id: [(c.topic, c.optional) for c in p.cameras] for p in load_all()}
     assert cams == {
         "myagv": [("/usb_cam/image_raw", False)],
         "ainex": [("/camera/image_raw", False)],
         "rosmaster_x3_plus": [("/camera/rgb/image_raw", False)],
         "so101": [("/image_raw", False)],
-        "mycobot280": [],
     }
 
 
@@ -145,10 +144,12 @@ def test_reads_parse_documented_invalid_answers():
     x3 = load("rosmaster_x3_plus").reads[0]
     got = x3.parse({"angles": [80.0, 120.0, 10.0, 45.0, -1, 60.0]})
     assert got[("arm_pose", "j2")] == 120.0 and got[("arm_pose", "j5")] is None and got[("gripper", "angle")] == 60.0
-    cobot = load("mycobot280").reads[0]
-    assert set(cobot.parse({f"joint_{i}": 0.0 for i in range(1, 7)}).values()) == {None}
-    assert cobot.parse({f"joint_{i}": 10.0 * i for i in range(1, 7)})[("arm_gripper_target", "j1")] == \
-        pytest.approx(math.radians(10))
+    # A node that answers all zeros when it cannot read the arm (invalid_if_all_zero): no packaged
+    # read documents that answer, so the ROSMASTER's read carries the flag here.
+    zeros = dataclasses.replace(x3, invalid=(), invalid_if_all_zero=True)
+    assert set(zeros.parse({"angles": [0.0] * 6}).values()) == {None}
+    got = zeros.parse({"angles": [0.0, 120.0, 10.0, 45.0, 0.0, 60.0]})
+    assert got[("arm_pose", "j1")] == 0.0 and got[("arm_pose", "j2")] == 120.0     # one zero is a reading
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -227,7 +228,7 @@ def test_reads_are_documented_measurements_of_control_fields(pid):
             assert float(v.get("scale", 1)) != 0
     ids = {pid: [r["id"] for r in load(pid).raw.get("reads") or []] for pid in SUPPORTED_IDS}
     assert ids == {"myagv": [], "ainex": ["head_position", "joint_positions"], "rosmaster_x3_plus": ["current_angle"],
-                   "so101": [], "mycobot280": ["get_angles"]}
+                   "so101": []}
 
 
 # ------------------------------------------------------------------ AiNex: one control per servo
@@ -406,9 +407,10 @@ def test_profile_loader_refuses_inconsistent_maps_groups_and_polls():
 
 
 def test_sole_publisher_controls_are_traced_topic_publishes():
-    """A control incompatible with other publishers of its topic says why, from the sources."""
+    """A control incompatible with other publishers of its topic says why, from the sources. No
+    packaged control is marked; the page's check runs on a marked variant (test_view_page.py)."""
     marked = {(p.id, c.id) for p in load_all() for c in p.controls if c.sole_publisher}
-    assert marked == {("mycobot280", "arm_gripper_target")}
+    assert marked == set()
     for pid, cid in marked:
         p = load(pid)
         c = next(c for c in p.controls if c.id == cid)
@@ -418,19 +420,11 @@ def test_sole_publisher_controls_are_traced_topic_publishes():
         assert m and m["key"] in p.sources and raw["sole_publisher_note"]
 
 
-def test_call_controls_name_their_documented_failure_field():
-    """mycobot_interfaces SetAngles/GripperStatus answer `bool flag` (false on failure)."""
-    by = {c.id: c for c in load("mycobot280").controls}
-    assert {i: by[i].ok_field for i in ("set_angles", "gripper_open", "gripper_close")} == dict.fromkeys(
-        ("set_angles", "gripper_open", "gripper_close"), "flag")
-
-
-@pytest.mark.parametrize("unknown", ["turtlebot", "myagv_mycobot280"])
+@pytest.mark.parametrize("unknown", ["turtlebot", "so100"])
 def test_id_refusals(unknown):
-    # myagv_mycobot280 is the former assembly: no longer a registry id (amended 2026-10-02)
-    with pytest.raises(ProfileError, match=f"unknown robot id '{unknown}'. Accepted ids"):
+    with pytest.raises(ProfileError, match=f"unknown robot id '{unknown}'. Accepted ids: "
+                                           "myagv, ainex, rosmaster_x3_plus, so101$"):
         select_id(unknown)
-    for arm in ("so101", "mycobot280"):
-        with pytest.raises(ProfileError, match="myagv, ainex, rosmaster_x3_plus"):
-            select_id(arm, teleop=True)
+    with pytest.raises(ProfileError, match="'so101' is an arm.*myagv, ainex, rosmaster_x3_plus$"):
+        select_id("so101", teleop=True)
 

@@ -145,9 +145,9 @@ def test_admission_duplicate_busy_and_release(sim):
     b.call("commit")
     c = client()
     assert set(robots(c)) == {"myagv", "so101"}
-    # the worktop is taken: another arm is refused and nothing is left behind
+    # the worktop is taken: another robot is refused there and nothing is left behind
     with pytest.raises(protocol.RemoteError, match="worktop already holds so101"):
-        c.call("spawn", robot="mycobot280", placement="worktop", ports=[9993])
+        c.call("spawn", robot="ainex", placement="worktop", ports=[9993])
     assert set(robots(c)) == {"myagv", "so101"} and c.call("robots")["starting"] is None
     # ending a spawn (its connection) removes its robot and releases its id and port
     a.close()

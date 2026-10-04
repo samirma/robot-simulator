@@ -6,7 +6,6 @@ interface uses vendor message packages (ainex, rosmaster_x3_plus) are not covere
 packages are not installable in stock images.
 
     docker build -t robot-console-test:noetic -f tests/live/docker/Dockerfile.noetic tests/live/docker
-    docker build -t robot-console-test:humble -f tests/live/docker/Dockerfile.humble tests/live/docker
     docker build -t robot-console-test:jazzy  -f tests/live/docker/Dockerfile.jazzy  tests/live/docker
 """
 
@@ -189,33 +188,7 @@ def test_noetic_wrong_type_fails(wire):
     assert code != 0 and "wrong type on topic /odom" in out, out
 
 
-# ------------------------------------------------------------------ ROS 2 (Humble, Jazzy)
-
-def test_humble_mycobot280_fleet_and_page_publish(wire):
-    p = load("mycobot280")
-    w = wire("robot-console-test:humble", wire_spec(p))
-    code, out = fleet("--url", w.url, "--expect", "mycobot280")
-    print(out)
-    assert code == 0, out
-    playwright = pytest.importorskip("playwright.sync_api")
-    from robot_console.view import make_server
-    http = make_server(w.url, None, None, 0)
-    threading.Thread(target=http.serve_forever, daemon=True).start()
-    with playwright.sync_playwright() as pw:
-        b = pw.chromium.launch()
-        page = b.new_page()
-        page.goto(f"http://127.0.0.1:{http.server_address[1]}/")
-        page.wait_for_function("window.RC && RC.ready === true", timeout=20000)
-        assert page.locator('[data-testid="target"]').inner_text() == "mycobot280"
-        c = page.locator('[data-control="arm_gripper_target"]')
-        c.locator('input[data-field="j1"]').fill("0.5")
-        c.locator('input[data-field="j1"]').press("Enter")              # a committed value is sent once
-        page.wait_for_timeout(1500)
-        b.close()
-    http.shutdown()
-    msgs = [e["msg"] for e in w.events() if e.get("topic") == "/joint_states"]
-    assert len(msgs) == 1 and msgs[0]["position"][0] == 0.5 and len(msgs[0]["position"]) == 7
-
+# ------------------------------------------------------------------ ROS 2 (Jazzy)
 
 def test_jazzy_so101_fleet_and_page_streamed_goals(wire):
     """Dragging a slider streams goals over stock Jazzy rosbridge: each goal on its own

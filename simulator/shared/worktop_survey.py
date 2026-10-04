@@ -78,16 +78,9 @@ class Mount:
 
 #: The worktop robots. so101: REF's constants (shared/placement.py:40-58,
 #: molmospaces/tools/spawn_robot.py:68-73): reach `ARM_REACH` (0.15, 0.35), radius 0.20,
-#: height 0.45, footprint 0.14, workspace 0.35 + 0.10. REF had no standalone myCobot 280;
-#: its reach follows REF's rule -- the SO-101's annulus is 0.375-0.875 of its ~0.40 m
-#: maximum reach, the AiNex's (0.11, 0.25) the same fraction of its measured 0.289 m --
-#: applied to the myCobot 280's measured maximum reach, 0.3605 m (the farthest horizontal
-#: distance of any of its body origins from the base axis over its joint ranges, measured
-#: off the compiled model on 2026-10-01), and pinned: (0.14, 0.32). Its height is its
-#: model's 0.468 m upright stack and a margin.
+#: height 0.45, footprint 0.14, workspace 0.35 + 0.10.
 MOUNT = {
     "so101": Mount(reach=(0.15, 0.35), radius=0.20, height=0.45),
-    "mycobot280": Mount(reach=(0.14, 0.32), radius=0.20, height=0.50),
 }
 
 

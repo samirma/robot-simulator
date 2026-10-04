@@ -12,6 +12,7 @@ the same path. For a mobile profile the page also offers teleop.sh's hold-to-mov
 a page sends its start-up stop and nothing else.
 """
 
+import dataclasses
 import math
 import threading
 import time
@@ -19,12 +20,14 @@ import time
 import numpy as np
 import pytest
 
+import robot_console.discovery as discovery_mod
 import robot_console.view as view_mod
 from robot_console.discovery import SelectionError, fetch_graph, select_target
-from robot_console.profiles import SUPPORTED_IDS, load, load_all
+from robot_console.profiles import SUPPORTED_IDS, Field, load, load_all, profile_json
 from robot_console.rosbridge import Rosbridge
 from robot_console.teleop_core import command_topics, stop_ops
 from robot_console.view import make_server
+from test_discovery import without_camera
 from test_profiles import AINEX_SERVOS, GET_POSITION, SET_POSITION, angle2pulse
 from wirespec import drop, merge, retype, wire_spec
 
@@ -70,6 +73,23 @@ def view(fake, browser):
         c.close()
     for h in https:
         h.shutdown()
+
+
+def serve_variants(monkeypatch, *variants):
+    """Hand the page (and Python's discovery) these profiles in place of the packaged profiles of
+    the same id, or in addition to them: test variants for behaviour no packaged profile has.
+    Patch before opening the page (the server reads the profiles when it starts)."""
+    packaged_json, packaged = view_mod.all_profiles_json, discovery_mod.load_all
+    by_id = {v.id: v for v in variants}
+
+    def profiles():
+        ps = packaged()
+        return [by_id.get(p.id, p) for p in ps] + [v for v in variants if v.id not in {p.id for p in ps}]
+
+    def profiles_json():
+        return dict(packaged_json(), profiles=[profile_json(p) for p in profiles()])
+    monkeypatch.setattr(view_mod, "all_profiles_json", profiles_json)
+    monkeypatch.setattr(discovery_mod, "load_all", profiles)
 
 
 def so101_spec(exec_s=20.0, namespace=None):
@@ -256,12 +276,18 @@ def test_missing_profile_camera_is_a_visible_state(view, monkeypatch):
     assert "MISSING" in page.locator('[data-testid="camera-state"]').inner_text()
 
 
-def test_no_cameras_is_a_visible_state(view):
-    srv, page = view(wire_spec(load("mycobot280")))
-    assert page.locator('[data-testid="target"]').inner_text() == "mycobot280"
+def test_no_cameras_is_a_visible_state(view, monkeypatch):
+    """A validated target without cameras shows that state, and its controls (console spec §2.3).
+    Every packaged profile has a camera, so the page is handed an SO-101 booted without one."""
+    serve_variants(monkeypatch, without_camera(load("so101")))
+    srv, page = view(drop(so101_spec(), "/image_raw"))
+    assert page.locator('[data-testid="target"]').inner_text() == "so101"
     page.wait_for_function("getComputedStyle(document.querySelector('[data-testid=no-cameras]')).display !== 'none'")
     assert "No cameras" in page.locator('[data-testid="no-cameras"]').inner_text()
-    assert page.locator('[data-testid="control"]').count() == len(load("mycobot280").controls)
+    assert page.locator('[data-testid="camera"]').count() == 0
+    assert page.locator('[data-testid="control"]').count() == len(load("so101").controls)
+    assert not disabled(page, "arm_trajectory")
+    assert srv.command_ops() == []
 
 
 def test_mobile_base_page_has_camera_base_motion_and_no_bounded_controls(view):
@@ -308,7 +334,7 @@ def test_explicit_selection_cannot_bypass_type_checks(view, robot, name, bad):
     assert srv.command_ops() == []
 
 
-@pytest.mark.parametrize("robot", ["so101", "ainex", "mycobot280", "rosmaster_x3_plus"])
+@pytest.mark.parametrize("robot", ["so101", "ainex", "rosmaster_x3_plus"])
 def test_nothing_is_sent_on_load_or_reload(view, robot):
     """Apart from the read-only poll and, for a mobile profile, the start-up stop of every load."""
     srv, page = view(wire_spec(load(robot), include_optional=True))
@@ -346,18 +372,22 @@ def test_page_states_the_sending_contract_and_has_no_arm_switch(view, robot):
 
 # ------------------------------------------------------------------ topic publishes stream while dragging
 
-def test_ros2_publish_drag_streams_throttled_and_delivers_final_value(view):
-    srv, page = view(wire_spec(load("mycobot280")))
+def test_publish_drag_streams_throttled_and_delivers_final_value(view):
+    """A multi-field topic publish (the ROSMASTER's six-servo arm pose): every message carries the
+    whole target, about 10 per second while dragging, the last one the final value."""
+    srv, page = view(wire_spec(load("rosmaster_x3_plus")))
+    started(page)
     t0 = time.monotonic()
-    final = drag(page, "arm_gripper_target", "j1", 0.5, 0.95, steps=40, step_ms=40)
+    final = drag(page, "arm_pose", "j1", 0.5, 0.95, steps=40, step_ms=40)
     dur = time.monotonic() - t0
     page.wait_for_timeout(400)
-    pubs = srv.published("/joint_states")
+    pubs = srv.published("/TargetAngle")
     assert 5 <= len(pubs) <= dur / 0.1 + 3, len(pubs)                  # streamed, about 10 per s
     assert min(gaps(pubs)) > 0.07, gaps(pubs)                           # throttled
-    assert pubs[-1]["msg"]["position"][0] == final > 2.0                # the final value is delivered
-    assert len(pubs[-1]["msg"]["position"]) == 7
-    assert "sent" in status(page, "arm_gripper_target")
+    assert pubs[-1]["msg"]["joints"][0] == final > 150                  # the final value is delivered
+    assert pubs[-1]["msg"]["joints"][1:] == [145, 0, 45, 90, 30]        # with the other fields' targets
+    assert "sent" in status(page, "arm_pose")
+    assert unprompted(srv, "rosmaster_x3_plus") == [o for o in srv.command_ops() if o.get("topic") == "/TargetAngle"]
     no_stop_ops(srv)
 
 
@@ -754,19 +784,27 @@ def test_numbers_read_the_same_in_every_locale(view):
     assert ",3" not in page.locator(".pad-readout").inner_text()
 
 
-def test_mycobot_all_zero_answer_is_no_reading(view):
-    """listen_real_service answers the response defaults (all zeros) when it cannot read the arm."""
-    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
-    srv.set_service("/get_angles", lambda args: {f"joint_{i}": 0.0 for i in range(1, 7)})
-    control(page, "set_angles").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=set_angles] [data-testid=read-value]').dataset.state === 'invalid'")
-    assert control(page, "set_angles").get_by_role("button", name="Use measured").is_disabled()
-    srv.set_service("/get_angles", lambda args: {f"joint_{i}": 10.0 * i for i in range(1, 7)})
-    control(page, "arm_gripper_target").locator('[data-testid="read"]').click()
-    page.wait_for_function("document.querySelector('[data-control=arm_gripper_target] [data-testid=read-value]').dataset.state === 'read'")
-    assert "+0.17 rad" in read_value(page, "arm_gripper_target", "j1").inner_text()           # 10 deg
-    assert "+30.0 deg" in read_value(page, "set_angles", "j3").inner_text()
-    assert len(srv.calls("/get_angles")) == 2 and srv.calls("/set_angles") == []
+def test_all_zero_answer_is_no_reading(view, monkeypatch):
+    """A read marked invalid_if_all_zero (a node that answers its response defaults, all zeros,
+    when it cannot read the arm) shows an all-zero answer as no reading, which cannot be copied
+    into the targets; a single zero is a reading. No packaged read is marked, so the page is
+    handed a ROSMASTER whose /CurrentAngle read is."""
+    x3 = load("rosmaster_x3_plus")
+    serve_variants(monkeypatch, dataclasses.replace(x3, reads=tuple(
+        dataclasses.replace(r, invalid=(), invalid_if_all_zero=True) for r in x3.reads)))
+    srv, page = view(wire_spec(x3))
+    started(page)
+    srv.set_service("/CurrentAngle", lambda args: {"angles": [0.0] * 6})
+    control(page, "arm_pose").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'invalid'")
+    assert {read_value(page, "arm_pose", f).get_attribute("data-state") for f in ("j1", "j2", "gripper")} == {"invalid"}
+    assert read_value(page, "gripper", "angle").get_attribute("data-state") == "invalid"
+    assert control(page, "arm_pose").get_by_role("button", name="Use measured").is_disabled()
+    srv.set_service("/CurrentAngle", lambda args: {"angles": [0.0, 120.0, 10.0, 45.0, 90.0, 60.0]})
+    control(page, "arm_pose").locator('[data-testid="read"]').click()
+    page.wait_for_function("document.querySelector('[data-control=arm_pose] [data-testid=read-value]').dataset.state === 'read'")
+    assert "+120.0 deg" in read_value(page, "arm_pose", "j2").inner_text()
+    assert len(srv.calls("/CurrentAngle")) == 2 and srv.published("/TargetAngle") == []
 
 
 # ------------------------------------------------------------------ sending, done and failed states
@@ -775,27 +813,40 @@ def phase(page, cid):
     return control(page, cid).get_attribute("data-phase")
 
 
-def test_each_control_shows_its_sending_done_and_failed_state(view):
-    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
-    assert phase(page, "set_angles") is None                                  # nothing sent yet
-    srv.set_service("/set_angles", "hang")
-    control(page, "set_angles").locator('[data-testid="send"]').click()
+def ainex_stand_with_a_field(ok_field="ok"):
+    """No packaged call control takes a value or documents a response field that is false on
+    failure (the AiNex's Stand is a std_srvs/Empty call), so these tests hand the page an AiNex
+    whose Stand call takes a bounded `duration` and answers `ok_field`."""
+    p = load("ainex")
+    duration = Field(name="duration", label="Duration", min=0.2, max=2.0, default=0.5, unit="s")
+    return dataclasses.replace(p, controls=tuple(
+        dataclasses.replace(c, template={"duration": "$duration"}, fields=(duration,), ok_field=ok_field)
+        if c.id == "init_pose" else c for c in p.controls))
+
+
+def test_each_control_shows_its_sending_done_and_failed_state(view, monkeypatch):
+    serve_variants(monkeypatch, ainex_stand_with_a_field())
+    srv, page = view(wire_spec(load("ainex")))
+    started(page)
+    assert phase(page, "init_pose") is None                                   # nothing sent yet
+    srv.set_service("/walking/init_pose", "hang")
+    control(page, "init_pose").locator('[data-testid="send"]').click()
     page.wait_for_timeout(200)
-    assert phase(page, "set_angles") == "sending" and status(page, "set_angles").startswith("sending")
-    # The documented response field `flag` is false when the arm refused (listen_real_service.py)
-    srv.set_service("/set_gripper", lambda args: {"flag": False})
-    control(page, "gripper_close").locator('[data-testid="send"]').click()
-    page.wait_for_function("document.querySelector('[data-control=gripper_close]').dataset.phase === 'failed'")
-    srv.set_service("/set_gripper", lambda args: {"flag": True})
-    control(page, "gripper_open").locator('[data-testid="send"]').click()
-    page.wait_for_function("document.querySelector('[data-control=gripper_open]').dataset.phase === 'done'")
-    drag(page, "arm_gripper_target", "j1", 0.5, 0.6, steps=5, step_ms=40)
+    assert phase(page, "init_pose") == "sending" and status(page, "init_pose").startswith("sending")
+    # The documented response field (the profile's ok_field) is false: the call failed.
+    srv.set_service("/walking/init_pose", lambda args: {"ok": False})
+    control(page, "init_pose").locator('[data-testid="send"]').click()
+    page.wait_for_function("document.querySelector('[data-control=init_pose]').dataset.phase === 'failed'")
+    srv.set_service("/walking/init_pose", lambda args: {"ok": True})
+    control(page, "init_pose").locator('[data-testid="send"]').click()
+    page.wait_for_function("document.querySelector('[data-control=init_pose]').dataset.phase === 'done'")
+    drag(page, "head_pan", "position", 0.5, 0.6, steps=5, step_ms=40)
     page.wait_for_timeout(300)
-    assert phase(page, "arm_gripper_target") == "done" and "sent" in status(page, "arm_gripper_target")
-    num(page, "arm_gripper_target", "j1").fill("9")
-    num(page, "arm_gripper_target", "j1").press("Enter")
+    assert phase(page, "head_pan") == "done" and "sent" in status(page, "head_pan")
+    num(page, "head_pan", "position").fill("9")
+    num(page, "head_pan", "position").press("Enter")
     page.wait_for_timeout(200)
-    assert phase(page, "arm_gripper_target") == "invalid" and "not sent" in status(page, "arm_gripper_target")
+    assert phase(page, "head_pan") == "invalid" and "not sent" in status(page, "head_pan")
 
 
 def test_aborted_goal_is_a_visible_failure(view):
@@ -812,34 +863,22 @@ def test_aborted_goal_is_a_visible_failure(view):
 
 # ------------------------------------------------------------------ services and action groups: once per click
 
-def test_service_is_called_once_per_click_never_streamed(view):
-    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
-    drag(page, "set_angles", "j1", 0.5, 0.8, steps=15, step_ms=40)       # editing a service's values sends nothing
+def test_service_is_called_once_per_click_never_streamed(view, monkeypatch):
+    serve_variants(monkeypatch, ainex_stand_with_a_field())
+    srv, page = view(wire_spec(load("ainex")))
+    started(page)
+    drag(page, "init_pose", "duration", 0.5, 0.8, steps=15, step_ms=40)  # editing a service's values sends nothing
     page.wait_for_timeout(300)
-    assert srv.calls("/set_angles") == []
-    send = control(page, "set_angles").locator('[data-testid="send"]')
+    assert srv.calls("/walking/init_pose") == []
+    send = control(page, "init_pose").locator('[data-testid="send"]')
     for _ in range(3):
         send.click()
     page.wait_for_timeout(300)
-    calls = srv.calls("/set_angles")
+    calls = srv.calls("/walking/init_pose")
     assert len(calls) == 3
-    assert calls[-1]["args"]["joint_1"] == float(num(page, "set_angles", "j1").input_value()) and calls[-1]["args"]["speed"] == 50
-    assert "done" in status(page, "set_angles")
-    control(page, "gripper_open").locator('[data-testid="send"]').click()
-    page.wait_for_timeout(300)
-    assert [c["args"] for c in srv.calls("/set_gripper")] == [{"status": True}]
-
-
-def test_call_control_pending_and_failure_states(view):
-    srv, page = view(wire_spec(load("mycobot280"), include_optional=True))
-    srv.set_service("/set_angles", "hang")
-    control(page, "set_angles").locator('[data-testid="send"]').click()
-    page.wait_for_timeout(200)
-    assert "pending" in status(page, "set_angles")
-    srv.set_service("/set_gripper", "fail")
-    control(page, "gripper_close").locator('[data-testid="send"]').click()
-    page.wait_for_function("document.querySelector('[data-control=gripper_close] .status').innerText.includes('failed')")
-    assert len(srv.calls("/set_gripper")) == 1
+    assert calls[-1]["args"] == {"duration": float(num(page, "init_pose", "duration").input_value())} != {"duration": 0.5}
+    assert "done" in status(page, "init_pose")
+    no_stop_ops(srv)
 
 
 def test_ros1_call_control_pending_and_failure_states(view):
@@ -870,34 +909,53 @@ def test_ainex_init_pose_and_action_group_once_per_click(view):
     no_stop_ops(srv)
 
 
-def test_unsupported_controls_remain_unavailable(view):
-    srv, page = view(wire_spec(load("mycobot280")))       # boot only: no optional services
-    for cid in ("set_angles", "gripper_open", "gripper_close"):
-        assert "is not on the wire" in control(page, cid).locator('[data-testid="unavailable"]').inner_text()
-        assert disabled(page, cid)
-    assert control(page, "set_angles").locator('[data-testid="send"]').is_disabled()
-    assert not disabled(page, "arm_gripper_target")
-    assert control(page, "set_angles").locator('[data-testid="read"]').count() == 0      # /get_angles absent too
+def with_optional(p, *names):
+    """Profile ``p`` with the endpoint rows ``names`` optional (test variant)."""
+    return dataclasses.replace(p, endpoints=tuple(dataclasses.replace(e, optional=True) if e.name in names else e
+                                                  for e in p.endpoints))
 
 
-def test_incompatible_prerequisite_leaves_the_control_unavailable(view):
-    """myCobot 280: the slider-control boot executes every /joint_states message, so the page's
-    target needs the boot with gui:=false. While another node (the slider GUI, or a measured
-    joint-state publisher) publishes /joint_states the control is unavailable and names it;
-    rosbridge's own node (an earlier page's publication) is infrastructure."""
+def test_unsupported_controls_remain_unavailable(view, monkeypatch):
+    """A control or read whose optional prerequisite is absent is unavailable with its reason; the
+    rest of the target stays live. No packaged control or read depends on an optional row, so the
+    page is handed an AiNex whose Stand service is optional and a ROSMASTER whose /CurrentAngle is."""
+    serve_variants(monkeypatch, with_optional(load("ainex"), "/walking/init_pose"),
+                   with_optional(load("rosmaster_x3_plus"), "/CurrentAngle"))
+    srv, page = view(drop(wire_spec(load("ainex")), "/walking/init_pose"))
+    assert page.locator('[data-testid="target"]').inner_text() == "ainex"
+    assert "is not on the wire" in control(page, "init_pose").locator('[data-testid="unavailable"]').inner_text()
+    assert disabled(page, "init_pose") and control(page, "init_pose").locator('[data-testid="send"]').is_disabled()
+    assert not disabled(page, "head_pan") and not disabled(page, "action_group")
+    only_startup(srv, page, "ainex")
+    srv2, page2 = view(drop(wire_spec(load("rosmaster_x3_plus")), "/CurrentAngle"))
+    assert page2.locator('[data-testid="target"]').inner_text() == "rosmaster_x3_plus"
+    assert not disabled(page2, "arm_pose")
+    assert control(page2, "arm_pose").locator('[data-testid="read"]').count() == 0     # its read is absent
+    only_startup(srv2, page2, "rosmaster_x3_plus")
+
+
+def test_incompatible_prerequisite_leaves_the_control_unavailable(view, monkeypatch):
+    """A publish control marked sole_publisher (a boot that executes every message on its topic)
+    is unavailable while another node publishes that topic, and names it; rosbridge's own node (an
+    earlier page's publication) is infrastructure. No packaged control is marked, so the page is
+    handed a ROSMASTER whose arm pose is (its other /TargetAngle control is not)."""
+    x3 = load("rosmaster_x3_plus")
+    serve_variants(monkeypatch, dataclasses.replace(x3, controls=tuple(
+        dataclasses.replace(c, sole_publisher=True) if c.id == "arm_pose" else c for c in x3.controls)))
+
     def spec_with(pubs):
-        s = wire_spec(load("mycobot280"))
-        next(r for r in s["topics"] if r["name"] == "/joint_states")["publishers"] = pubs
+        s = wire_spec(x3)
+        next(r for r in s["topics"] if r["name"] == "/TargetAngle")["publishers"] = pubs
         return s
-    srv, page = view(spec_with(["/joint_state_publisher"]))
-    assert page.locator('[data-testid="target"]').inner_text() == "mycobot280"
-    reason = control(page, "arm_gripper_target").locator('[data-testid="unavailable"]').inner_text()
-    assert "/joint_state_publisher" in reason and "re-command" in reason
-    assert disabled(page, "arm_gripper_target")
-    assert srv.command_ops() == []
+    srv, page = view(spec_with(["/transport_main"]))
+    assert page.locator('[data-testid="target"]').inner_text() == "rosmaster_x3_plus"
+    reason = control(page, "arm_pose").locator('[data-testid="unavailable"]').inner_text()
+    assert "/transport_main" in reason and "re-command" in reason
+    assert disabled(page, "arm_pose") and not disabled(page, "gripper")
+    only_startup(srv, page, "rosmaster_x3_plus")
     srv2, page2 = view(spec_with(["/rosbridge_websocket"]))
-    assert not disabled(page2, "arm_gripper_target")
-    assert control(page2, "arm_gripper_target").locator('[data-testid="unavailable"]').count() == 0
+    assert not disabled(page2, "arm_pose")
+    assert control(page2, "arm_pose").locator('[data-testid="unavailable"]').count() == 0
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -1317,7 +1375,6 @@ CASES = {
     "two-so101": lambda: merge(wire_spec(load("so101"), namespace="arm1"), wire_spec(load("so101"), namespace="arm2")),
     "ambiguous": lambda: merge(wire_spec(load("myagv")), wire_spec(load("rosmaster_x3_plus"))),
     "missing": lambda: drop(wire_spec(load("ainex")), "/walking/command"),
-    "mycobot": lambda: wire_spec(load("mycobot280")),
 }
 
 
@@ -1339,11 +1396,33 @@ def test_page_selection_matches_python(view, case):
     assert srv.command_ops() == []
 
 
+def test_page_does_not_select_a_subsumed_profile(view, monkeypatch):
+    """As discovery.py (test_discovery.py): a wire presenting every name one profile requires, and
+    more, is the larger profile's, and the smaller one is refused even when selected explicitly.
+    No two packaged profiles nest, so the page's catalog also holds a profile of the SO-101 booted
+    without its camera."""
+    serve_variants(monkeypatch, without_camera(load("so101"), "so101_nocam"))
+    for robot, shown in ((None, "so101"), ("so101_nocam", "none")):
+        srv, page = view(so101_spec(), robot=robot)
+        rb = Rosbridge(srv.url).connect()
+        try:
+            g = fetch_graph(rb)
+        finally:
+            rb.close()
+        assert page.locator('[data-testid="target"]').inner_text() == shown
+        assert select_target(g, None, None).label == "so101"
+        if robot:
+            reason = page.locator('[data-testid="reason"]').inner_text()
+            assert "presents so101, whose interface contains all of so101_nocam" in reason, reason
+            assert page.locator('[data-testid="control"]').count() == 0
+        assert srv.command_ops() == []
+    srv, page = view(drop(so101_spec(), "/image_raw"))                  # without the camera: the smaller one
+    assert page.locator('[data-testid="target"]').inner_text() == "so101_nocam"
+
 
 # ------------------------------------------------------------------ base motion (console spec §2.2, §4 as amended 2026-10-04)
 
 MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
-ARMS = ["so101", "mycobot280"]
 KEY_SIGN = {"w": (1, 0, 0), "s": (-1, 0, 0), "a": (0, 1, 0), "d": (0, -1, 0), "q": (0, 0, 1), "e": (0, 0, -1)}
 WALK = "/walking/command"
 
@@ -1728,9 +1807,9 @@ def test_motion_keys_typed_into_editable_fields_move_nothing(view, pid):
     page.keyboard.up("w")
 
 
-@pytest.mark.parametrize("pid", ARMS)
-def test_arm_profiles_offer_no_base_motion(view, pid):
-    srv, page = view(so101_spec() if pid == "so101" else wire_spec(load(pid)))
+def test_arm_profile_offers_no_base_motion(view):
+    assert [p.id for p in load_all() if p.is_arm] == ["so101"]
+    srv, page = view(so101_spec())
     assert page.evaluate("RC.motion()") is None
     assert not page.locator('[data-testid="motion"]').is_visible()
     assert page.locator('[data-testid^="hold-"]').count() == 0 and page.locator('[data-testid="stop"]').count() == 0

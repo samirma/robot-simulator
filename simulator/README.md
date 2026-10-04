@@ -39,7 +39,6 @@ single body with one interface, served on `--port`:
 | `myagv` | ROS 1 Noetic | yes | floor |
 | `so101` | ROS 2 Jazzy | arm | worktop |
 | `ainex` | ROS 1 Noetic | yes (humanoid) | floor |
-| `mycobot280` | ROS 2 Humble | arm | worktop |
 | `rosmaster_x3_plus` | ROS 1 Noetic | yes | floor |
 
 `spawn.sh` prints one readiness line when the wire serves its recorded interface -- every
@@ -80,7 +79,7 @@ robot and releases its id and placement; its container exits and removes itself.
 | `shared/protocol.py`, `shared/simport.py` | the control-port protocol and a CLI client |
 | `shared/rosbridge_client.py` | stdlib rosbridge client (spawn health checks, tests) |
 | `shared/wire/` | everything that runs inside the wire containers (mounted read-only) |
-| `shared/wire/docker/` | wire images: `noetic`, `humble`, `jazzy` bases and per-robot layers |
+| `shared/wire/docker/` | wire images: `noetic`, `jazzy` bases and per-robot layers |
 | `shared/wire/robots/<id>.py` | each robot's wire plan and simulated drivers (one per robot) |
 | `tests/` | unit, integration and end-to-end checks (see below) |
 
@@ -156,10 +155,10 @@ every spawn and removal. A scene with no worktop has none.
 tries them in order and takes the first one that is supported, clear (the robot's own
 collision geometry against the scene, after clearing, in a trial compile), camera-clear
 and that leaves every object standing on the surface. The SO-101's spot frames the
-scene's objects. An arm spawned on the worktop is first tried there, among them; both arms
-fit there on the default scenes and then leave the objects untouched:
+scene's objects. An arm spawned on the worktop is first tried there, among them; the SO-101
+fits there on the default scenes and then leaves the objects untouched:
 
-| Scene | so101 and mycobot280 |
+| Scene | so101 |
 | --- | --- |
 | `ithor:1` | island (-0.382, 0.218), z 1.100, yaw 0 deg -- the reference's spot, exactly |
 | `robocasa:1-1` | counter (2.231, -0.200), z 0.920, yaw -90 deg -- the reference's spot, exactly |
@@ -250,8 +249,8 @@ open("scene.png", "wb").write(png)
 Each wire is a container (`rsim-<sim port>-<id>-main`, rosbridge listening on the same
 port number inside as it is published on outside) built on first use from pinned
 sources (base images by digest; every ROS package from a dated snapshots.ros.org snapshot
-of the ROS repository, never the live one: noetic 2025-05-29, humble 2026-09-14, jazzy
-2026-09-11; rosbridge_suite 0.11.17 on Noetic, 2.0.8 on Humble, 2.7.1 on Jazzy; the stock
+of the ROS repository, never the live one: noetic 2025-05-29, jazzy 2026-09-11;
+rosbridge_suite 0.11.17 on Noetic, 2.7.1 on Jazzy; the stock
 packages the boots run also pinned by the releases their interface files cite, and on
 Jazzy ros2_control 4.48.1 and geometry2's tf2/tf2_ros 0.36.23, which no snapshot carries,
 built from their recorded revisions) and started with the
@@ -265,7 +264,6 @@ that needs no hardware, that code runs unchanged; hardware is simulated undernea
 | myAGV | joint_state_publisher, robot_state_publisher, tf static publishers, the vendor's modified robot_pose_ekf (built from myagv_ros `c71f3cc5`) | `/myagv_odometry_node` (myAGV.cpp's behaviour: 0.01 m/s MCU resolution, 0.1 deg yaw dead band, held command, no watchdog), `/ydlidar_lidar_publisher` (X2L: 400 samples, ignore sector reported 0), `/usb_cam` |
 | SO-101 | robot_state_publisher, ros2_control_node with joint_trajectory_controller, parallel gripper controller, joint_state_broadcaster (spawned by the stock spawner) | the `feetech_ros2_driver/FeetechHardwareInterface` plugin (same name, simulated STS3215 bus: 2400 ticks/s, acceleration register 50, 4096-tick readback), `/usb_cam` (YUYV) |
 | AiNex | the vendor's `ros_robot_controller_node.py` and `ainex_controller.py` with its gait engine (`walking_module.so`, `kinematics.so`), imu_calib, imu_complementary_filter, the nodelet manager with image_proc/rectify, web_video_server | the controller board (bus servos 0-1000 pulses over their move time, IMU in g and deg/s), `/camera`, `/joystick` (an idle receiver), `/sensor` (the user button, published while enabled), `/color_detection` and `/face_detect` (the undrawn camera frame on `<node>/image_result`; nothing detected), `/app` in its boot state `idle` (set_running true refused; false stops the gait), `/joystick_control` (its endpoints; the gamepad is idle) |
-| myCobot 280 | robot_state_publisher (with `xacro` of the boot URDF) | `/slider_control_adaptive_gripper` (pymycobot's send_angles/set_gripper_value semantics, including ending on an invalid command) |
 | ROSMASTER X3 PLUS | the vendor's `Mcnamu_X3plus.py` driver, `base_node`, `yahboom_joy.py` (built from yahboomcar_ws.zip), robot_state_publisher, imu_filter_madgwick, robot_localization EKF, joy_node, tf publishers | the expansion board (`Rosmaster_Lib`: the firmware's motion path -- vx/vy clamped to 0.7 m/s, mecanum mixing, 0.7 m/s wheel clamp, no yaw-hold, which the firmware applies only to commands the driver never sends -- and servo run times), `/ydlidar_lidar_publisher` (4ROS), `/camera/camera` (Astra Pro Plus colour, 16UC1 depth, IR, point clouds, TF; its camera services answer with the intrinsics its streams publish, and `toggle_<stream>` stops or restarts that stream) |
 
 Robots move only through contact of their own wheels (mecanum rollers modelled in the
@@ -280,7 +278,7 @@ each recorded node's XML-RPC server every 2 s and ends itself, reporting
 Every figure the wires use that no pinned source fixes is the robot specification's,
 labelled there as an estimate: each robot's `robots_specs/<id>/import.md`, section
 "Estimates (not manufacturer data)" -- the myAGV's battery voltages and IMU units, the
-myCobot 280's motion pacing, the SO-101's servo acceleration unit, the ROSMASTER's battery,
+SO-101's servo acceleration unit, the ROSMASTER's battery,
 firmware version, magnetometer field and `orbbec_camera` definitions (built from
 OrbbecSDK_ROS1 `v1.4.2`, `7ef885a4`, whose `msg/` and `srv/` files are the same git blobs as
 `v1.2.9`, `9569cc31`, the release the vendor's driver sources equal), and the AiNex board's

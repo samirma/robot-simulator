@@ -43,7 +43,6 @@ The console owns the following profiles; these are the only accepted robot ids:
 | `ainex` | ROS 1 | Walking and head control |
 | `rosmaster_x3_plus` | ROS 1 | Base motion |
 | `so101` | ROS 2 | Not supported (arm) |
-| `mycobot280` | ROS 2 | Not supported (arm) |
 
 Each packaged profile is the console's normative typed interface and control catalog.
 It records its pinned authoritative sources, required interface evidence for identification,
@@ -155,7 +154,7 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
   intent and request the documented stop; a target change does so before leaving the old
   target. An explicitly failed stop disables base motion until an explicit re-enable action
   and fresh input, with §2.1's stated limitations. Connection loss clears motion intent and
-  states that no stop could be delivered. Arm profiles get no base motion.
+  states that no stop could be delivered. An arm profile gets no base motion.
 * The page shows a 3D model of the selected target's embodiment in its current pose,
   updated from the joint positions the robot reports: when an arm joint moves, the same
   joint in the model turns by the same angle. Each movable joint that a catalog control

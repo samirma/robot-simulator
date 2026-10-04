@@ -1,6 +1,6 @@
 """Each engine's default scene loads as the reference project loaded it (model counts
 recorded from the reference loader, plus the six worktop objects the scene holds), with no
-robot and the reference survey's worktop; both worktop robots stand at the scene's spot,
+robot and the reference survey's worktop; the worktop robot stands at the scene's spot,
 among its six objects. (`test_reference_parity.py` compares the scene with the reference's
 own, body by body and render by render, when a reference checkout is at hand.)"""
 
@@ -9,6 +9,7 @@ import math
 import numpy as np
 import pytest
 
+import registry
 from conftest import engine_ready, running_sim
 
 #: Counts of the scene built by the reference project's own loader (MolmoSpaces
@@ -28,20 +29,13 @@ WORKTOP = {
     ("robocasa", "robocasa:1-1"): ("counter_main_main_group/geom_1", 0.92),
 }
 
-#: Golden spots (x, y, surface z, yaw) and cleared objects, recorded 2026-10-01. so101's
+#: Golden spots (x, y, surface z, yaw) and cleared objects, recorded 2026-10-01: so101's
 #: are the reference project's own (integration/test_reference_parity.py checks them
-#: against it); the myCobot 280 stands at the same spot on both engines, where the scene's
-#: worktop objects are: in its natural ready pose it fits there (upright, all zeros, it
-#: ran into the wall cabinet on RoboCasa layout 1).
+#: against it).
 SPOTS = {
     ("molmospaces", "so101"): ((-0.3819999726666255, 0.2180100565565969, 1.1000100382472997, 0.0),
                                ["apple", "bread", "book"]),
-    # fits where the scene's objects are, so stands there (its own survey spot, at
-    # pi/6, is only for an arm that does not)
-    ("molmospaces", "mycobot280"): ((-0.3819999726666255, 0.2180100565565969, 1.1000100382472997,
-                                     0.0), ["apple", "bread", "book"]),
     ("robocasa", "so101"): ((2.231088192318004, -0.2, 0.92, -math.pi / 2), []),
-    ("robocasa", "mycobot280"): ((2.231088192318004, -0.2, 0.92, -math.pi / 2), []),
 }
 #: The objects in the robot's base frame (worktop_objects.OBJECT_POSES), frame at the
 #: surface + 4 mm.
@@ -88,7 +82,7 @@ def test_default_scene_matches_reference_and_has_a_worktop(engine, scene, logdir
         (tmp_path / f"{engine}.png").write_bytes(png)
         # each worktop robot at its golden spot with the six objects around it; removing
         # it leaves the scene as it was loaded
-        for rid in ("so101", "mycobot280"):
+        for rid in sorted(r.id for r in registry.robots() if r.kind == "arm"):
             (x, y, sz, yaw), cleared = SPOTS[(engine, rid)]
             res = c.call("spawn", robot=rid, placement="worktop", ports=[])
             c.call("commit")
@@ -104,7 +98,7 @@ def test_default_scene_matches_reference_and_has_a_worktop(engine, scene, logdir
                     # fixtures are not loose); which ones follows from the layout's draw
                     assert all(n.startswith("rc_obj_") for n in res["cleared"]), res["cleared"]
                 else:
-                    assert got == sorted(cleared) if rid == "so101" else set(got) <= set(cleared)
+                    assert got == sorted(cleared)
                 c_, s_ = math.cos(yaw), math.sin(yaw)
                 for obj, (ox, oy, oz) in OBJECTS.items():
                     want = [x + c_ * ox - s_ * oy, y + s_ * ox + c_ * oy, sz + 0.004 + oz]

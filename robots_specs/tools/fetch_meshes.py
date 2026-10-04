@@ -55,8 +55,6 @@ GIT = {
                   "c71f3cc574e5ed1973a925238eabe88662cfa701"),
     "ainex": ("https://github.com/Hiwonder/ainex",
               "e8fe2a816797cf83054135160df5a82ec3596a69"),
-    "mycobot_ros2": ("https://github.com/elephantrobotics/mycobot_ros2",
-                     "d42ff61a78122c79246623391540d75738b03b23"),
 }
 DRIVE = {
     "yahboom": {
@@ -71,7 +69,6 @@ SOURCES = [
     ("so101", "so101/assets/", "SO-ARM100", "Simulation/SO101/assets/"),
     ("myagv", "myagv/urdf/", "myagv_ros", "myagv_urdf/urdf/"),
     ("ainex", "ainex/meshes/", "ainex", "src/ainex_simulations/ainex_description/meshes/"),
-    ("mycobot280", "mycobot280/urdf/", "mycobot_ros2", "mycobot_description/urdf/"),
     ("rosmaster_x3_plus", "rosmaster_x3_plus/meshes/", "yahboom",
      "yahboomcar_ws/src/yahboomcar_description/meshes/"),
 ]

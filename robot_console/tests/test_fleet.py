@@ -113,7 +113,7 @@ def test_missing_camera_reported(fake):
     assert code != 0 and "camera /camera/rgb/image_raw: MISSING" in out, out
 
 
-@pytest.mark.parametrize("unknown", ["turtlebot", "myagv_mycobot280"])
+@pytest.mark.parametrize("unknown", ["turtlebot", "so100"])
 def test_unknown_id(unknown):
     code, out = fleet("--url", "ws://127.0.0.1:1", "--expect", unknown)
-    assert code == 2 and "unknown robot id" in out and "Accepted ids" in out, out
+    assert code == 2 and "unknown robot id" in out and "Accepted ids: myagv, ainex, rosmaster_x3_plus, so101\n" in out, out

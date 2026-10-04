@@ -762,94 +762,6 @@ def so101_motions(ctx: Ctx) -> List[dict]:
     return out
 
 
-# --------------------------------------------------------------------------- myCobot 280
-
-
-def mycobot_motions(ctx: Ctx) -> List[dict]:
-    """Arm, then gripper, through /joint_states on the myCobot wire; judged by the
-    simulation's joint readings (the boot publishes no measured feedback)."""
-    w = ctx.wire
-    arm = motion_row("mycobot280", "arm")
-    grip = motion_row("mycobot280", "gripper")
-    t_arm = tolerance("mycobot280", "arm joint")
-    t_grip = tolerance("mycobot280", "gripper reaches")
-    ex = arm["command"]["example"]
-    names, target = ex["name"], ex["position"]
-    arm_names = names[:6]
-    rb = Rosbridge(w["url"])
-    out = []
-
-    def jget():
-        return ctx.joints()
-
-    try:
-        rb.advertise(arm["command"]["name"], arm["command"]["type"])
-        time.sleep(1.0)
-
-        def msg_of(pos):
-            return {"header": {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""},
-                    "name": names, "position": pos, "velocity": [], "effort": []}
-
-        def do_arm():
-            before = jget()
-            g_now = before["gripper_controller"]
-            # the node truncates the gripper value int((p + 0.74) / 0.89 * 100): send the
-            # current opening so that only the arm moves (interface note)
-            pos = list(target[:6]) + [round(g_now, 4)]
-            msg = msg_of(pos)
-            rb.publish(arm["command"]["name"], msg)
-            lim = t_arm["tolerance"]["absolute"]
-            res = wait_settled(jget, arm_names, dict(zip(arm_names, target[:6])), lambda k: lim,
-                               15.0, still=0.002)
-            problems = [f"{k}: {res['positions'][k]:.4f} vs {v} (> {lim})"
-                        for k, v in zip(arm_names, target[:6]) if res["error"][k] > lim]
-            if not res["settled"]:
-                problems.append("did not settle at the goal (still moving or outside the tolerance)")
-            return {"wire": w["url"], "command": {"topic": arm["command"]["name"],
-                                                  "type": arm["command"]["type"], "message": msg},
-                    "feedback": "none on the wire (interface feedback: []); judged by sim-port readings",
-                    "commanded": dict(zip(arm_names, target[:6])),
-                    "before": rounded({k: before[k] for k in arm_names}),
-                    "measured": rounded({k: res["positions"][k] for k in arm_names}),
-                    "error": rounded({k: res["error"][k] for k in arm_names}),
-                    "moved_last_0_5s": rounded(res["moved_last_window"], 5),
-                    "bound": {"figure": t_arm["figure"], "tolerance": t_arm["tolerance"],
-                              "rule": "each arm joint within the absolute tolerance; at rest = moved < 0.002 rad over 0.5 s"},
-                    "settle_time_s": res["t_s"], "problems": problems}
-
-        def do_grip():
-            before = jget()
-            want = -0.5 if before["gripper_controller"] > -0.2 else 0.15
-            pos = [round(before[k], 4) for k in arm_names] + [want]
-            msg = msg_of(pos)
-            rb.publish(grip["command"]["name"], msg)
-            lim = t_grip["tolerance"]["absolute"]
-            res = wait_settled(jget, ["gripper_controller"], {"gripper_controller": want},
-                               lambda k: lim, 8.0, still=0.002)
-            problems = []
-            if res["error"]["gripper_controller"] > lim:
-                problems.append(f"gripper_controller {res['positions']['gripper_controller']:.4f} vs {want} (> {lim})")
-            if not res["settled"]:
-                problems.append("gripper did not settle")
-            return {"wire": w["url"], "command": {"topic": grip["command"]["name"],
-                                                  "type": grip["command"]["type"], "message": msg},
-                    "feedback": "none on the wire (interface feedback: []); judged by sim-port readings",
-                    "commanded": {"gripper_controller": want,
-                                  "pymycobot_value": int((want + 0.74) / 0.89 * 100)},
-                    "before": {"gripper_controller": round(before["gripper_controller"], 4)},
-                    "measured": {"gripper_controller": round(res["positions"]["gripper_controller"], 4)},
-                    "error": round(res["error"]["gripper_controller"], 4),
-                    "bound": {"figure": t_grip["figure"], "tolerance": t_grip["tolerance"],
-                              "rule": "gripper within the absolute tolerance; at rest = moved < 0.002 rad over 0.5 s"},
-                    "settle_time_s": res["t_s"], "problems": problems}
-
-        out.append(run_motion(ctx, "arm", do_arm))
-        out.append(run_motion(ctx, "gripper", do_grip))
-    finally:
-        rb.close()
-    return out
-
-
 # --------------------------------------------------------------------------- ROSMASTER X3 PLUS
 
 
@@ -1200,7 +1112,6 @@ SMOKE = {
     "myagv": drive_motions,
     "rosmaster_x3_plus": lambda ctx: drive_motions(ctx) + rosmaster_arm_motions(ctx),
     "so101": so101_motions,
-    "mycobot280": mycobot_motions,
     "ainex": ainex_motions,
 }
 

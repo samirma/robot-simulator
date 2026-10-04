@@ -19,11 +19,26 @@ from pathlib import Path
 import common
 from robots import _plan
 from robots._ros1_drivers import UsbCam
-from robots.mycobot280 import rsp_params_file
 
 WIRE = Path(__file__).resolve().parents[1]
 CONTROLLER_NODES = ("/controller_manager", "/joint_trajectory_controller",
                     "/joint_state_broadcaster", "/gripper_controller")
+
+
+def rsp_params_file(robot, iface, node="/robot_state_publisher") -> str:
+    """A ROS 2 parameter file with the node's recorded parameters."""
+    import yaml
+
+    params = {}
+    for row in common.params_of(iface, node):
+        v = common.param_value(robot, row)
+        if isinstance(v, dict) and "generated" in v:
+            raise SystemExit(f"{node} {row['name']} is generated and has no value")
+        params[row["name"]] = v   # dotted names are flat keys in a ROS 2 parameter file
+    path = f"/tmp/{robot.id}_{node.strip('/').replace('/', '_')}.yaml"
+    with open(path, "w") as fh:
+        yaml.safe_dump({node: {"ros__parameters": params}}, fh)
+    return path
 
 
 def controllers_file(robot, iface) -> str:

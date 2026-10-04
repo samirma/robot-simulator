@@ -13,8 +13,7 @@ against the simulated robot unchanged.
 
 * Every recorded robot can be spawned into each engine's default household scene and
   commanded through its vendor interface (§1.3) on its own rosbridge websocket (amended
-  2026-10-02: robots are single bodies; the myAGV + myCobot 280 composite is no longer
-  supported).
+  2026-10-02: robots are single bodies).
 * The robot console teleoperates a supported mobile robot, and views the cameras and
   operates the bounded controls of any supported robot, whose wire matches one of its
   profiles, whether the simulator or the physical robot serves that wire.
@@ -144,7 +143,7 @@ Simulator robot embodiments are recorded under `robots_specs/`:
   is installed or a launch other than the robot's authoritative boot runs are marked
   `optional`; each camera's raw image stream is marked as a camera.
 * Every robot is a single body: no robot is assembled from other robots (amended
-  2026-10-02: the myAGV + myCobot 280 composite is no longer supported).
+  2026-10-02).
 * Robot meshes are not committed. Each engine's `simulator/<engine>/run.sh setup` fetches
   them into `robots_specs/<id>/` from each robot's pinned sources, verifies them against
   `robots_specs/meshes.sha256` and refuses on a mismatch; `spawn.sh` refuses a robot whose
@@ -179,7 +178,6 @@ default scene. Every robot has a case on each engine; a mobile robot (every `kin
   * the ROSMASTER X3 PLUS also moves its arm and its gripper;
   * the SO-101 moves its arm and its gripper;
   * the AiNex turns its head, walks and stops, and plays an action group;
-  * the myCobot 280 moves its arm and its gripper;
 * for the console profile whose id names this robot, if any, a passing
   `python -m robot_console.fleet --expect <id>` over the case's wire:
   the profile's typed validation passes and every profile camera not marked `optional` shows

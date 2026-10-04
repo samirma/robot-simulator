@@ -12,8 +12,8 @@ import wirecheck
 from conftest import SHARED
 
 DOCKER = SHARED / "wire" / "docker"
-DISTROS = ("noetic", "humble", "jazzy")
-APT_ROS = re.compile(r"\bros-(noetic|humble|jazzy)-([a-z0-9][a-z0-9-]*)(=\S+)?")
+DISTROS = ("noetic", "jazzy")
+APT_ROS = re.compile(r"\bros-(noetic|jazzy)-([a-z0-9][a-z0-9-]*)(=\S+)?")
 
 
 def install_lines(text: str) -> str:
@@ -57,8 +57,6 @@ STOCK = {
               "controller_manager": "ros2_control", "hardware_interface": "ros2_control",
               "diagnostic_updater": "diagnostics", "pal_statistics": "pal_statistics",
               "tf2_ros": "geometry2"},
-    "mycobot280": {"robot_state_publisher": "robot_state_publisher",
-                   "joint_state_publisher": "joint_state_publisher"},
 }
 
 

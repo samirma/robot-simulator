@@ -34,7 +34,6 @@ REQUIRED_MOTIONS = {
     "myagv": {"drive"},
     "so101": {"arm", "gripper"},
     "ainex": {"head", "walk", "action_group"},
-    "mycobot280": {"arm", "gripper"},
     "rosmaster_x3_plus": {"drive", "arm", "gripper"},
 }
 
@@ -55,8 +54,7 @@ def load(robot) -> dict:
 
 
 def test_registry_lists_the_robots():
-    assert {r.id for r in ROBOTS} == {"myagv", "so101", "ainex", "mycobot280",
-                                      "rosmaster_x3_plus"}
+    assert {r.id for r in ROBOTS} == {"myagv", "so101", "ainex", "rosmaster_x3_plus"}
 
 
 def test_every_robot_file_is_a_robot_named_by_its_id():
@@ -256,18 +254,6 @@ def test_watchdog_sources_follow_the_command(robot):
                     (a["id"], b["id"])
 
 
-def test_mycobot280_rviz2_is_part_of_the_boot():
-    """rviz2 is started unconditionally by the authoritative boot launch, so its rows are
-    not optional (robot specification §1)."""
-    doc = load(spec_registry.by_id()["mycobot280"])
-    rviz = [n for n in doc["nodes"] if n["name"] == "/rviz2"]
-    assert rviz and not rviz[0].get("optional")
-    rows = [t for t in doc["topics"] if "/rviz2" in t["nodes"]]
-    rows += [p for p in doc["parameters"] if p.get("node") == "/rviz2"]
-    assert {t["name"] for t in rows} >= {"/initialpose", "/goal_pose", "/clicked_point"}
-    assert not [r["name"] for r in rows if r.get("optional")]
-
-
 def test_myagv_mapping_and_navigation_endpoints_are_optional_rows():
     """The endpoints of the separate mapping and navigation launches, and the usb_cam
     plugin topics, are recorded as optional rows (myagv.md; robot specification §1)."""
@@ -291,16 +277,18 @@ def _record_texts(rid: str) -> dict[str, str]:
     folder = SPECS / rid
     files = [p for p in folder.iterdir() if p.is_file() and p.suffix in (".md", ".yml", ".xml", ".urdf")]
     files.append(SPECS / "tools" / "models" / f"{rid}.py")
+    files.append(SPECS / f"{rid}.md")
     return {p.name: p.read_text() for p in files if p.is_file()}
 
 
-def test_no_composite_leftovers():
-    """Robots are single bodies (robot specification §2, amended 2026-10-02): the
-    myCobot 280 and myAGV records do not describe the removed assembly."""
-    for name, text in _record_texts("mycobot280").items():
-        assert "myagv" not in text.lower() and "stands alone" not in text, name
-    for name, text in _record_texts("myagv").items():
-        assert "mycobot" not in text.lower(), name
+@pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
+def test_no_composite_leftovers(robot):
+    """Robots are single bodies (robot specification §2, amended 2026-10-02): no robot's
+    record names another robot of the registry, as a record of an assembly would."""
+    others = {w for o in ROBOTS if o.id != robot.id for w in (o.id, o.name.lower())}
+    for name, text in _record_texts(robot.id).items():
+        low = text.lower()
+        assert not [w for w in sorted(others) if w in low], name
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
@@ -586,7 +574,7 @@ def _stage(src: Path, dst: Path) -> None:
 #: Generators that print the model instead of writing model.xml.
 TO_STDOUT = {"myagv"}
 #: Third-party modules a generator needs beyond the standard library.
-GENERATOR_NEEDS = {"mycobot280": ("mujoco",), "rosmaster_x3_plus": ("mujoco",), "so101": ("numpy", "scipy")}
+GENERATOR_NEEDS = {"rosmaster_x3_plus": ("mujoco",), "so101": ("numpy", "scipy")}
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)

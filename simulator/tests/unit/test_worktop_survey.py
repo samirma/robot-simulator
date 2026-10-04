@@ -107,4 +107,4 @@ def test_a_robocasa_kitchen_with_no_counter_region_has_no_worktop():
     for regions in ([], None):
         rc = ws.Facts("robocasa", f.model, f.data, regions=regions)
         assert ws.worktop(rc) is None
-        assert ws.candidates(rc, "so101") == [] and ws.candidates(rc, "mycobot280") == []
+        assert ws.candidates(rc, "so101") == []

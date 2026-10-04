@@ -12,7 +12,6 @@ within its recorded tolerance.
 import base64
 import math
 import re
-import subprocess
 import time
 
 import numpy as np
@@ -191,11 +190,7 @@ JUDGED_BY = {
                           "gripper": "test_motion", "camera and lidar mount poses": "here",
                           "camera horizontal field of view": "here"},
     "so101": {"arm joint": "test_motion", "gripper": "test_motion"},
-    "mycobot280": {"end-effector position repeatability": "here", "arm joint": "test_motion",
-                   "gripper": "test_motion"},
 }
-
-FLANGE = {"mycobot280": "joint6_flange"}   # the URDF link of the flange
 
 
 def mount_poses(robot, iface, row) -> list:
@@ -278,46 +273,9 @@ def standing_height(robot, iface, row) -> list:
     return []
 
 
-def repeatability(robot, iface, row) -> list:
-    """The flange's position after the same joint command, reached from two different
-    poses, within the recorded repeatability."""
-    rid, sim_port = robot.robot, robot.sim_port
-    ex = motion_row(iface, "arm")["command"]["example"]
-    names, target = ex["name"], ex["position"][:6]
-    t_arm = motion.tol(rid, "arm joint")["absolute"]
-    g = limited(motion_row(iface, "gripper"))[0]
-    rb = Rosbridge("127.0.0.1", robot.port)
-    try:
-        rb.advertise("/joint_states", "sensor_msgs/msg/JointState")
-        time.sleep(0.8)
-
-        def go(arm):
-            # the gripper stays as it is (inside its recorded range: outside, the node ends)
-            grip = min(max(motion.joints(sim_port, rid)[names[6]], float(g["min"])),
-                       float(g["max"]))
-            rb.publish("/joint_states", {"header": {"stamp": {"sec": 0, "nanosec": 0},
-                                                    "frame_id": ""},
-                                         "name": names, "position": list(arm) + [grip],
-                                         "velocity": [], "effort": []})
-            motion.wait_joints(sim_port, rid, dict(zip(names, arm)), t_arm, 10)
-            motion.at_rest(sim_port, rid, names[:6])
-            return np.asarray(motion.readings(sim_port, rid)["bodies"][FLANGE[rid]]["pos"])
-
-        first = go(target)
-        go([0.0] * 6)
-        again = go(target)
-    finally:
-        rb.close()
-    err = float(np.linalg.norm(again - first))
-    if err > row["tolerance"]["absolute"]:
-        return [f"{FLANGE[rid]} returns {err * 1000:.2f} mm from where the same command put it"]
-    return []
-
-
 FIGURE_CHECKS = {"camera and lidar mount poses": mount_poses,
                  "camera horizontal field of view": fields_of_view,
-                 "standing height": standing_height,
-                 "end-effector position repeatability": repeatability}
+                 "standing height": standing_height}
 
 
 def test_recorded_figures(robot):
@@ -444,36 +402,6 @@ def trajectory(names, positions, seconds=2):
     return {"header": {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""}, "joint_names": names,
             "points": [{"positions": list(positions), "velocities": [], "accelerations": [],
                         "effort": [], "time_from_start": {"sec": seconds, "nanosec": 0}}]}
-
-
-def mycobot_arm(port, sim_port):
-    out = []
-    rid = "mycobot280"
-    names = ["joint2_to_joint1", "joint3_to_joint2", "joint4_to_joint3", "joint5_to_joint4",
-             "joint6_to_joint5", "joint6output_to_joint6", "gripper_controller"]
-    target = [0.3, -0.3, 0.5, -0.4, 0.2, 0.5, 0.15]
-    t_arm = motion.tol(rid, "arm joint")["absolute"]
-    t_grip = motion.tol(rid, "gripper")["absolute"]
-    rb = Rosbridge("127.0.0.1", port)
-    try:
-        rb.advertise("/joint_states", "sensor_msgs/msg/JointState")
-        time.sleep(0.8)
-        rb.publish("/joint_states", {"header": {"stamp": {"sec": 0, "nanosec": 0},
-                                                "frame_id": ""},
-                                     "name": names, "position": target, "velocity": [],
-                                     "effort": []})
-        want = dict(zip(names[:6], target[:6]))
-        err = motion.wait_joints(sim_port, rid, want, t_arm, 8)
-        if max(err.values()) > t_arm:
-            out.append(f"{rid} arm error {err}")
-        err = motion.wait_joints(sim_port, rid, {"gripper_controller": 0.15}, t_grip, 5)
-        if max(err.values()) > t_grip:
-            out.append(f"{rid} gripper error {err}")
-        if not motion.at_rest(sim_port, rid, list(want)):
-            out.append(f"{rid} not at rest")
-    finally:
-        rb.close()
-    return out
 
 
 ROSMASTER_SERVOS = ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5",
@@ -672,7 +600,6 @@ MOTION_CHECKS = {
         ("drive",): lambda port, sim_port: motion.drive(port, "rosmaster_x3_plus"),
         ("arm", "gripper"): rosmaster_arm},
     "so101": {("arm", "gripper"): so101_arm},
-    "mycobot280": {("arm", "gripper"): mycobot_arm},
     "ainex": {("head",): ainex_head,
               ("walk",): lambda port, sim_port: ainex_walk(port, sim_port)[0],
               ("action_group",): ainex_action_group},
@@ -827,26 +754,7 @@ def rosmaster_camera_services(port, sim_port) -> list:
 
 
 #: Recorded command behaviours beyond the motions, per robot.
-def mycobot_no_joint_feedback(port, sim_port) -> list:
-    """The myCobot 280's recorded boot publishes no measured joint feedback: /joint_states
-    is an input (of /robot_state_publisher and /slider_control_adaptive_gripper), so no node
-    of the wire but a client's rosbridge publishes it, and /get_angles (optional) is not
-    served."""
-    rb = Rosbridge("127.0.0.1", port)
-    try:
-        pubs = rb.call("/rosapi/publishers", {"topic": "/joint_states"}, timeout=20)
-        services = set(rb.call("/rosapi/services", {}, timeout=20).get("services", []))
-    finally:
-        rb.close()
-    out = [f"/joint_states published by {n}" for n in pubs.get("publishers") or []
-           if n != "/rosbridge_websocket"]
-    if "/get_angles" in services:
-        out.append("/get_angles (recorded optional) is served")
-    return out
-
-
-BEHAVIOUR_CHECKS = {"ainex": ainex_app_nodes, "rosmaster_x3_plus": rosmaster_camera_services,
-                    "mycobot280": mycobot_no_joint_feedback}
+BEHAVIOUR_CHECKS = {"ainex": ainex_app_nodes, "rosmaster_x3_plus": rosmaster_camera_services}
 
 
 def test_recorded_behaviours(robot):
@@ -1184,41 +1092,10 @@ def ainex_limits(robot, iface) -> list:
     return out
 
 
-def mycobot_limits(robot, iface) -> list:
-    """An arm angle beyond its recorded maximum: as recorded, pymycobot raises in the
-    node's callback and the node ends, so the spawn reports the lost node and ends (the
-    first such command ends the robot, so one field is exercised)."""
-    arm = motion_row(iface, "arm")
-    fields = limited(arm) + limited(motion_row(iface, "gripper"))
-    names = arm["command"]["example"]["name"]
-    now = motion.joints(robot.sim_port, robot.robot)
-    pos = [min(max(now[field_joint(f)], float(f["min"])), float(f["max"])) for f in fields]
-    pos[0] = motion.beyond(float(fields[0]["max"]))
-    rb = Rosbridge("127.0.0.1", robot.port)
-    try:
-        rb.advertise(arm["command"]["name"], arm["command"]["type"])
-        time.sleep(0.8)
-        robot.ended_by_test = True
-        rb.publish(arm["command"]["name"], {"header": {"stamp": {"sec": 0, "nanosec": 0},
-                                                       "frame_id": ""},
-                                            "name": names, "position": pos, "velocity": [],
-                                            "effort": []})
-    finally:
-        rb.close()
-    try:
-        code = robot.wait_exit(90)
-    except subprocess.TimeoutExpired:
-        code = None
-    if not code or "lost node" not in robot.text():
-        return [f"{field_joint(fields[0])} at {pos[0]:.3f} rad, past its maximum: the spawn "
-                f"ended with {code}, expected its node lost:\n{robot.text()[-1500:]}"]
-    return []
-
-
 #: How each robot's recorded command limits are exercised (drives through
 #: motion.drive_limits); a robot with limited command fields and no check fails.
 LIMIT_CHECKS = {"so101": so101_limits, "rosmaster_x3_plus": rosmaster_limits,
-                "ainex": ainex_limits, "mycobot280": mycobot_limits}
+                "ainex": ainex_limits}
 
 
 def test_limits(robot):

@@ -170,7 +170,7 @@ def test_occupied_worktop_is_refused():
     w, s = make_world(scene_xml(WORKTOP))
     add(w, "so101", place(w, s, "so101", "worktop"))
     with pytest.raises(placement.Refused, match="already holds so101"):
-        place(w, s, "mycobot280", "worktop")
+        place(w, s, "myagv", "worktop")
     assert list(w.robots) == ["so101"]
 
 

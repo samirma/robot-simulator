@@ -16,8 +16,8 @@ parameters (including `/client_count`, `/connected_clients` and `/rosapi_params`
 parameter and type-description services) — is not part of it. Infrastructure may appear on a
 wire but never alters or replaces a vendor-owned name or behaviour. The **reference
 project** is the prior version of this workspace, github.com/samirma/robot-simulator at
-revision `34547ae`. A **worktop robot** is a robot of `kind` `arm` (the SO-101 and the
-myCobot 280); its **worktop objects** are the six objects of the reference project's
+revision `34547ae`. A **worktop robot** is a robot of `kind` `arm` (the SO-101); its
+**worktop objects** are the six objects of the reference project's
 apple-on-plate scene — an apple, a plate, a bowl, a mug, a banana and a lemon (YCB scans)
 — that are part of every scene with a worktop, staged on it when the simulation starts and
 independent of any robot (§2.2, §2.3, amended 2026-10-01). An **evidence case** is
@@ -34,10 +34,9 @@ reaching its goal or end state, judged as §5 **Evidence** states.
 Run a MuJoCo simulation of a realistic household scene in a choice of physics **engine**,
 and spawn into it, one at a time and by id, every robot defined in the robot specification.
 Every spawned robot shares the one simulation and serves its recorded control interface
-on **its own rosbridge websocket** (amended 2026-10-02: robots are single bodies; the
-myAGV + myCobot 280 composite is no longer supported). Each simulated robot reproduces the
-recorded real-hardware behaviour within the acceptance bounds in §5 on every engine. Scene content differs
-between engines by design.
+on **its own rosbridge websocket** (amended 2026-10-02: robots are single bodies). Each
+simulated robot reproduces the recorded real-hardware behaviour within the acceptance
+bounds in §5 on every engine. Scene content differs between engines by design.
 
 | Entry point | Responsibility |
 | --- | --- |
@@ -232,7 +231,7 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
   and nothing about them reaches a wire: the vendor interface is unchanged.
   **Arms and the objects.** A worktop robot is placed where the scene's objects are, when
   it fits there under every requirement above; the objects are then untouched. An arm that
-  does not fit there (both arms do, in their natural ready pose, on the default scenes) is placed at its own
+  does not fit there (the SO-101 does, in its natural ready pose, on the default scenes) is placed at its own
   survey spot instead, and for as long as it is there the six objects stand staged around it
   at the same reference poses in its base frame, the loose scene objects in that area
   cleared too; when it is removed the six objects are back where the scene staged them and
@@ -240,9 +239,9 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
   robot on the floor, and a mobile robot on the worktop, moves none of them. The spawn's
   reply and the control port's `robots` and `scene` answers name the objects an arm stands
   among and the scene objects cleared for them; `scene` also names the scene's own.
-* **One wire per robot** (amended 2026-10-02: the myAGV + myCobot 280 composite is no longer
-  supported): every robot is a single body with one interface, served on `--port` in its
-  recorded ROS dialect; there is no assembly and no `--arm-port`.
+* **One wire per robot** (amended 2026-10-02): every robot is a single body with one
+  interface, served on `--port` in its recorded ROS dialect; there is no assembly and no
+  `--arm-port`.
 * Every spawned robot presents every camera required by its recorded interface;
   no flag removes one.
 * The spawn runs in the foreground. Ending it removes its robot from the simulation,

@@ -10,7 +10,7 @@ def test_every_robot_file_is_a_registry_entry():
     table = re.findall(r"^\| `([^`]+)` \|", registry.SPEC.read_text(), re.M)
     files = {p.stem for p in registry.SPECS.glob("*.md")} - {"high_level_spec", "SCHEMA"}
     assert set(registry.ids()) == set(table) == files
-    assert set(registry.ids()) == {"myagv", "so101", "ainex", "mycobot280", "rosmaster_x3_plus"}
+    assert set(registry.ids()) == {"myagv", "so101", "ainex", "rosmaster_x3_plus"}
     for r in registry.robots():
         assert r.name in registry.SPEC.read_text(), r.id
 
@@ -44,7 +44,9 @@ def test_unknown_id_lists_every_accepted_id_with_its_name():
         raise AssertionError("an unknown id must be refused")
     for r in registry.robots():
         assert r.id in msg and r.name in msg
-    assert "myagv_mycobot280" not in msg
+    # no id but the robot files' is offered (no assembly of robots, spec §2.3)
+    listed = msg.split("accepted ids:", 1)[1].splitlines()
+    assert {line.split()[0] for line in listed if line.strip()} == set(registry.ids())
 
 
 def test_required_files_present_after_setup():

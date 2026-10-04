@@ -1,10 +1,13 @@
 """Typed discovery, validation and target selection (console spec §1.1, §2.4, §4)."""
 
+import copy
+
 import pytest
 
 from robot_console import camera as cam
+from robot_console import discovery
 from robot_console.discovery import SelectionError, discover, fetch_graph, select_target
-from robot_console.profiles import SUPPORTED_IDS, ProfileError, load
+from robot_console.profiles import SUPPORTED_IDS, ProfileError, load, load_all, parse_profile
 from robot_console.rosbridge import Rosbridge
 from wirespec import drop, merge, retype, wire_spec
 
@@ -70,12 +73,32 @@ def test_ambiguous_overlapping_candidates_name_them(fake):
     assert [sorted(t.profile.id for t in grp) for grp in d.ambiguous] == [["myagv", "rosmaster_x3_plus"]]
 
 
-def test_subsumed_profile_is_not_selected(fake):
-    # An SO-101 wire presents every name the myCobot 280 boot requires, and more.
-    g = graph_of(fake, wire_spec(load("so101")))
+def without_camera(p, new_id=None):
+    """Profile ``p`` booted without its camera: its camera rows dropped (and its id changed)."""
+    raw = copy.deepcopy(dict(p.raw))
+    cams = {c["topic"] for c in raw.get("cameras") or []}
+    raw["topics"] = [r for r in raw["topics"] if r["name"] not in cams]
+    raw["cameras"] = []
+    raw["id"] = new_id or raw["id"]
+    return parse_profile(raw)
+
+
+def test_subsumed_profile_is_not_selected(fake, monkeypatch):
+    """A wire presenting every name one profile requires, and more, is the larger profile's; the
+    smaller one is not selected even explicitly. No two packaged profiles nest, so the catalog here
+    also holds a profile of the SO-101 booted without its camera, whose required names the SO-101's
+    contain."""
+    so101 = load("so101")
+    nocam = without_camera(so101, "so101_nocam")
+    assert {e.name for e in nocam.required()} < {e.name for e in so101.required()}
+    monkeypatch.setattr(discovery, "load_all", lambda: [*load_all(), nocam])
+    g = graph_of(fake, wire_spec(so101))
     assert select_target(g, None, None).profile.id == "so101"
-    with pytest.raises(SelectionError, match="contains all of mycobot280"):
-        select_target(g, load("mycobot280"), None)
+    with pytest.raises(SelectionError, match="presents so101, whose interface contains all of so101_nocam"):
+        select_target(g, nocam, None)
+    # Without the camera on the wire, the smaller profile is the wire's.
+    g = graph_of(fake, drop(wire_spec(so101), "/image_raw"))
+    assert select_target(g, None, None).profile.id == "so101_nocam"
 
 
 def test_no_supported_robot(fake):
@@ -86,7 +109,7 @@ def test_no_supported_robot(fake):
 
 
 def test_dialect_is_checked(fake):
-    g = graph_of(fake, wire_spec(load("mycobot280")))
+    g = graph_of(fake, wire_spec(load("so101")))
     with pytest.raises(SelectionError, match="not found"):
         select_target(g, load("myagv"), None)
 

@@ -2166,9 +2166,9 @@
   }
 
   // A publish control its profile marks `sole_publisher` is incompatible with any other node
-  // publishing its topic, whose messages would re-command the robot (e.g. the myCobot 280 boot's
-  // slider GUI). rosapi names the publishers when the target validates (a read, nothing is sent
-  // to the robot); rosbridge's own node is ROS infrastructure and is ignored.
+  // publishing its topic, whose messages would re-command the robot (e.g. a slider GUI publishing
+  // the topic a hardware node executes). rosapi names the publishers when the target validates (a
+  // read, nothing is sent to the robot); rosbridge's own node is ROS infrastructure and is ignored.
   async function checkSolePublishers(t, conn) {
     S.conflicts = new Map();
     for (const c of t.profile.controls) {

@@ -268,9 +268,9 @@ def test_add_and_remove_preserve_the_survivors_state():
 
 def test_new_robot_starts_at_home_at_rest():
     w, s = make_world()
-    inst = spawn(w, s, "mycobot280", "worktop")
+    inst = spawn(w, s, "so101", "worktop")
     for name, q in inst.rm.home.items():
-        j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, "mycobot280/" + name)
+        j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, "so101/" + name)
         assert abs(w.data.qpos[w.model.jnt_qposadr[j]] - q) < 1e-12
 
 

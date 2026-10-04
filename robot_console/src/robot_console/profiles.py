@@ -20,7 +20,7 @@ import yaml
 from robot_console import dialect as d
 
 #: Every accepted robot id, in display order (console spec §1.1).
-SUPPORTED_IDS: Tuple[str, ...] = ("myagv", "ainex", "rosmaster_x3_plus", "so101", "mycobot280")
+SUPPORTED_IDS: Tuple[str, ...] = ("myagv", "ainex", "rosmaster_x3_plus", "so101")
 
 
 class ProfileError(ValueError):

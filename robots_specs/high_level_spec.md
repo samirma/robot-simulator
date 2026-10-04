@@ -84,13 +84,11 @@ exceed its documented capabilities.
 Every robot is one file in this folder, `robots_specs/<id>.md`, listed below; the robot
 files (every `.md` here with a robot id, this document and `SCHEMA.md` aside) are the robot
 registry, and this table must list exactly them. Robots are single bodies: no robot is assembled from other robots
-(amended 2026-10-02: the `myagv_mycobot280` assembly of myAGV and myCobot 280 is no longer
-supported).
+(amended 2026-10-02).
 
 | Robot id | Name | Kind | File |
 | --- | --- | --- | --- |
 | `myagv` | myAGV | `mobile_base` | [`myagv.md`](myagv.md) |
 | `so101` | SO-101 | `arm` | [`so101.md`](so101.md) |
 | `ainex` | AiNex | `humanoid` | [`ainex.md`](ainex.md) |
-| `mycobot280` | myCobot 280 | `arm` | [`mycobot280.md`](mycobot280.md) |
 | `rosmaster_x3_plus` | ROSMASTER X3 PLUS | `mobile_manipulator` | [`rosmaster_x3_plus.md`](rosmaster_x3_plus.md) |

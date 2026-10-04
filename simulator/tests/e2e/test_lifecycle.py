@@ -83,18 +83,19 @@ def test_duplicate_and_busy_refusals_and_isolation(sim, logdir):
     assert dup.wait_exit(120) != 0
     assert "already spawned" in dup.text()
     assert port_free(9395)
-    # a second spawn while another starts up is refused
+    # a second spawn while another starts up is refused (on the worktop, so that it is
+    # refused even if so101 is ready by then)
     b = Spawn("so101", SIM_PORT, 9396, log=logdir / "lc-b.log")
     assert wait(lambda: "placed on" in b.text() or b.proc.poll() is not None, 300)
-    busy = Spawn("mycobot280", SIM_PORT, 9397, log=logdir / "lc-busy.log")
+    busy = Spawn("ainex", SIM_PORT, 9397, placement="worktop", log=logdir / "lc-busy.log")
     code = busy.wait_exit(120)
     if "spawn ready" not in b.text():
         assert code != 0 and "starting up" in busy.text()
     b.wait_ready()
-    # the worktop now holds so101: another arm is refused there, nothing left behind
-    arm = Spawn("mycobot280", SIM_PORT, 9397, log=logdir / "lc-arm.log")
-    assert arm.wait_exit(120) != 0 and "worktop already holds so101" in arm.text()
-    assert "mycobot280" not in robots() and not containers("mycobot280")
+    # the worktop now holds so101: another robot is refused there, nothing left behind
+    other = Spawn("ainex", SIM_PORT, 9397, placement="worktop", log=logdir / "lc-other.log")
+    assert other.wait_exit(120) != 0 and "worktop already holds so101" in other.text()
+    assert "ainex" not in robots() and not containers("ainex")
     # removing so101 does not disturb the myAGV
     assert b.stop() == 0
     assert_released("so101", [9396])

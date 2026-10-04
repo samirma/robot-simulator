@@ -85,8 +85,8 @@ class Node:
         for row in common.params_of(self.iface, name):
             value = overrides.get(row["name"], common.param_value(self.robot, row))
             p = _param_obj(row["name"], value)
-            # a parameter the record notes as read-only (rclpy's QoS overrides, rviz2's
-            # tf_buffer_cache_time_ms) is declared so: setting it is refused, as on the robot
+            # a parameter the record notes as read-only (the client library's QoS
+            # overrides) is declared so: setting it is refused, as on the robot
             ro = str(row.get("notes") or "").lower().startswith("read-only")
             try:
                 self.rcl.declare_parameter(p.name, p.value, ParameterDescriptor(read_only=ro))

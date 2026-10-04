@@ -107,15 +107,14 @@ def test_ainex_walk_step_is_read_from_the_record():
 
 
 #: Workspace spec §3's smoke-run motions, by robot: a wheeled base drives forward, back,
-#: sideways and turns; the ROSMASTER X3 PLUS also moves its arm and gripper; the SO-101 and
-#: the myCobot 280 their arm and gripper; the AiNex turns its head (each head joint it
-#: records), walks and stops, and plays an action group.
+#: sideways and turns; the ROSMASTER X3 PLUS also moves its arm and gripper; the SO-101 its
+#: arm and gripper; the AiNex turns its head (each head joint it records), walks and stops,
+#: and plays an action group.
 DRIVE = {"drive_forward", "drive_back", "drive_left", "drive_right", "drive_turn"}
 SPEC_MOTIONS = {
     "myagv": DRIVE,
     "rosmaster_x3_plus": DRIVE | {"arm", "gripper"},
     "so101": {"arm", "gripper"},
-    "mycobot280": {"arm", "gripper"},
     "ainex": {"head_pan", "head_tilt", "walk", "action_group"},
 }
 REGISTRY = [r["id"] for r in evidence.registry()]

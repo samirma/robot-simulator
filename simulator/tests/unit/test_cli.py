@@ -31,7 +31,7 @@ def test_spawn_help_lists_every_id_with_its_name_and_no_other():
     for flag in ("--placement", "--sim-port", "--port"):
         assert flag in out.stdout
     # one wire per robot: no assembly, no --arm-port (spec §2.3, amended 2026-10-02)
-    for word in ("--arm-port", "composite", "myagv_mycobot280"):
+    for word in ("--arm-port", "composite"):
         assert word not in out.stdout, word
 
 

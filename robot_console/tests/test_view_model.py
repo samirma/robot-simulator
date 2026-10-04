@@ -15,13 +15,8 @@ TRACE = re.compile(r"^(?P<key>[A-Za-z0-9_.-]+):(?P<path>[^#\s]+)#L\d+")
 # Every catalog field that commands a joint, and that joint's name in the vendor URDF; listed
 # here independently of the profiles' model sections.
 _ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
-_COBOT = ["joint2_to_joint1", "joint3_to_joint2", "joint4_to_joint3", "joint5_to_joint4", "joint6_to_joint5",
-          "joint6output_to_joint6"]
 COMMANDED = {
     "so101": {**{("arm_trajectory", a): f"{a}_joint" for a in _ARM}, ("gripper", "position"): "gripper_joint"},
-    "mycobot280": {**{("arm_gripper_target", f"j{i + 1}"): n for i, n in enumerate(_COBOT)},
-                   **{("set_angles", f"j{i + 1}"): n for i, n in enumerate(_COBOT)},
-                   ("arm_gripper_target", "gripper"): "gripper_controller"},
     # every AiNex servo: its control (named as the joint) commands the joint, in the joint's rad
     "ainex": {(j, "position"): j for j in (
         "head_pan", "head_tilt", "l_sho_pitch", "l_sho_roll", "l_el_pitch", "l_el_yaw", "l_gripper", "r_sho_pitch",

@@ -62,7 +62,6 @@ robots_specs/**/*.dae
 robots_specs/so101/assets/
 robots_specs/myagv/urdf/
 robots_specs/ainex/meshes/
-robots_specs/mycobot280/urdf/
 robots_specs/rosmaster_x3_plus/meshes/
 robots_specs/*/derived_meshes/
 robots_specs/.fetch-*/

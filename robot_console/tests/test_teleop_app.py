@@ -321,9 +321,8 @@ def test_every_start_stops_once_without_resumed_motion(fake):
 
 @pytest.mark.parametrize("args, word", [
     (["--robot", "turtlebot"], "unknown robot id"),
-    (["--robot", "myagv_mycobot280"], "unknown robot id"),
+    (["--robot", "so100"], "unknown robot id"),
     (["--robot", "so101"], "is an arm"),
-    (["--robot", "mycobot280"], "is an arm"),
     (["--robot", "myagv", "--namespace", "robot1"], "no namespace override"),
 ])
 def test_refusals(args, word):
