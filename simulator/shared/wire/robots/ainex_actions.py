@@ -9,7 +9,7 @@ ESTIMATES, `robots_specs/ainex/action_groups.yml` (named by
 `motions[action_group].command.estimated_groups` of ros.yml; format in
 robots_specs/SCHEMA.md, "Estimated action groups"), every one of them: the record's own
 `wave`, `raise_hands` and `nod`, and its stand-ins under the vendor's names (left_shot,
-greet, stand, ...; amended 2026-10-03), so a vendor name plays the stand-in through the
+greet, stand, ...; amended), so a vendor name plays the stand-in through the
 vendor player; any other name answers as the controller answers an unknown name. Each
 frame is offsets (rad) from the recorded init pose, the `/ainex_controller/init_pose`
 parameter, a joint it does not name staying at its init angle, converted to pulses with

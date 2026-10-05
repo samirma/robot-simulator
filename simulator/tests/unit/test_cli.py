@@ -30,7 +30,7 @@ def test_spawn_help_lists_every_id_with_its_name_and_no_other():
     assert {line.split()[0] for line in listed if line.strip()} == set(registry.ids())
     for flag in ("--placement", "--sim-port", "--port"):
         assert flag in out.stdout
-    # one wire per robot: no assembly, no --arm-port (spec §2.3, amended 2026-10-02)
+    # one wire per robot: no assembly, no --arm-port (spec §2.3, amended)
     for word in ("--arm-port", "composite"):
         assert word not in out.stdout, word
 

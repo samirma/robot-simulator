@@ -374,7 +374,7 @@ def test_scene_objects_exist_without_a_robot_and_survive_every_robot():
 
 @pytest.mark.parametrize("rid", registry.ids())
 def test_every_registry_robot_loads_as_one_body(rid):
-    """Every robot is a single body (spec §2.3, amended 2026-10-02): its own model with one
+    """Every robot is a single body (spec §2.3, amended): its own model with one
     top body, starting from its `home` keyframe; no assembly machinery is left."""
     r = registry.get(rid)
     if registry.missing_files(r):

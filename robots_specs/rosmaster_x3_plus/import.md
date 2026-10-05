@@ -160,7 +160,7 @@ above the floor (settled height, wheels touching).
 ## Estimates (not manufacturer data)
 
 Interface values read from the expansion board at run time, which no pinned source fixes
-(added 2026-10-03):
+(added):
 
 * **Battery** (`/voltage`): **12.3 V** (the pack is not modelled).
 * **Firmware version** (`/edition`): **3.5**, the major.minor of the pinned firmware V3.5.1.

@@ -221,7 +221,7 @@ def test_arm_refused_when_its_objects_would_not_stand_on_the_worktop():
 
 
 def test_mobile_robot_on_a_worktop_too_small_for_its_travel_is_placed():
-    """No travel requirement on the worktop (spec §2.3, amended 2026-10-02): the robot
+    """No travel requirement on the worktop (spec §2.3, amended): the robot
     stands on a top too small to drive on, supported and clear; on the floor it is held to
     its travel."""
     small = '<body name="small"><geom type="box" size="0.25 0.25 0.375" pos="1.5 0 0.375"/></body>'

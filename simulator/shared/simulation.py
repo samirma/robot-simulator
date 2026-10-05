@@ -794,6 +794,84 @@ class Simulation:
 # ---------------------------------------------------------------- viewer
 
 
+# The window opens on the worktop's room from above, the scene overview; a scene without
+# a worktop is framed whole.
+OVERVIEW_DISTANCE = 14.0
+OVERVIEW_AZIMUTH = 90.0
+OVERVIEW_ELEVATION = -70.0
+
+
+# The window's render thread puts its camera back to MuJoCo's default free camera when it
+# finishes loading a model, some time after the load is handed over (longer for a bigger
+# scene); for this long after each load, a camera found at that default is set back to
+# the wanted one. A camera the user moved is never at it, so it is left alone.
+CAMERA_WATCH_S = 10.0
+
+
+# Under a ceiling (iTHOR rooms have one) the overview would show the roof: the eye then
+# stays in the worktop's room, along the clearest of these lines of sight, short of what
+# it would be behind by OVERVIEW_MARGIN.
+OVERVIEW_FALLBACK_ELEVATIONS = (-70.0, -50.0, -35.0)
+OVERVIEW_FALLBACK_AZIMUTHS = tuple(OVERVIEW_AZIMUTH + 45.0 * k for k in range(8))
+OVERVIEW_MARGIN = 0.15
+
+
+def _clear_distance(sim: Simulation, origin, azimuth: float, elevation: float) -> float:
+    """How far the eye can go back from `origin` along azimuth/elevation (MuJoCo's free
+    camera convention) before a visible geom is in the way; inf when nothing is."""
+    w = sim.world
+    az, el = math.radians(azimuth), math.radians(elevation)
+    back = -np.array([math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el)])
+    gg = np.zeros(6, np.uint8)
+    gg[:len(w.scene.geomgroup)] = [int(g) for g in w.scene.geomgroup][:6]
+    gid = np.zeros(1, np.int32)
+    d = mujoco.mj_ray(w.model, w.data, np.asarray(origin, float), back, gg, 1, -1, gid)
+    return math.inf if d < 0 else float(d)
+
+
+def overview_camera(sim: Simulation) -> mujoco.MjvCamera:
+    """The free camera of the scene overview: the worktop's room from 14 m above, or, when
+    something (a ceiling) hides it from there, from as far back inside as can see it."""
+    m = sim.world.model
+    wt = sim.surfaces.worktop if sim.surfaces is not None else None
+    if wt is None:
+        return sensors.free_camera(m.stat.center, 1.5 * float(m.stat.extent),
+                                   OVERVIEW_AZIMUTH, OVERVIEW_ELEVATION)
+    cx, cy = wt.describe()["centroid"]
+    top = (cx, cy, wt.z + 0.05)
+    eye_from = (cx, cy, wt.z + 0.3)   # above the staged objects
+    with sim.world.lock:
+        if _clear_distance(sim, eye_from, OVERVIEW_AZIMUTH, OVERVIEW_ELEVATION) >= OVERVIEW_DISTANCE:
+            return sensors.free_camera((cx, cy, sim.surfaces.floor_z), OVERVIEW_DISTANCE,
+                                       OVERVIEW_AZIMUTH, OVERVIEW_ELEVATION)
+        best = None
+        for el in OVERVIEW_FALLBACK_ELEVATIONS:
+            for az in OVERVIEW_FALLBACK_AZIMUTHS:
+                d = min(_clear_distance(sim, eye_from, az, el), OVERVIEW_DISTANCE)
+                if best is None or d > best[0] + 1e-6:
+                    best = (d, az, el)
+    d, az, el = best
+    return sensors.free_camera(top, max(d - OVERVIEW_MARGIN, 0.5), az, el)
+
+
+def set_camera(cam, want) -> None:
+    cam.type = want.type
+    cam.lookat[:] = want.lookat
+    cam.distance = want.distance
+    cam.azimuth = want.azimuth
+    cam.elevation = want.elevation
+
+
+def at_default_camera(model, cam) -> bool:
+    """Whether `cam` is where MuJoCo's viewer puts it on loading `model`."""
+    d = mujoco.MjvCamera()
+    mujoco.mjv_defaultFreeCamera(model, d)
+    return (cam.type == d.type and np.allclose(cam.lookat, d.lookat, atol=1e-6)
+            and all(abs(a - b) < 1e-6 for a, b in ((cam.distance, d.distance),
+                                                    (cam.azimuth, d.azimuth),
+                                                    (cam.elevation, d.elevation))))
+
+
 def run_viewer(sim: Simulation):
     """The MuJoCo window, on the main thread (mjpython on macOS). Closing it ends the
     simulation; a robot added or removed reloads the window's model in place."""
@@ -810,14 +888,26 @@ def run_viewer(sim: Simulation):
         # A scene solved by constraint island (RoboCasa, `scenes.solve_by_island`) would be
         # drawn island-coloured -- flat colours, no textures -- with this flag at its default
         handle.opt.flags[mujoco.mjtVisFlag.mjVIS_ISLAND] = 0
+    # the opening view, then whatever view the user had when a robot reloads the model
+    want, watch_until = overview_camera(sim), time.monotonic() + CAMERA_WATCH_S
+    with handle.lock():
+        set_camera(handle.cam, want)
     while handle.is_running() and not sim.shutdown_event.is_set():
         with w.lock:
             if w.version != version:
                 sim_obj = handle._get_sim()
                 if sim_obj is not None:
+                    with handle.lock():
+                        want = sensors.free_camera(handle.cam.lookat, handle.cam.distance,
+                                                   handle.cam.azimuth, handle.cam.elevation)
                     sim_obj.load(w.model, w.data, "")
                     handle._sim = (lambda s=sim_obj: s)
+                    watch_until = time.monotonic() + CAMERA_WATCH_S
                 version = w.version
+            if time.monotonic() < watch_until:
+                with handle.lock():
+                    if at_default_camera(w.model, handle.cam):
+                        set_camera(handle.cam, want)
             handle.sync()
         time.sleep(1 / 60)
     handle.close()

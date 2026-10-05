@@ -12,8 +12,7 @@ against the simulated robot unchanged.
 ### 1.1 What to expect from the workspace
 
 * Every recorded robot can be spawned into each engine's default household scene and
-  commanded through its vendor interface (§1.3) on its own rosbridge websocket (amended
-  2026-10-02: robots are single bodies).
+  commanded through its vendor interface (§1.3) on its own rosbridge websocket (amended: robots are single bodies).
 * The robot console teleoperates a supported mobile robot, and views the cameras and
   operates the bounded controls of any supported robot, whose wire matches one of its
   profiles, whether the simulator or the physical robot serves that wire.
@@ -30,7 +29,7 @@ meet them.
 **Robot records — `robots_specs/`.** The robot registry: one robot file per robot,
 `robots_specs/<id>.md`, giving its id, identity, `kind`, embodiment, pinned authoritative
 sources, authoritative boot and the paths of its URDF, its official MJCF where one exists,
-and its ROS interface file, which live under `robots_specs/<id>/` (amended 2026-10-02: the
+and its ROS interface file, which live under `robots_specs/<id>/` (amended: the
 robot sections moved into those files). Expect a
 self-contained, source-traceable description of each real robot, normative for the
 simulator and a reference for the console. It holds robot data, plus only the tooling that
@@ -126,7 +125,7 @@ its user-facing entry points:
 Simulator robot embodiments are recorded under `robots_specs/`:
 
 * [`robots_specs/high_level_spec.md`](robots_specs/high_level_spec.md) and its robot files,
-  one per robot, `robots_specs/<id>.md` (amended 2026-10-02: the robot sections moved into
+  one per robot, `robots_specs/<id>.md` (amended: the robot sections moved into
   those files) — each robot's **id**, identity, `kind`, embodiment, official URL, pinned
   sources, authoritative boot,
   documentation URLs, and the paths of its URDF, its official MJCF where one exists, and
@@ -142,8 +141,7 @@ Simulator robot embodiments are recorded under `robots_specs/`:
   frames, rates and the robot's stop command. Rows that exist only when an optional plugin
   is installed or a launch other than the robot's authoritative boot runs are marked
   `optional`; each camera's raw image stream is marked as a camera.
-* Every robot is a single body: no robot is assembled from other robots (amended
-  2026-10-02).
+* Every robot is a single body: no robot is assembled from other robots (amended).
 * Robot meshes are not committed. Each engine's `simulator/<engine>/run.sh setup` fetches
   them into `robots_specs/<id>/` from each robot's pinned sources, verifies them against
   `robots_specs/meshes.sha256` and refuses on a mismatch; `spawn.sh` refuses a robot whose
@@ -162,7 +160,7 @@ default scene. Every robot has a case on each engine; a mobile robot (every `kin
 * a picture of the scene with the robot in it — an offscreen render of the simulation
   stands in for a window. For an arm on the worktop the picture also shows the worktop
   objects staged around it (simulator spec §2.3), and the case records which objects were
-  staged and which scene objects were cleared for them (amended 2026-10-01);
+  staged and which scene objects were cleared for them (amended);
 * a picture from each of the robot's cameras not marked `optional`;
 * a passing smoke run, through the robot's vendor interface on its own wire, of each
   motion listed below using its recorded command. A drive or walk is followed by the

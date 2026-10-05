@@ -2,7 +2,7 @@
 the driver's `set_car_motion` as the recorded firmware path does
 (robots_specs/rosmaster_x3_plus/ros.yml, drive motion): vx and vy clamped to the speed
 limit, the recorded mecanum mixing, each wheel clamped at the rim -- and no IMU yaw-hold,
-which the firmware applies only to commands the driver never sends (amended 2026-10-02)."""
+which the firmware applies only to commands the driver never sends (amended)."""
 
 import importlib.util
 import math

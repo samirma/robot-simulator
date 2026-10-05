@@ -531,7 +531,7 @@ STANDING_TILT_RAD = 0.05
 
 def ainex_action_group(port, sim_port):
     """The recorded vendor example, `left_shot`: no pinned source holds its .d6a, so it plays
-    the record's stand-in under that name (amended 2026-10-03), a small kick on one foot --
+    the record's stand-in under that name (amended), a small kick on one foot --
     its legs move, then the robot stands where it stood, upright, at its standing height,
     every joint back at the init pose. Then the record's smoke example, one of its own
     estimated groups (robots_specs/ainex/action_groups.yml) -- it moves the right arm and ends
@@ -699,7 +699,7 @@ def ainex_app_nodes(port, sim_port) -> list:
                                  queue_length=1)
             finally:
                 rb.call(f"{node}/exit", {})
-            # the recorded frame (the node's name string, amended 2026-10-03)
+            # the recorded frame (the node's name string, amended)
             want = next(t for t in iface["topics"]
                         if t["name"] == f"{node}/image_result").get("frame_id")
             if not frames:

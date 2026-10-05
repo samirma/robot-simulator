@@ -195,7 +195,7 @@ def test_ainex_head_arrows(fake):
     pans = [o["msg"]["position"] for o in srv.published("/head_pan_controller/command")]
     tilts = [o["msg"]["position"] for o in srv.published("/head_tilt_controller/command")]
     # Left turns the head left: a negative pan on the vendor model's -Z head_pan axis
-    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended 2026-10-02)
+    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended)
     assert pans and pans == sorted(pans, reverse=True) and min(pans) >= p.head["pan"].min
     assert min(pans) < -0.5
     assert tilts and max(tilts) <= p.head["tilt"].max
@@ -220,7 +220,7 @@ def test_connection_lost_while_advertising_ends_with_status_4(fake, monkeypatch)
 
 
 def test_launcher_header_describes_automatic_enable():
-    """teleop.sh's header follows console spec §2.1 as amended 2026-10-02."""
+    """teleop.sh's header follows console spec §2.1 as amended."""
     with open(os.path.join(CONSOLE, "teleop.sh")) as f:
         text = f.read()
     assert "Enter enable commands" not in text and "re-enable" in text

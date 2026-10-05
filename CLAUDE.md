@@ -11,7 +11,7 @@ Simulated robots that present the **same vendor ROS interface as the real hardwa
 * `robot_console/` — teleop (`teleop.sh`), camera/controls page (`view.sh`) and the `fleet` wire checker. Independent of the simulator: it derives its own profiles (`src/robot_console/profiles/*.yaml`) and never imports it.
 * `tests/` — the workspace evidence harness (`evidence.sh` → `evidence.py`, `evidence_io.py`; writes `evidences/`, which is not committed) and the checks that span both projects (`test_evidence_*.py`, `test_console_stop_outcome.py`). The harness exercises both projects as installed, over rosbridge and the documented `--sim-port`, and imports neither; the opt-in stop-outcome test imports the console only to run its own `TeleopApp` against a simulated wire.
 
-The specs are the source of truth: where code contradicts a spec, the code is wrong. Spec changes are made deliberately and dated ("amended 2026-MM-DD"). Production code of the simulator and console talk only over rosbridge; `tests/` (workspace) may read both trees but must not use one project's code or data as the oracle for the other.
+The specs are the source of truth: where code contradicts a spec, the code is wrong. Spec changes are made deliberately and marked "(amended: …)", without a date. Production code of the simulator and console talk only over rosbridge; `tests/` (workspace) may read both trees but must not use one project's code or data as the oracle for the other.
 
 ## Commands
 

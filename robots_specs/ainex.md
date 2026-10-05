@@ -34,7 +34,7 @@
   are estimates, not vendor data, since no vendor group is in a pinned source. They include a
   stand-in under each vendor group name the pinned code plays (`left_shot`, `greet`, `stand`,
   ...), an invented motion resembling the name, each citing the vendor line that names it
-  (amended 2026-10-03).
+  (amended).
 * **Documentation:** <https://docs.hiwonder.com/projects/AiNex/en/raspberry-pi5-version/>
 
 Preserve the official humanoid joints and meshes. The interface description must

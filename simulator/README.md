@@ -23,6 +23,11 @@ simulator/<engine>/run.sh setup | assets [<source>] | start [--scene ..] [--sim-
 simulator/spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
 ```
 
+`--mujoco` opens the window on the scene overview: the worktop's room from above (looking
+at the worktop centroid on the floor, 14 m, azimuth 90°, elevation −70°), or the whole
+scene when it has no worktop. When a ceiling or wall cabinets hide the worktop from
+there, the camera looks at it from inside, along the clearest line of sight.
+
 | Engine | Scene sources | Default |
 | --- | --- | --- |
 | `molmospaces` | `ithor:<n>`, `procthor:<n>`, `test:1` | `ithor:1` |
@@ -112,7 +117,7 @@ own kitchen objects on its counters:
   fetched), each upright on a free spot of a counter top (`Counter.get_reset_regions()`),
   about eight per square metre of counter and at most 24, not touching one another -- the
   same draw for the same layout and style. They are loose objects like any other, and they
-  stay where they are set (spec §2.1, amended 2026-10-03):
+  stay where they are set (spec §2.1, amended):
   * RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of the scene
     as one problem. RoboCasa's lightest objects (a 1.2 g straw and sugar cube, 3-7 g shrimp,
     marshmallows, cookie-dough balls) came off their first contacts with the counters at
@@ -285,7 +290,7 @@ OrbbecSDK_ROS1 `v1.4.2`, `7ef885a4`, whose `msg/` and `srv/` files are the same 
 IMU report rate -- and the AiNex's playable action groups, `robots_specs/ainex/action_groups.yml`
 (the vendor's `.d6a` files are in no pinned source; `shared/wire/robots/ainex_actions.py`
 writes every group of the record where the vendor player reads them: its own `wave`,
-`raise_hands` and `nod`, and its stand-ins under the vendor's names (amended 2026-10-03:
+`raise_hands` and `nod`, and its stand-ins under the vendor's names (amended:
 `left_shot`, `greet`, `stand`, `walk_ready`, `twist`, `hand_open`, `hand_back`, ... -- every
 name the pinned code plays), so `/app/set_action` with a vendor name plays a visible
 estimated motion and leaves the robot standing at the init pose; any other name answers as

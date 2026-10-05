@@ -1,5 +1,5 @@
 """The robot registry is the robot specification's robot files, robots_specs/<id>.md, parsed
-as they are now (robot specification §2, amended 2026-10-02)."""
+as they are now (robot specification §2, amended)."""
 
 import re
 
@@ -27,7 +27,7 @@ def test_kinds_files_and_dialects():
 
 
 def test_robots_are_single_bodies():
-    """No assembly of robots (simulator spec §2.3, amended 2026-10-02)."""
+    """No assembly of robots (simulator spec §2.3, amended)."""
     for name in ("components", "wires", "mounting_transform"):
         assert not hasattr(registry, name), name
     for r in registry.robots():

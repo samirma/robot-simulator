@@ -690,7 +690,7 @@
 
   // ------------------------------------------------------------------ polled positions
   // The read the profile marks `poll_s` is its documented read-only joint-position query (console
-  // spec §2.2, amended 2026-10-03): once the target is validated the page calls it about every
+  // spec §2.2, amended): once the target is validated the page calls it about every
   // poll_s seconds, one call at a time, so the model and the measured values follow a robot that
   // publishes no joint states. It commands nothing, is never called before validation, and stops
   // on connection loss and on a target change.
@@ -1647,7 +1647,7 @@
   })();
 
   // ------------------------------------------------------------------ base motion
-  // teleop.sh's base motion and AiNex head keys (console spec §2.1, §2.2 as amended 2026-10-04),
+  // teleop.sh's base motion and AiNex head keys (console spec §2.1, §2.2 as amended),
   // for a teleoperable profile only. The contract is the profile's `teleop` section, built by
   // teleop_core.page_contract from the same profile data teleop uses (§3), and the state machine
   // below is teleop_core.TeleopCore's: held keys commanded at their recorded speed within the

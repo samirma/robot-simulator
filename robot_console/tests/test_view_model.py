@@ -111,7 +111,7 @@ def test_rosmaster_mapping_is_the_drivers_joint_states_mapping():
 
 
 def test_ainex_head_pan_turns_about_minus_z_and_its_label_says_so():
-    """Console spec §2.1 (amended 2026-10-02): a negative head_pan turns the head to the robot's left."""
+    """Console spec §2.1 (amended): a negative head_pan turns the head to the robot's left."""
     pan = next(j for j in load("ainex").raw["model"]["joints"] if j["name"] == "head_pan")
     assert pan["axis"] == [0, 0, -1]
     label = field("ainex", "head_pan", "position").label
@@ -121,7 +121,7 @@ def test_ainex_head_pan_turns_about_minus_z_and_its_label_says_so():
 def test_ainex_model_feedback_is_the_polled_read_of_every_commanded_field():
     """The AiNex boot publishes no joint states (feedback null); the profile's polled read measures
     the field that commands each movable joint, so the model can follow the robot (console spec
-    §2.2, amended 2026-10-03). Bindings are the identity: the controller's rad is the URDF joint's
+    §2.2, amended). Bindings are the identity: the controller's rad is the URDF joint's
     (ainex_controller.py#L196-L203 sends the same goal_position to Gazebo and, as pulses, to the servo)."""
     p = load("ainex")
     m = p.raw["model"]

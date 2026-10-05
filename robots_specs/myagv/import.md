@@ -152,7 +152,7 @@ boxes, actuator gains and limits, camera field-of-view axis, roller geometry.
 
 ## Estimates (not manufacturer data)
 
-Interface values the pinned sources leave to the hardware (added 2026-10-03):
+Interface values the pinned sources leave to the hardware (added):
 
 * **`/Voltage` = 12.0 V**: the battery level is not modelled; a nominal 12 V pack is taken.
 * **`/voltage_backup` = 0.0**: no backup battery is modelled.

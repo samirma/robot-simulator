@@ -88,7 +88,7 @@ body pitch 0.2609658522284916 rad described below). Its rules are:
    (the init pose leaves the torso leaning 15° forward of the feet, matching the gait's
    `hip_pitch_offset` 15°), root height 0.2029 m (soles 0.5 mm above z = 0). With joints at
    zero (qpos0) the legs are straight and the robot is not balanced; use `home`.
-   **Arms (changed 2026-10-02):** `home` is the spawn pose, so its arms are not the boot's
+   **Arms (changed):** `home` is the spawn pose, so its arms are not the boot's
    (`init_pose.yaml` raises them, shoulder roll ±1.293 with the elbows yawed ±1.926) but
    relaxed down at the sides like a person at rest: shoulder roll -1.45 (left) and +1.45
    (right), shoulder pitch, elbow pitch and elbow yaw 0. Legs, head and root are the boot's.
@@ -147,7 +147,7 @@ adaptation 5. The optical axis is the link's +x; the boot publishes no camera TF
 ## Estimates (not manufacturer data)
 
 Interface values the controller board reports at run time, which no pinned source fixes
-(added 2026-10-03):
+(added):
 
 * **Board IMU report rate: 200 Hz.** The firmware's report rate is in no pinned source. The
   driver node polls a queue of one at its 100 Hz loop (`ros.yml` takes that loop cap as the
@@ -158,8 +158,7 @@ Interface values the controller board reports at run time, which no pinned sourc
   the raw value is taken to be millivolts. Neither the unit nor the report interval is in a
   pinned source (`ros.yml` `/ros_robot_controller/battery`).
 * **Action groups**: no vendor group is in a pinned source. `action_groups.yml` defines the
-  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only) and, amended
-  2026-10-03, a stand-in under each of the 21 vendor names the pinned code plays (`stand`,
+  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only) and, amended, a stand-in under each of the 21 vendor names the pinned code plays (`stand`,
   `walk_ready`, `greet`, `twist`, `hand_open`, `hand_back`, `left_shot`, `right_shot`, ...;
   each group's `vendor_source` cites the line). Their content is invented, resembling the
   name: postures, gestures, small kicks and steps in place on one foot, crouches. Leg offsets

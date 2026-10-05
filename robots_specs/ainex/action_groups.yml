@@ -1,5 +1,5 @@
 # AiNex action groups that can be played without the vendor's .d6a files: ESTIMATES, not
-# vendor data (added 2026-10-03). Referenced by ros.yml motions[action_group]; format in
+# vendor data (added). Referenced by ros.yml motions[action_group]; format in
 # robots_specs/SCHEMA.md, "Estimated action groups".
 #
 # Hiwonder ships its action groups (left_shot, greet, ...) as .d6a files on the robot image
@@ -8,7 +8,7 @@
 # has playable, documented groups. They are not Hiwonder motions:
 #
 # * `wave`, `raise_hands` and `nod`: arm and head motions with this record's own names.
-# * stand-ins under the vendor's own names (amended 2026-10-03): one group for every name the
+# * stand-ins under the vendor's own names (amended): one group for every name the
 #   pinned vendor code plays (each group's `vendor_source` is the line that names it), so a
 #   client that plays a vendor name gets a visible motion resembling what the name says. They
 #   are invented: the vendor files' content is unknown. The pinned code also names `three` and
@@ -21,11 +21,11 @@ basis: estimate
 reason: >-
   No vendor action group is in a pinned source. These groups are invented motions. `wave`,
   `raise_hands` and `nod` move only the arms and head, both feet left at the init pose. The
-  stand-ins under the vendor's names (amended 2026-10-03) also move the legs, conservatively:
+  stand-ins under the vendor's names (amended) also move the legs, conservatively:
   their leg offsets were computed by inverse kinematics on model.xml for a pelvis shifted,
   raised, lowered, pitched or yawed over planted flat soles, or for one foot lifted at most
   4.5 cm with the pelvis first moved over the other foot; checked in a MuJoCo simulation of
-  model.xml on a flat floor to leave the robot standing where it was (2026-10-03). Every group
+  model.xml on a flat floor to leave the robot standing where it was. Every group
   ends at the init pose, legs and head included, because the controller returns only the arms
   and grippers after a group (ainex_controller.py#L262-L318). Each joint target stays inside
   the URDF limit (+-2.09 rad) and inside the servo pulse range 0-1000 under `servos`,
@@ -49,7 +49,7 @@ frames_are: >-
 pulse_source:
   - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/config/servo_controller.yaml
   - https://github.com/Hiwonder/ainex/blob/e8fe2a816797cf83054135160df5a82ec3596a69/src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L24
-# servo_controller.yaml's mapping (added 2026-10-03), joint: [servo id, init pulse, sign]
+# servo_controller.yaml's mapping (added), joint: [servo id, init pulse, sign]
 servos:
   l_ank_roll: [1, 500, 1]
   r_ank_roll: [2, 500, 1]
@@ -101,7 +101,7 @@ groups:
       - {time_ms: 400, offsets_rad: {head_tilt: 0.1}}
       - {time_ms: 400, offsets_rad: {head_tilt: -0.4}}
       - {time_ms: 400, offsets_rad: {}}
-  # ---- stand-ins under the vendor names (amended 2026-10-03), in the order: postures,
+  # ---- stand-ins under the vendor names (amended), in the order: postures,
   # gestures, kicks, steps in place, get-ups, carrying and placing
   stand:
     description: >-

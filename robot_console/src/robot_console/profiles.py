@@ -139,7 +139,7 @@ class ReadValue:
 class Read:
     """A documented read service returning measured joint positions. The page calls it once per
     click of its read button, or, for the read with ``poll_s`` (the profile's documented read-only
-    joint-position query, console spec §2.2 as amended 2026-10-03), about every ``poll_s`` seconds
+    joint-position query, console spec §2.2 as amended), about every ``poll_s`` seconds
     once the target is validated; teleop reads the AiNex head position through it."""
 
     id: str

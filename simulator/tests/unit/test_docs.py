@@ -1,5 +1,5 @@
 """The simulator's own documents describe what the specification now requires: one body and
-one wire per robot (spec §2.3, amended 2026-10-02), no assembly and no `--arm-port`."""
+one wire per robot (spec §2.3, amended), no assembly and no `--arm-port`."""
 
 import pytest
 

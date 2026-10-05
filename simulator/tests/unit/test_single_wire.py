@@ -1,4 +1,4 @@
-"""One body and one wire per robot (spec §2.3, amended 2026-10-02): no assembly machinery is
+"""One body and one wire per robot (spec §2.3, amended): no assembly machinery is
 left in the simulator's code, and a wire attaches to its robot by the spawn token alone."""
 
 import re

@@ -621,7 +621,7 @@ topics:
   source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L9
   notes: "map_server's ~frame_id default, which the launch does not set
     (https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/map_server/src/main.cpp#L72,
-    L157, the Noetic release 1.17.3; amended 2026-10-03: frame recorded)."
+    L157, the Noetic release 1.17.3; amended: frame recorded)."
 - name: /move_base_simple/goal
   type: geometry_msgs/PoseStamped
   direction: in
@@ -998,31 +998,31 @@ parameters:
   source:
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/cfg/ImuFilterMadgwick.cfg#L10
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
-  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added 2026-10-02)
+  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added)
 - name: /imu_filter_madgwick/zeta
   value: 0.0
   source:
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/cfg/ImuFilterMadgwick.cfg#L11
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
-  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added 2026-10-02)
+  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added)
 - name: /imu_filter_madgwick/mag_bias_x
   value: 0.0
   source:
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/cfg/ImuFilterMadgwick.cfg#L12
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
-  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added 2026-10-02)
+  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added)
 - name: /imu_filter_madgwick/mag_bias_y
   value: 0.0
   source:
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/cfg/ImuFilterMadgwick.cfg#L13
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
-  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added 2026-10-02)
+  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added)
 - name: /imu_filter_madgwick/mag_bias_z
   value: 0.0
   source:
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/cfg/ImuFilterMadgwick.cfg#L14
   - https://github.com/CCNYRoboticsLab/imu_tools/blob/c6118a2ef3299a9deab419b68c6a7d4e070b4ff7/imu_filter_madgwick/src/imu_filter_ros.cpp#L111
-  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added 2026-10-02)
+  notes: dynamic_reconfigure default written by the server at start (the launch does not set it; added)
 - name: /ekf_localization/odom_frame
   value: /odom
   source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/launch/bringup.launch#L62
@@ -1710,7 +1710,7 @@ motions:
       FUNC_MOTION 0x12 with no adjust bit, Rosmaster_Lib.py L558-L577); the ranges are the library's documented X3PLUS
       input range. The firmware clamps vx and vy to +/-700 mm/s (app_motion.c L384-L392), converts to wheel speeds and
       clamps EACH WHEEL to +/-700 mm/s (app_mecanum.h L31, app_mecanum.c L45-L55); all-zero input brakes the motors
-      (protocol.c L520-L523, app_mecanum.c L34-L37). No IMU yaw-hold applies to /cmd_vel (amended 2026-10-02; the
+      (protocol.c L520-L523, app_mecanum.c L34-L37). No IMU yaw-hold applies to /cmd_vel (amended; the
       record said it did). The correction (ENABLE_YAW_ADJUST, app_motion.c L277-L289) runs only while g_yaw_adjust is
       set, which only Mecanum_State does (app_mecanum.c L122-L124) for a FUNC_CAR_RUN command with the adjust bit
       (protocol.c L499-L507, Rosmaster_Lib set_car_run L537-L556, "not enabled" per its L532), which the boot never

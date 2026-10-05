@@ -8,7 +8,7 @@ action-group buttons once per click); limits are never exceeded; no bounded cont
 stopped or cancelled by the page. The 3D model is posed from the joint positions the robot
 reports (where the profile documents them) and its commanded joints edit their controls through
 the same path. For a mobile profile the page also offers teleop.sh's hold-to-move base motion
-(console spec §2.2 as amended 2026-10-04), tested at the end of this file; elsewhere, loading such
+(console spec §2.2 as amended), tested at the end of this file; elsewhere, loading such
 a page sends its start-up stop and nothing else.
 """
 
@@ -40,7 +40,7 @@ HEAD_PAN = "/head_pan_controller/command"
 HEAD_TILT = "/head_tilt_controller/command"
 GOAL_CONNS_MAX = 3          # console.js: open goal connections per control
 # The profiles' documented read-only position queries, which the page polls once a target is
-# validated (console spec §2.2, amended 2026-10-03): not commands (FakeRosbridge.read_only).
+# validated (console spec §2.2, amended): not commands (FakeRosbridge.read_only).
 POLLED = {r.service for p in load_all() for r in p.reads if r.poll_s}
 
 
@@ -350,7 +350,7 @@ def test_nothing_is_sent_on_load_or_reload(view, robot):
 @pytest.mark.parametrize("robot", ["so101", "ainex"])
 def test_page_states_the_sending_contract_and_has_no_arm_switch(view, robot):
     """No arm switch, no Esc behaviour, no stop for a bounded control; only a mobile profile's
-    base motion has a STOP button (console spec §2.2 as amended 2026-10-04)."""
+    base motion has a STOP button (console spec §2.2 as amended)."""
     srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
     note = page.locator('[data-testid="send-note"]').inner_text()
     assert "Changes are sent to the robot immediately, and only base motion is stopped automatically." in note
@@ -399,7 +399,7 @@ def test_ros1_head_slider_and_pad_stream(view):
     assert len(pubs) >= 5 and min(gaps(pubs)) > 0.07
     assert pubs[-1]["msg"] == {"position": final, "duration": 0.5}
     # The head pad streams both axes while dragged. Its left is the robot's left: a negative
-    # head_pan on the model's -Z axis (console spec §2.1, amended 2026-10-02), as teleop's Left key.
+    # head_pan on the model's -Z axis (console spec §2.1, amended), as teleop's Left key.
     pad = page.locator(".pad")
     pad.scroll_into_view_if_needed()
     labels = pad.locator(".pad-lbl").all_inner_texts()
@@ -614,7 +614,7 @@ def polls(srv):
 
 
 def test_ainex_pose_is_polled_once_validated_and_shown_without_a_click(view, fake):
-    """Console spec §2.2 (amended 2026-10-03): once the target is validated the page asks the
+    """Console spec §2.2 (amended): once the target is validated the page asks the
     documented read-only query about once a second, one call at a time, with every servo; the model
     shows the robot's pose (head turned, knees bent, arms down) within about 2 s, the controls show
     the measured values in rad and degrees, and targets not yet changed follow them. Nothing is
@@ -1001,7 +1001,7 @@ def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
     """Every pair of ROS 1 profiles shares required names and none is namespace-capable, so two
     validated ROS 1 targets cannot share one wire: the change goes through a refused selection
     and back. Each selection validates afresh on a new connection; the change sends nothing to the
-    old target but base motion's stop, before leaving it (console spec §2.2 as amended 2026-10-04),
+    old target but base motion's stop, before leaving it (console spec §2.2 as amended),
     and the new validated target gets its start-up stop."""
     srv, page = view(wire_spec(load("ainex")))
     p = load("ainex")
@@ -1370,7 +1370,7 @@ def test_page_does_not_select_a_subsumed_profile(view, monkeypatch):
     assert page.locator('[data-testid="target"]').inner_text() == "so101_nocam"
 
 
-# ------------------------------------------------------------------ base motion (console spec §2.2, §4 as amended 2026-10-04)
+# ------------------------------------------------------------------ base motion (console spec §2.2, §4 as amended)
 
 MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
 KEY_SIGN = {"w": (1, 0, 0), "s": (-1, 0, 0), "a": (0, 1, 0), "d": (0, -1, 0), "q": (0, 0, 1), "e": (0, 0, -1)}

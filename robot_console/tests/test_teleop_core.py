@@ -268,7 +268,7 @@ def test_ainex_head_keys_move_within_limits_and_never_stop_walking():
         core.tick()
     pans = head_targets(rec, p, "pan")
     # Left turns the head left: a negative pan on the vendor model's -Z head_pan axis
-    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended 2026-10-02)
+    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended)
     assert pans and min(pans) == pytest.approx(p.head["pan"].min) and pans == sorted(pans, reverse=True)
     core.key_up("left")
     n = len(rec.sent)

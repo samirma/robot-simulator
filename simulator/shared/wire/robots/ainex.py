@@ -26,7 +26,7 @@ do):
   played. The simulator writes the record's estimated groups (`ainex_actions.py`,
   robots_specs/ainex/action_groups.yml) where the vendor player reads them: `wave`,
   `raise_hands`, `nod`, and a stand-in under every vendor name the pinned code plays
-  (left_shot, greet, stand, ...; amended 2026-10-03) -- ESTIMATES, not vendor data. They
+  (left_shot, greet, stand, ...; amended) -- ESTIMATES, not vendor data. They
   play through the vendor path unchanged (/app/set_action -> ainex_controller ->
   MotionManager.run_action -> bus servos); any other name answers as the controller answers
   an unknown name.

@@ -85,7 +85,7 @@ def walk_row(rid):
 def walk_step_periods(rid):
     """Gait periods per walk step, as the robot's record defines it
     (`motions[walk].command.step_definition`; x_move_amplitude in m per step, one step = one
-    gait period, amended 2026-10-03)."""
+    gait period, amended)."""
     cmd = walk_row(rid)["command"]
     unit = next(f["unit"] for f in cmd["fields"] if f["field"] == "x_move_amplitude")
     assert cmd.get("step_definition") and "one step = one gait period" in unit, \
@@ -96,7 +96,7 @@ def walk_step_periods(rid):
 def check_walk(d, rid, m):
     """A passing walk against the record: its commanded displacement is x_move_amplitude per
     completed gait period, and the measured forward displacement is within the recorded
-    walk-displacement tolerance of it (`tolerances`, amended 2026-10-03)."""
+    walk-displacement tolerance of it (`tolerances`, amended)."""
     prm = m["command"]["set_param"]
     period = prm["period_time"] / 1000.0
     periods = m["gait_periods_completed"]
@@ -114,7 +114,7 @@ def check_walk(d, rid, m):
 def check_action_group(d, rid, m):
     """The action group played is the record's smoke example, with its basis reported: an
     estimated group is labelled as one (`motions[action_group].command.smoke_example`,
-    `smoke_example_basis`, amended 2026-10-03)."""
+    `smoke_example_basis`, amended)."""
     cmd = next(x for x in interface(rid)["motions"] if x["id"] == "action_group")["command"]
     want = cmd.get("smoke_example") or cmd["example"]
     assert m["command"]["message"] == want, (d, m["command"]["message"], want)

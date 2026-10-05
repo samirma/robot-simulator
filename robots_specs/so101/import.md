@@ -68,7 +68,7 @@ File digests (sha256) at the time of conversion:
    * camera `default_cam` added in `gripper_link` (wrist camera, below);
    * keyframe `home`: the spawn pose, a natural ready pose (shoulder lift -0.6 rad, elbow 1.2
      rad, every other joint 0.0), chosen over the boot's `initial_position` of 0.0 on every
-     joint, which holds the arm stretched out awkwardly (changed 2026-10-02).
+     joint, which holds the arm stretched out awkwardly (changed).
 
    Everything else — meshes and their poses, materials, inertials (mass, CoM, full inertia),
    the `sts3215` joint class (damping 0.60, frictionloss 0.052, armature 0.028), the backlash
@@ -143,7 +143,7 @@ after 3 s under gravity; no contacts at `home`.
 
 ## Estimates (not manufacturer data)
 
-* **Servo acceleration** (added 2026-10-03): the hardware plugin writes acceleration register
+* **Servo acceleration** (added): the hardware plugin writes acceleration register
   50 with every goal (`ros2.yml` → `motions[arm].command.servo_profile`), but no pinned source
   states the register's unit. Estimate: Feetech's STS unit of 100 ticks/s² per count, so 50 =
   **5000 ticks/s² = 7.67 rad/s²** (4096 ticks/rev), with the recorded 2400 ticks/s speed.

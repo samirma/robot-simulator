@@ -28,7 +28,7 @@ HEAD_KEYS = ("left", "right", "up", "down")
 HEAD_AXIS = {"left": "pan", "right": "pan", "up": "tilt", "down": "tilt"}
 #: (positive key, negative key) per head axis. The vendor model's head_pan joint axis is -Z
 #: (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec
-#: §2.1 as amended 2026-10-02): a positive pan turns the head to the robot's right, so Left is negative.
+#: §2.1 as amended): a positive pan turns the head to the robot's right, so Left is negative.
 HEAD_DIRS = {"pan": ("right", "left"), "tilt": ("up", "down")}
 STOP_CALL_TIMEOUT_S = 3.0
 HEAD_PERIOD_S = 0.1          # console policy: head target re-sent at most at 10 Hz while held

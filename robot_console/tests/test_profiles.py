@@ -354,8 +354,7 @@ def test_ainex_servo_limits_are_the_servo_range_within_the_urdf():
 
 
 def test_ainex_polled_read_measures_every_servo():
-    """The documented read-only joint-position query the page polls (console spec §2.2, amended
-    2026-10-03): all 24 servos through get_position, each mapped back to its control's rad with
+    """The documented read-only joint-position query the page polls (console spec §2.2, amended): all 24 servos through get_position, each mapped back to its control's rad with
     the inverse of that control's wire map. No other profile polls."""
     for p in load_all():
         polled = [r for r in p.reads if r.poll_s]

@@ -140,7 +140,7 @@ def test_start_scene_is_the_reference_scene_without_its_robot(engine, tmp_path, 
     if engine == "robocasa":
         # except the fixtures RoboCasa's own fixture placement sets on a counter (a toaster,
         # a knife block...), which the reference left where the layout put them (on 1-1, at
-        # the world origin): each stands off the floor now (§2.1, amended 2026-10-03)
+        # the world origin): each stands off the floor now (§2.1, amended)
         placed = ours["placed_fixtures"]
         assert placed, "RoboCasa placed no fixture"
         moved = [n for n in moved if not any(n.startswith(f + "_") for f in placed)]

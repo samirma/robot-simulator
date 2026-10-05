@@ -877,7 +877,7 @@ AINEX_WALK_S = 4.0
 
 def ainex_walk_step_periods(walk: dict) -> int:
     """Gait periods per walk step, as the AiNex record defines it
-    (motions[walk].command.step_definition, amended 2026-10-03: the amplitudes are per step and
+    (motions[walk].command.step_definition, amended: the amplitudes are per step and
     one step is one gait period, so the nominal commanded displacement is x_move_amplitude per
     completed gait period). A record that stops saying so fails the walk, naming the change."""
     cmd = walk["command"]

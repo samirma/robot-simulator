@@ -6,7 +6,7 @@ This document describes the robots and the files needed to import them into
 MuJoCo, reproducing the real hardware's geometry, physical properties, motion,
 sensors and control interfaces as documented by their manufacturers. Together with the
 robot files it lists (§2) it is self-contained. Each robot has its own file,
-`robots_specs/<id>.md`, named exactly by its robot id (amended 2026-10-02: the robot
+`robots_specs/<id>.md`, named exactly by its robot id (amended: the robot
 sections moved out of this document into those files).
 
 Each robot file defines a stable **robot id**, its identity and kind, its **embodiment**
@@ -84,7 +84,7 @@ exceed its documented capabilities.
 Every robot is one file in this folder, `robots_specs/<id>.md`, listed below; the robot
 files (every `.md` here with a robot id, this document and `SCHEMA.md` aside) are the robot
 registry, and this table must list exactly them. Robots are single bodies: no robot is assembled from other robots
-(amended 2026-10-02).
+(amended).
 
 | Robot id | Name | Kind | File |
 | --- | --- | --- | --- |

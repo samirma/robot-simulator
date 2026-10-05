@@ -180,7 +180,7 @@ def test_estimated_action_groups():
 
 def test_vendor_names_have_stand_ins():
     """Every vendor action-group name the pinned AiNex code plays has a stand-in group, an
-    estimate citing the vendor line that names it (amended 2026-10-03), and the record's
+    estimate citing the vendor line that names it (amended), and the record's
     vendor example is one of them, so it plays."""
     doc = yaml.safe_load((SPECS / "ainex" / "action_groups.yml").read_text())
     iface = yaml.safe_load((SPECS / "ainex" / "ros.yml").read_text())
@@ -283,7 +283,7 @@ def _record_texts(rid: str) -> dict[str, str]:
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
 def test_no_composite_leftovers(robot):
-    """Robots are single bodies (robot specification §2, amended 2026-10-02): no robot's
+    """Robots are single bodies (robot specification §2, amended): no robot's
     record names another robot of the registry, as a record of an assembly would."""
     others = {w for o in ROBOTS if o.id != robot.id for w in (o.id, o.name.lower())}
     for name, text in _record_texts(robot.id).items():
