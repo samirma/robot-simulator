@@ -89,6 +89,6 @@ registry, and this table must list exactly them. Robots are single bodies: no ro
 | Robot id | Name | Kind | File |
 | --- | --- | --- | --- |
 | `myagv` | myAGV | `mobile_base` | [`myagv.md`](myagv.md) |
-| `so101` | SO-101 | `arm` | [`so101.md`](so101.md) |
+| `rebot_b601_rs` | reBot Arm B601-RS | `arm` | [`rebot_b601_rs.md`](rebot_b601_rs.md) |
 | `ainex` | AiNex | `humanoid` | [`ainex.md`](ainex.md) |
 | `rosmaster_x3_plus` | ROSMASTER X3 PLUS | `mobile_manipulator` | [`rosmaster_x3_plus.md`](rosmaster_x3_plus.md) |

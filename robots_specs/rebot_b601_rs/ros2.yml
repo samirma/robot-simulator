@@ -1,0 +1,1594 @@
+# reBot Arm B601-RS - ROS 2 interface (schema: robots_specs/SCHEMA.md).
+# Manufacturer interface: Seeed's rebotarm_bringup bringup.launch.py model:=rs channel:=can0 (reBotArmController
+# + robot_state_publisher) on ROS 2 Jazzy, with the reBotArm_control_py SDK and motorbridge on SocketCAN can0.
+# Every row cites its pinned line in the sources listed under `sources`.
+schema_version: 1
+robot_id: rebot_b601_rs
+name: reBot Arm B601-RS
+dialect: ros2
+ros_distribution: jazzy
+interface_authority: manufacturer
+sources:
+- id: reBotArmController_ROS2
+  url: https://github.com/Seeed-Projects/reBotArmController_ROS2
+  revision: 7506dc0fc5c2a7787dcb974d89d13f9f49d16d61
+  branch: main
+  role: manufacturer ROS 2 stack (rebotarm_bringup, rebotarmcontroller, rebotarm_msgs, version 0.3.0) that Seeed's B601-RS
+    ROS 2 wiki clones; authoritative boot. Also holds the boot's copy of the official URDF and the 42 RS meshes (src/rebotarm_bringup/description/RS/)
+- id: reBotArm_control_py
+  url: https://github.com/Seeed-Projects/reBotArm_control_py
+  revision: 6415d43130d1e143c70dc106096a857ac5556f81
+  branch: main
+  role: 'manufacturer Python SDK the boot imports from third_party/reBotArm_control_py (wiki step 5): sdk_config rebotarm_rs.yaml,
+    RebotArm joint groups and control loop, RebotArmEndPose (MIT hold loop, IK, trajectories), Pinocchio kinematics and
+    gravity'
+- id: reBot-DevArm
+  url: https://github.com/Seeed-Projects/reBot-DevArm
+  revision: 0dfb49b85bc146eb3741f414be9dd2b1662345e8
+  branch: main
+  role: 'official open-source project: B601-RS hardware BOM (hardware/reBot_B601_RS/README.md), specifications (README.md),
+    Rebot_Arm_description/RS URDF and meshes (the URDF equals the boot''s copy apart from its ../meshes/ URIs)'
+- id: wiki-documents
+  url: https://github.com/Seeed-Studio/wiki-documents
+  revision: 2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a
+  branch: docusaurus-version
+  role: 'vendor documentation: source of https://wiki.seeedstudio.com/rebot_arm_b601_rs_ros2_integration/ (boot commands,
+    recommended system, CAN set-up) and https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/ (PCAN-USB adapter, 48
+    V supply)'
+  retrieved: '2026-10-08'
+- id: motorbridge
+  url: https://github.com/motorbridge/motorbridge
+  revision: c652ce420e7da1008fa1864cc7f47d7d7c57fdb6
+  role: 'dependency: motorbridge release v0.5.6 (PyPI motorbridge 0.5.6, which the wiki installs unpinned; the newest release
+    when reBotArmController_ROS2 was pinned on 2026-09-30, and still the newest on 2026-10-08): SocketCAN controller and
+    RobStride private-protocol driver used by the SDK'
+- id: robot_state_publisher
+  url: https://github.com/ros/robot_state_publisher
+  revision: d1b994d2d2eb19e4d2886be57211114134f25b50
+  branch: jazzy
+  role: 'dependency: robot_state_publisher, release 3.3.4 (Jazzy binary 3.3.4-1)'
+- id: geometry2
+  url: https://github.com/ros2/geometry2
+  revision: f702874b1c8535d6a038230ab2cda0ba5d521ebd
+  branch: jazzy
+  role: 'dependency: tf2_ros broadcasters used by robot_state_publisher, release 0.36.23 (Jazzy binary 0.36.23-1)'
+- id: rclcpp
+  url: https://github.com/ros2/rclcpp
+  revision: 3aa906a2c7ad13d1623b31a55731993f56538e72
+  branch: jazzy
+  role: 'dependency: rclcpp QoS-override parameters of robot_state_publisher, release 28.1.22 (Jazzy binary 28.1.22-1),
+    read for behaviour'
+- id: rclpy
+  url: https://github.com/ros2/rclpy
+  revision: bd637294dd02b1c128422395c059fa06df8387a3
+  branch: jazzy
+  role: 'dependency: rclpy (the controller node''s client library) QoS presets and defaults, release 7.1.12 (Jazzy binary
+    7.1.12-1), read for behaviour'
+- id: rmw
+  url: https://github.com/ros2/rmw
+  revision: 8cb94a87cf3f4049abe2d563af893517bf336930
+  branch: jazzy
+  role: 'dependency: rmw QoS profiles (sensor data, default), release 7.3.4 (Jazzy binary 7.3.4-1)'
+- id: launch
+  url: https://github.com/ros2/launch
+  revision: b63c1b82687038dad9a5d914c631f6681a550abe
+  branch: jazzy
+  role: 'dependency: launch Command substitution (robot_description is the script''s stdout, unstripped), release 3.4.12
+    (Jazzy binary 3.4.12-1), read for behaviour'
+boot:
+  summary: 'rebotarm_bringup bringup.launch.py with model:=rs channel:=can0 (Seeed''s B601-RS ROS 2 wiki). It starts /reBotArmController
+    (rebotarmcontroller, rclpy, MultiThreadedExecutor) and /robot_state_publisher (robot_description = stdout of rviz_urdf_compat.py
+    run on the RS URDF; /joint_states remapped to /rebotarm/joint_states); rviz2 only with use_rviz:=true (default false).
+    The controller resolves rebotarm_hardware.yaml model rs: the SDK''s config/rebotarm_rs.yaml deep-merged with the rs
+    overrides and channel can0, written to a temporary <model>_hardware.yaml that the SDK''s RebotArm loads; it connects
+    the seven RobStride motors through motorbridge on SocketCAN can0, puts the arm group in MIT mode (kp/kd from the overrides)
+    and the gripper in MIT mode, enables them and starts a 500 Hz loop that holds the current pose (MIT target, gravity
+    feedforward) and the gripper''s current position. Every topic, service and action is under arm_namespace rebotarm. On
+    shutdown (Ctrl+C) the node runs safe_home (gripper closed, arm to all-zero) and, with disable_after_safe_home true,
+    disables the motors.'
+  commands:
+  - sudo ip link set can0 type can bitrate 1000000
+  - sudo ip link set can0 up
+  - ros2 launch rebotarm_bringup bringup.launch.py model:=rs channel:=can0
+  launch_files:
+  - source: reBotArmController_ROS2
+    path: src/rebotarm_bringup/launch/bringup.launch.py
+    role: authoritative boot
+  - source: reBotArmController_ROS2
+    path: src/rebotarm_bringup/launch/rviz_urdf_compat.py
+    role: robot_description generator (run by the launch's Command substitution)
+  data_files:
+  - source: reBotArmController_ROS2
+    path: src/rebotarm_bringup/config/rebotarm_hardware.yaml
+    role: 'hardware selection: model rs, sdk_config rebotarm_rs.yaml and the rs overrides (default hardware_config)'
+  - source: reBotArm_control_py
+    path: config/rebotarm_rs.yaml
+    role: SDK RS config (motor ids, models, MIT and POS_VEL gains, gripper joint), merged under the rs overrides
+  - source: reBotArmController_ROS2
+    path: src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf
+    role: input of robot_description and the SDK's Pinocchio model (urdf_path override)
+  hardware: 'reBot Arm B601-RS, 6 DOF plus gripper: RobStride RS-06 on joint1-joint3 (CAN ids 0x01-0x03) and RS-00 on joint4-joint6
+    (0x04-0x06) and the gripper (0x07), all with host (feedback) id 0xFD, one CAN bus at 1 Mbit/s. Gripper: the RS-00 turns
+    a module-1 16-tooth pinion between two racks on an MGN9 rail (DevArm BOM). Host: Ubuntu 24.04, ROS 2 Jazzy, Python 3.12
+    (the wiki''s main reference; Humble on 22.04 also documented), motorbridge 0.5.6 from PyPI, Pinocchio from ros-jazzy-pinocchio.
+    CAN adapter: the kit''s USB-to-CAN board with PCAN-USB firmware (Linux peak_usb SocketCAN), interface can0, 1 Mbit/s,
+    120 ohm termination switch. Power: DC 48 V (MeanWell LRS-600-48, 48 V 12.5 A, recommended) through an XT30 2+2 power
+    separation board. No camera, lidar or IMU is started by the boot (Seeed publishes optional wrist-camera mounts only).'
+model:
+  urdf: ReBot_Arm_RS.urdf
+  urdf_sha256: 978568c1b73310ec134b8f2285295f46d0c32c904d397bd097e3bcc81507b77b
+  urdf_source:
+    source: reBotArmController_ROS2
+    path: src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf
+  mjcf: model.xml
+  mjcf_official: false
+  robot_description:
+    published_as: /robot_state_publisher parameter robot_description and the transient-local topic /robot_description
+    content:
+      file: boot/robot_description.urdf
+      generated: 'stdout of `python3 <share>/launch/rviz_urdf_compat.py <share>/description/RS/urdf/ReBot_Arm_RS.urdf` (bringup.launch.py
+        L59-L75 with model:=rs), unstripped by the launch Command substitution, so it ends with a newline. Generated here
+        by running the pinned script (read in full: it only parses the URDF with ElementTree and prints it) on the pinned
+        URDF with Python 3.12 (Jazzy''s), python3 -I, from a directory outside the clone; Python 3.11, 3.13 and 3.14 give
+        the same bytes. No installation-dependent content.'
+      sha256: b45bd97e4b1ebd94283b59f2034e3451a5946db75a2b8d1a871cbaaf600e6f64
+    differences_from_model:
+    - 'compat split (rviz_urdf_compat.py L57-L87): every link with several visuals keeps only its first; each further visual
+      moves, unchanged, into a new child link <link>__rviz_visual_<mesh stem> joined by a fixed joint <child>__fixed_joint
+      at xyz 0 0 0, rpy 0 0 0, with no inertial or collision. 15 such links: link2 (cnc2, pla2_black, pla2_green), link3
+      (motor_4, pla3_black_without_seeed_badge, pla3_seeed_badge_with_counters, pla3_seeed_wordmark_backing, pla3_green),
+      link4 (cnc4), link5 (cnc5, pla5_green), gripper_end (cnc7, motor_7), gripper_left (cnc_left), gripper_right (cnc_right).
+      Masses, inertias, collisions and every geometry pose are unchanged; the model keeps the official URDF''s links with
+      all their visuals'
+    - 'materials (rviz_urdf_compat.py L27-L33): rs_base_black, rs_motor_black and rs_pla_black become rgba 0.140 0.160 0.150
+      1 (official 0.055 0.065 0.060 1, 0.045 0.052 0.049 1, 0.090 0.106 0.102 1), a presentation override for RViz; the
+      model keeps the official colours'
+    - 'serialisation: ElementTree drops the XML declaration and every comment (the exporter banner, the palette note and
+      the commented-out whole-link visuals of link2-link5, gripper_end, gripper_left and gripper_right); attribute values
+      are unchanged'
+    - 'names, axes, origins, limits, zero offsets: identical to the official URDF (revolute joint1-joint6, prismatic gripper_joint1
+      and gripper_joint2, fixed j_gripper_end; root base_link)'
+    - 'arm command frame: the motors'' positions are the URDF joint angles with no sign, offset or ratio (joint_states publishes
+      the SDK motor positions as joint1-joint6, and the SDK pads the same values into its Pinocchio model of this URDF for
+      IK and gravity); the motor zero is the set_zero position, i.e. the URDF zero. The driver does not clamp arm targets
+      to the URDF limits (motorbridge clamps MIT targets to +-4 pi rad); joint2 and joint3 have their URDF lower limit 0.0
+      at the zero (safe_home) pose'
+    - 'gripper: one motor (RS-00, id 7) commanded in motor rad, close 0.0 to open 5.0 (rebotarm_hardware.yaml rs position_limits);
+      /rebotarm/joint_states reports it on the URDF''s two prismatic finger joints as ratio = clamp(motor / 5.0, 0, 1),
+      gripper_joint1 = 0.05 * ratio m and gripper_joint2 = 0.0715 * ratio m (the URDF upper limits), so the two fingers
+      are reported asymmetric (0.0100 and 0.0143 m per motor rad), while the rack-and-pinion moves both equally; Seeed''s
+      fake driver and MoveIt pick-place config use 0.045 m per finger at 5.0 rad instead. Positive finger travel opens (each
+      finger axis points away from the jaw centre)'
+    - 'velocity and effort limits: URDF effort 36 N m (joint1-joint3) and 14 N m (joint4-joint6) equal motorbridge''s RS-06
+      and RS-00 MIT torque ranges; URDF velocity 50 rad/s (joint1-joint3) equals the RS-06 MIT velocity range but 40 rad/s
+      (joint4-joint6) exceeds the RS-00''s 33 rad/s; finger joints effort 500, velocity 10 (URDF values, no motor counterpart)'
+nodes:
+- name: /reBotArmController
+  package: rebotarmcontroller
+  executable: reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L95-L117
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L18
+  notes: 'rclpy node (MultiThreadedExecutor, 4 threads) wrapping the SDK: hardware manager, joint/status publishers, services,
+    actions and per-motor raw command subscriptions. on_exit shuts the launch down.'
+- name: /robot_state_publisher
+  package: robot_state_publisher
+  executable: robot_state_publisher
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L118-L125
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L78
+  notes: Remaps /joint_states to /rebotarm/joint_states (arm_namespace).
+- name: /rviz2
+  package: rviz2
+  executable: rviz2
+  optional: true
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L126-L133
+  notes: Started only with use_rviz:=true (default false); config rviz/rebotarm.rviz shows the RobotModel from /robot_description
+    and has no publishing tools.
+topics:
+- name: /rebotarm/joint_states
+  type: sensor_msgs/msg/JointState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: rclpy timer of period 1/joint_state_rate; joint_state_rate 100.0 (bringup.launch.py default, the wiki command
+    passes none)
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  internal_subscribers:
+  - /robot_state_publisher
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L25-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L59-L64
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L67-L125
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'name [joint1..joint6, gripper_joint1, gripper_joint2]; arm: SDK motor position (rad), velocity (rad/s) and torque
+    (N m) from the latest RobStride status frames; gripper: ratio = clamp(motor rad / 5.0, 0, 1), positions [0.05 * ratio,
+    0.0715 * ratio] m, velocities (ratio(motor + motor velocity) - ratio(motor)) times the same limits (m/s), effort the
+    gripper motor torque (N m) on both. header.stamp is the node clock at publication; frame_id is never set. RobStride
+    motors report only in reply to commands (motorbridge request_feedback is a no-op), so while the motors are disabled
+    the values repeat the last frames.'
+- name: /rebotarm/joints/joint1/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint1 motor (RobStride RS-06, CAN id 1): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/joints/joint2/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint2 motor (RobStride RS-06, CAN id 2): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/joints/joint3/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint3 motor (RobStride RS-06, CAN id 3): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/joints/joint4/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint4 motor (RobStride RS-00, CAN id 4): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/joints/joint5/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint5 motor (RobStride RS-00, CAN id 5): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/joints/joint6/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L76-L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMotorState.msg#L1-L6
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_abi/src/state_ffi.rs#L68-L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'joint6 motor (RobStride RS-00, CAN id 6): position rad, velocity rad/s, torque N m, status_code bits 0 undervoltage,
+    1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated (motorbridge); header as joint_states.'
+- name: /rebotarm/gripper/state
+  type: rebotarm_msgs/msg/JointMotorState
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: 100
+  rate_basis: source
+  rate_note: published in the same 100 Hz callback
+  frame_id: ''
+  qos:
+    reliability: best_effort
+    durability: volatile
+    depth: 5
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L52-L58
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L116-L123
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L592-L606
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L22
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L453-L454
+  - https://github.com/ros2/rmw/blob/8cb94a87cf3f4049abe2d563af893517bf336930/rmw/include/rmw/qos_profiles.h#L25-L36
+  notes: 'gripper motor (RS-00, CAN id 7): joint_name ''gripper'', position in motor rad (0.0 closed, 5.0 open), velocity
+    rad/s, torque N m, status_code as the joint motors.'
+- name: /rebotarm/arm_status
+  type: rebotarm_msgs/msg/ArmStatus
+  direction: out
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  latched: true
+  frame_id: ''
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L40-L50
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L65
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L127-L140
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/ArmStatus.msg#L1-L8
+  notes: Published once at start and after every service call, action step that changes state, and raw command. mode is
+    the arm group's motor mode ('mit' at boot), enabled, control_loop_active, state_machine IDLE | TRAJ_RUNNING | LOWLEVEL_STREAMING
+    | GRAVITY_COMP | SAFE_HOMING, joint_names joint1..joint6, per_joint_status_code, error_codes (always empty).
+- name: /rebotarm/joints/joint1/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint1: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint1/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint1: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/joints/joint2/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint2: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint2/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint2: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/joints/joint3/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint3: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint3/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint3: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/joints/joint4/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint4: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint4/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint4: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/joints/joint5/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint5: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint5/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint5: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/joints/joint6/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L18-L30
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L345-L380
+  - https://github.com/ros2/rclpy/blob/bd637294dd02b1c128422395c059fa06df8387a3/rclpy/rclpy/qos.py#L96-L97
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointMitCmd.msg#L1-L6
+  notes: 'Raw MIT command for joint6: pos rad, vel rad/s, kp, kd (0 keeps the configured gain), tau N m; stamp ignored.
+    Stops the 500 Hz hold loop, switches the arm group to MIT if needed and sends one MIT frame per arm motor (this joint
+    gets the message, the others their measured position); state LOWLEVEL_STREAMING. Rejected while disabled, in GRAVITY_COMP
+    and SAFE_HOMING, and in TRAJ_RUNNING unless cmd_arbitration is preempt. No URDF limit check.'
+- name: /rebotarm/joints/joint6/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L15
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L31-L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L382-L399
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/msg/JointPosVelCmd.msg#L1-L3
+  notes: 'Raw position command for joint6: pos rad, vlim rad/s; stamp ignored. Stops the hold loop, switches the arm group
+    to RobStride position mode (writes vel_kp, vel_ki, pos_kp, limit_spd) and sends every arm motor its target; same gating
+    as cmd/mit.'
+- name: /rebotarm/gripper/cmd/mit
+  type: rebotarm_msgs/msg/JointMitCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L41-L52
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L72-L79
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L614-L637
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L133-L143
+  notes: 'Raw MIT command for the gripper motor: pos motor rad within [0.0, 5.0] (else rejected), vel, kp, kd (0 keeps 50
+    / 4), tau. Stops the hold loop. Rejected while disabled, in GRAVITY_COMP, SAFE_HOMING or TRAJ_RUNNING (no preemption
+    for the gripper).'
+- name: /rebotarm/gripper/cmd/pos_vel
+  type: rebotarm_msgs/msg/JointPosVelCmd
+  direction: in
+  nodes:
+  - /reBotArmController
+  rate: non_periodic
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L53-L58
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L72-L79
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L639-L648
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L133-L143
+  notes: 'Raw position command for the gripper motor: pos motor rad within [0.0, 5.0], vlim rad/s; gating as cmd/mit.'
+- name: /robot_description
+  type: std_msgs/msg/String
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L132-L135
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L209-L213
+  notes: The boot robot_description (model.robot_description), published once.
+- name: /tf
+  type: tf2_msgs/msg/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: 18.2
+  rate_basis: estimate
+  rate_note: 'robot_state_publisher republishes the moving joints on a /rebotarm/joint_states message only when its stamp
+    is at least 1/publish_frequency = 50 ms after the last published one. joint_states comes every 10 ms stamped by the
+    node clock after the motor read, so the 50 ms threshold falls exactly on the 5th message: an interval is 50 ms when
+    that message''s latency is at least the first one''s, else 60 ms. With independent latencies that averages 55 ms, 18.2
+    Hz (between 16.7 and 20 Hz); estimate, not measured'
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 100
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L336-L340
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L118
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L75
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L46-L51
+  notes: One TFMessage with the eight moving transforms (see tf), stamped with the joint_states stamp.
+- name: /tf_static
+  type: tf2_msgs/msg/TFMessage
+  direction: out
+  nodes:
+  - /robot_state_publisher
+  rate: non_periodic
+  latched: true
+  qos:
+    reliability: reliable
+    durability: transient_local
+    depth: 1
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L279-L298
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: The 16 fixed transforms (link6 -> gripper_end and the 15 compat-split visual links), published once.
+services:
+- name: /rebotarm/enable
+  type: std_srvs/srv/Trigger
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L20
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L60-L61
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L264-L281
+  notes: When the hold loop is stopped (after disable, set_zero or a raw command), puts arm and gripper in MIT mode, enables
+    them and restarts the 500 Hz hold loop on the current position; otherwise only sets IDLE. Rejected during gravity compensation,
+    safe home or a trajectory.
+- name: /rebotarm/disable
+  type: std_srvs/srv/Trigger
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L21
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L63-L68
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L283-L293
+  notes: 'Stops gravity compensation and the hold loop, then disables every motor (torque off: the arm is no longer held
+    against gravity).'
+- name: /rebotarm/safe_home
+  type: std_srvs/srv/Trigger
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L22
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L70-L71
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L295-L328
+  - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L175-L227
+  notes: Closes the gripper (target 0.0, up to 3 s), then drives every arm joint to 0.0 along a minimum-jerk profile of
+    duration 2 * max|q| / 0.5 s sent at 50 Hz, and waits up to 3 s for max|q| < 0.01 rad; state SAFE_HOMING meanwhile, IDLE
+    after. Arm stays enabled.
+- name: /rebotarm/gravity_compensation/start
+  type: std_srvs/srv/Trigger
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L23-L28
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L453-L486
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/config/rebotarm_hardware.yaml#L56-L58
+  - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/config/rebotarm_rs.yaml#L136-L141
+  notes: 'Arm MIT with kp 2.0, kd 1.0 (rs overrides) and Pinocchio gravity torque scaled by tau_scale [1.0, 0.98, 0.98,
+    1.0, 1.0, 1.0] at 500 Hz; the gripper holds its position. State GRAVITY_COMP: arm and gripper goals and raw commands
+    are rejected.'
+- name: /rebotarm/gravity_compensation/stop
+  type: std_srvs/srv/Trigger
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L29-L34
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L488-L502
+  notes: Ends gravity compensation and resumes the MIT hold loop at the last compensated position.
+- name: /rebotarm/set_zero
+  type: rebotarm_msgs/srv/SetZero
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L35
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L87-L93
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L330-L343
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/srv/SetZero.srv#L1-L4
+  - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/motor.rs#L398-L412
+  notes: 'Disables every motor and stores the current position as zero on joint_name (empty: all seven motors, gripper included);
+    leaves the arm disabled.'
+- name: /rebotarm/move_to_pose_ik
+  type: rebotarm_msgs/srv/MoveToPoseIK
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L36
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L95-L109
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L432-L437
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/srv/MoveToPoseIK.srv#L1-L5
+  notes: Solves IK for target_pose (gripper_end in base_link, quaternion read as roll/pitch/yaw) from the current joints
+    and, on success, steps the hold target to q_solution at once (no trajectory); returns q_solution.
+- name: /rebotarm/gripper/set
+  type: rebotarm_msgs/srv/SetGripper
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L37
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L111-L123
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L583-L590
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/srv/SetGripper.srv#L1-L5
+  notes: 'position: gripper motor rad within [0.0, 5.0]; max_effort ignored. Waits up to 3 s for |position - target| < 0.12
+    rad; success = reached, reached_position = motor rad.'
+- name: /rebotarm/gripper/open
+  type: rebotarm_msgs/srv/GripperCommand
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L38
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L125-L128
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L135-L154
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/srv/GripperCommand.srv#L1-L6
+  notes: position 0.0 means the configured open position 5.0 motor rad, else that position; timeout <= 0 means 3 s.
+- name: /rebotarm/gripper/close
+  type: rebotarm_msgs/srv/GripperCommand
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L39
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L130-L133
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L135-L154
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/srv/GripperCommand.srv#L1-L6
+  notes: position 0.0 means the configured close position 0.0 motor rad, else that position; timeout <= 0 means 3 s.
+actions:
+- name: /rebotarm/move_to_pose
+  type: rebotarm_msgs/action/MoveToPose
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L18-L26
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L77-L132
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_msgs/action/MoveToPose.action#L1-L10
+  - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L259-L324
+  notes: 'Cartesian goal: target_pose of gripper_end in base_link, duration s (<= 0: max(1, distance / 0.1)). IK, SE(3)
+    geodesic minimum-jerk plan at 0.01 s and CLIK tracking; the joint points are streamed to the hold target over duration.
+    Succeeds when the stream ends (deadline duration + 2 s); no feedback is published.'
+- name: /rebotarm/follow_joint_trajectory
+  type: control_msgs/action/FollowJointTrajectory
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L27-L35
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L134-L242
+  notes: Arm joint trajectory (motions.arm).
+- name: /rebotarm/gripper/command
+  type: control_msgs/action/GripperCommand
+  node: /reBotArmController
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L36-L44
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L244-L291
+  notes: Gripper motor position goal (motions.gripper).
+parameters:
+- node: /reBotArmController
+  name: hardware_config
+  value:
+    generated: <install prefix of rebotarm_bringup>/share/rebotarm_bringup/config/rebotarm_hardware.yaml, the launch default
+      (an absolute, installation-dependent path; with the wiki's colcon workspace <workspace>/install/rebotarm_bringup/share/rebotarm_bringup/config/rebotarm_hardware.yaml)
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L79-L84
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L103
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L24
+- node: /reBotArmController
+  name: model
+  value: rs
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L85
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L104
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L25
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L253
+  notes: launch argument model:=rs
+- node: /reBotArmController
+  name: channel
+  value: can0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L86
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L105
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L26
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L253
+  notes: launch argument channel:=can0 (overrides the yaml channel, also can0)
+- node: /reBotArmController
+  name: joint_state_rate
+  value: 100.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L106
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L27
+  notes: launch default '100.0', a double after launch_ros's YAML evaluation
+- node: /reBotArmController
+  name: arm_namespace
+  value: rebotarm
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L89
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L108
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L28
+- node: /reBotArmController
+  name: cmd_arbitration
+  value: reject
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L88
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L107
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L29
+  notes: 'reject: arm raw commands are refused while a trajectory runs (preempt would stop it)'
+- node: /reBotArmController
+  name: frame_id
+  value: base_link
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L91
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L109
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L30
+  notes: declared and passed but not used by the node
+- node: /reBotArmController
+  name: ee_frame_id
+  value: gripper_end
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L36-L41
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L92
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L110
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L31
+  notes: the launch resolves the empty default to gripper_end for model rs; declared but not used by the node
+- node: /reBotArmController
+  name: disable_after_safe_home
+  value: true
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L93
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L111-L114
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/rebotarm_controller.py#L32
+  notes: shutdown runs safe_home, then disables the motors
+- node: /robot_state_publisher
+  name: robot_description
+  value:
+    file: boot/robot_description.urdf
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L69-L75
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L123
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L81
+  - https://github.com/ros2/launch/blob/b63c1b82687038dad9a5d914c631f6681a550abe/launch/launch/substitutions/command.py#L92-L131
+  notes: stdout of rviz_urdf_compat.py on the RS URDF (see model.robot_description)
+- node: /robot_state_publisher
+  name: publish_frequency
+  value: 20.0
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L118
+- node: /robot_state_publisher
+  name: frame_prefix
+  value: ''
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L124
+- node: /robot_state_publisher
+  name: ignore_timestamp
+  value: false
+  source: https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L127
+- node: /robot_state_publisher
+  name: qos_overrides./rebotarm/joint_states.subscription.depth
+  value: 5
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L139-L148
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/include/rclcpp/create_subscription.hpp#L128-L133
+  notes: read-only QoS override parameter declared by rclcpp for this subscription (with_default_policies); the topic part
+    is the remapped name /rebotarm/joint_states
+- node: /robot_state_publisher
+  name: qos_overrides./rebotarm/joint_states.subscription.history
+  value: keep_last
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L139-L148
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  notes: read-only QoS override parameter declared by rclcpp for this subscription (with_default_policies)
+- node: /robot_state_publisher
+  name: qos_overrides./rebotarm/joint_states.subscription.reliability
+  value: best_effort
+  source:
+  - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L139-L148
+  - https://github.com/ros2/rclcpp/blob/3aa906a2c7ad13d1623b31a55731993f56538e72/rclcpp/src/rclcpp/qos_overriding_options.cpp#L46-L47
+  notes: read-only QoS override parameter declared by rclcpp for this subscription (with_default_policies)
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.depth
+  value: 100
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L64-L71
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L46-L51
+  notes: read-only QoS override parameter declared by rclcpp for the /tf broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.durability
+  value: volatile
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L64-L71
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L46-L51
+  notes: read-only QoS override parameter declared by rclcpp for the /tf broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.history
+  value: keep_last
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L64-L71
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L46-L51
+  notes: read-only QoS override parameter declared by rclcpp for the /tf broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf.publisher.reliability
+  value: reliable
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/transform_broadcaster.hpp#L64-L71
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L46-L51
+  notes: read-only QoS override parameter declared by rclcpp for the /tf broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.depth
+  value: 1
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.history
+  value: keep_last
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.reliability
+  value: reliable
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+tf:
+- parent: link6
+  child: gripper_end
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.16621
+  rpy:
+  - 3.1416
+  - -1.5708
+  - 0.0
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L603-L615
+  notes: fixed j_gripper_end
+- parent: link2
+  child: link2__rviz_visual_cnc2
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L153-L162
+  notes: fixed link2__rviz_visual_cnc2__fixed_joint (compat split of the visual cnc2.STL)
+- parent: link2
+  child: link2__rviz_visual_pla2_black
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L163-L172
+  notes: fixed link2__rviz_visual_pla2_black__fixed_joint (compat split of the visual pla2_black.STL)
+- parent: link2
+  child: link2__rviz_visual_pla2_green
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L173-L182
+  notes: fixed link2__rviz_visual_pla2_green__fixed_joint (compat split of the visual pla2_green.STL)
+- parent: link3
+  child: link3__rviz_visual_motor_4
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L247-L256
+  notes: fixed link3__rviz_visual_motor_4__fixed_joint (compat split of the visual motor_4.STL)
+- parent: link3
+  child: link3__rviz_visual_pla3_black_without_seeed_badge
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L257-L266
+  notes: fixed link3__rviz_visual_pla3_black_without_seeed_badge__fixed_joint (compat split of the visual pla3_black_without_seeed_badge.STL)
+- parent: link3
+  child: link3__rviz_visual_pla3_seeed_badge_with_counters
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L267-L276
+  notes: fixed link3__rviz_visual_pla3_seeed_badge_with_counters__fixed_joint (compat split of the visual pla3_seeed_badge_with_counters.STL)
+- parent: link3
+  child: link3__rviz_visual_pla3_seeed_wordmark_backing
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L277-L286
+  notes: fixed link3__rviz_visual_pla3_seeed_wordmark_backing__fixed_joint (compat split of the visual pla3_seeed_wordmark_backing.STL)
+- parent: link3
+  child: link3__rviz_visual_pla3_green
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L287-L296
+  notes: fixed link3__rviz_visual_pla3_green__fixed_joint (compat split of the visual pla3_green.STL)
+- parent: link4
+  child: link4__rviz_visual_cnc4
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L361-L370
+  notes: fixed link4__rviz_visual_cnc4__fixed_joint (compat split of the visual cnc4.STL)
+- parent: link5
+  child: link5__rviz_visual_cnc5
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L435-L444
+  notes: fixed link5__rviz_visual_cnc5__fixed_joint (compat split of the visual cnc5.STL)
+- parent: link5
+  child: link5__rviz_visual_pla5_green
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L445-L454
+  notes: fixed link5__rviz_visual_pla5_green__fixed_joint (compat split of the visual pla5_green.STL)
+- parent: gripper_end
+  child: gripper_end__rviz_visual_cnc7
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L573-L582
+  notes: fixed gripper_end__rviz_visual_cnc7__fixed_joint (compat split of the visual cnc7.STL)
+- parent: gripper_end
+  child: gripper_end__rviz_visual_motor_7
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L583-L592
+  notes: fixed gripper_end__rviz_visual_motor_7__fixed_joint (compat split of the visual motor_7.STL)
+- parent: gripper_left
+  child: gripper_left__rviz_visual_cnc_left
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L656-L665
+  notes: fixed gripper_left__rviz_visual_cnc_left__fixed_joint (compat split of the visual cnc_left.STL)
+- parent: gripper_right
+  child: gripper_right__rviz_visual_cnc_right
+  static: true
+  publisher: /robot_state_publisher
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/rviz_urdf_compat.py#L57-L87
+  - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L734-L743
+  notes: fixed gripper_right__rviz_visual_cnc_right__fixed_joint (compat split of the visual cnc_right.STL)
+- parent: base_link
+  child: link1
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L99-L116
+  notes: revolute joint1, from /rebotarm/joint_states
+- parent: link1
+  child: link2
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L193-L210
+  notes: revolute joint2, from /rebotarm/joint_states
+- parent: link2
+  child: link3
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L307-L324
+  notes: revolute joint3, from /rebotarm/joint_states
+- parent: link3
+  child: link4
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L381-L398
+  notes: revolute joint4, from /rebotarm/joint_states
+- parent: link4
+  child: link5
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L465-L482
+  notes: revolute joint5, from /rebotarm/joint_states
+- parent: link5
+  child: link6
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L519-L536
+  notes: revolute joint6, from /rebotarm/joint_states
+- parent: gripper_end
+  child: gripper_left
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L676-L693
+  notes: prismatic gripper_joint1, from /rebotarm/joint_states
+- parent: gripper_end
+  child: gripper_right
+  static: false
+  publisher: /robot_state_publisher
+  rate: 18.2
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L754-L771
+  notes: prismatic gripper_joint2, from /rebotarm/joint_states
+motions:
+- id: arm
+  velocity_driven: false
+  command:
+    interface: action
+    name: /rebotarm/follow_joint_trajectory
+    type: control_msgs/action/FollowJointTrajectory
+    fields:
+    - field: trajectory.joint_names
+      unit: joint name
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L146-L152
+      notes: must be exactly [joint1, joint2, joint3, joint4, joint5, joint6] in this order, else INVALID_GOAL
+    - field: trajectory.points[].positions[0] (joint1)
+      unit: rad
+      min: -2.8
+      max: 2.8
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L111-L115
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].positions[1] (joint2)
+      unit: rad
+      min: 0.0
+      max: 3.14
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L205-L209
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].positions[2] (joint3)
+      unit: rad
+      min: 0.0
+      max: 3.14
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L319-L323
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].positions[3] (joint4)
+      unit: rad
+      min: -1.57
+      max: 1.57
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L393-L397
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].positions[4] (joint5)
+      unit: rad
+      min: -1.57
+      max: 1.57
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L477-L481
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].positions[5] (joint6)
+      unit: rad
+      min: -3.14
+      max: 3.14
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L531-L535
+      notes: URDF limit of the boot's robot_description; the driver does not clamp
+    - field: trajectory.points[].time_from_start
+      unit: s
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L165-L172
+      notes: a first point after 0 s is preceded by the current position at 0 s; velocities, accelerations, effort and the
+        goal's tolerances and goal_time_tolerance are ignored
+    notes: Executed by linear joint-space interpolation between the points, writing the hold target about every 20 ms (sleep
+      0.02 s) and publishing feedback (desired, actual, error) each step; desired velocities are zero. A goal is rejected
+      while a trajectory, gravity compensation or safe home runs, and a disabled arm is re-enabled by the goal. Cancel holds
+      the current position. The example is Seeed's pick-place ready_point [0.0, 0.75, 0.55, 0.0, 0.0, 0.0] with joint1 at
+      0.3 (the wiki's own example keeps joint2 and joint3 on their 0.0 lower limits).
+    source:
+    - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L370-L373
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L46-L49
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_moveit_demos/config/pick_place_rs.yaml#L12
+    servo_profile:
+      mode: MIT (RobStride operation control)
+      loop_rate_hz: 500
+      kp:
+      - 50.0
+      - 150.0
+      - 150.0
+      - 50.0
+      - 50.0
+      - 50.0
+      kd:
+      - 3.0
+      - 10.0
+      - 10.0
+      - 5.0
+      - 4.0
+      - 4.0
+      feedforward: Pinocchio gravity torque of the URDF at the measured joints (g = -9.81 m/s^2 along base z)
+      basis: source
+      source:
+      - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/config/rebotarm_hardware.yaml#L42
+      - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/config/rebotarm_hardware.yaml#L52-L55
+      - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L328-L345
+      - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/actuator/rebotarm.py#L382-L411
+      - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/protocol.rs#L142-L170
+      - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/motor.rs#L17-L24
+      - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/motor.rs#L60-L66
+      - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/motor.rs#L167-L171
+      notes: 'per joint1..joint6: tau = kp (q_target - q) + kd (0 - dq) + tau_gravity, computed in the motor; motorbridge
+        clamps MIT fields to position +-4 pi rad, velocity +-50 (RS-06) / +-33 (RS-00) rad/s, kp 0-5000 / 0-500, kd 0-100
+        / 0-5, torque +-36 / +-14 N m'
+    also: /rebotarm/move_to_pose (rebotarm_msgs/action/MoveToPose, Cartesian gripper_end goal in base_link with a duration)
+      and /rebotarm/move_to_pose_ik (rebotarm_msgs/srv/MoveToPoseIK, IK then an immediate step of the hold target)
+    alternative: per-joint raw commands /rebotarm/joints/<joint>/cmd/mit (JointMitCmd) and /rebotarm/joints/<joint>/cmd/pos_vel
+      (JointPosVelCmd), debugging paths that stop the hold loop
+    example:
+      trajectory:
+        joint_names:
+        - joint1
+        - joint2
+        - joint3
+        - joint4
+        - joint5
+        - joint6
+        points:
+        - positions:
+          - 0.3
+          - 0.75
+          - 0.55
+          - 0.0
+          - 0.0
+          - 0.0
+          time_from_start:
+            sec: 4
+            nanosec: 0
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'Derived from the pinned source, not measured on the real robot (the robot specification''s real-hardware measurement
+      is outstanding): a trajectory ends by leaving the last point as the MIT hold target. Nothing times the target out:
+      the SDK control loop resends it every 2 ms (500 Hz) for as long as the node runs, the controller has no command timeout,
+      and motorbridge never writes the RobStride canTimeout parameter (0x7028, default 0 = off), so the motors also hold
+      their last MIT command if the loop stops.'
+    date: '2026-10-08'
+    source:
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L174-L220
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L251-L262
+    - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L328-L345
+    - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/actuator/rebotarm.py#L785-L814
+    - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/registers.rs#L185
+  feedback:
+  - name: /rebotarm/joint_states
+    field: position[0..5] (joint1..joint6, rad)
+  - name: /rebotarm/follow_joint_trajectory
+    field: feedback.actual.positions, feedback.error.positions
+  - name: /rebotarm/arm_status
+    field: state_machine (TRAJ_RUNNING while executing, then IDLE)
+  end_state: the action succeeds with error_code SUCCESSFUL once the elapsed time reaches the last point's time_from_start;
+    the driver checks no position tolerance. The 500 Hz MIT loop then holds the last point (kp, kd, gravity feedforward),
+    where the joints settle
+- id: gripper
+  velocity_driven: false
+  command:
+    interface: action
+    name: /rebotarm/gripper/command
+    type: control_msgs/action/GripperCommand
+    fields:
+    - field: command.position
+      unit: rad (gripper motor angle)
+      min: 0.0
+      max: 5.0
+      source:
+      - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/config/rebotarm_hardware.yaml#L48-L51
+      - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L72-L80
+      - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L133-L143
+      notes: 0.0 closed, 5.0 fully open; outside the range the goal aborts. /rebotarm/joint_states shows it as gripper_joint1
+        = 0.01 m and gripper_joint2 = 0.0143 m per motor rad
+    - field: command.max_effort
+      unit: N m
+      source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L274
+      notes: 'used only for the stalled flag: stalled when the position changes < 1e-4 rad in 50 ms and |torque| >= max_effort;
+        the gripper always moves with MIT kp 50, kd 4'
+    notes: Sets the gripper target of the 500 Hz loop (MIT kp 50, kd 4 from rebotarm_rs.yaml) and sends it once; then polls
+      every 50 ms for up to 5.0 s. Rejected in gravity compensation and safe home; aborts while disabled or during a trajectory.
+    source:
+    - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/config/rebotarm_rs.yaml#L122-L134
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L51-L52
+    also: /rebotarm/gripper/set (rebotarm_msgs/srv/SetGripper, same units and range), /rebotarm/gripper/open and /rebotarm/gripper/close
+      (rebotarm_msgs/srv/GripperCommand; position 0.0 means 5.0 / 0.0)
+    alternative: raw /rebotarm/gripper/cmd/mit and /rebotarm/gripper/cmd/pos_vel (stop the hold loop)
+    example:
+      command:
+        position: 5.0
+        max_effort: 0.0
+  watchdog:
+    present: false
+    interval_s: null
+    basis: source
+    method: 'Derived from the pinned source, not measured on the real robot (the robot specification''s real-hardware measurement
+      is outstanding): the gripper goal stays the loop''s gripper target after the action returns. Nothing times the target
+      out: the SDK control loop resends it every 2 ms (500 Hz) for as long as the node runs, the controller has no command
+      timeout, and motorbridge never writes the RobStride canTimeout parameter (0x7028, default 0 = off), so the motors
+      also hold their last MIT command if the loop stops.'
+    date: '2026-10-08'
+    source:
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L259-L291
+    - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L563-L573
+    - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L353-L358
+    - https://github.com/Seeed-Projects/reBotArm_control_py/blob/6415d43130d1e143c70dc106096a857ac5556f81/reBotArm_control_py/actuator/rebotarm.py#L785-L814
+    - https://github.com/motorbridge/motorbridge/blob/c652ce420e7da1008fa1864cc7f47d7d7c57fdb6/motor_vendors/robstride/src/registers.rs#L185
+  feedback:
+  - name: /rebotarm/gripper/state
+    field: position (motor rad)
+  - name: /rebotarm/joint_states
+    field: position[6..7] (gripper_joint1, gripper_joint2, m)
+  - name: /rebotarm/gripper/command
+    field: result.position, result.reached_goal, result.stalled
+  end_state: the action ends when |motor position - target| < 0.12 rad or after 5.0 s and always reports success; result.reached_goal
+    is that 0.12 rad test, result.position the motor angle. A grasped object stops the fingers short of the target, squeezed
+    by the motor's MIT torque kp * error (kp 50 N m/rad, at most the RS-00's 14 N m)
+sensors:
+  cameras: []
+  lidars: []
+  imus: []
+tolerances:
+- figure: arm joint final position after a trajectory
+  applies_to:
+  - joint1
+  - joint2
+  - joint3
+  - joint4
+  - joint5
+  - joint6
+  tolerance:
+    absolute: 0.03
+    unit: rad
+  basis: estimate
+  notes: 'about 1.7 deg: the MIT position loop (kp 50-150 N m/rad) with gravity feedforward leaves a static error of residual
+    torque / kp; 0.3 N m of unmodelled friction or gravity on a kp-50 wrist joint is 0.006 rad, and the 16-bit MIT position
+    resolution is 0.0004 rad. Seeed states no joint accuracy'
+- figure: gripper motor final position after a free (non-grasping) command
+  applies_to:
+  - gripper
+  tolerance:
+    absolute: 0.12
+    unit: rad (gripper motor)
+  basis: source
+  source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L13
+  notes: the driver's own goal test (_GRIPPER_GOAL_TOLERANCE_RAD); on /rebotarm/joint_states that is 0.0012 m on gripper_joint1
+    and 0.0017 m on gripper_joint2
+- figure: end-effector repeatability
+  applies_to:
+  - gripper_end
+  tolerance:
+    absolute: 0.0002
+    unit: m
+  basis: manufacturer
+  source: https://github.com/Seeed-Projects/reBot-DevArm/blob/0dfb49b85bc146eb3741f414be9dd2b1662345e8/README.md#L157
+  notes: Seeed's specification '< 0.2 mm' (repeatability, not absolute accuracy)
+notes: 'Seeed publishes and documents this interface (Seeed-Projects reBotArmController_ROS2 and the B601-RS ROS 2 wiki),
+  so it is the manufacturer''s. Excluded as ROS infrastructure: /rosout, /parameter_events, every node''s parameter, logger
+  and type-description services, ROS 2 action-internal topics and services, and the client-library parameters every node
+  declares (use_sim_time: false; start_type_description_service: true). Rates are derived from the pinned source (rate_basis
+  source), the /tf rate is an estimate, nothing is measured on hardware. The MoveIt 2 launches (rebotarm_moveit_config demo/hardware.launch.py),
+  fake_rs_bringup.launch.py, driver.launch.py, the agent and MuJoCo packages and the example executables are other launches
+  and are not recorded; MoveIt''s hardware path uses this boot''s /rebotarm/follow_joint_trajectory and /rebotarm/gripper/command.'

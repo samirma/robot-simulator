@@ -1,0 +1,170 @@
+<mujoco model="rebot_b601_rs">
+  <!-- DERIVED MODEL - not manufacturer-provided. Converted from Seeed's official ReBot_Arm_RS.urdf (Seeed-Projects/reBotArmController_ROS2 @ 7506dc0fc5c2a7787dcb974d89d13f9f49d16d61, src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf; equal to reBot-DevArm @ 0dfb49b apart from mesh URIs) by robots_specs/tools/models/rebot_b601_rs.py, following robots_specs/rebot_b601_rs/import.md. Kinematics, inertials, meshes, materials and limits are the URDF's. Adaptations listed in import.md: Seeed's mujoco_collision finger parts as finger contact, the coupled rack-and-pinion gripper (tendon + equality, one actuator in motor rad), position actuators with the boot's MIT gains, the boot's gravity feed-forward as gravcomp, collision filtering, the gripper_end site and the home keyframe. -->
+  <compiler angle="radian" meshdir="." autolimits="true" inertiafromgeom="false" />
+  <default>
+    <default class="rebot">
+      <default class="visual">
+        <geom type="mesh" group="2" contype="0" conaffinity="0" density="0" />
+      </default>
+      <default class="collision">
+        <geom type="mesh" group="3" contype="1" conaffinity="0" density="0" rgba="0.8 0.2 0.2 0.4" />
+      </default>
+      <default class="finger">
+        <geom type="mesh" group="3" contype="1" conaffinity="0" density="0" condim="4" friction="1 0.005 0.0001" rgba="0.2 0.5 0.9 0.4" />
+      </default>
+    </default>
+  </default>
+  <asset>
+    <material name="rs_base_black" rgba="0.055 0.065 0.060 1" />
+    <material name="rs_motor_black" rgba="0.045 0.052 0.049 1" />
+    <material name="rs_pla_black" rgba="0.090 0.106 0.102 1" />
+    <material name="rs_wordmark_black" rgba="0.010 0.012 0.011 1" />
+    <material name="rs_anodized_silver" rgba="0.720 0.760 0.730 1" />
+    <material name="rs_seeed_green" rgba="0.725 0.835 0.118 1" />
+    <mesh name="base_link" file="description/RS/meshes/shared/base_link.STL" />
+    <mesh name="cnc2" file="description/RS/meshes/visual/cnc2.STL" />
+    <mesh name="cnc3" file="description/RS/meshes/visual/cnc3.STL" />
+    <mesh name="cnc4" file="description/RS/meshes/visual/cnc4.STL" />
+    <mesh name="cnc5" file="description/RS/meshes/visual/cnc5.STL" />
+    <mesh name="cnc7" file="description/RS/meshes/visual/cnc7.STL" />
+    <mesh name="cnc_left" file="description/RS/meshes/visual/cnc_left.STL" />
+    <mesh name="cnc_right" file="description/RS/meshes/visual/cnc_right.STL" />
+    <mesh name="colored_left_finger_carriage_grey" file="description/RS/meshes/mujoco_collision/colored_left_finger_carriage_grey.stl" />
+    <mesh name="colored_left_finger_travel_stop_yellow" file="description/RS/meshes/mujoco_collision/colored_left_finger_travel_stop_yellow.stl" />
+    <mesh name="colored_right_finger_carriage_grey" file="description/RS/meshes/mujoco_collision/colored_right_finger_carriage_grey.stl" />
+    <mesh name="colored_right_finger_travel_stop_yellow" file="description/RS/meshes/mujoco_collision/colored_right_finger_travel_stop_yellow.stl" />
+    <mesh name="gripper_end" file="description/RS/meshes/shared/gripper_end.STL" />
+    <mesh name="left_finger_front" file="description/RS/meshes/mujoco_collision/left_finger_front.stl" />
+    <mesh name="left_finger_mid" file="description/RS/meshes/mujoco_collision/left_finger_mid.stl" />
+    <mesh name="left_finger_rear" file="description/RS/meshes/mujoco_collision/left_finger_rear.stl" />
+    <mesh name="link1" file="description/RS/meshes/shared/link1.STL" />
+    <mesh name="link2" file="description/RS/meshes/shared/link2.STL" />
+    <mesh name="link3" file="description/RS/meshes/shared/link3.STL" />
+    <mesh name="link4" file="description/RS/meshes/shared/link4.STL" />
+    <mesh name="link5" file="description/RS/meshes/shared/link5.STL" />
+    <mesh name="link6" file="description/RS/meshes/shared/link6.STL" />
+    <mesh name="motor_2_3" file="description/RS/meshes/visual/motor_2_3.STL" />
+    <mesh name="motor_4" file="description/RS/meshes/visual/motor_4.STL" />
+    <mesh name="motor_5" file="description/RS/meshes/visual/motor_5.STL" />
+    <mesh name="motor_6" file="description/RS/meshes/visual/motor_6.STL" />
+    <mesh name="motor_7" file="description/RS/meshes/visual/motor_7.STL" />
+    <mesh name="pla2_black" file="description/RS/meshes/visual/pla2_black.STL" />
+    <mesh name="pla2_green" file="description/RS/meshes/visual/pla2_green.STL" />
+    <mesh name="pla3_black_without_seeed_badge" file="description/RS/meshes/visual/pla3_black_without_seeed_badge.STL" />
+    <mesh name="pla3_green" file="description/RS/meshes/visual/pla3_green.STL" />
+    <mesh name="pla3_seeed_badge_with_counters" file="description/RS/meshes/visual/pla3_seeed_badge_with_counters.STL" />
+    <mesh name="pla3_seeed_wordmark_backing" file="description/RS/meshes/visual/pla3_seeed_wordmark_backing.STL" />
+    <mesh name="pla5_green" file="description/RS/meshes/visual/pla5_green.STL" />
+    <mesh name="pla7_green" file="description/RS/meshes/visual/pla7_green.STL" />
+    <mesh name="pla_left" file="description/RS/meshes/visual/pla_left.STL" />
+    <mesh name="pla_right" file="description/RS/meshes/visual/pla_right.STL" />
+    <mesh name="right_finger_front" file="description/RS/meshes/mujoco_collision/right_finger_front.stl" />
+    <mesh name="right_finger_mid" file="description/RS/meshes/mujoco_collision/right_finger_mid.stl" />
+    <mesh name="right_finger_rear" file="description/RS/meshes/mujoco_collision/right_finger_rear.stl" />
+  </asset>
+  <worldbody>
+    <body name="base_link" childclass="rebot">
+      <inertial pos="2.87641888266442E-06 -0.000122302488725115 0.0243376121934547" mass="1.1774" fullinertia="0.00133040 0.00213119 0.00275877 0.00000001 0.00000000 0.00000000" />
+      <geom class="visual" mesh="base_link" material="rs_base_black" />
+      <geom class="collision" mesh="base_link" />
+      <body name="link1" pos="-0.00034283 -0.00098683 0.075" gravcomp="1">
+        <joint name="joint1" type="hinge" axis="0 0 -1" range="-2.8 2.8" damping="3" actuatorfrcrange="-36 36" actuatorgravcomp="true" />
+        <inertial pos="0.00817652280320541 0.00122584211922395 0.0331419658967293" mass="0.4655" fullinertia="0.00025207 0.00015464 0.00023416 0.00000000 -0.00002832 0.00000000" />
+        <geom class="visual" mesh="link1" material="rs_anodized_silver" />
+        <geom class="collision" mesh="link1" />
+        <body name="link2" pos="0.020343 0.027237 0.07" quat="0.707105482511 -0.707108079859 0 0" gravcomp="1">
+          <joint name="joint2" type="hinge" axis="0 0 1" range="0 3.14" damping="10" actuatorfrcrange="-36 36" actuatorgravcomp="true" />
+          <inertial pos="-0.117864812717456 -0.00342226413942967 -0.0271551938501484" mass="1.552" fullinertia="0.00073374 0.01255987 0.01281387 -0.00000043 0.00000851 0.00000128" />
+          <geom class="visual" mesh="motor_2_3" material="rs_motor_black" />
+          <geom class="visual" mesh="cnc2" material="rs_anodized_silver" />
+          <geom class="visual" mesh="pla2_black" material="rs_pla_black" />
+          <geom class="visual" mesh="pla2_green" material="rs_seeed_green" />
+          <geom class="collision" mesh="link2" />
+          <body name="link3" pos="-0.236 0 0" gravcomp="1">
+            <joint name="joint3" type="hinge" axis="0 0 -1" range="0 3.14" damping="10" actuatorfrcrange="-36 36" actuatorgravcomp="true" />
+            <inertial pos="0.103427154487799 -0.0664137912104635 -0.0271068687716704" mass="1.252" fullinertia="0.00046807 0.00632695 0.00648221 -0.00003456 -0.00004260 0.00000006" />
+            <geom class="visual" mesh="cnc3" material="rs_anodized_silver" />
+            <geom class="visual" mesh="motor_4" material="rs_motor_black" />
+            <geom class="visual" mesh="pla3_black_without_seeed_badge" material="rs_pla_black" />
+            <geom class="visual" mesh="pla3_seeed_badge_with_counters" material="rs_seeed_green" />
+            <geom class="visual" mesh="pla3_seeed_wordmark_backing" material="rs_wordmark_black" />
+            <geom class="visual" mesh="pla3_green" material="rs_seeed_green" />
+            <geom class="collision" mesh="link3" />
+            <body name="link4" pos="0.228 -0.072746 0.0045" gravcomp="1">
+              <joint name="joint4" type="hinge" axis="0 0 -1" range="-1.57 1.57" damping="5" actuatorfrcrange="-14 14" actuatorgravcomp="true" />
+              <inertial pos="0.0475544540775559 -0.0441113470158517 -0.0314111924918381" mass="0.46" fullinertia="0.00045986 0.00075258 0.00066742 0.00024219 -0.0 -0.0" />
+              <geom class="visual" mesh="motor_5" material="rs_motor_black" />
+              <geom class="visual" mesh="cnc4" material="rs_anodized_silver" />
+              <geom class="collision" mesh="link4" />
+              <body name="link5" pos="0.087 -0.048 -0.03075" quat="0.707105482511 -0.707108079859 0 0" gravcomp="1">
+                <joint name="joint5" type="hinge" axis="0 0 -1" range="-1.57 1.57" damping="4" actuatorfrcrange="-14 14" actuatorgravcomp="true" />
+                <inertial pos="0.0114400622356175 4.7907739316217E-06 0.0380487481818926" mass="0.20120457182895" fullinertia="7.34238025911107E-05 5.5153884237714E-05 5.29920095811017E-05 1.35700947009798E-08 -8.58146433770359E-07 -1.32742144977931E-08" />
+                <geom class="visual" mesh="motor_6" material="rs_motor_black" />
+                <geom class="visual" mesh="cnc5" material="rs_anodized_silver" />
+                <geom class="visual" mesh="pla5_green" material="rs_seeed_green" />
+                <geom class="collision" mesh="link5" />
+                <body name="link6" pos="0.0365 0 0.048" quat="0.707105482511 0 0.707108079859 0" gravcomp="1">
+                  <joint name="joint6" type="hinge" axis="0 0 -1" range="-3.14 3.14" damping="4" actuatorfrcrange="-14 14" actuatorgravcomp="true" />
+                  <inertial pos="1.80196022567525E-05 2.48334592051007E-08 0.00434805764057547" mass="0.1" fullinertia="4.42273835852359E-06 4.37185522080034E-06 8.54299378942051E-06 3.16758463739482E-12 1.51852818442002E-10 -2.21864017603015E-12" />
+                  <geom class="visual" mesh="link6" material="rs_motor_black" />
+                  <geom class="collision" mesh="link6" />
+                  <body name="gripper_end" pos="0 0 0.16621" quat="-2.59734346696e-06 0.707105482506 2.59735300756e-06 0.707108079855" gravcomp="1">
+                    <inertial pos="-0.112751692515958 0.000128443070436966 -5.72602449749882E-06" mass="0.65" fullinertia="0.00037354 0.00015830 0.00045353 -0.00000011 0.00000050 0.00000348" />
+                    <geom class="visual" mesh="pla7_green" material="rs_seeed_green" />
+                    <geom class="visual" mesh="cnc7" material="rs_anodized_silver" />
+                    <geom class="visual" mesh="motor_7" material="rs_motor_black" />
+                    <geom class="collision" mesh="gripper_end" />
+                    <body name="gripper_left" pos="-0.041939 -7.3385E-05 0" quat="0.499998163397 0.499999999997 -0.499999999997 0.500001836603" gravcomp="1">
+                      <joint name="gripper_joint1" type="slide" axis="0 0 1" range="0 0.05" damping="31250" actuatorfrcrange="-500 500" />
+                      <inertial pos="-0.00218008703135955 0.0187090355934181 0.00932188568692145" mass="0.0752" fullinertia="1.09877964176176E-05 9.50146036720166E-06 9.30779991911125E-06 0 0 0" />
+                      <geom class="visual" mesh="pla_left" material="rs_pla_black" />
+                      <geom class="visual" mesh="cnc_left" material="rs_anodized_silver" />
+                      <geom class="finger" mesh="right_finger_front" pos="-1.54050548823e-07 -0.041939000269 -7.32309494507e-05" quat="0.499998163397 -0.499999999997 0.499999999997 -0.500001836603" />
+                      <geom class="finger" mesh="right_finger_mid" pos="-1.54050548823e-07 -0.041939000269 -7.32309494507e-05" quat="0.499998163397 -0.499999999997 0.499999999997 -0.500001836603" />
+                      <geom class="finger" mesh="right_finger_rear" pos="-1.54050548823e-07 -0.041939000269 -7.32309494507e-05" quat="0.499998163397 -0.499999999997 0.499999999997 -0.500001836603" />
+                      <geom class="finger" mesh="colored_right_finger_carriage_grey" pos="-1.54050548823e-07 -0.041939000269 -7.32309494507e-05" quat="0.499998163397 -0.499999999997 0.499999999997 -0.500001836603" />
+                      <geom class="finger" mesh="colored_right_finger_travel_stop_yellow" pos="-1.54050548823e-07 -0.041939000269 -7.32309494507e-05" quat="0.499998163397 -0.499999999997 0.499999999997 -0.500001836603" />
+                    </body>
+                    <body name="gripper_right" pos="-0.041939 7.3385E-05 0" quat="0.499998163397 -0.499999999997 -0.499999999997 -0.500001836603" gravcomp="1">
+                      <joint name="gripper_joint2" type="slide" axis="0 0 1" range="0 0.0715" damping="31250" actuatorfrcrange="-500 500" />
+                      <inertial pos="0.00218008703135955 -0.018709035593418 0.00932188568692151" mass="0.0752" fullinertia="1.09877964176176E-05 9.50146036720166E-06 9.30779991911125E-06 0 0 0" />
+                      <geom class="visual" mesh="pla_right" material="rs_pla_black" />
+                      <geom class="visual" mesh="cnc_right" material="rs_anodized_silver" />
+                      <geom class="finger" mesh="left_finger_front" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
+                      <geom class="finger" mesh="left_finger_mid" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
+                      <geom class="finger" mesh="left_finger_rear" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
+                      <geom class="finger" mesh="colored_left_finger_carriage_grey" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
+                      <geom class="finger" mesh="colored_left_finger_travel_stop_yellow" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
+                    </body>
+                    <site name="gripper_end" size="0.005" group="4" />
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <fixed name="gripper">
+      <joint joint="gripper_joint1" coef="62.5" />
+      <joint joint="gripper_joint2" coef="62.5" />
+    </fixed>
+  </tendon>
+  <equality>
+    <joint name="gripper_rack" joint1="gripper_joint2" joint2="gripper_joint1" polycoef="0 1 0 0 0" solref="0.005 1" />
+  </equality>
+  <actuator>
+    <position name="joint1" joint="joint1" kp="50" ctrlrange="-2.8 2.8" forcerange="-36 36" />
+    <position name="joint2" joint="joint2" kp="150" ctrlrange="0 3.14" forcerange="-36 36" />
+    <position name="joint3" joint="joint3" kp="150" ctrlrange="0 3.14" forcerange="-36 36" />
+    <position name="joint4" joint="joint4" kp="50" ctrlrange="-1.57 1.57" forcerange="-14 14" />
+    <position name="joint5" joint="joint5" kp="50" ctrlrange="-1.57 1.57" forcerange="-14 14" />
+    <position name="joint6" joint="joint6" kp="50" ctrlrange="-3.14 3.14" forcerange="-14 14" />
+    <position name="gripper" tendon="gripper" kp="50" ctrlrange="0 5" forcerange="-14 14" />
+  </actuator>
+  <keyframe>
+    <key name="home" qpos="0 0 0 0 0 0 0 0" ctrl="0 0 0 0 0 0 0" />
+  </keyframe>
+</mujoco>

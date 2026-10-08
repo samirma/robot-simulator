@@ -2,7 +2,7 @@
 """Fetch the robot meshes robots_specs/ references but git does not commit.
 
     python3 robots_specs/tools/fetch_meshes.py               every robot
-    python3 robots_specs/tools/fetch_meshes.py so101 ainex   only these
+    python3 robots_specs/tools/fetch_meshes.py rebot_b601_rs ainex   only these
     python3 robots_specs/tools/fetch_meshes.py --check       verify only, fetch nothing
 
 `robots_specs/meshes.sha256` lists every file (`<sha256>  <path from the repo root>`).
@@ -48,8 +48,8 @@ CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "robo
 
 #: Pinned sources. Revisions are those of the robot files robots_specs/<id>.md (a test checks).
 GIT = {
-    "SO-ARM100": ("https://github.com/TheRobotStudio/SO-ARM100",
-                  "aec17bbc256d1a7342d53aaa4950595d4c30b40d"),
+    "reBotArmController_ROS2": ("https://github.com/Seeed-Projects/reBotArmController_ROS2",
+                                "7506dc0fc5c2a7787dcb974d89d13f9f49d16d61"),
     "myagv_ros": ("https://github.com/elephantrobotics/myagv_ros",
                   "c71f3cc574e5ed1973a925238eabe88662cfa701"),
     "ainex": ("https://github.com/Hiwonder/ainex",
@@ -65,7 +65,10 @@ DRIVE = {
 }
 #: (robot id, local prefix under robots_specs/, source key, upstream prefix)
 SOURCES = [
-    ("so101", "so101/assets/", "SO-ARM100", "Simulation/SO101/assets/"),
+    # package://rebotarm_bringup/description/... of the boot's URDF; these RS meshes are
+    # byte-identical (git blob ids) to Seeed-Projects/reBot-DevArm Rebot_Arm_description/RS/meshes
+    ("rebot_b601_rs", "rebot_b601_rs/description/", "reBotArmController_ROS2",
+     "src/rebotarm_bringup/description/"),
     ("myagv", "myagv/urdf/", "myagv_ros", "myagv_urdf/urdf/"),
     ("ainex", "ainex/meshes/", "ainex", "src/ainex_simulations/ainex_description/meshes/"),
     ("rosmaster_x3_plus", "rosmaster_x3_plus/meshes/", "yahboom",

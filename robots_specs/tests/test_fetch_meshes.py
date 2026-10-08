@@ -17,13 +17,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
 import fetch_meshes  # noqa: E402
 
 GOOD = b"the pinned upstream bytes"
-REL = "so101/assets/part.stl"          # an SO-ARM100 file (fetch_meshes.SOURCES)
+REL = "rebot_b601_rs/description/RS/meshes/shared/part.STL"   # a reBotArmController_ROS2 file (fetch_meshes.SOURCES)
 
 
 @pytest.fixture
 def specs(tmp_path, monkeypatch):
     specs = tmp_path / "robots_specs"
-    (specs / "so101").mkdir(parents=True)
+    (specs / "rebot_b601_rs").mkdir(parents=True)
     manifest = specs / "meshes.sha256"
     manifest.write_text(f"{hashlib.sha256(GOOD).hexdigest()}  robots_specs/{REL}\n")
     monkeypatch.setattr(fetch_meshes, "SPECS", specs)
@@ -51,7 +51,7 @@ def test_a_mismatching_fetch_is_refused_and_nothing_is_kept(specs, monkeypatch):
     with pytest.raises(fetch_meshes.Refused) as exc:
         fetch_meshes.main([])
     assert exc.value.code == 1
-    assert calls == ["SO-ARM100"]
+    assert calls == ["reBotArmController_ROS2"]
     assert not (specs / REL).exists(), "no unverified file is left in place"
     assert not list(specs.glob(".fetch-*")), "the staging directory is removed"
 

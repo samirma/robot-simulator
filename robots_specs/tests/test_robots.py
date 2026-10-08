@@ -32,7 +32,7 @@ ROBOTS = spec_registry.robots()
 #: Motions each robot's evidence case exercises (workspace spec §3).
 REQUIRED_MOTIONS = {
     "myagv": {"drive"},
-    "so101": {"arm", "gripper"},
+    "rebot_b601_rs": {"arm", "gripper"},
     "ainex": {"head", "walk", "action_group"},
     "rosmaster_x3_plus": {"drive", "arm", "gripper"},
 }
@@ -54,7 +54,7 @@ def load(robot) -> dict:
 
 
 def test_registry_lists_the_robots():
-    assert {r.id for r in ROBOTS} == {"myagv", "so101", "ainex", "rosmaster_x3_plus"}
+    assert {r.id for r in ROBOTS} == {"myagv", "rebot_b601_rs", "ainex", "rosmaster_x3_plus"}
 
 
 def test_every_robot_file_is_a_robot_named_by_its_id():
@@ -456,7 +456,7 @@ def test_model_settles_on_a_floor(robot):
 
 
 #: Robots whose recorded boot (incl. an approved camera boot) serves a required camera.
-REQUIRED_CAMERA = {"myagv", "so101", "ainex", "rosmaster_x3_plus"}
+REQUIRED_CAMERA = {"myagv", "ainex", "rosmaster_x3_plus"}
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
@@ -574,7 +574,7 @@ def _stage(src: Path, dst: Path) -> None:
 #: Generators that print the model instead of writing model.xml.
 TO_STDOUT = {"myagv"}
 #: Third-party modules a generator needs beyond the standard library.
-GENERATOR_NEEDS = {"rosmaster_x3_plus": ("mujoco",), "so101": ("numpy", "scipy")}
+GENERATOR_NEEDS = {"rosmaster_x3_plus": ("mujoco",)}
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
