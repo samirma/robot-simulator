@@ -5,13 +5,20 @@
 # aarch64 CPython 3.8 extension modules walking_module.so and kinematics.so), ainex_sdk,
 # imu_calib and the calibration files; and the stock packages its boot runs (image_proc,
 # imu_complementary_filter, web_video_server). The board and GPIO hardware are simulated
-# at run time (wire/robots/sim_libs), so the vendor code runs unchanged.
+# at run time (wire/robots/sim_libs), so the vendor code runs unchanged. Every package comes
+# from the base image's dated snapshots (ROS: snapshots.ros.org noetic 2025-05-29; Ubuntu:
+# snapshot.ubuntu.com focal 20261002T223000Z), the stock nodes also by the release the
+# interface file records (image_proc 1.17.0, imu_complementary_filter 1.2.7, joy 1.15.1; the
+# build suffix is per architecture, hence the `*`).
 ARG BASE
 FROM ${BASE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-noetic-imu-complementary-filter ros-noetic-web-video-server ros-noetic-image-proc \
-      ros-noetic-nodelet ros-noetic-joy ros-noetic-dynamic-reconfigure ros-noetic-message-generation \
+      ros-noetic-imu-complementary-filter=1.2.7-1focal.* \
+      ros-noetic-image-proc=1.17.0-1focal.* \
+      ros-noetic-joy=1.15.1-1focal.* \
+      ros-noetic-web-video-server \
+      ros-noetic-nodelet ros-noetic-dynamic-reconfigure ros-noetic-message-generation \
       libeigen3-dev python3-opencv python3-serial python3-scipy \
     && rm -rf /var/lib/apt/lists/*
 ENV AINEX_REV=e8fe2a816797cf83054135160df5a82ec3596a69

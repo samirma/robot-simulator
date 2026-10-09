@@ -1,0 +1,198 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The vendor kinematics behind the rebot_b601_rs profile's `model`: console spec §2.2 makes the robot's
+     URDF the reference for the page's 3D model. Each <excerpt> is lines `lines` of `path` in the
+     pinned source exactly as written there (indentation and line endings aside): every joint of the
+     file, and the inertial origins the model draws links to. test_view_urdf.py reads them with URDF
+     semantics and checks the profile's model rows against them; live/test_live_urdf.py (opt in) checks
+     them against the pinned file. -->
+<vendor robot="rebot_b601_rs">
+  <file source="rebotarm_ros2" path="src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf"
+        revision="7506dc0fc5c2a7787dcb974d89d13f9f49d16d61"
+        sha256="978568c1b73310ec134b8f2285295f46d0c32c904d397bd097e3bcc81507b77b">
+    <excerpt lines="99-116">
+      <joint
+        name="joint1"
+        type="revolute">
+        <origin
+          xyz="-0.00034283 -0.00098683 0.075"
+          rpy="0 0 0" />
+        <parent
+          link="base_link" />
+        <child
+          link="link1" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-2.8"
+          upper="2.8"
+          effort="36"
+          velocity="50" />
+      </joint>
+    </excerpt>
+    <excerpt lines="193-210">
+      <joint
+        name="joint2"
+        type="revolute">
+        <origin
+          xyz="0.020343 0.027237 0.07"
+          rpy="-1.5708 0 0" />
+        <parent
+          link="link1" />
+        <child
+          link="link2" />
+        <axis
+          xyz="0 0 1" />
+        <limit
+          lower="0"
+          upper="3.14"
+          effort="36"
+          velocity="50" />
+      </joint>
+    </excerpt>
+    <excerpt lines="307-324">
+      <joint
+        name="joint3"
+        type="revolute">
+        <origin
+          xyz="-0.236 0 0"
+          rpy="0 0 0" />
+        <parent
+          link="link2" />
+        <child
+          link="link3" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="0"
+          upper="3.14"
+          effort="36"
+          velocity="50" />
+      </joint>
+    </excerpt>
+    <excerpt lines="381-398">
+      <joint
+        name="joint4"
+        type="revolute">
+        <origin
+          xyz="0.228 -0.072746 0.0045"
+          rpy="0 0 0" />
+        <parent
+          link="link3" />
+        <child
+          link="link4" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-1.57"
+          upper="1.57"
+          effort="14"
+          velocity="40" />
+      </joint>
+    </excerpt>
+    <excerpt lines="465-482">
+      <joint
+        name="joint5"
+        type="revolute">
+        <origin
+          xyz="0.087 -0.048 -0.03075"
+          rpy="-1.5708 0 0" />
+        <parent
+          link="link4" />
+        <child
+          link="link5" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-1.57"
+          upper="1.57"
+          effort="14"
+          velocity="40" />
+      </joint>
+    </excerpt>
+    <excerpt lines="519-536">
+      <joint
+        name="joint6"
+        type="revolute">
+        <origin
+          xyz="0.0365 0 0.048"
+          rpy="0 1.5708 0" />
+        <parent
+          link="link5" />
+        <child
+          link="link6" />
+        <axis
+          xyz="0 0 -1" />
+        <limit
+          lower="-3.14"
+          upper="3.14"
+          effort="14"
+          velocity="40" />
+      </joint>
+    </excerpt>
+    <excerpt lines="603-615">
+      <joint
+        name="j_gripper_end"
+        type="fixed">
+        <origin
+          xyz="0 0 0.16621"
+          rpy="3.1416 -1.5708 0" />
+        <parent
+          link="link6" />
+        <child
+          link="gripper_end" />
+        <axis
+          xyz="0 0 0" />
+      </joint>
+    </excerpt>
+    <excerpt lines="676-693">
+      <joint
+        name="gripper_joint1"
+        type="prismatic">
+        <origin
+          xyz="-0.041939 -7.3385E-05 0"
+          rpy="1.5708 -1.5708 0" />
+        <parent
+          link="gripper_end" />
+        <child
+          link="gripper_left" />
+        <axis
+          xyz="0 0 1" />
+        <limit
+          lower="0"
+          upper="0.05"
+          effort="500"
+          velocity="10" />
+      </joint>
+    </excerpt>
+    <excerpt lines="754-771">
+      <joint
+        name="gripper_joint2"
+        type="prismatic">
+        <origin
+          xyz="-0.041939 7.3385E-05 0"
+          rpy="-1.5708 -1.5708 0" />
+        <parent
+          link="gripper_end" />
+        <child
+          link="gripper_right" />
+        <axis
+          xyz="0 0 1" />
+        <limit
+          lower="0"
+          upper="0.0715"
+          effort="500"
+          velocity="10" />
+      </joint>
+    </excerpt>
+    <excerpt lines="619-621" inertial="gripper_left">
+          <origin
+            xyz="-0.00218008703135955 0.0187090355934181 0.00932188568692145"
+            rpy="0 0 0" />
+    </excerpt>
+    <excerpt lines="697-699" inertial="gripper_right">
+          <origin
+            xyz="0.00218008703135955 -0.018709035593418 0.00932188568692151"
+            rpy="0 0 0" />
+    </excerpt>
+  </file>
+</vendor>

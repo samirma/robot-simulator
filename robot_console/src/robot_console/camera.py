@@ -38,8 +38,39 @@ def _yuv_to_rgb(y: np.ndarray, u: np.ndarray, v: np.ndarray) -> np.ndarray:
     return np.clip(np.stack([r, g, b], axis=-1), 0, 255).astype(np.uint8)
 
 
-def decode_image(msg: dict, allowed: Optional[Sequence[str]] = None) -> np.ndarray:
-    """A ``sensor_msgs/Image`` dict -> RGB uint8 array (H, W, 3); raises FrameError."""
+#: The depth false-colour map: (position 0 = near ... 1 = far, RGB). The page (``console.js``) carries
+#: the same stops, so both entry points draw a depth image alike.
+DEPTH_STOPS = ((0.0, (213, 32, 39)), (0.17, (244, 125, 32)), (0.34, (250, 224, 50)), (0.5, (80, 200, 100)),
+               (0.67, (40, 180, 220)), (0.84, (50, 90, 210)), (1.0, (70, 40, 140)))
+#: Colour of a pixel with no depth (value 0).
+NO_DEPTH_RGB = (0, 0, 0)
+
+
+def depth_lut(n: int = 256) -> np.ndarray:
+    """The map as ``n`` RGB rows, near first (float stops interpolated, rounded to uint8)."""
+    pos = [p for p, _ in DEPTH_STOPS]
+    xs = np.linspace(0.0, 1.0, n)
+    return np.stack([np.round(np.interp(xs, pos, [c[i] for _, c in DEPTH_STOPS])) for i in range(3)],
+                    axis=-1).astype(np.uint8)
+
+
+def depth_to_rgb(values: np.ndarray, unit_m: float, range_m: Tuple[float, float]) -> np.ndarray:
+    """Depth values (H, W; each times ``unit_m`` is metres, 0 = no depth) -> RGB (H, W, 3): the
+    false-colour map scaled to ``range_m`` (near, far), nearer or farther values at its ends."""
+    lut = depth_lut()
+    near, far = range_m
+    t = np.clip((values.astype(np.float64) * unit_m - near) / (far - near), 0.0, 1.0)
+    out = lut[np.floor(t * 255.0 + 0.5).astype(np.intp)]
+    out[values == 0] = NO_DEPTH_RGB
+    return out
+
+
+def decode_image(msg: dict, allowed: Optional[Sequence[str]] = None,
+                 depth: Optional[Tuple[float, Tuple[float, float]]] = None) -> np.ndarray:
+    """A ``sensor_msgs/Image`` dict -> RGB uint8 array (H, W, 3); raises FrameError.
+
+    ``depth`` = (``unit_m``, ``range_m``) is a depth camera's scale: a 16-bit frame is then drawn as the
+    false-colour map over that range instead of being stretched to its own maximum."""
     try:
         w, h, step = int(msg["width"]), int(msg["height"]), int(msg["step"])
         enc = str(msg["encoding"]).lower()
@@ -80,7 +111,10 @@ def decode_image(msg: dict, allowed: Optional[Sequence[str]] = None) -> np.ndarr
         g = rows[:, :w]
         return np.repeat(g[:, :, None], 3, axis=2).copy()
     if enc in ("mono16", "16uc1"):
-        vals = rows[:, : w * 2].copy().view(">u2" if big else "<u2").reshape(h, w).astype(np.float32)
+        raw16 = rows[:, : w * 2].copy().view(">u2" if big else "<u2").reshape(h, w)
+        if depth is not None:
+            return depth_to_rgb(raw16, *depth)
+        vals = raw16.astype(np.float32)
         top = float(vals.max()) or 1.0
         g = np.clip(vals * (255.0 / top), 0, 255).astype(np.uint8)
         return np.repeat(g[:, :, None], 3, axis=2)
@@ -112,6 +146,7 @@ class StreamSpec:
     encodings: Optional[Tuple[str, ...]] = None   # None: any supported (untied stream)
     tied: bool = True
     optional: bool = False
+    depth: Optional[Tuple[float, Tuple[float, float]]] = None   # (unit_m, range_m) of a depth camera
 
 
 class CameraStream:
@@ -148,7 +183,7 @@ class CameraStream:
         if msg is None:
             return
         try:
-            self.frame = decode_image(msg, self.spec.encodings)
+            self.frame = decode_image(msg, self.spec.encodings, self.spec.depth)
             self.frame_at = at
             self.frames += 1
             self.error = None
@@ -214,7 +249,8 @@ class CameraSet:
 def target_specs(target) -> list:
     """Stream specs of a validated target's profile cameras (resolved names)."""
     return [StreamSpec(topic=target.wire(c.topic), type=c.type, stale_after_s=c.stale_after_s,
-                       encodings=c.encodings or None, tied=True, optional=c.optional)
+                       encodings=c.encodings or None, tied=True, optional=c.optional,
+                       depth=(c.unit_m, c.range_m) if c.kind == "depth" else None)
             for c in target.profile.cameras]
 
 

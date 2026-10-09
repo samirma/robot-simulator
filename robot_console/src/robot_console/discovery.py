@@ -10,7 +10,9 @@ optional rows and ROS infrastructure.
 Stock ROS 2 rosapi cannot report action types (its ``action_type`` service crashes the
 rosapi node on Jazzy and hangs on Humble, and hidden ``_action`` endpoints are not listed),
 so a ROS 2 action is identified by name through ``/rosapi/action_servers`` and its type is
-reported as not verifiable over rosbridge. The console never calls ``action_type``.
+reported as not verifiable over rosbridge; where a rosapi does list the hidden
+``…/_action/send_goal`` service, its type gives the action's, which is then checked.
+The console never calls ``action_type``.
 """
 
 from __future__ import annotations

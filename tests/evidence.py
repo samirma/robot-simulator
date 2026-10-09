@@ -19,14 +19,16 @@ A case starts the engine's default scene with `simulator/kitchen.sh start --engi
   vendor wire with each robot's recorded command, one or more motions per recorded motion
   (workspace spec §3's list), judged by recorded feedback (or, where the interface
   publishes none, by readings from the simulation's control port) against the tolerances
-  recorded in `robots_specs/<id>/ros*.yml`;
+  recorded in `robots_specs/<id>/ros*.yml`, and, where a record gives no figure, by the
+  harness heuristics listed in HEURISTICS (and in the index);
 * `fleet_<profile>.txt` -- `robot_console/python.sh -m robot_console.fleet --expect` for
   the console profile naming the robot, if any;
 * `case.json` -- robot, engine, scene, placement, ports, readiness line, timestamps, host
   load, the worktop objects staged and the scene objects cleared (arms), per-item results
-  and the verdict. Evidence collected while the simulation ran below real time (RTF < 0.90
-  over a 10 s window, simulator spec §3 Timing) cannot claim the acceptance bounds and fails
-  the case.
+  and the verdict. Evidence collected while the simulation ran below real time (a completed
+  10 s window below 0.90 overlapping the collection, from the control port's documented
+  `rtf` operation asked since the collection's start; simulator spec §3 Timing) cannot
+  claim the acceptance bounds and fails the case.
 
 Independence (workspace spec §1.4): the smoke-run commands and bounds come from
 `robots_specs/` (normative for the simulator); the console's verdict is its own exit
@@ -47,7 +49,6 @@ import signal
 import socket
 import subprocess
 import sys
-import threading
 import time
 import traceback
 from pathlib import Path
@@ -69,6 +70,63 @@ DEFAULT_SCENES = {"molmospaces": "ithor:1", "robocasa": "robocasa:1-1"}
 ENGINES = list(DEFAULT_SCENES)
 #: The worktop objects staged around an arm on the worktop (simulator spec Terms, §2.3).
 WORKTOP_OBJECTS = ("apple", "banana", "bowl", "lemon", "mug", "plate")
+
+# Harness heuristics: thresholds the harness judges by where the robot's record gives no
+# figure. They are not recorded acceptance bounds; the index lists them (HEURISTICS).
+#: reBot arm and gripper at rest: |velocity| on the recorded feedback below this, rad/s, and
+#: moved less than STILL_RAD over STILL_WINDOW_S.
+REST_SPEED_RADPS = 0.01
+STILL_RAD = 0.002
+STILL_WINDOW_S = 0.5
+#: ROSMASTER arm and gripper still: every /CurrentAngle servo angle changes less than this,
+#: deg, over 0.5 s.
+SERVO_STILL_DEG = 0.5
+#: AiNex head still: the servo position changes at most this many pulses over 0.25 s.
+HEAD_STILL_PULSES = 1
+#: How long a joint motion may take to settle: s after the command (arm and gripper), s
+#: beyond the commanded move time (AiNex head).
+SETTLE_S = 8.0
+HEAD_SETTLE_MARGIN_S = 4.0
+#: AiNex walk: a body height change over the walk above this, m, is a fall (the gait's stance
+#: after the stop is not the recorded init pose, so the record's standing-height figure does
+#: not apply there); at rest after the stop: travel from 1 s to 2 s after it below this, m.
+WALK_FALL_M = 0.03
+WALK_STILL_M = 0.01
+#: AiNex action group: control-port joint readings every AG_SAMPLE_S s; at rest when no joint
+#: of the init pose moves more than AG_STILL_RAD between readings for AG_QUIET_S s, after the
+#: group's frames have played, within the frames' time plus AG_MARGIN_S s.
+AG_SAMPLE_S = 0.1
+AG_STILL_RAD = 0.002
+AG_QUIET_S = 1.5
+AG_MARGIN_S = 10.0
+#: Pictures that are not flat: pixel standard deviation of the scene picture above, and of a
+#: camera picture at least, these.
+SCENE_MIN_STD = 5.0
+CAMERA_MIN_STD = 2.0
+#: A worktop object is shown when the depth render around its pixel reaches its origin less
+#: this much nearer, m (the object's own surface in front of its origin).
+OBJECT_DEPTH_MARGIN_M = 0.10
+
+HEURISTICS = [
+    f"reBot Arm B601-RS arm and gripper at rest: |velocity| on the recorded feedback < "
+    f"{REST_SPEED_RADPS} rad/s and moved < {STILL_RAD} rad over {STILL_WINDOW_S} s",
+    f"ROSMASTER X3 PLUS arm and gripper at rest: each /CurrentAngle servo angle changes < "
+    f"{SERVO_STILL_DEG} deg over 0.5 s",
+    f"AiNex head at rest: the servo position changes <= {HEAD_STILL_PULSES} pulse over 0.25 s",
+    f"settling waits: {SETTLE_S:g} s after an arm or gripper command, the commanded move time "
+    f"+ {HEAD_SETTLE_MARGIN_S:g} s for an AiNex head move",
+    f"AiNex walk: a body height change over the walk > {WALK_FALL_M} m is a fall (the gait's "
+    "stance after the stop is not the recorded init pose, so the record's standing-height "
+    f"figure does not apply there); at rest after the stop: travel < {WALK_STILL_M} m from "
+    "1 s to 2 s after it",
+    f"AiNex action group at rest: no joint of the recorded init pose moves > {AG_STILL_RAD} rad "
+    f"between control-port readings {AG_SAMPLE_S:g} s apart for {AG_QUIET_S:g} s, after the "
+    f"group's frames have played and within their time + {AG_MARGIN_S:g} s",
+    f"pictures are not flat: pixel standard deviation > {SCENE_MIN_STD:g} (scene picture), "
+    f">= {CAMERA_MIN_STD:g} (camera picture)",
+    f"a worktop object is shown when the depth render around its pixel reaches its origin "
+    f"less {OBJECT_DEPTH_MARGIN_M} m",
+]
 
 
 # =========================================================================== registry
@@ -106,8 +164,17 @@ def tolerance(rid: str, fragment: str) -> dict:
     for t in interface(rid).get("tolerances") or []:
         if fragment in t["figure"]:
             return {"figure": t["figure"], "tolerance": t["tolerance"], "basis": t.get("basis"),
+                    "notes": t.get("notes"),
                     "source": f"{interface_file(rid).relative_to(REPO)} tolerances"}
     raise KeyError(f"{rid}: no tolerance '{fragment}'")
+
+
+def param(rid: str, name: str):
+    """A recorded parameter's value (interface file `parameters`)."""
+    for p in interface(rid).get("parameters") or []:
+        if p["name"] == name:
+            return p["value"]
+    raise KeyError(f"{rid}: no parameter {name}")
 
 
 def bound_of(tol: dict, commanded: float) -> float:
@@ -308,7 +375,7 @@ def project(view: dict, point, width: int, height: int):
     return col, row, z
 
 
-def shown(depth: np.ndarray, view: dict, point, margin: float = 0.10) -> bool:
+def shown(depth: np.ndarray, view: dict, point, margin: float = OBJECT_DEPTH_MARGIN_M) -> bool:
     """Whether a world point is in the picture of `view` and not hidden: it projects into
     the frame and, around its pixel, the depth render reaches it (nothing more than
     `margin` m nearer, which allows for the object's own surface in front of its origin)."""
@@ -633,7 +700,7 @@ def drive_motions(ctx: Ctx) -> List[dict]:
 
 
 def wait_settled(get, names, target: Dict[str, float], tol_of, timeout: float,
-                 still: float, window: float = 0.5) -> dict:
+                 still: float, window: float = STILL_WINDOW_S) -> dict:
     """Poll `get()` (name -> position) until every named joint is within its tolerance of
     the target and moved less than `still` over `window`; returns the last samples."""
     t0 = time.monotonic()
@@ -659,22 +726,64 @@ def rounded(d: dict, n=4) -> dict:
     return {k: (round(v, n) if isinstance(v, float) else v) for k, v in d.items()}
 
 
-# --------------------------------------------------------------------------- SO-101
+# --------------------------------------------------------------------------- reBot Arm B601-RS
 
 
-def so101_motions(ctx: Ctx) -> List[dict]:
+def rebot_finger_m_per_motor_rad(grip: dict) -> Dict[str, float]:
+    """Metres of each finger joint on /rebotarm/joint_states per gripper motor rad, as the
+    reBot record states it (motions[gripper].command.fields[command.position].notes). A record
+    that stops saying so fails the gripper motion, naming the change."""
+    note = next(f for f in grip["command"]["fields"] if f["field"] == "command.position").get("notes", "")
+    m = re.search(r"(gripper_joint1)\s*=\s*([\d.]+) m and (gripper_joint2)\s*=\s*([\d.]+) m per motor rad",
+                  " ".join(str(note).split()))
+    if not m:
+        raise ValueError("robots_specs/rebot_b601_rs/ros2.yml no longer states the finger metres per gripper "
+                         f"motor rad (command.position notes {note!r}); update the gripper judgement")
+    return {m.group(1): float(m.group(2)), m.group(3): float(m.group(4))}
+
+
+def action_problems(res: dict, what: str) -> List[str]:
+    """A rosbridge `action_result` that is not a succeeded goal (GoalStatus SUCCEEDED = 4,
+    where rosbridge reports the status)."""
+    out = []
+    if not res.get("result", False):
+        out.append(f"{what}: action failed: {res.get('values')}")
+    elif res.get("status") is not None and res["status"] != 4:
+        out.append(f"{what}: goal status {res['status']} (not SUCCEEDED)")
+    return out
+
+
+def rebot_b601_rs_motions(ctx: Ctx) -> List[dict]:
+    """The recorded arm and gripper actions on the vendor wire: the FollowJointTrajectory
+    example (joint1..joint6) and the GripperCommand example (gripper motor rad), judged by
+    the recorded feedback -- /rebotarm/joint_states for the arm joints and the fingers,
+    /rebotarm/gripper/state for the gripper motor, the action results and
+    /rebotarm/arm_status -- against the recorded tolerances."""
+    rid = "rebot_b601_rs"
     w = ctx.wire
-    arm = motion_row("so101", "arm")
-    grip = motion_row("so101", "gripper")
-    t_arm = tolerance("so101", "arm joint")
-    t_grip = tolerance("so101", "gripper final")
-    names = arm["command"]["example"]["joint_names"]
-    target = arm["command"]["example"]["points"][0]["positions"]
+    arm = motion_row(rid, "arm")
+    grip = motion_row(rid, "gripper")
+    t_arm = tolerance(rid, "arm joint final position")
+    t_grip = tolerance(rid, "gripper motor final position")
+    goal_arm = arm["command"]["example"]
+    names = list(goal_arm["trajectory"]["joint_names"])
+    target = dict(zip(names, (float(x) for x in goal_arm["trajectory"]["points"][-1]["positions"])))
+
+    def feedback_topic(row: dict, suffix: str) -> str:
+        return next(f["name"] for f in row["feedback"] if f["name"].endswith(suffix))
+
+    js_topic = feedback_topic(arm, "/joint_states")
+    status_topic = feedback_topic(arm, "/arm_status")
+    gs_topic = feedback_topic(grip, "/gripper/state")
     rb = Rosbridge(w["url"])
     out = []
     try:
-        js = Latest(rb, "/joint_states")
+        js = Latest(rb, js_topic)
+        gs = Latest(rb, gs_topic)
+        states: List[tuple] = []
+        rb.subscribe(status_topic, lambda m: states.append((time.monotonic(), m.get("state_machine"))))
         js.wait(20)
+        gs.wait(20)
 
         def fb() -> Dict[str, float]:
             m = js.next()
@@ -684,76 +793,111 @@ def so101_motions(ctx: Ctx) -> List[dict]:
             m = js.msg
             return dict(zip(m["name"], m.get("velocity") or [0.0] * len(m["name"])))
 
-        rb.advertise(arm["command"]["name"], arm["command"]["type"])
-        time.sleep(1.0)
-
         def do_arm():
-            ex = arm["command"]["example"]
-            msg = {"header": {"stamp": {"sec": 0, "nanosec": 0}, "frame_id": ""},
-                   "joint_names": names,
-                   "points": [{"positions": target, "velocities": [], "accelerations": [],
-                               "effort": [], "time_from_start": ex["points"][0]["time_from_start"]}]}
-            before = fb()
-            rb.publish(arm["command"]["name"], msg)
             lim = t_arm["tolerance"]["absolute"]
-            res = wait_settled(fb, names, dict(zip(names, target)), lambda k: lim, 12.0, still=0.002)
+            before = fb()
+            t0 = time.monotonic()
+            res = rb.action(arm["command"]["name"], arm["command"]["type"], goal_arm, timeout=60)
+            t_result = round(time.monotonic() - t0, 2)
+            st = wait_settled(fb, names, target, lambda k: lim, SETTLE_S, still=STILL_RAD)
             vel = fbv()
-            problems = []
+            time.sleep(0.3)
+            seen = [s for t, s in states if t >= t0]
+            last = states[-1][1] if states else None
+            values = res.get("values") or {}
+            problems = action_problems(res, "arm")
+            if isinstance(values, dict) and values.get("error_code", 0) != 0:
+                problems.append(f"error_code {values.get('error_code')} {values.get('error_string')!r} "
+                                "(not SUCCESSFUL)")
             for k in names:
-                if res["error"][k] > lim:
-                    problems.append(f"{k}: {res['positions'][k]:.4f} vs {dict(zip(names, target))[k]} (> {lim})")
+                if st["error"][k] > lim:
+                    problems.append(f"{k}: {st['positions'][k]:.4f} vs {target[k]} (> {lim})")
             vmax = max(abs(vel.get(k, 0.0)) for k in names)
-            if vmax >= 0.01:
+            if vmax >= REST_SPEED_RADPS:
                 problems.append(f"not at rest: |velocity| {vmax:.4f} rad/s")
-            if not res["settled"]:
+            if not st["settled"]:
                 problems.append("did not settle at the goal")
+            if "TRAJ_RUNNING" not in seen or last != "IDLE":
+                problems.append(f"{status_topic} state_machine {seen} (last {last}): not TRAJ_RUNNING, then IDLE")
             sim = ctx.joints()
-            return {"wire": w["url"], "command": {"topic": arm["command"]["name"],
-                                                  "type": arm["command"]["type"], "message": msg},
-                    "feedback": "/joint_states (joint_state_broadcaster: measured positions/velocities)",
-                    "commanded": dict(zip(names, target)),
+            return {"wire": w["url"], "command": {"action": arm["command"]["name"],
+                                                  "type": arm["command"]["type"], "goal": goal_arm},
+                    "feedback": f"action result + {js_topic} position[0..5] (measured) + {status_topic}",
+                    "commanded": target,
                     "before": rounded({k: before[k] for k in names}),
-                    "measured": rounded({k: res["positions"][k] for k in names}),
-                    "error": rounded(res["error"]),
+                    "action_result": values, "action_status": res.get("status"),
+                    "result_after_s": t_result,
+                    "arm_status": {"state_machine_seen": seen, "last": last},
+                    "measured": rounded({k: st["positions"][k] for k in names}),
+                    "error": rounded(st["error"]),
                     "velocity_after": rounded({k: vel.get(k) for k in names}),
-                    "sim_readings_crosscheck": rounded({k: sim[k] for k in names}),
+                    "sim_readings_crosscheck": rounded({k: sim[k] for k in names if k in sim}),
                     "bound": {"figure": t_arm["figure"], "tolerance": t_arm["tolerance"],
-                              "rule": "every joint within the absolute tolerance of the goal; at rest = "
-                                      "|velocity| < 0.01 rad/s (end_state: stopped_velocity_tolerance)"},
-                    "settle_time_s": res["t_s"], "problems": problems}
+                              "rule": "the goal succeeds (error_code SUCCESSFUL); every joint within the "
+                                      "absolute tolerance of the last point; at rest = |velocity| < "
+                                      f"{REST_SPEED_RADPS} rad/s and still (< {STILL_RAD} rad over "
+                                      f"{STILL_WINDOW_S} s; harness heuristics); arm_status TRAJ_RUNNING, "
+                                      "then IDLE"},
+                    "settle_time_s": st["t_s"], "problems": problems}
+
+        def motor() -> Dict[str, float]:
+            return {"gripper": float(gs.next()["position"])}
 
         def do_grip():
-            ex = grip["command"]["example"]
-            before = fb()["gripper_joint"]
-            want = float(ex["command"]["position"][0])
-            if abs(before - want) < 0.2:   # already there: close instead, so the jaw moves
-                want = 0.0
-            goal = {"command": {"name": ex["command"]["name"], "position": [want],
-                                "velocity": [], "effort": []}}
-            res = rb.action(grip["command"]["name"], grip["command"]["type"], goal, timeout=30)
             lim = t_grip["tolerance"]["absolute"]
-            st = wait_settled(fb, ["gripper_joint"], {"gripper_joint": want}, lambda k: lim, 8.0, still=0.002)
-            vel = fbv().get("gripper_joint", 0.0)
-            problems = []
+            per_rad = rebot_finger_m_per_motor_rad(grip)
+            pos_field = next(f for f in grip["command"]["fields"] if f["field"] == "command.position")
+            goal = grip["command"]["example"]
+            before = motor()["gripper"]
+            want = float(goal["command"]["position"])
+            if abs(before - want) <= 2 * lim:   # already there: to the other end, so the jaw moves
+                want = float(pos_field["min"]) if want > (pos_field["min"] + pos_field["max"]) / 2 \
+                    else float(pos_field["max"])
+                goal = {"command": dict(goal["command"], position=want)}
+            res = rb.action(grip["command"]["name"], grip["command"]["type"], goal, timeout=30)
+            st = wait_settled(motor, ["gripper"], {"gripper": want}, lambda k: lim, SETTLE_S, still=STILL_RAD)
+            vel = float(gs.msg.get("velocity") or 0.0)
+            fingers = {k: v for k, v in fb().items() if k in per_rad}
             values = res.get("values") or {}
-            if not res.get("result", False):
-                problems.append(f"action result not successful: {res}")
-            if st["error"]["gripper_joint"] > lim:
-                problems.append(f"gripper_joint {st['positions']['gripper_joint']:.4f} vs {want} (> {lim})")
-            if abs(vel) >= 0.01:
+            problems = action_problems(res, "gripper")
+            if isinstance(values, dict) and values.get("reached_goal") is False:
+                problems.append(f"result.reached_goal false (result.position {values.get('position')})")
+            if st["error"]["gripper"] > lim:
+                problems.append(f"gripper motor {st['positions']['gripper']:.4f} rad vs {want} (> {lim})")
+            if abs(vel) >= REST_SPEED_RADPS:
                 problems.append(f"gripper not at rest ({vel:.4f} rad/s)")
+            if not st["settled"]:
+                problems.append("gripper did not settle")
+            finger_want = {k: per_rad[k] * want for k in per_rad}
+            finger_err = {k: abs(fingers[k] - finger_want[k]) if k in fingers else None for k in per_rad}
+            for k, e in finger_err.items():
+                if e is None:
+                    problems.append(f"{js_topic} has no {k}")
+                elif e > per_rad[k] * lim + 1e-6:
+                    problems.append(f"{k}: {fingers[k]:.4f} m vs {finger_want[k]:.4f} (> {per_rad[k] * lim:.4f})")
+            rd = ctx.readings()
+            sim = {k: rd["joints"][k]["position"] for k in per_rad if k in rd["joints"]}
+            if "gripper" in (rd.get("ctrl") or {}):
+                sim["gripper_actuator_target_rad"] = rd["ctrl"]["gripper"]
             return {"wire": w["url"], "command": {"action": grip["command"]["name"],
                                                   "type": grip["command"]["type"], "goal": goal},
-                    "feedback": "action result + /joint_states gripper_joint",
-                    "commanded": {"gripper_joint": want}, "before": {"gripper_joint": round(before, 4)},
-                    "action_result": values,
-                    "measured": {"gripper_joint": round(st["positions"]["gripper_joint"], 4)},
-                    "error": round(st["error"]["gripper_joint"], 4),
+                    "feedback": f"action result + {gs_topic} position (motor rad) + "
+                                f"{js_topic} position[6..7] (fingers, m)",
+                    "commanded": {"gripper": want}, "before": {"gripper": round(before, 4)},
+                    "action_result": values, "action_status": res.get("status"),
+                    "measured": {"gripper": round(st["positions"]["gripper"], 4)},
+                    "error": round(st["error"]["gripper"], 4),
                     "velocity_after": vel,
-                    "sim_readings_crosscheck": {"gripper_joint": round(ctx.joints()["gripper_joint"], 4)},
+                    "fingers": {"commanded_m": rounded(finger_want, 5), "measured_m": rounded(fingers, 5),
+                                "m_per_motor_rad": per_rad},
+                    "sim_readings_crosscheck": rounded(sim),
                     "bound": {"figure": t_grip["figure"], "tolerance": t_grip["tolerance"],
-                              "rule": "action succeeds and gripper_joint within the absolute tolerance; at rest"},
-                    "problems": problems}
+                              "rule": "the goal succeeds with result.reached_goal; the gripper motor within the "
+                                      "absolute tolerance of the goal and each finger within the tolerance times "
+                                      f"its m per motor rad; at rest = |velocity| < {REST_SPEED_RADPS} rad/s "
+                                      f"and still (< {STILL_RAD} rad over {STILL_WINDOW_S} s; harness "
+                                      "heuristics)"},
+                    "settle_time_s": st["t_s"], "problems": problems}
 
         out.append(run_motion(ctx, "arm", do_arm))
         out.append(run_motion(ctx, "gripper", do_grip))
@@ -800,7 +944,7 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
                 cur = measured()
                 errs = {i: abs(to_joint(i, cur[i]) - to_joint(i, d)) for i, d in want_deg.items()}
                 lims = {i: (t_grip if i == 5 else t_arm)["tolerance"]["absolute"] for i in want_deg}
-                still = all(abs(cur[i] - prev[i]) < 0.5 for i in range(6))
+                still = all(abs(cur[i] - prev[i]) < SERVO_STILL_DEG for i in range(6))
                 ok = all(errs[i] <= lims[i] for i in want_deg) and still
                 if ok or time.monotonic() - t0 > timeout:
                     return cur, errs, lims, ok, round(time.monotonic() - t0, 2)
@@ -812,7 +956,7 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
             joints = list(ex["joints"][:5]) + [int(round(before[5]))]
             msg = {"id": 0, "run_time": ex["run_time"], "angle": 0.0, "joints": joints}
             rb.publish(arm["command"]["name"], msg)
-            cur, errs, lims, ok, t = settle({i: joints[i] for i in range(5)}, 8.0)
+            cur, errs, lims, ok, t = settle({i: joints[i] for i in range(5)}, SETTLE_S)
             problems = [f"{names[i]}: servo {cur[i]:.1f} deg vs {joints[i]} (error {errs[i]:.4f} rad > {lims[i]})"
                         for i in range(5) if errs[i] > lims[i]]
             if not ok:
@@ -830,7 +974,8 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
                     "sim_readings_crosscheck": {n: round(sim[n], 4) for n in names[:5]},
                     "bound": {"figure": t_arm["figure"], "tolerance": t_arm["tolerance"],
                               "rule": "each arm joint (servo deg - 90) within the absolute tolerance; "
-                                      "at rest = measured angles change < 0.5 deg over 0.5 s"},
+                                      f"at rest = measured angles change < {SERVO_STILL_DEG} deg over 0.5 s "
+                                      "(harness heuristic)"},
                     "settle_time_s": t, "problems": problems}
 
         def do_grip():
@@ -840,7 +985,7 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
                 ex["angle"] = 30.0
             msg = {"id": ex["id"], "run_time": ex["run_time"], "angle": float(ex["angle"]), "joints": []}
             rb.publish(grip["command"]["name"], msg)
-            cur, errs, lims, ok, t = settle({5: msg["angle"]}, 6.0)
+            cur, errs, lims, ok, t = settle({5: msg["angle"]}, SETTLE_S)
             problems = []
             if errs[5] > lims[5]:
                 problems.append(f"grip servo {cur[5]:.1f} deg vs {msg['angle']} (error {errs[5]:.4f} rad > {lims[5]})")
@@ -856,7 +1001,8 @@ def rosmaster_arm_motions(ctx: Ctx) -> List[dict]:
                     "error": round(errs[5], 4),
                     "sim_readings_crosscheck": {"grip_joint": round(ctx.joints()["grip_joint"], 4)},
                     "bound": {"figure": t_grip["figure"], "tolerance": t_grip["tolerance"],
-                              "rule": "grip_joint ((deg-180)/150*pi/2) within the absolute tolerance; at rest"},
+                              "rule": "grip_joint ((deg-180)/150*pi/2) within the absolute tolerance; at rest = "
+                                      f"measured angles change < {SERVO_STILL_DEG} deg over 0.5 s (harness heuristic)"},
                     "settle_time_s": t, "problems": problems}
 
         out.append(run_motion(ctx, "arm", do_arm))
@@ -877,7 +1023,7 @@ AINEX_WALK_S = 4.0
 
 def ainex_walk_step_periods(walk: dict) -> int:
     """Gait periods per walk step, as the AiNex record defines it
-    (motions[walk].command.step_definition, amended: the amplitudes are per step and
+    (motions[walk].command.step_definition: the amplitudes are per step and
     one step is one gait period, so the nominal commanded displacement is x_move_amplitude per
     completed gait period). A record that stops saying so fails the walk, naming the change."""
     cmd = walk["command"]
@@ -888,6 +1034,129 @@ def ainex_walk_step_periods(walk: dict) -> int:
     return 1
 
 
+def ainex_init_pose() -> Dict[str, float]:
+    """The recorded init pose, rad by joint: the `/ainex_controller/init_pose` parameter of
+    robots_specs/ainex/ros.yml, to which an action group returns the robot
+    (motions[action_group].end_state) and from which its frames' offsets are counted."""
+    return {k: float(v) for k, v in param("ainex", "/ainex_controller/init_pose").items()}
+
+
+def ainex_group_frames(cmd: dict, name: str) -> List[tuple]:
+    """The frames `[(time ms, {joint: offset rad})]` of the record's estimated action group
+    `name` (robots_specs/ainex/<motions[action_group].command.estimated_groups>; offsets
+    from the recorded init pose, a joint a frame does not name at its init angle)."""
+    if not cmd.get("estimated_groups"):
+        raise ValueError("robots_specs/ainex/ros.yml motions[action_group] names no estimated_groups "
+                         "file; update the action-group judgement")
+    doc = yaml.safe_load((SPECS / "ainex" / cmd["estimated_groups"]).read_text())
+    group = (doc.get("groups") or {}).get(name)
+    if group is None:
+        raise ValueError(f"robots_specs/ainex/{cmd['estimated_groups']} has no group {name!r}")
+    return [(int(f["time_ms"]), {k: float(v) for k, v in (f.get("offsets_rad") or {}).items()})
+            for f in group["frames"]]
+
+
+def ainex_frame_targets(frames: List[tuple], init: Dict[str, float]) -> List[Dict[str, float]]:
+    """Each frame's target of every joint the frames name: init + the frame's offset (the
+    init angle where the frame does not name the joint)."""
+    named = sorted({j for _, off in frames for j in off})
+    unknown = [j for j in named if j not in init]
+    if unknown:
+        raise ValueError(f"action-group frames name joints the recorded init pose lacks: {unknown}")
+    return [{j: init[j] + off.get(j, 0.0) for j in named} for _, off in frames]
+
+
+def ainex_held_targets(frames: List[tuple], init: Dict[str, float]) -> Dict[str, List[float]]:
+    """The frame targets a group holds away from the init pose, by joint: a joint's target in
+    a frame that equals its target in the previous frame and is not its init angle (a
+    non-zero offset). The player sends a frame, then waits its time, so a joint stands on such
+    a target for at least a whole frame; a target only passed through within one frame (the
+    wave's elbow) is not held."""
+    out: Dict[str, List[float]] = {}
+    targets = ainex_frame_targets(frames, init)
+    for (_, off), prev, cur in zip(frames[1:], targets, targets[1:]):
+        for j, t in cur.items():
+            if abs(t - prev[j]) < 1e-9 and abs(off.get(j, 0.0)) > 1e-9 \
+                    and all(abs(t - x) > 1e-9 for x in out.get(j, [])):
+                out.setdefault(j, []).append(t)
+    return out
+
+
+def ainex_standing_height(tol: dict) -> tuple:
+    """(body name, standing height of its origin above the floor at the init pose, m), as the
+    AiNex record states them (tolerances: the figure 'standing height of <body> origin at the
+    init pose' and its notes 'Model value <h> m'). A record that stops saying so fails the
+    action group, naming the change."""
+    body = re.search(r"standing height of (\S+) origin at the init pose", tol["figure"])
+    value = re.search(r"Model value ([\d.]+) m", " ".join(str(tol.get("notes") or "").split()))
+    if not body or not value:
+        raise ValueError("robots_specs/ainex/ros.yml no longer states the standing height at the init "
+                         f"pose (figure {tol['figure']!r}, notes {tol.get('notes')!r}); update the "
+                         "action-group judgement")
+    return body.group(1), float(value.group(1))
+
+
+def ainex_play_and_judge(sample, frames: List[tuple], init: Dict[str, float], lim: float) -> dict:
+    """Judge an action group while it plays from control-port joint readings (`sample()`:
+    joint -> position; the interface records no feedback for it): read every AG_SAMPLE_S s
+    until every held frame target (ainex_held_targets) has been reached and every joint of
+    the recorded init pose has been still for AG_QUIET_S s after the frames' time, or until
+    the frames' time plus AG_MARGIN_S. Passes when each held target was reached within the
+    recorded tolerance `lim` and the joints end at rest within `lim` of the init pose."""
+    held = ainex_held_targets(frames, init)
+    if not held:
+        raise ValueError("the action group holds no frame target away from the init pose, so its "
+                         "frames cannot show that it played; update the action-group judgement")
+    targets = ainex_frame_targets(frames, init)
+    play_s = sum(t for t, _ in frames) / 1000.0
+    j0 = sample()
+    judged = [j for j in init if j in j0]
+    problems = [f"no reading of {j} (a joint of the recorded init pose)" for j in init if j not in j0]
+    # the closest approach to every frame target away from the init angle (held ones judged)
+    closest = {(j, t): abs(j0[j] - t) for tg in targets for j, t in tg.items()
+               if abs(t - init[j]) > 1e-9 and j in j0}
+    t0 = time.monotonic()
+    prev, cur = j0, j0
+    quiet_since = None
+    rested = False
+    while time.monotonic() - t0 < play_s + AG_MARGIN_S:
+        time.sleep(AG_SAMPLE_S)
+        cur = sample()
+        for (j, t) in closest:
+            closest[(j, t)] = min(closest[(j, t)], abs(cur[j] - t))
+        reached = all(closest.get((j, t), math.inf) <= lim for j, ts in held.items() for t in ts)
+        moving = any(abs(cur[j] - prev[j]) > AG_STILL_RAD for j in judged)
+        prev = cur
+        if reached and not moving and time.monotonic() - t0 >= play_s:
+            quiet_since = quiet_since or time.monotonic()
+            if time.monotonic() - quiet_since >= AG_QUIET_S:
+                rested = True
+                break
+        else:
+            quiet_since = None
+    for j, ts in held.items():
+        for t in ts:
+            c = closest.get((j, t), math.inf)
+            if c > lim:
+                problems.append(f"{j} never came within {lim} rad of the frame target {t:.4f} the group "
+                                f"holds (closest {c:.4f})")
+    if not rested:
+        problems.append(f"the joints did not come to rest within the frames' {play_s:g} s + {AG_MARGIN_S:g} s")
+    final_err = {j: abs(cur[j] - init[j]) for j in judged}
+    bad = {j: round(e, 4) for j, e in final_err.items() if e > lim}
+    if bad:
+        problems.append(f"not at the recorded init pose: {bad} (> {lim})")
+    return {"held_targets": {j: [round(t, 4) for t in ts] for j, ts in held.items()},
+            "held_targets_closest_rad": {f"{j} {t:.4f}": round(closest.get((j, t), math.inf), 4)
+                                         for j, ts in held.items() for t in ts},
+            "frame_targets_closest_rad": {f"{j} {t:.4f}": round(c, 4) for (j, t), c in closest.items()},
+            "before": rounded({j: j0[j] for j in judged}),
+            "measured": rounded({j: cur[j] for j in judged}),
+            "final_error_vs_init_pose_rad": rounded(final_err),
+            "frames_s": play_s, "duration_s": round(time.monotonic() - t0, 2), "at_rest": rested,
+            "problems": problems}
+
+
 def ainex_motions(ctx: Ctx) -> List[dict]:
     w = ctx.wire
     rb = Rosbridge(w["url"])
@@ -896,6 +1165,7 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
     t_walk = tolerance("ainex", "walk displacement")
     t_drift = tolerance("ainex", "heading drift")
     t_ag = tolerance("ainex", "action group")
+    t_stand = tolerance("ainex", "standing height")
 
     def servo_positions(ids) -> Dict[int, int]:
         r = rb.call("/ros_robot_controller/bus_servo/get_position", {"id": list(ids)}, timeout=10)
@@ -923,11 +1193,11 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
                 t0 = time.monotonic()
                 prev = before
                 ok = False
-                while time.monotonic() - t0 < ex["duration"] + 4.0:
+                while time.monotonic() - t0 < ex["duration"] + HEAD_SETTLE_MARGIN_S:
                     time.sleep(0.25)
                     cur = servo_positions([servo])[servo]
                     err = abs(pulse_to_rad(cur) - ex["position"])
-                    if err <= lim and abs(cur - prev) <= 1 and time.monotonic() - t0 >= ex["duration"]:
+                    if err <= lim and abs(cur - prev) <= HEAD_STILL_PULSES and time.monotonic() - t0 >= ex["duration"]:
                         ok = True
                         break
                     prev = cur
@@ -947,7 +1217,8 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
                         "sim_readings_crosscheck": {joint: round(sim, 4)},
                         "bound": {"figure": t_head["figure"], "tolerance": t_head["tolerance"],
                                   "rule": "servo position (pulse-500)*0.24 deg within the absolute tolerance "
-                                          "after the move time, then still (<= 1 pulse over 0.25 s)"},
+                                          f"after the move time, then still (<= {HEAD_STILL_PULSES} pulse over "
+                                          "0.25 s; harness heuristic)"},
                         "problems": problems}
             out.append(run_motion(ctx, joint, do_head))
         # back to the centre (not judged: restores the initial head pose)
@@ -1010,11 +1281,11 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
                 problems.append(f"forward {fwd:.3f} m vs commanded {commanded:.3f} m (bound {b:.3f})")
             if abs(drift) > t_drift["tolerance"]["absolute"]:
                 problems.append(f"heading drift {drift:.3f} rad (> {t_drift['tolerance']['absolute']})")
-            if abs(r1["pos"][2] - r0["pos"][2]) > 0.03:
+            if abs(r1["pos"][2] - r0["pos"][2]) > WALK_FALL_M:
                 problems.append(f"body height changed {r1['pos'][2] - r0['pos'][2]:.3f} m (fell?)")
             if not states or states[-1][1]:
                 problems.append(f"/walking/is_walking did not end False: {[s for _, s in states]}")
-            if settle > 0.01:
+            if settle > WALK_STILL_M:
                 problems.append(f"body still moving after the stop: {settle:.4f} m in 1 s")
             return {"wire": w["url"],
                     "command": {"sequence": "get_param -> publish /walking/set_param -> /walking/command start",
@@ -1040,7 +1311,9 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
                               "bound": round(b, 4), "drift": t_drift["tolerance"],
                               "rule": "forward > 0 and |forward - commanded| <= relative*commanded (commanded = "
                                       "x_move_amplitude per completed gait period); |heading drift| <= "
-                                      "the drift tolerance; is_walking ends False; still (< 0.01 m over 1 s) after the stop"},
+                                      "the drift tolerance; is_walking ends False; harness heuristics: body "
+                                      f"height change <= {WALK_FALL_M} m (not fallen) and still (< {WALK_STILL_M} m "
+                                      "from 1 s to 2 s) after the stop"},
                     "problems": problems}
         out.append(run_motion(ctx, "walk", do_walk))
 
@@ -1054,51 +1327,51 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
             msg = dict(cmd["smoke_example"])
             basis = cmd.get("smoke_example_basis")
             groups_file = f"robots_specs/ainex/{cmd['estimated_groups']}" if cmd.get("estimated_groups") else None
-            arms = ["r_sho_pitch", "r_sho_roll", "r_el_pitch", "r_el_yaw",
-                    "l_sho_pitch", "l_sho_roll", "l_el_pitch", "l_el_yaw", "head_pan", "head_tilt"]
-            j0 = ctx.joints()
-            arms = [a for a in arms if a in j0]
+            # the group's frames and the init pose, from the record
+            frames = ainex_group_frames(cmd, msg["data"])
+            init = ainex_init_pose()
+            lim = t_ag["tolerance"]["absolute"]
+            body, standing = ainex_standing_height(t_stand)
+            lim_h = t_stand["tolerance"]["absolute"]
             rb.advertise(ag["command"]["name"], ag["command"]["type"])
             time.sleep(0.8)
             rb.publish(ag["command"]["name"], msg)
-            peak = {a: 0.0 for a in arms}
-            t0 = time.monotonic()
-            quiet_since = None
-            prev = j0
-            while time.monotonic() - t0 < 20:
-                time.sleep(0.1)
-                j = ctx.joints()
-                for a in arms:
-                    peak[a] = max(peak[a], abs(j[a] - j0[a]))
-                moving = any(abs(j[a] - prev[a]) > 0.002 for a in arms)
-                prev = j
-                if max(peak.values()) > 0.2 and not moving:
-                    quiet_since = quiet_since or time.monotonic()
-                    if time.monotonic() - quiet_since > 1.5:
-                        break
-                else:
-                    quiet_since = None
-            j1 = ctx.joints()
-            back = {a: abs(j1[a] - j0[a]) for a in arms}
-            lim = t_ag["tolerance"]["absolute"]
-            problems = []
-            if max(peak.values()) < 0.2:
-                problems.append(f"the action group did not move the arms (peak {max(peak.values()):.3f} rad)")
-            bad = {a: round(v, 4) for a, v in back.items() if v > lim}
-            if bad:
-                problems.append(f"not back at the init pose: {bad} (> {lim})")
+            rec = ainex_play_and_judge(ctx.joints, frames, init, lim)
+            problems = rec.pop("problems")
+            # standing at the init pose: the body's recorded standing height above the floor
+            floor_z = float(ctx.sp.call("hello")["floor_z"])
+            pose = (ctx.readings().get("bodies") or {}).get(body)
+            height = None if pose is None else pose["pos"][2] - floor_z
+            if height is None:
+                problems.append(f"no reading of the body {body}")
+            elif abs(height - standing) > lim_h:
+                problems.append(f"{body} origin {height:.4f} m above the floor vs the recorded standing height "
+                                f"{standing} m at the init pose (> {lim_h})")
             return {"wire": w["url"], "command": {"topic": cmd["name"], "type": cmd["type"], "message": msg,
                                                   "smoke_example_basis": basis,
                                                   "estimated_groups": groups_file},
                     "note": (f"'{msg['data']}' is an ESTIMATED action group ({groups_file}, smoke_example_basis "
                              f"{basis}), not vendor data: no vendor .d6a file is in a pinned source"
                              if basis == "estimate" else f"the record's smoke example ({basis})"),
-                    "feedback": "none on the wire (interface feedback: []); judged by sim-port joint readings",
-                    "peak_excursion_rad": rounded(peak), "final_error_vs_init_rad": rounded(back),
-                    "duration_s": round(time.monotonic() - t0, 2),
+                    "feedback": "none on the wire (interface feedback: []); judged by sim-port joint readings "
+                                "and the body's pose",
+                    "frames": [{"time_ms": t, "offsets_rad": off} for t, off in frames],
+                    "init_pose": {"parameter": "/ainex_controller/init_pose", "value": init},
+                    **rec,
+                    "standing": {"body": body, "height_above_floor_m": None if height is None else round(height, 4),
+                                 "floor_z": floor_z, "recorded_m": standing,
+                                 "figure": t_stand["figure"], "tolerance": t_stand["tolerance"]},
                     "bound": {"figure": t_ag["figure"], "tolerance": t_ag["tolerance"],
-                              "rule": "an arm joint moves > 0.2 rad (the group plays), then every arm/head joint "
-                                      "returns within the absolute tolerance of the init pose and is still for 1.5 s"},
+                              "rule": "every frame target the group holds away from the init pose (a joint's "
+                                      "target equal to the previous frame's, so held for a whole frame) is "
+                                      "reached within the absolute tolerance; then every joint of the recorded "
+                                      "init pose (/ainex_controller/init_pose) ends within the absolute tolerance "
+                                      f"of it, at rest (harness heuristic: no joint moves > {AG_STILL_RAD} rad "
+                                      f"between readings {AG_SAMPLE_S:g} s apart for {AG_QUIET_S:g} s), and the "
+                                      f"{body} origin stands at the recorded standing height above the floor "
+                                      "within its tolerance. Targets passed through within one frame are "
+                                      "recorded (frame_targets_closest_rad), not judged: sampled control-port "
+                                      "readings cannot catch them reliably"},
                     "problems": problems}
         out.append(run_motion(ctx, "action_group", do_action))
     finally:
@@ -1111,7 +1384,7 @@ def ainex_motions(ctx: Ctx) -> List[dict]:
 SMOKE = {
     "myagv": drive_motions,
     "rosmaster_x3_plus": lambda ctx: drive_motions(ctx) + rosmaster_arm_motions(ctx),
-    "so101": so101_motions,
+    "rebot_b601_rs": rebot_b601_rs_motions,
     "ainex": ainex_motions,
 }
 
@@ -1170,7 +1443,7 @@ def capture_cameras(rid: str, wire: dict, outdir: Path, say) -> List[dict]:
                         for k in ("encoding", "width", "height", "frame_id") if info.get(k) != c[k]]
             if len(box) < 2:
                 problems.append("only one frame within 20 s")
-            if info["std"] < 2.0:
+            if info["std"] < CAMERA_MIN_STD:
                 problems.append(f"picture is flat (std {info['std']})")
             rec.update({"file": fn, "frames_seen": len(box), "message": info,
                         "pass": not problems, "problems": problems})
@@ -1215,44 +1488,39 @@ def iso(t: Optional[float] = None) -> str:
     return dt.datetime.fromtimestamp(t or time.time()).astimezone().isoformat(timespec="seconds")
 
 
-class RtfMonitor:
-    """Polls the simulation's real-time factor (`hello.rtf`, the RTF over its last 10 s
-    window) every second on its own control-port connection. A change of value marks a
-    window that ended then; `low_windows(a, b)` lists the windows below 0.90 (the
-    simulator's warning threshold) that overlap the wall-time interval [a, b]."""
+#: The simulation's real-time-factor window, s, and the factor below which it warns (simulator
+#: spec §3 Timing); the `rtf` reply states both, and its values are the ones used.
+RTF_WINDOW_S = 10.0
+RTF_WARN_BELOW = 0.90
 
-    WINDOW_S = 10.0
 
-    def __init__(self, port: int):
-        self.sp = SimPort(port)
-        self.samples: List[tuple] = []
-        self.updates: List[tuple] = []
-        self._stop = threading.Event()
-        self._t = threading.Thread(target=self._run, daemon=True)
-        self._t.start()
+def rtf_since(sp, since: float, until: float, wait: float) -> dict:
+    """The control port's documented `rtf` operation (simulator/README.md) asked with
+    `since` (epoch s): every completed window ending at or after it, `[[wall start, wall end,
+    rtf], ...]`, with `window_s` and `warn_below`. With `wait` > 0 it is asked again, about
+    once a second, until a completed window ends at or after `until` or `wait` s have passed."""
+    t0 = time.monotonic()
+    while True:
+        reply = sp.call("rtf", since=since)
+        windows = reply.get("windows") or []
+        if (windows and max(float(w[1]) for w in windows) >= until) or time.monotonic() - t0 >= wait:
+            return reply
+        time.sleep(1.0)
 
-    def _run(self):
-        last = None
-        while not self._stop.is_set():
-            try:
-                rtf = float(self.sp.call("hello").get("rtf"))
-            except Exception:
-                return
-            now = time.time()
-            self.samples.append((now, rtf))
-            if last is not None and rtf != last:
-                self.updates.append((now, rtf))
-            last = rtf
-            self._stop.wait(1.0)
 
-    def low_windows(self, a: float, b: float, threshold: float = 0.90) -> List[dict]:
-        return [{"window_end": iso(t), "rtf": r} for t, r in self.updates
-                if r < threshold and t > a and t - self.WINDOW_S - 1.0 < b]
-
-    def close(self):
-        self._stop.set()
-        self._t.join(3)
-        self.sp.close()
+def rtf_judgement(reply: dict, a: float, b: float) -> dict:
+    """The real-time factor over the collection [a, b] (epoch s) from an `rtf` reply: the
+    completed windows overlapping it, those below the reply's `warn_below`, and whether they
+    cover it (the first starts at or before `a`, the last ends at or after `b`)."""
+    below = float(reply.get("warn_below", RTF_WARN_BELOW))
+    windows = sorted((float(s), float(e), float(r)) for s, e, r in reply.get("windows") or []
+                     if float(e) > a and float(s) < b)
+    covered = bool(windows) and windows[0][0] <= a and windows[-1][1] >= b
+    return {"operation": "rtf", "since": a, "window_s": reply.get("window_s", RTF_WINDOW_S),
+            "warn_below": below, "covered": covered,
+            "windows": [[iso(s), iso(e), r] for s, e, r in windows],
+            "low": [{"window_start": iso(s), "window_end": iso(e), "rtf": r}
+                    for s, e, r in windows if r < below]}
 
 
 def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
@@ -1268,7 +1536,7 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
     say(f"== case {engine}/{rid} ({placement})")
     case["host_load_before"] = wait_low_load(args.max_load, args.max_wait, say)
     sim = spawn = None
-    sp = rtfmon = None
+    sp = rtf_reply = None
     t_collect = None
     sim_log = outdir / "simulation.log"
     try:
@@ -1279,7 +1547,6 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         sim.wait_for("simulation ready", 600)
         case["simulation_command"] = f"simulator/kitchen.sh start --engine {engine} --sim-port {args.sim_port}"
         sp = SimPort(args.sim_port)
-        rtfmon = RtfMonitor(args.sim_port)
         hello = sp.call("hello")
         case["scene"] = hello["scene"]
         if hello["engine"] != engine:
@@ -1310,7 +1577,8 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         case["view"] = view
         sc = render(sp, view, outdir / "scene.png")
         case["items"]["scene"] = {"file": "scene.png", **sc,
-                                  "pass": sc["width"] == 1280 and sc["height"] == 720 and sc["std"] > 5}
+                                  "pass": sc["width"] == 1280 and sc["height"] == 720
+                                  and sc["std"] > SCENE_MIN_STD}
         if staged:
             case["items"]["scene"]["worktop_objects_shown"] = objects_in_picture(sp, view, staged)
         say(f"    scene.png ({view.get('_context_m')} m context"
@@ -1338,25 +1606,27 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         case["items"]["smoke"] = {"file": "smoke.json", "pass": all(m["pass"] for m in motions),
                                   "motions": {m["name"]: m["pass"] for m in motions}}
         t_collect[1] = time.time()
-        # the RTF window covering the end of the collection, before the robot is removed
-        time.sleep(RtfMonitor.WINDOW_S + 1.0)
+        # the completed RTF windows over the collection, up to the one covering its end,
+        # before the robot is removed (the documented `rtf` operation, since its start)
+        rtf_reply = rtf_since(sp, t_collect[0], t_collect[1], wait=2 * RTF_WINDOW_S + 5.0)
     except Exception as exc:
         case["error"] = f"{exc!r}"
         case["traceback"] = traceback.format_exc()[-4000:]
         say(f"    ERROR {exc!r}")
     finally:
-        if rtfmon is not None:
-            if t_collect and t_collect[1] is None:
+        if t_collect:
+            if t_collect[1] is None:
                 t_collect[1] = time.time()
-            if t_collect:
-                case["collection"] = {"from": iso(t_collect[0]), "to": iso(t_collect[1])}
-                case["rtf_low_windows_during_collection"] = rtfmon.low_windows(*t_collect)
-                # the monitor sampled the whole collection (its thread ends on an error)
-                case["rtf_monitored_to_end"] = bool(rtfmon.samples) and \
-                    rtfmon.samples[-1][0] >= t_collect[1]
-            t0 = rtfmon.samples[0][0] if rtfmon.samples else 0.0
-            case["rtf_samples"] = [[round(t - t0, 1), r] for t, r in rtfmon.samples]
-            rtfmon.close()
+            case["collection"] = {"from": iso(t_collect[0]), "to": iso(t_collect[1])}
+            if rtf_reply is None and sp is not None:
+                try:
+                    rtf_reply = rtf_since(sp, t_collect[0], t_collect[1], wait=0.0)
+                except Exception as exc:
+                    case["rtf_error"] = f"{exc!r}"
+            if rtf_reply is not None:
+                rtf = case["rtf"] = rtf_judgement(rtf_reply, *t_collect)
+                case["rtf_low_windows_during_collection"] = rtf["low"]
+                case["rtf_windows_cover_collection"] = rtf["covered"]
         if sp is not None:
             sp.close()
         if spawn is not None:
@@ -1386,9 +1656,10 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
         # every motion of workspace spec §3's list, as the robot records it, was run
         "smoke_covers_recorded_motions": set(required_motions(rid)) <= set(smoke_run),
         # nothing collected below real time (simulator spec §3 Timing: no claim of the
-        # acceptance bounds for such an interval)
-        "real_time": "collection" in case and not case.get("rtf_low_windows_during_collection")
-                     and bool(case.get("rtf_monitored_to_end")),
+        # acceptance bounds for such an interval), by the `rtf` windows covering the collection
+        "real_time": "collection" in case and "rtf" in case
+                     and not case.get("rtf_low_windows_during_collection")
+                     and bool(case.get("rtf_windows_cover_collection")),
         "spawn_clean_exit": case.get("spawn_exit_code") == 0 and not case["containers_left"],
     }
     if not mobile:
@@ -1402,11 +1673,13 @@ def run_case(engine: str, robot: dict, out_root: Path, args, say) -> dict:
     case["checks"] = checks
     case["pass"] = "error" not in case and all(checks.values())
     # evidence collected while the simulation ran below real time is retried (main loop)
-    case["rtf_clean"] = not case.get("rtf_low_windows_during_collection")
+    case["rtf_clean"] = bool(case.get("rtf_windows_cover_collection")) \
+        and not case.get("rtf_low_windows_during_collection")
     (outdir / "case.json").write_text(json.dumps(case, indent=1, default=str))
     say(f"== {engine}/{rid}: {'PASS' if case['pass'] else 'FAIL'} {checks}"
         + ("" if case["rtf_clean"] else f" (RTF below 0.90 during collection: "
-                                         f"{case['rtf_low_windows_during_collection']})"))
+                                         f"{case.get('rtf_low_windows_during_collection')}, windows "
+                                         f"cover it: {case.get('rtf_windows_cover_collection')})"))
     return case
 
 
@@ -1456,6 +1729,7 @@ def write_index(out_root: Path) -> dict:
                 "rtf_warnings": len(c.get("rtf_warnings") or []),
                 "rtf_clean": c.get("rtf_clean"),
                 "rtf_low_windows": c.get("rtf_low_windows_during_collection"),
+                "rtf_covered": c.get("rtf_windows_cover_collection"),
                 "collection": c.get("collection"),
                 "earlier_attempts": hist,
             })
@@ -1511,12 +1785,22 @@ def write_index(out_root: Path) -> dict:
           "x_move_amplitude per completed gait period (the record's step definition); all within "
           "the placement's guaranteed travel. The AiNex action group is its record's `smoke_example`, "
           "an estimated group (`smoke_example_basis: estimate`, robots_specs/ainex/action_groups.yml): "
-          "no vendor group is in a pinned source.",
+          "no vendor group is in a pinned source. The interface records no feedback for it, so the "
+          "control port's joint readings judge it against the record: every frame target the group "
+          "holds away from the init pose (a joint's target equal to the previous frame's) is reached, "
+          "then every joint ends at the recorded init pose (`/ainex_controller/init_pose`), both "
+          "within the recorded action-group tolerance, and the body stands at the recorded standing "
+          "height above the floor within its tolerance.",
           "* **Console check**: `robot_console/python.sh -m robot_console.fleet --url <wire> --expect <profile>` "
           "for the console profile naming the robot, if any; exit 0 is the console's own verdict.",
-          "* **Real time**: the simulation's real-time factor never fell below 0.90 (over its 10 s "
-          "window) during the collection; below it no acceptance bound can be claimed (simulator "
-          "spec §3 Timing).",
+          "* **Real time**: the control port's documented `rtf` operation, asked with `since` = the "
+          "collection's start once a window has completed after its end, lists the completed "
+          "real-time-factor windows (10 s each); those overlapping the collection cover it and none "
+          "is below the reply's `warn_below` (0.90): below it no acceptance bound can be claimed "
+          "(simulator spec §3 Timing).",
+          "* **Harness heuristics**: where a robot's record gives no figure, the harness judges by "
+          "these thresholds of its own (not recorded acceptance bounds): "
+          + "; ".join(HEURISTICS) + ".",
           "* A case also requires `spawn.sh` to exit 0 on SIGINT with no container left.",
           "* **Worktop objects** (an arm on the worktop): the arm stands among the six worktop "
           "objects (apple, plate, bowl, mug, banana, lemon; simulator spec §2.3); the scene "
@@ -1536,7 +1820,8 @@ def write_index(out_root: Path) -> dict:
         L.append(f"* Started {c['started']}, finished {c['finished']}; host load (1 min) before "
                  f"{(c.get('host_load_before') or {}).get('load1')}; real-time factor during the "
                  f"collection: " + ("never below 0.90" if c.get("rtf_clean") else
-                                    "below 0.90 in " + ", ".join(f"{w['rtf']} (window ending {w['window_end']})" for w in low))
+                                    "below 0.90 in " + ", ".join(f"{w['rtf']} (window ending {w['window_end']})" for w in low)
+                                    if low else "not established (the `rtf` windows do not cover it)")
                  + f"; RTF warnings in the whole simulation log {c['rtf_warnings']}")
         L.append(f"* Checks: {c['checks']}" + (f"; error: `{c['error']}`" if c.get("error") else ""))
         L.append(f"* Details: [case.json]({c['dir']}/case.json), [smoke.json]({c['smoke']}), "

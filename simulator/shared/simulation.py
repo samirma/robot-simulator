@@ -116,12 +116,16 @@ class Conn:
 
 def _staging_row(st) -> dict:
     """A staging (`worktop_objects.Staging`) as the control port names it: `staged` {name:
-    {body, pos, quat}} and `cleared` (body names); empty for none."""
+    {body, pos, quat}}, `cleared` (body names) and `frame`, the spot the objects are
+    staged at ({xy, z: the top face, yaw}); empty for none."""
     if st is None:
-        return {"staged": {}, "cleared": []}
+        return {"staged": {}, "cleared": [], "frame": None}
+    x, y, z = st.frame_pos
     return {"staged": {n: {"body": worktop_objects.BODIES[n], "pos": p, "quat": q}
                        for n, (p, q) in st.poses().items()},
-            "cleared": list(st.cleared)}
+            "cleared": list(st.cleared),
+            "frame": {"xy": [x, y], "z": z - worktop_objects.FRAME_ABOVE_SURFACE,
+                      "yaw": st.yaw}}
 
 
 # ---------------------------------------------------------------- the server
@@ -196,27 +200,28 @@ class Simulation:
 
     def _stage_worktop_objects(self, wt) -> None:
         """The six worktop objects are part of the scene (spec §2.2), whatever robots come:
-        staged around the spot the SO-101 -- the reference's own arm -- is placed at on
-        the worktop, with the loose scene objects in their working area cleared. A scene
-        with no worktop has none. One with a worktop does not start when their meshes or
-        the SO-101's files are missing (the message names `run.sh setup`); a worktop with
-        no spot for them, which the spec leaves open, starts without them, saying so."""
+        staged at the first of the reference survey's spots where all six stand on the
+        surface, clear of the scene, with the loose scene objects in their working area
+        cleared (`placement.stage_objects`; no robot takes part). A scene with no worktop
+        has none. One with a worktop does not start when their meshes are missing (the
+        message names `run.sh setup`); a worktop with no clear spot for them among the
+        survey's first 40 starts without them, saying so."""
         if wt is None:
             return
         t0 = time.time()
         try:
-            rm = robot_model.load(registry.get("so101"))
-            pl = placement_mod.place(self.world, self.surfaces, rm, "worktop", False, "so101/")
-            self.world.stage_scene(pl.staging)
-        except (robot_model.ModelError, registry.RegistryError,
-                worktop_objects.AssetsMissing) as exc:
+            staging = placement_mod.stage_objects(self.world, self.surfaces)
+            self.world.stage_scene(staging)
+        except worktop_objects.AssetsMissing as exc:
             raise SystemExit(f"error: the worktop objects cannot be staged: {exc}")
         except placement_mod.Refused as exc:
             log(f"no worktop objects staged: {exc}")
             return
-        log(f"worktop objects staged: {', '.join(worktop_objects.OBJECTS)}; scene objects "
-            f"cleared from their area: {', '.join(pl.staging.cleared) or 'none'} "
-            f"({time.time() - t0:.1f} s)")
+        x, y, z = staging.frame_pos
+        log(f"worktop objects staged: {', '.join(worktop_objects.OBJECTS)} at ({x:.3f}, "
+            f"{y:.3f}) z {z - worktop_objects.FRAME_ABOVE_SURFACE:.3f}, heading "
+            f"{math.degrees(staging.yaw):.1f} deg; scene objects cleared from their area: "
+            f"{', '.join(staging.cleared) or 'none'} ({time.time() - t0:.1f} s)")
 
     def ready_line(self) -> str:
         return (f"{READY_PREFIX}: engine {self.engine}, scene {self.world.scene.name}, "
@@ -705,6 +710,8 @@ class Simulation:
                        "sim_time": float(w.data.time)}
                 if prm.get("joints", True):
                     out["joints"] = sensors.joint_readings(w, inst)
+                if prm.get("gravcomp", False):
+                    out["gravcomp"] = sensors.joint_gravcomp(w, inst)
                 if prm.get("base", False):
                     out["base"] = sensors.base_reading(w, inst)
                 if prm.get("sites"):
@@ -872,6 +879,29 @@ def at_default_camera(model, cam) -> bool:
                                                     (cam.elevation, d.elevation))))
 
 
+class CameraKeeper:
+    """The window's camera across model loads (spec §2.2: only the opening view is set; a
+    spawn reloading the model keeps the camera where the user left it). The window resets
+    its camera to MuJoCo's default free camera some time after each load; for
+    CAMERA_WATCH_S after a load, a camera found at that default is put back to the wanted
+    view -- the overview after the first load, the user's view (taken just before the
+    reload) after every later one. A camera the user moved is never at the default, so it
+    is left alone."""
+
+    def __init__(self, opening, now: float):
+        self.want, self.until = opening, now + CAMERA_WATCH_S
+
+    def reloading(self, cam, now: float) -> None:
+        """The model is about to be reloaded: keep the view the user has now."""
+        self.want = sensors.free_camera(cam.lookat, cam.distance, cam.azimuth, cam.elevation)
+        self.until = now + CAMERA_WATCH_S
+
+    def settle(self, model, cam, now: float) -> None:
+        """After the window's reset of a load (any frame): the wanted view back."""
+        if now < self.until and at_default_camera(model, cam):
+            set_camera(cam, self.want)
+
+
 def run_viewer(sim: Simulation):
     """The MuJoCo window, on the main thread (mjpython on macOS). Closing it ends the
     simulation; a robot added or removed reloads the window's model in place."""
@@ -889,25 +919,21 @@ def run_viewer(sim: Simulation):
         # drawn island-coloured -- flat colours, no textures -- with this flag at its default
         handle.opt.flags[mujoco.mjtVisFlag.mjVIS_ISLAND] = 0
     # the opening view, then whatever view the user had when a robot reloads the model
-    want, watch_until = overview_camera(sim), time.monotonic() + CAMERA_WATCH_S
+    keeper = CameraKeeper(overview_camera(sim), time.monotonic())
     with handle.lock():
-        set_camera(handle.cam, want)
+        set_camera(handle.cam, keeper.want)
     while handle.is_running() and not sim.shutdown_event.is_set():
         with w.lock:
             if w.version != version:
                 sim_obj = handle._get_sim()
                 if sim_obj is not None:
                     with handle.lock():
-                        want = sensors.free_camera(handle.cam.lookat, handle.cam.distance,
-                                                   handle.cam.azimuth, handle.cam.elevation)
+                        keeper.reloading(handle.cam, time.monotonic())
                     sim_obj.load(w.model, w.data, "")
                     handle._sim = (lambda s=sim_obj: s)
-                    watch_until = time.monotonic() + CAMERA_WATCH_S
                 version = w.version
-            if time.monotonic() < watch_until:
-                with handle.lock():
-                    if at_default_camera(w.model, handle.cam):
-                        set_camera(handle.cam, want)
+            with handle.lock():
+                keeper.settle(w.model, handle.cam, time.monotonic())
             handle.sync()
         time.sleep(1 / 60)
     handle.close()

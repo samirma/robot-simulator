@@ -20,7 +20,7 @@ import yaml
 from robot_console import dialect as d
 
 #: Every accepted robot id, in display order (console spec §1.1).
-SUPPORTED_IDS: Tuple[str, ...] = ("myagv", "ainex", "rosmaster_x3_plus", "so101")
+SUPPORTED_IDS: Tuple[str, ...] = ("myagv", "ainex", "rosmaster_x3_plus", "rebot_b601_rs")
 
 
 class ProfileError(ValueError):
@@ -41,12 +41,62 @@ class Endpoint:
 
 @dataclasses.dataclass(frozen=True)
 class Camera:
+    """A raw image stream the page shows. ``kind`` ``color`` is shown as the image it carries; ``depth``
+    is a single-channel 16-bit range image: each value times ``unit_m`` is a distance in metres (0 = no
+    depth) and is shown as a false-colour map scaled to ``range_m`` (near, far), the camera's range."""
     topic: str
     type: str
     encodings: Tuple[str, ...]
     stale_after_s: float
     rate_hz: Optional[float] = None
     optional: bool = False
+    kind: str = "color"
+    range_m: Optional[Tuple[float, float]] = None
+    unit_m: Optional[float] = None
+
+
+CAMERA_KINDS = ("color", "depth")
+
+
+#: How a sensor field is shown (console spec §2.5): ``number`` a finite number (``unit``, ``decimals``),
+#: ``text`` a string, ``bool`` true/false, ``list`` the elements of an array joined by ", ", ``bits`` an
+#: unsigned integer whose documented bits (``bits``) are each shown set or clear.
+SENSOR_KINDS = ("number", "text", "bool", "list", "bits")
+
+
+@dataclasses.dataclass(frozen=True)
+class SensorBit:
+    bit: int
+    label: str
+
+
+@dataclasses.dataclass(frozen=True)
+class SensorField:
+    """One value the sensor panel shows from a message of a sensor topic: ``path`` into the message
+    (``read_path``'s grammar, e.g. ``position.0``)."""
+
+    name: str
+    label: str
+    path: str
+    kind: str = "number"
+    unit: str = ""
+    decimals: Optional[int] = None
+    bits: Tuple[SensorBit, ...] = ()
+    group: str = ""           # fields of one group are shown together under the group's label
+
+
+@dataclasses.dataclass(frozen=True)
+class Sensor:
+    """A manufacturer sensor topic the view page subscribes to and shows read-only (console spec §2.5):
+    an ``out`` topic of the profile. ``stale_after_s`` None: a latched or non-periodic topic, shown
+    with its last message's age but never as stale."""
+
+    id: str
+    label: str
+    topic: str                # bare (documented) name, resolved like every profile name
+    type: str
+    stale_after_s: Optional[float]
+    fields: Tuple[SensorField, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -107,6 +157,14 @@ class Group:
     note: str = ""
 
 
+#: What an action server documentedly does with a goal that arrives while one of its goals runs
+#: (a control's ``busy.new_goal``): ``preempt`` ends the running goal and runs the new one;
+#: ``reject`` refuses the new goal; ``parallel`` accepts it and runs it beside the running one.
+#: The page streams goals only to a ``preempt`` server; to any other it keeps one goal of the
+#: control outstanding and sends the latest value when that goal's result arrives (console spec §2.2).
+BUSY = ("preempt", "reject", "parallel")
+
+
 @dataclasses.dataclass(frozen=True)
 class Control:
     """A bounded page control. Only the page sends controls: it fills ``template`` (``"$field"``
@@ -122,6 +180,7 @@ class Control:
     stop: Optional[Tuple[Op, ...]]    # the documented stop/cancel (the page never sends it)
     prerequisites: Tuple[str, ...]
     group: str = ""           # the profile group the page lists it in ("" = a card of its own)
+    busy: str = ""            # action controls: the server's handling of a goal while one runs (BUSY)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -139,7 +198,7 @@ class ReadValue:
 class Read:
     """A documented read service returning measured joint positions. The page calls it once per
     click of its read button, or, for the read with ``poll_s`` (the profile's documented read-only
-    joint-position query, console spec §2.2 as amended), about every ``poll_s`` seconds
+    joint-position query, console spec §2.2), about every ``poll_s`` seconds
     once the target is validated; teleop reads the AiNex head position through it."""
 
     id: str
@@ -248,6 +307,7 @@ class Profile:
     controls: Tuple[Control, ...]
     reads: Tuple[Read, ...]
     groups: Tuple[Group, ...] = ()
+    sensors: Tuple[Sensor, ...] = ()
     raw: Mapping[str, Any] = dataclasses.field(repr=False, compare=False, default_factory=dict)
 
     # ---- names
@@ -338,6 +398,19 @@ def _check_field(where: str, f: Field) -> None:
             raise ValueError(f"{where}: documented limit {exc}") from None
 
 
+def _busy(where: str, c: Mapping[str, Any]) -> str:
+    """An action control's documented ``busy.new_goal`` (required); no other control has one."""
+    b = c.get("busy")
+    if c["kind"] != "action":
+        if b is not None:
+            raise ValueError(f"{where}: busy is recorded for action controls only")
+        return ""
+    v = b.get("new_goal") if isinstance(b, Mapping) else None
+    if v not in BUSY:
+        raise ValueError(f"{where}: an action control records busy.new_goal, one of {', '.join(BUSY)} (got {v!r})")
+    return v
+
+
 def _axes(rows: Mapping[str, Any]) -> Dict[str, Axis]:
     return {k: Axis(speed=float(v["speed"]), limit=float(v["limit"]), field=v.get("field"))
             for k, v in (rows or {}).items()}
@@ -353,6 +426,73 @@ def _read(r: Mapping[str, Any]) -> Read:
                              for v in r["values"]))
 
 
+def _sensor(pid: str, r: Mapping[str, Any]) -> Sensor:
+    where = f"{pid}.sensors.{r['id']}"
+    fields = []
+    for f in r.get("fields") or []:
+        kind = str(f.get("kind", "number"))
+        if kind not in SENSOR_KINDS:
+            raise ValueError(f"{where}.{f['name']}: kind {kind!r} is none of {', '.join(SENSOR_KINDS)}")
+        bits = tuple(SensorBit(bit=int(b["bit"]), label=str(b["label"])) for b in f.get("bits") or ())
+        if bool(bits) != (kind == "bits"):
+            raise ValueError(f"{where}.{f['name']}: bits are recorded for (and only for) kind bits")
+        if len({b.bit for b in bits}) != len(bits) or any(not 0 <= b.bit <= 31 for b in bits):
+            raise ValueError(f"{where}.{f['name']}: bits are distinct and within 0..31")
+        dec = f.get("decimals")
+        if dec is not None and (isinstance(dec, bool) or not isinstance(dec, int) or dec < 0):
+            raise ValueError(f"{where}.{f['name']}: decimals is a non-negative integer")
+        if not str(f.get("path", "")):
+            raise ValueError(f"{where}.{f['name']}: no path")
+        fields.append(SensorField(name=f["name"], label=str(f.get("label", f["name"])), path=str(f["path"]),
+                                  kind=kind, unit=str(f.get("unit", "")), decimals=dec, bits=bits,
+                                  group=str(f.get("group") or "")))
+    if not fields or len({f.name for f in fields}) != len(fields):
+        raise ValueError(f"{where}: one or more fields with distinct names")
+    stale = _opt_float(r.get("stale_after_s"))
+    if stale is not None and stale <= 0:
+        raise ValueError(f"{where}: stale_after_s is positive (or null for a latched topic)")
+    return Sensor(id=r["id"], label=str(r.get("label", r["id"])), topic=r["topic"], type=r["type"],
+                  stale_after_s=stale, fields=tuple(fields))
+
+
+def _check_sensors(raw: Mapping[str, Any], sensors: Sequence[Sensor], eps: Sequence[Endpoint]) -> None:
+    """Every sensor reads an ``out`` topic of the profile, of the profile's type for it; none is a camera."""
+    if len({s.id for s in sensors}) != len(sensors):
+        raise ValueError(f"{raw['id']}: sensor ids are distinct")
+    cams = {c["topic"] for c in raw.get("cameras") or []}
+    for s in sensors:
+        e = next((x for x in eps if x.kind == "topic" and x.name == s.topic), None)
+        if e is None or e.direction != "out" or e.type != s.type:
+            raise ValueError(f"{raw['id']}.sensors.{s.id}: {s.topic} ({s.type}) is not an out topic "
+                             f"of that type in the profile")
+        if s.topic in cams:
+            raise ValueError(f"{raw['id']}.sensors.{s.id}: {s.topic} is a camera, not a sensor")
+
+
+def _camera(raw: Mapping[str, Any], c: Mapping[str, Any]) -> Camera:
+    where = f"{raw['id']}.cameras.{c['topic']}"
+    kind = c.get("kind", "color")
+    if kind not in CAMERA_KINDS:
+        raise ValueError(f"{where}: kind {kind!r} is none of {', '.join(CAMERA_KINDS)}")
+    rng = unit = None
+    if kind == "depth":
+        enc = [str(e).lower() for e in c.get("encodings") or ()]
+        if enc != ["16uc1"]:
+            raise ValueError(f"{where}: a depth camera's only encoding is 16UC1")
+        r, u = c.get("range_m"), c.get("unit_m")
+        num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
+        if not (isinstance(r, (list, tuple)) and len(r) == 2 and all(num(x) for x in r) and 0 <= r[0] < r[1]):
+            raise ValueError(f"{where}: range_m is [near, far] metres with 0 <= near < far")
+        if not num(u) or u <= 0:
+            raise ValueError(f"{where}: unit_m is the positive metres per depth value")
+        rng, unit = (float(r[0]), float(r[1])), float(u)
+    elif "range_m" in c or "unit_m" in c:
+        raise ValueError(f"{where}: range_m and unit_m belong to a depth camera")
+    return Camera(topic=c["topic"], type=c["type"], encodings=tuple(c.get("encodings") or ()),
+                  stale_after_s=float(c["stale_after_s"]), rate_hz=c.get("rate_hz"),
+                  optional=bool(c.get("optional", False)), kind=kind, range_m=rng, unit_m=unit)
+
+
 def parse_profile(raw: Mapping[str, Any]) -> Profile:
     dia = raw["dialect"]
     if dia not in d.DIALECTS:
@@ -363,10 +503,7 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
             eps.append(Endpoint(kind=kind, name=r["name"], type=r["type"],
                                 optional=bool(r.get("optional", False)),
                                 direction=r.get("direction"), rate_hz=r.get("rate_hz")))
-    cams = tuple(Camera(topic=c["topic"], type=c["type"], encodings=tuple(c.get("encodings") or ()),
-                        stale_after_s=float(c["stale_after_s"]), rate_hz=c.get("rate_hz"),
-                        optional=bool(c.get("optional", False)))
-                 for c in raw.get("cameras") or [])
+    cams = tuple(_camera(raw, c) for c in raw.get("cameras") or [])
     ns = raw.get("namespace")
     nsr = None
     if ns:
@@ -401,12 +538,15 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
             type=c["type"], template=c.get("template", {}),
             fields=tuple(_field(f) for f in c.get("fields") or []),
             stop=_ops(c["stop"]) if c.get("stop") else None,
-            prerequisites=tuple(c.get("prerequisites") or ()), group=str(c.get("group") or "")))
+            prerequisites=tuple(c.get("prerequisites") or ()), group=str(c.get("group") or ""),
+            busy=_busy(f"{raw['id']}.controls.{c['id']}", c)))
         for f in controls[-1].fields:
             _check_field(f"{raw['id']}.controls.{c['id']}.{f.name}", f)
         if controls[-1].group and controls[-1].group not in {g.id for g in groups}:
             raise ValueError(f"{raw['id']}.controls.{c['id']}: unknown group {controls[-1].group!r}")
     reads = tuple(_read(r) for r in raw.get("reads") or [])
+    sensors = tuple(_sensor(raw["id"], r) for r in raw.get("sensors") or [])
+    _check_sensors(raw, sensors, eps)
     polled = [r for r in reads if r.poll_s is not None]
     if len(polled) > 1 or any(r.poll_s <= 0 for r in polled):
         raise ValueError(f"{raw['id']}: at most one read is polled, with a positive poll_s")
@@ -416,7 +556,7 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
         namespace=nsr, owned_prefixes=tuple(raw.get("owned_prefixes") or ()),
         endpoints=tuple(eps), cameras=cams, stop=_ops(raw.get("stop")),
         watchdog=str(raw.get("watchdog", "")), teleop_base=base, teleop_walk=walk, head=head,
-        controls=tuple(controls), reads=reads, groups=groups, raw=raw)
+        controls=tuple(controls), reads=reads, groups=groups, sensors=sensors, raw=raw)
 
 
 @functools.lru_cache(maxsize=None)
@@ -483,8 +623,9 @@ def expand_endpoint(p: Profile, e: Endpoint) -> List[Tuple[str, str, str]]:
 
 def profile_json(p: Profile) -> dict:
     """What the page needs of a profile: the typed interface it validates, its cameras, its
-    bounded controls (never their stop: the page stops or cancels no bounded control) with their
-    groups and wire maps, its measured reads (one of them possibly polled), the ``model`` section
+    read-only ``sensors`` (topics the page subscribes to and shows), its bounded controls (never their stop: the page stops or cancels no bounded control) with their
+    groups, wire maps and, for an action control, ``busy`` (how its server handles a goal that
+    arrives while one runs, which decides whether the page streams goals), its measured reads (one of them possibly polled), the ``model`` section
     for its 3D model (the embodiment's joint tree from the pinned vendor URDF, the control fields
     that command each joint and the documented joint-position feedback) and, for a teleoperable
     profile, ``teleop``: the base motion contract teleop runs (``teleop_core.page_contract``)."""
@@ -496,8 +637,11 @@ def profile_json(p: Profile) -> dict:
         "endpoints": [dict(kind=e.kind, name=e.name, type=e.type, optional=e.optional, direction=e.direction,
                            parts=[{"kind": k, "name": n, "type": t} for k, n, t in expand_endpoint(p, e)])
                       for e in p.endpoints],
-        "cameras": [dict(topic=c.topic, type=c.type, encodings=list(c.encodings), stale_after_s=c.stale_after_s)
+        "cameras": [dict(topic=c.topic, type=c.type, encodings=list(c.encodings), stale_after_s=c.stale_after_s,
+                         optional=c.optional, kind=c.kind, range_m=list(c.range_m) if c.range_m else None,
+                         unit_m=c.unit_m)
                     for c in p.cameras],
+        "sensors": [dataclasses.asdict(x) for x in p.sensors],
         "controls": [{k: v for k, v in dataclasses.asdict(c).items() if k != "stop"} for c in p.controls],
         "groups": [dataclasses.asdict(g) for g in p.groups],
         "reads": [dataclasses.asdict(r) for r in p.reads],

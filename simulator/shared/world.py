@@ -12,7 +12,8 @@ placed where they are leaves them untouched. An arm placed elsewhere comes with 
 scene's loose objects cleared from its working area. Both enter in the robot's own
 recompile and leave in the recompile that removes it: the six objects are back where the
 scene staged them, and a cleared object comes back with the position and velocity it had
-when it was cleared.
+when it was cleared. A staging only moves the scene's objects: in a scene that started
+without them a robot comes with none, and `add` refuses one.
 
 Physics runs on its own thread against the wall clock. Everything that reads or writes
 the model or data holds `world.lock`.
@@ -39,6 +40,21 @@ RTF_WINDOW_S = 10.0
 RTF_WARN = 0.90
 #: completed real-time-factor windows kept for the control port's `rtf` answer (an hour)
 RTF_HISTORY = 360
+
+
+#: MuJoCo's own bound for a sane state value (mjMAXVAL)
+MAX_VALUE = 1e10
+
+
+def _no_autoreset(model) -> None:
+    """MuJoCo resets the whole simulation -- time, every robot and scene object -- to its
+    initial state when a step goes bad; the world recovers instead (`World._recover`)."""
+    model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+
+
+def _diverged(d) -> bool:
+    """A non-finite or huge position, velocity or acceleration (MuJoCo's own test)."""
+    return not all(np.all(np.abs(a) <= MAX_VALUE) for a in (d.qpos, d.qvel, d.qacc))
 
 
 @dataclass
@@ -92,6 +108,7 @@ class World:
         self.lock = threading.RLock()
         self.log = log or (lambda msg: print(msg, file=sys.stderr, flush=True))
         self.model = self.spec.compile()
+        _no_autoreset(self.model)
         self.data = mujoco.MjData(self.model)
         mujoco.mj_forward(self.model, self.data)
         #: bumped at every recompile: renderers and bindings rebuild on a change.
@@ -117,9 +134,14 @@ class World:
     # ------------------------------------------------------------------ robots
 
     def add(self, inst: Instance, staging=None) -> None:
-        """Attach the robot at its pose -- with its staging (`worktop_objects.Staging`:
-        objects added, scene objects cleared) if it has one -- and recompile once, keeping
-        every other state. On failure both are rolled back and the world is unchanged."""
+        """Attach the robot at its pose -- with its staging (`worktop_objects.Staging`: the
+        scene's six objects moved to it, scene objects cleared) if it has one -- and
+        recompile once, keeping every other state. On failure both are rolled back and the
+        world is unchanged. A scene without worktop objects takes no staging (spec §2.3: a
+        robot's spawn never brings them)."""
+        if staging is not None and self.scene_staging is None:
+            raise ValueError("a staging moves the scene's worktop objects, and this scene "
+                             "has none: a robot's spawn never brings them")
         with self.lock:
             rm = inst.rm
             spec = rm.spec.copy() if hasattr(rm.spec, "copy") else rm.spec
@@ -132,11 +154,10 @@ class World:
                 if staging is not None:
                     staging.capture(self.model, self.data)
                     staged = True
-                    if self.scene_staging is not None:
-                        # this arm stands elsewhere than the scene's own objects: they
-                        # move to it for as long as it is here
-                        displaced = self.scene_staging
-                        displaced.remove_objects(self.spec)
+                    # this arm stands elsewhere than the scene's own objects: they move to
+                    # it for as long as it is here
+                    displaced = self.scene_staging
+                    displaced.remove_objects(self.spec)
                     staging.apply(self.spec)
                 frame = self.spec.worldbody.add_frame(pos=[float(v) for v in inst.xyz],
                                                       quat=mjutil.yaw_quat(inst.yaw))
@@ -268,6 +289,7 @@ class World:
                         pass
 
     def _swap(self, model, data) -> None:
+        _no_autoreset(model)
         self.model, self.data = model, data
         self.version += 1
 
@@ -381,6 +403,19 @@ class World:
             except queue.Empty:
                 item = None
 
+    def _recover(self, d, qpos, act) -> None:
+        """The divergence guard (simulator/README.md, Timing): a batch of steps that left a
+        non-finite or huge position, velocity or acceleration is undone -- every position
+        and activation back to where it was before the batch, every velocity zero -- and
+        the simulation steps on from there, its time and actuator targets kept."""
+        self.log("warning: physics diverged; positions kept from before the step, "
+                 "velocities cleared")
+        d.qpos[:] = qpos
+        d.act[:] = act
+        d.qvel[:] = 0
+        d.qacc_warmstart[:] = 0
+        mujoco.mj_forward(self.model, d)
+
     def _run(self) -> None:
         wall0 = time.monotonic()
         with self.lock:
@@ -402,11 +437,10 @@ class World:
                     # the physics (calls are still served every few milliseconds)
                     n = int(min(STEP_BATCH, max(1, math.ceil((target - d.time)
                                                                 / self.model.opt.timestep))))
+                    before = (d.qpos.copy(), d.act.copy())
                     mujoco.mj_step(self.model, d, nstep=n)
-                    if not np.isfinite(d.qacc).all():
-                        self.log("warning: physics diverged; clearing velocities")
-                        d.qvel[:] = 0
-                        d.qacc_warmstart[:] = 0
+                    if _diverged(d):
+                        self._recover(d, *before)
                 steps += 1
                 if steps >= 200:
                     break

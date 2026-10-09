@@ -1,0 +1,664 @@
+id: rebot_b601_rs
+name: "Seeed reBot Arm B601-RS (reBotArmController_ROS2 real-hardware bringup, model rs)"
+dialect: ros2
+teleop: none
+sources:
+  rebotarm_ros2:
+    url: https://github.com/Seeed-Projects/reBotArmController_ROS2
+    branch: main
+    revision: 7506dc0fc5c2a7787dcb974d89d13f9f49d16d61
+    note: "Manufacturer ROS 2 interface (Seeed publishes and documents it). The wiki's reference environment is Ubuntu 24.04 + ROS 2 Jazzy (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L65-L67); types below use the Jazzy spelling. Every name below is built by the controller node's own code (src/rebotarmcontroller/rebotarmcontroller/*.py) or by the bringup launch."
+  rebotarm_sdk:
+    url: https://github.com/Seeed-Projects/reBotArm_control_py
+    branch: main
+    revision: 6415d43130d1e143c70dc106096a857ac5556f81
+    note: "Python SDK the controller wraps (cloned by the wiki into third_party/reBotArm_control_py, rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/hardware_config.py#L42-L53): RS motor table and gripper group (config/rebotarm_rs.yaml) and the end-pose controller that holds the joint targets."
+  motorbridge:
+    url: https://github.com/motorbridge/motorbridge
+    revision: c652ce420e7da1008fa1864cc7f47d7d7c57fdb6
+    note: "Motor driver library under the SDK: decodes the RobStride status frame, including the status flags the controller copies into JointMotorState.status_code."
+  wiki_documents:
+    url: https://github.com/Seeed-Studio/wiki-documents
+    branch: docusaurus-version
+    revision: 2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a
+    note: "Source of https://wiki.seeedstudio.com/rebot_arm_b601_rs_ros2_integration/ (the B601-RS ROS 2 integration page)."
+boot:
+  - "rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L77-L135"
+boot_args:
+  bringup: "model:=rs channel:=can0 (every other launch argument at its default: arm_namespace rebotarm, joint_state_rate 100.0, cmd_arbitration reject, use_rviz false)"
+boot_note: >-
+  Real hardware = `ros2 launch rebotarm_bringup bringup.launch.py model:=rs channel:=can0` with SocketCAN can0 up
+  (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L244-L254).
+  The launch starts the controller node reBotArmController (package rebotarmcontroller, no ROS namespace, its
+  arm_namespace parameter from the launch argument, bringup.launch.py#L95-L117) and robot_state_publisher (no
+  namespace, robot_description = rviz_urdf_compat.py run on description/RS/urdf/ReBot_Arm_RS.urdf for model rs,
+  /joint_states remapped to /<arm_namespace>/joint_states, #L59-L75, #L118-L125); RViz only with use_rviz:=true
+  (#L126-L133). model:=rs selects the `rs` entry of src/rebotarm_bringup/config/rebotarm_hardware.yaml (#L35-L58),
+  deep-merged over the SDK's config/rebotarm_rs.yaml (hardware_config.py#L85-L128): groups arm joint1..joint6 and
+  gripper [gripper], gripper position limits open 5.0 / close 0.0 (motor rad), arm control mode mit. The node
+  connects and enables the motors at start (hardware_manager.py#L185-L195) and, on exit, moves to safe home and
+  disables them (rebotarm_controller.py#L79-L82, hardware_manager.py#L207-L224). No camera, lidar or IMU driver is
+  started (an optional D405 wrist camera is run beside it, see cameras_note); driver.launch.py (controller only) and the MoveIt launches are not this profile's boot.
+namespace:
+  default: rebotarm
+  compose: "/{ns}{name}"
+  global_names:
+    - /robot_description
+    - /tf
+    - /tf_static
+    - /camera/camera/color/image_raw
+    - /camera/camera/color/camera_info
+    - /camera/camera/aligned_depth_to_color/image_raw
+    - /camera/camera/aligned_depth_to_color/camera_info
+  source: "rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L89"
+  note: >-
+    The bringup declares launch argument arm_namespace (default "rebotarm", bringup.launch.py#L89) and passes it to
+    the controller as its arm_namespace parameter (#L108, declared with the same default,
+    rebotarmcontroller/rebotarm_controller.py#L28, stripped of slashes, #L37). The controller builds every one of its
+    names as f"/{namespace}/{name}" (ros_publishers.py#L25-L58, ros_services.py#L41-L47, ros_actions.py#L18-L44,
+    motor_passthrough.py#L60-L79), so the profile lists them relative to the namespace and composes "/<ns><name>".
+    The wiki documents the composition: "all topics, services, and actions are prefixed with /rebotarm" and
+    arm_namespace:=right_arm turns /rebotarm/joint_states into /right_arm/joint_states
+    (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L285-L307).
+    robot_state_publisher runs un-namespaced (#L118-L125): /robot_description, /tf and /tf_static are global. So are the
+    optional D405 wrist camera's topics: realsense2_camera is not part of the controller and names them
+    /camera/camera/... whatever the arm namespace.
+    Joint names are not prefixed: the controller reports and expects the SDK's joint names whatever the namespace
+    (ros_publishers.py#L87, ros_actions.py#L146-L152), so there is no joint prefix.
+owned_prefixes: []
+owned_prefixes_note: >-
+  Everything the controller creates is under its arm namespace (validated as a whole: nothing else may be under
+  /<ns>/). The node itself runs at the root (/reBotArmController) and owns no private topics or services beyond the
+  client library's parameter services.
+topics:
+  # ---- robot_state_publisher (global) -------------------------------------------------------
+  - name: /robot_description
+    type: std_msgs/msg/String
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L118-L125"
+    note: "Latched (transient_local) robot_description published by stock robot_state_publisher: the output of rviz_urdf_compat.py for ReBot_Arm_RS.urdf (#L59-L75), the URDF with extra visuals moved to fixed child links (src/rebotarm_bringup/launch/rviz_urdf_compat.py#L43-L80)."
+  - name: /tf
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L118-L125"
+    note: >-
+      robot_state_publisher transforms of the movable joints, computed from the remapped /<arm_namespace>/joint_states
+      (#L124). Not one /tf message per joint-state message: robot_state_publisher publishes a joint state's
+      transforms only when it is at least 1/publish_frequency newer than the last one it published, and the launch
+      leaves publish_frequency at its default (#L118-L125), 20.0 Hz in stock robot_state_publisher, so /tf follows the
+      100 Hz /joint_states at about 20 Hz. The profile pins no robot_state_publisher release (see uncertainties).
+  - name: /tf_static
+    type: tf2_msgs/msg/TFMessage
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L118-L125"
+    note: "Fixed joints of the robot_description (j_gripper_end and the rviz_urdf_compat visual frames)."
+  # ---- reBotArmController: state ----------------------------------------------------------
+  - name: /joint_states
+    type: sensor_msgs/msg/JointState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L25-L30"
+    note: >-
+      Published every 1/joint_state_rate s (#L59-L64; joint_state_rate default 100.0, bringup.launch.py#L87) with
+      sensor-data QoS (rebotarm_controller.py#L22). Names: the arm group's joint1..joint6 (motor positions in rad,
+      #L76-L90), then, with the gripper present, gripper_joint1 and gripper_joint2 (hardware_manager.py#L115-L119):
+      each = clamp((gripper motor - close) / (open - close), 0, 1) times the RS finger limits 0.05 and 0.0715 m
+      (ros_publishers.py#L7, #L11-L18, #L92-L114).
+  - name: /joints/joint1/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "One per arm joint (joint names from the rs groups.arm, rebotarm_hardware.yaml#L44-L45), published with each joint_states (#L77-L85): position (rad), velocity, torque, status_code."
+  - name: /joints/joint2/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+  - name: /joints/joint3/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+  - name: /joints/joint4/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+  - name: /joints/joint5/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+  - name: /joints/joint6/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+  - name: /gripper/state
+    type: rebotarm_msgs/msg/JointMotorState
+    direction: out
+    rate_hz: 100
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L51-L58"
+    note: "Created when the hardware has a gripper, as the rs configuration does (groups.gripper [gripper], rebotarm_hardware.yaml#L46-L47); joint_name \"gripper\", position = gripper motor angle in rad (#L116-L123)."
+  - name: /arm_status
+    type: rebotarm_msgs/msg/ArmStatus
+    direction: out
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L40-L50"
+    note: >-
+      TRANSIENT_LOCAL + RELIABLE depth 1 (latched, #L40-L50), written by publish_status (#L127-L140); not periodic.
+      It is published at start (#L65); after every service call (ros_services.py#L49-L58, #L108, #L122, #L153);
+      by a /follow_joint_trajectory goal as it enters TRAJ_RUNNING (ros_actions.py#L163) and as its finally returns
+      to IDLE (#L228-L231; not for the invalid-goal aborts at #L140-L159, nor for a goal that safe home ended);
+      by a /move_to_pose goal once planned (#L94) and as it ends, unless safe home ended it (#L64-L67, #L129-L130);
+      and after each raw command that passes the arbitration check (motor_passthrough.py#L106-L107, #L123-L124).
+      Gripper goals never publish it (ros_actions.py#L244-L291), and a raw command the arbitration check refuses
+      returns before it (motor_passthrough.py#L94-L98, #L113-L117).
+  # ---- reBotArmController: raw motor commands (debugging; not console controls) -------------
+  - name: /joints/joint1/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+    note: "Per arm joint, RELIABLE depth 10 (#L15). Raw MIT command without IK, trajectory or URDF checks (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L512-L525): unbounded, so not a console control."
+  - name: /joints/joint1/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint2/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint2/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint3/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint3/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint4/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint4/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint5/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint5/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint6/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /joints/joint6/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L60-L71"
+  - name: /gripper/cmd/mit
+    type: rebotarm_msgs/msg/JointMitCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L72-L79"
+    note: "Gripper raw MIT command (motor rad, validated against 0..5 by the driver, hardware_manager.py#L615-L637); refused while a trajectory runs (motor_passthrough.py#L128-L143)."
+  - name: /gripper/cmd/pos_vel
+    type: rebotarm_msgs/msg/JointPosVelCmd
+    direction: in
+    rate_hz: null
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L72-L79"
+  # ---- optional Intel RealSense D405 wrist camera (realsense2_camera, global names) --------------
+  - name: /camera/camera/color/image_raw
+    type: sensor_msgs/msg/Image
+    direction: out
+    rate_hz: 30
+    optional: true
+    policy: "Console policy: the D405 colour stream, rgb8 640x360 at 30 Hz (Seeed B601-RS grasping guide with realsense2_camera, default camera_name \"camera\" in namespace \"camera\"); optional because the bringup does not start it and a real arm may have no D405."
+  - name: /camera/camera/color/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    direction: out
+    rate_hz: 30
+    optional: true
+    policy: "Console policy: calibration of the D405 colour stream (same optional add-on)."
+  - name: /camera/camera/aligned_depth_to_color/image_raw
+    type: sensor_msgs/msg/Image
+    direction: out
+    rate_hz: 30
+    optional: true
+    policy: "Console policy: the D405 depth stream aligned to colour (16UC1, millimetres); the page shows it as the second (depth) camera, see cameras."
+  - name: /camera/camera/aligned_depth_to_color/camera_info
+    type: sensor_msgs/msg/CameraInfo
+    direction: out
+    rate_hz: 30
+    optional: true
+    policy: "Console policy: calibration of the aligned depth stream (same optional add-on)."
+services:
+  - name: /enable
+    type: std_srvs/srv/Trigger
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L20"
+    note: >-
+      Calls start_endpos_control (ros_services.py#L60-L61, hardware_manager.py#L280-L281). It raises, answered with
+      success false (ros_services.py#L49-L58), during gravity compensation (hardware_manager.py#L266-L267) and in
+      state SAFE_HOMING or TRAJ_RUNNING (#L268-L269); with the end-pose hold loop running it only sets IDLE
+      (#L271-L273); only a stopped loop is restarted (#L275-L278). The motors are already enabled at start
+      (#L185-L195).
+  - name: /disable
+    type: std_srvs/srv/Trigger
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L21"
+  - name: /safe_home
+    type: std_srvs/srv/Trigger
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L22"
+    note: "Closes the gripper and moves every joint to 0 (hardware_manager.py#L295-L328; rebotarm_sdk:reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L175-L190)."
+  - name: /gravity_compensation/start
+    type: std_srvs/srv/Trigger
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L23-L28"
+  - name: /gravity_compensation/stop
+    type: std_srvs/srv/Trigger
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L29-L34"
+  - name: /set_zero
+    type: rebotarm_msgs/srv/SetZero
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L35"
+  - name: /move_to_pose_ik
+    type: rebotarm_msgs/srv/MoveToPoseIK
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L36"
+  - name: /gripper/set
+    type: rebotarm_msgs/srv/SetGripper
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L37"
+  - name: /gripper/open
+    type: rebotarm_msgs/srv/GripperCommand
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L38"
+  - name: /gripper/close
+    type: rebotarm_msgs/srv/GripperCommand
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_services.py#L39"
+actions:
+  - name: /move_to_pose
+    type: rebotarm_msgs/action/MoveToPose
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L18-L26"
+    note: "Cartesian goal planned by the SDK end-pose controller (#L77-L132). Not a console control: the pose is not bounded by a documented range. It shares the arm's goal callback (#L23, #L46-L49): rejected while an arm goal, gravity compensation or safe home runs; while it runs (TRAJ_RUNNING, hardware_manager.py#L418-L421) a /follow_joint_trajectory goal is rejected."
+  - name: /follow_joint_trajectory
+    type: control_msgs/action/FollowJointTrajectory
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L27-L35"
+    note: "joint_names must equal the arm group's joint1..joint6 in order (#L146-L152); the target is interpolated linearly from the current position over time_from_start (#L161-L220); limits are not checked (#L161-L220, rebotarm_ros2:API_zh.md#L86-L98). A goal that arrives while a trajectory or move_to_pose goal (TRAJ_RUNNING), gravity compensation or safe home runs is rejected, with the exceptions controls[arm_trajectory].busy records; it never preempts (#L46-L59)."
+  - name: /gripper/command
+    type: control_msgs/action/GripperCommand
+    optional: false
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L36-L44"
+    note: "command.position = gripper motor angle in rad, refused outside the configured close..open range (#L249-L257, hardware_manager.py#L133-L143, #L564-L573); the goal ends when the motor is within 0.12 rad of it or after 5 s (#L259-L291, hardware_manager.py#L13). command.max_effort only sets the stalled flag (#L274). A goal that arrives while another gripper goal runs is accepted and runs beside it (#L51-L59; controls[gripper].busy)."
+cameras:
+  - topic: /camera/camera/color/image_raw
+    type: sensor_msgs/msg/Image
+    encodings: [rgb8]
+    rate_hz: 30
+    stale_after_s: 2.0
+    optional: true
+    policy: "Console policy: the Seeed-supported Intel RealSense D405 wrist camera (realsense2_camera at its default camera_name/camera_namespace \"camera\") publishes its colour stream here at 640x360, 30 Hz, rgb8, frame camera_color_optical_frame; stale_after_s = 2.0 s."
+  - topic: /camera/camera/aligned_depth_to_color/image_raw
+    type: sensor_msgs/msg/Image
+    kind: depth
+    encodings: [16UC1]
+    unit_m: 0.001
+    range_m: [0.07, 0.5]
+    rate_hz: 30
+    stale_after_s: 2.0
+    optional: true
+    policy: "Console policy: the same D405's depth stream aligned to colour (align_depth.enable), 640x360, 30 Hz, 16UC1 in millimetres (the driver rescales the sensor's depth units to mm, ROS_DEPTH_SCALE 0.001, so unit_m = 0.001), 0 where there is no depth, frame camera_color_optical_frame; stale_after_s = 2.0 s. range_m is Intel's published ideal range for the D405 depth, 7 to 50 cm; the page maps it to colours and shows 0 black."
+cameras_note: >-
+  The authoritative boot starts no camera driver (bringup.launch.py#L95-L133); the D405 is an optional add-on that
+  Seeed's grasping guide runs beside the bringup (realsense2_camera, global names under /camera/camera, not the arm
+  namespace). Its topics are optional rows, so an arm without a D405 still validates and its page shows the colour
+  and depth cameras as missing.
+sensors:
+  # Read-only manufacturer sensor data the view page shows (console spec §2.4). Each topic is an out topic above.
+  - id: joint_states
+    label: "Joint states (/joint_states)"
+    topic: /joint_states
+    type: sensor_msgs/msg/JointState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L67-L125"
+    note: "Arm joints in rad, rad/s, N m; the two fingers in m, m/s, N m, derived from the gripper motor angle (not measured finger positions)."
+    fields:
+      - {name: joint1_position, label: "Position", path: "position.0", kind: number, unit: "rad", decimals: 3, group: joint1}
+      - {name: joint1_velocity, label: "Velocity", path: "velocity.0", kind: number, unit: "rad/s", decimals: 3, group: joint1}
+      - {name: joint1_effort, label: "Effort", path: "effort.0", kind: number, unit: "N m", decimals: 3, group: joint1}
+      - {name: joint2_position, label: "Position", path: "position.1", kind: number, unit: "rad", decimals: 3, group: joint2}
+      - {name: joint2_velocity, label: "Velocity", path: "velocity.1", kind: number, unit: "rad/s", decimals: 3, group: joint2}
+      - {name: joint2_effort, label: "Effort", path: "effort.1", kind: number, unit: "N m", decimals: 3, group: joint2}
+      - {name: joint3_position, label: "Position", path: "position.2", kind: number, unit: "rad", decimals: 3, group: joint3}
+      - {name: joint3_velocity, label: "Velocity", path: "velocity.2", kind: number, unit: "rad/s", decimals: 3, group: joint3}
+      - {name: joint3_effort, label: "Effort", path: "effort.2", kind: number, unit: "N m", decimals: 3, group: joint3}
+      - {name: joint4_position, label: "Position", path: "position.3", kind: number, unit: "rad", decimals: 3, group: joint4}
+      - {name: joint4_velocity, label: "Velocity", path: "velocity.3", kind: number, unit: "rad/s", decimals: 3, group: joint4}
+      - {name: joint4_effort, label: "Effort", path: "effort.3", kind: number, unit: "N m", decimals: 3, group: joint4}
+      - {name: joint5_position, label: "Position", path: "position.4", kind: number, unit: "rad", decimals: 3, group: joint5}
+      - {name: joint5_velocity, label: "Velocity", path: "velocity.4", kind: number, unit: "rad/s", decimals: 3, group: joint5}
+      - {name: joint5_effort, label: "Effort", path: "effort.4", kind: number, unit: "N m", decimals: 3, group: joint5}
+      - {name: joint6_position, label: "Position", path: "position.5", kind: number, unit: "rad", decimals: 3, group: joint6}
+      - {name: joint6_velocity, label: "Velocity", path: "velocity.5", kind: number, unit: "rad/s", decimals: 3, group: joint6}
+      - {name: joint6_effort, label: "Effort", path: "effort.5", kind: number, unit: "N m", decimals: 3, group: joint6}
+      - {name: gripper_joint1_position, label: "Position", path: "position.6", kind: number, unit: "m", decimals: 3, group: gripper_joint1}
+      - {name: gripper_joint1_velocity, label: "Velocity", path: "velocity.6", kind: number, unit: "m/s", decimals: 3, group: gripper_joint1}
+      - {name: gripper_joint1_effort, label: "Effort", path: "effort.6", kind: number, unit: "N m", decimals: 3, group: gripper_joint1}
+      - {name: gripper_joint2_position, label: "Position", path: "position.7", kind: number, unit: "m", decimals: 3, group: gripper_joint2}
+      - {name: gripper_joint2_velocity, label: "Velocity", path: "velocity.7", kind: number, unit: "m/s", decimals: 3, group: gripper_joint2}
+      - {name: gripper_joint2_effort, label: "Effort", path: "effort.7", kind: number, unit: "N m", decimals: 3, group: gripper_joint2}
+  - id: joint1_state
+    label: "Joint1 motor (/joints/joint1/state)"
+    topic: /joints/joint1/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: joint2_state
+    label: "Joint2 motor (/joints/joint2/state)"
+    topic: /joints/joint2/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: joint3_state
+    label: "Joint3 motor (/joints/joint3/state)"
+    topic: /joints/joint3/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: joint4_state
+    label: "Joint4 motor (/joints/joint4/state)"
+    topic: /joints/joint4/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: joint5_state
+    label: "Joint5 motor (/joints/joint5/state)"
+    topic: /joints/joint5/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: joint6_state
+    label: "Joint6 motor (/joints/joint6/state)"
+    topic: /joints/joint6/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L31-L39"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: gripper_state
+    label: "Gripper motor (/gripper/state)"
+    topic: /gripper/state
+    type: rebotarm_msgs/msg/JointMotorState
+    stale_after_s: 1.0
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L51-L58"
+    note: "status_code is the motor's RobStride status flags as motorbridge decodes them (bit 0 undervoltage, 1 overcurrent, 2 overtemperature, 3 magnetic encoder fault, 4 stall, 5 uncalibrated; motorbridge:motor_abi/src/state_ffi.rs#L68-L103); the controller copies it unchanged."
+    fields:
+      - {name: joint_name, label: "Joint", path: joint_name, kind: text}
+      - {name: position, label: "Position", path: position, kind: number, unit: "rad", decimals: 3}
+      - {name: velocity, label: "Velocity", path: velocity, kind: number, unit: "rad/s", decimals: 3}
+      - {name: torque, label: "Torque", path: torque, kind: number, unit: "N m", decimals: 3}
+      - {name: status_code, label: "Status", path: status_code, kind: bits, bits: [{bit: 0, label: undervoltage}, {bit: 1, label: overcurrent}, {bit: 2, label: overtemperature}, {bit: 3, label: encoder fault}, {bit: 4, label: stall}, {bit: 5, label: uncalibrated}]}
+  - id: arm_status
+    label: "Arm status (/arm_status)"
+    topic: /arm_status
+    type: rebotarm_msgs/msg/ArmStatus
+    stale_after_s: null
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L40-L50"
+    note: "Latched and non-periodic: shown with the age of its last message, never as stale."
+    fields:
+      - {name: mode, label: "Mode", path: mode, kind: text}
+      - {name: enabled, label: "Enabled", path: enabled, kind: bool}
+      - {name: control_loop_active, label: "Control loop active", path: control_loop_active, kind: bool}
+      - {name: state_machine, label: "State machine", path: state_machine, kind: text}
+      - {name: joint_names, label: "Joints", path: joint_names, kind: list}
+      - {name: per_joint_status_code, label: "Per-joint status codes", path: per_joint_status_code, kind: list}
+      - {name: error_codes, label: "Error codes", path: error_codes, kind: list}
+stop: []
+stop_note: >-
+  No velocity-driven motion exists (teleop none). Each action server accepts every cancel request (cancel_callback,
+  rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L61-L62; see controls[].stop). Arm motion
+  is stopped by cancelling the active FollowJointTrajectory goal: a cancelled trajectory holds the current position
+  (ros_actions.py#L211-L216). The gripper is not stopped by cancelling its GripperCommand goal: the cancel only ends
+  the goal as canceled (#L263-L270), while the motor target set_gripper_target set stays (hardware_manager.py#L563-L573)
+  and the SDK's end-pose control loop keeps driving the gripper to it
+  (rebotarm_sdk:reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L161-L162, #L353-L358). The pinned
+  sources document no gripper stop.
+watchdog: "No command timeout in the pinned controller: the SDK end-pose loop holds the last joint target until a new target, safe home or disable (rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L243-L262); on node exit it moves to safe home and disables the motors (rebotarm_controller.py#L79-L96). None found in source for a lost client."
+controls:
+  - id: arm_trajectory
+    label: "Arm joint goal"
+    kind: action
+    name: /follow_joint_trajectory
+    type: control_msgs/action/FollowJointTrajectory
+    template:
+      trajectory:
+        joint_names: ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6"]
+        points:
+          - positions: ["$joint1", "$joint2", "$joint3", "$joint4", "$joint5", "$joint6"]
+            time_from_start: {sec: "$duration", nanosec: 0}
+    fields:
+      - {name: joint1, label: "Joint 1", min: -2.8, max: 2.8, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L111-L115"}
+      - {name: joint2, label: "Joint 2", min: 0.0, max: 3.14, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L205-L209"}
+      - {name: joint3, label: "Joint 3", min: 0.0, max: 3.14, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L319-L323"}
+      - {name: joint4, label: "Joint 4", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L393-L397"}
+      - {name: joint5, label: "Joint 5", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L477-L481"}
+      - {name: joint6, label: "Joint 6", min: -3.14, max: 3.14, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L531-L535"}
+      - {name: duration, label: "Duration", min: 1, max: 10, default: 2, unit: s, integer: true, policy: "Console policy: whole seconds written to builtin_interfaces/Duration.sec (the wiki's example sends sec 5, wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L370-L373); the default is the vendor MoveTo example's --duration 2.0 (rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/examples/move_to.py#L177). The URDF velocity limits (40-50 rad/s) are no useful bound, so a conservative 1-10 s range is used."}
+    stop:
+      - {op: cancel}
+    busy:
+      new_goal: reject
+      source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L46-L59"
+      note: >-
+        The server's goal callback (arm_goal_callback, shared with /move_to_pose, ros_actions.py#L18-L35) returns
+        GoalResponse.REJECT in state TRAJ_RUNNING, GRAVITY_COMP or SAFE_HOMING (#L46-L59). An accepted trajectory
+        enters TRAJ_RUNNING as it starts (begin_trajectory_stream, ros_actions.py#L161-L163,
+        hardware_manager.py#L412-L416), as does a move_to_pose goal (hardware_manager.py#L418-L421), and returns to
+        IDLE before its result is sent, unless safe home ended it (the finally at ros_actions.py#L228-L231 precedes
+        goal_handle.succeed at #L233, and the cancel and exception returns pass through it; the invalid-goal aborts
+        at #L140-L159 never enter TRAJ_RUNNING). Safe home (the /safe_home service, ros_services.py#L22, #L70-L71)
+        sets SAFE_HOMING (hardware_manager.py#L320) and keeps it until the homing motion ends
+        (hardware_manager.py#L322-L328). A running trajectory then ends aborted, by its SAFE_HOMING check
+        (ros_actions.py#L182-L190) or because its next joint target is refused (hardware_manager.py#L252-L254,
+        caught at ros_actions.py#L222-L227), and the finally leaves the state SAFE_HOMING (#L229). So a goal that
+        arrives while an arm goal of any client runs is rejected and never preempts it, with these exceptions in
+        the pinned code. The gate reads the state without the hardware lock (_gate_goal, ros_actions.py#L54-L59;
+        the state_machine property, hardware_manager.py#L161-L163), and an accepted goal enters TRAJ_RUNNING only
+        when its execute callback reaches begin_trajectory_stream (ros_actions.py#L161-L162,
+        hardware_manager.py#L412-L416): a second goal that arrives before then is accepted. Its own
+        begin_trajectory_stream then raises in TRAJ_RUNNING (_require_idle, hardware_manager.py#L407-L410), its
+        except calls hold_current_position() (ros_actions.py#L222-L223) and aborts it, and its finally sets IDLE
+        (#L228-L231) while the first trajectory still runs, so later goals are accepted beside that trajectory.
+        /disable and /set_zero also set IDLE in mid-trajectory (hardware_manager.py#L293, #L342). The page's own
+        goals race this way only with a goal whose execution has not started within 1 s: a goal's first feedback,
+        published after begin_trajectory_stream (ros_actions.py#L209), acknowledges it, and the page sends the
+        control's next goal only after an acknowledged goal's result or after 1 s without acknowledgement (console
+        spec §2.2). The next goal sent after the running goal's result is accepted, except after a goal that safe
+        home ended: that goal is rejected until the homing ends.
+    prerequisites:
+      - /follow_joint_trajectory
+      - /joint_states
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L134-L242"
+    note: >-
+      One point with all six joints, joint_names exactly joint1..joint6 (ros_actions.py#L146-L152; the wiki's example,
+      wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L367-L374).
+      The driver does not clamp, so the fields carry the URDF joint limits; the defaults are the safe-home pose, every
+      joint at 0 (rebotarm_sdk:reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L175-L190).
+  - id: gripper
+    label: "Gripper"
+    kind: action
+    name: /gripper/command
+    type: control_msgs/action/GripperCommand
+    template:
+      command:
+        position: "$position"
+        max_effort: 0.0
+    fields:
+      - {name: position, label: "Gripper motor (0 closed, 5 open)", min: 0.0, max: 5.0, default: 0.0, unit: rad, source: "rebotarm_ros2:src/rebotarm_bringup/config/rebotarm_hardware.yaml#L48-L51", note: "Motor angle, close 0.0 .. open 5.0 for model rs; the driver refuses a position outside that range (hardware_manager.py#L121-L143)."}
+    stop:
+      - op: cancel
+        source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L61-L62"
+        note: >-
+          The documented cancel, but not a gripper stop: the server accepts it (#L61-L62) and the execute loop ends
+          the goal as canceled (#L263-L270) without touching the motor. The target set_gripper_target set stays
+          (hardware_manager.py#L563-L573) and the SDK's end-pose control loop keeps driving the gripper to it
+          (rebotarm_sdk:reBotArm_control_py/controllers/rebotarm_endpose_controller.py#L161-L162, #L353-L358). The
+          pinned sources document no gripper stop.
+    busy:
+      new_goal: parallel
+      source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L51-L59"
+      note: >-
+        The gripper's goal callback rejects only in GRAVITY_COMP or SAFE_HOMING (gripper_goal_callback,
+        ros_actions.py#L51-L59), and a gripper goal enters no state (set_gripper_target,
+        hardware_manager.py#L563-L573): a goal that arrives while another gripper goal runs is accepted and executed
+        beside it, each execute callback on its own thread of the node's reentrant group (ros_actions.py#L36-L44,
+        rebotarm_controller.py#L20, MultiThreadedExecutor of 4 threads, #L88). The newer goal's target replaces the
+        motor target, and every running gripper goal ends when the motor is within 0.12 rad of that target or after
+        5 s (ros_actions.py#L259-L291, hardware_manager.py#L13, #L608-L612). Nothing preempts or cancels the older
+        goal, so streamed goals would pile up on the server, each holding an executor thread for up to 5 s. While an
+        arm goal runs (TRAJ_RUNNING) a gripper goal is accepted and then aborted (set_gripper_target refuses it,
+        hardware_manager.py#L650-L661; ros_actions.py#L249-L257).
+    prerequisites:
+      - /gripper/command
+      - /joint_states
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_actions.py#L244-L291"
+    note: >-
+      command.position in gripper motor rad (rebotarm_ros2:API_zh.md#L546-L564). max_effort is sent as the vendor's
+      documented 0.0: the adapter applies no force limit with it (API_zh.md#L556-L558) and only uses it for the
+      stalled flag (ros_actions.py#L274). The default is the closed position the safe home also commands
+      (hardware_manager.py#L323-L324).
+uncertainties:
+  - "/robot_description, /tf and /tf_static are published by stock robot_state_publisher (not in the pinned repos); its QoS and rates are Jazzy defaults, not stated in the pinned sources. In particular the /tf rate: the launch sets no publish_frequency (rebotarm_ros2:src/rebotarm_bringup/launch/bringup.launch.py#L118-L125), and its 20.0 Hz default and the per-joint-state rate limit come from robot_state_publisher's jazzy branch (src/robot_state_publisher.cpp), not from a release the profile pins."
+  - "The wiki's joint motion demo (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L411-L419) sends joint2 = joint3 = -0.20 rad, and joint3 = -0.20 rad alone, outside the RS URDF bounds [0, 3.14] the arm fields use (rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L205-L209, #L319-L323). The values lie within the DM variant's joint2/joint3 range [-3.14, 0] (rebotarm_ros2:src/rebotarm_bringup/description/DM/urdf/ReBot_Arm_DM.urdf#L157, #L205), so the demo looks carried over from the B601-DM. The controller checks no limits (ros_actions.py#L161-L220); the profile keeps the RS URDF bounds."
+  - "/joint_states and the motor state topics use sensor-data QoS (best effort, rebotarm_controller.py#L22); a rosbridge that subscribes reliably sees no messages (the vendor API notes the incompatibility, rebotarm_ros2:API_zh.md#L100-L112)."
+  - "The vendor API reference also lists /set_mode and the cmd/vel raw topics (rebotarm_ros2:API_zh.md#L18-L45), which the pinned controller code does not create; the profile follows the code."
+  - "The finger positions on /joint_states are derived from the gripper motor angle (ratio of close..open, clamped, times 0.05 / 0.0715 m), not measured finger positions (ros_publishers.py#L92-L114)."
+  - "An empty arm_namespace is replaced by \"rebotarm\" in the controller (rebotarm_controller.py#L37) while robot_state_publisher's remap would become //joint_states; only non-empty namespaces are a documented configuration."
+  - "Several reBots on one wire would each start a robot_state_publisher named /robot_state_publisher publishing the global /robot_description and /tf (bringup.launch.py#L118-L125); the console selects among them by namespace."
+model:
+  source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf"
+  note: >-
+    Kinematic description for the page's 3D model, taken from the pinned vendor URDF that the boot loads for model rs
+    (bringup.launch.py#L59-L68): joint origins, axes and limits as written there. Links are drawn as sticks between
+    joint origins; the fingers are drawn to their centres of mass. The arm joints name the trajectory field that
+    commands them (rad, the URDF joint angle: the motors report in the URDF joint frame). The two prismatic fingers
+    are both driven by the one gripper motor: each names the gripper field with the controller's own mapping onto its
+    joint_states position, finger = motor rad / (open 5.0 - close 0.0) * finger limit (0.05 and 0.0715 m).
+  root: base_link
+  feedback:
+    topic: /joint_states
+    type: sensor_msgs/msg/JointState
+    measured: true
+    source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L67-L125"
+    note: >-
+      The arm joints' motor positions read from the bus every period, and the two finger positions the controller
+      derives from the measured gripper motor angle.
+  joints:
+    - {name: joint1, type: revolute, parent: base_link, child: link1, xyz: [-0.00034283, -0.00098683, 0.075], rpy: [0, 0, 0], axis: [0, 0, -1], min: -2.8, max: 2.8, reported: "joint1", command: [{control: arm_trajectory, field: joint1}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L99-L116"}
+    - {name: joint2, type: revolute, parent: link1, child: link2, xyz: [0.020343, 0.027237, 0.07], rpy: [-1.5708, 0, 0], axis: [0, 0, 1], min: 0, max: 3.14, reported: "joint2", command: [{control: arm_trajectory, field: joint2}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L193-L210"}
+    - {name: joint3, type: revolute, parent: link2, child: link3, xyz: [-0.236, 0, 0], rpy: [0, 0, 0], axis: [0, 0, -1], min: 0, max: 3.14, reported: "joint3", command: [{control: arm_trajectory, field: joint3}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L307-L324"}
+    - {name: joint4, type: revolute, parent: link3, child: link4, xyz: [0.228, -0.072746, 0.0045], rpy: [0, 0, 0], axis: [0, 0, -1], min: -1.57, max: 1.57, reported: "joint4", command: [{control: arm_trajectory, field: joint4}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L381-L398"}
+    - {name: joint5, type: revolute, parent: link4, child: link5, xyz: [0.087, -0.048, -0.03075], rpy: [-1.5708, 0, 0], axis: [0, 0, -1], min: -1.57, max: 1.57, reported: "joint5", command: [{control: arm_trajectory, field: joint5}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L465-L482"}
+    - {name: joint6, type: revolute, parent: link5, child: link6, xyz: [0.0365, 0, 0.048], rpy: [0, 1.5708, 0], axis: [0, 0, -1], min: -3.14, max: 3.14, reported: "joint6", command: [{control: arm_trajectory, field: joint6}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L519-L536"}
+    - {name: j_gripper_end, type: fixed, parent: link6, child: gripper_end, xyz: [0, 0, 0.16621], rpy: [3.1416, -1.5708, 0], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L603-L615"}
+    - {name: gripper_joint1, type: prismatic, parent: gripper_end, child: gripper_left, xyz: [-0.041939, -7.3385e-05, 0], rpy: [1.5708, -1.5708, 0], axis: [0, 0, 1], min: 0, max: 0.05, reported: "gripper_joint1", command: [{control: gripper, field: position, scale: 0.01, source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L7-L18", note: "0.05 m / (5.0 - 0.0) motor rad (open/close, rebotarm_hardware.yaml#L48-L51); the publisher clamps the ratio to 0..1, which the field's 0..5 never leaves"}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L676-L693"}
+    - {name: gripper_joint2, type: prismatic, parent: gripper_end, child: gripper_right, xyz: [-0.041939, 7.3385e-05, 0], rpy: [-1.5708, -1.5708, 0], axis: [0, 0, 1], min: 0, max: 0.0715, reported: "gripper_joint2", command: [{control: gripper, field: position, scale: 0.0143, source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/ros_publishers.py#L7-L18", note: "0.0715 m / (5.0 - 0.0) motor rad (open/close, rebotarm_hardware.yaml#L48-L51)"}], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L754-L771"}
+  tips:
+    - {link: gripper_left, xyz: [-0.00218009, 0.018709, 0.00932189], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L618-L621 (inertial origin: the finger is drawn to its centre of mass)"}
+    - {link: gripper_right, xyz: [0.00218009, -0.018709, 0.00932189], source: "rebotarm_ros2:src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L696-L699 (inertial origin: the finger is drawn to its centre of mass)"}

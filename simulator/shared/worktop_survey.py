@@ -76,12 +76,11 @@ class Mount:
         return self.workspace if self.workspace is not None else self.reach[1] + WORKSPACE_MARGIN
 
 
-#: The worktop robots. so101: REF's constants (shared/placement.py:40-58,
-#: molmospaces/tools/spawn_robot.py:68-73): reach `ARM_REACH` (0.15, 0.35), radius 0.20,
-#: height 0.45, footprint 0.14, workspace 0.35 + 0.10.
-MOUNT = {
-    "so101": Mount(reach=(0.15, 0.35), radius=0.20, height=0.45),
-}
+#: The mount the reference project surveyed its worktop for -- its own arm's constants
+#: (REF shared/placement.py:40-58, molmospaces/tools/spawn_robot.py:68-73): reach
+#: `ARM_REACH` (0.15, 0.35), radius 0.20, height 0.45, footprint 0.14, workspace
+#: 0.35 + 0.10. The survey ranks its spots for this mount, whatever arm then stands there.
+REF_MOUNT = Mount(reach=(0.15, 0.35), radius=0.20, height=0.45)
 
 
 @dataclass
@@ -803,7 +802,7 @@ def worktop(facts: Facts) -> Surface | None:
     if facts.kind == "robocasa":
         if not facts.regions:
             return None
-        region = _usable_region(facts.regions, MOUNT["so101"].radius, MOUNT["so101"].reach)
+        region = _usable_region(facts.regions, REF_MOUNT.radius, REF_MOUNT.reach)
         return Surface(region["name"], float(region["top_z"]), region_rect(region))
     targets = _ranked_targets(facts)
     if targets:
@@ -816,12 +815,24 @@ def worktop(facts: Facts) -> Surface | None:
     return None
 
 
-def candidates(facts: Facts, robot_id: str) -> list[Spot]:
-    """The spots `robot_id` is tried at on the worktop, best first (empty for a robot with
-    no `MOUNT`: it is placed on the worktop's surface by the general search)."""
-    mount = MOUNT.get(robot_id)
-    if mount is None:
+def on_worktop(spot: Spot, wt: Surface) -> bool:
+    """Whether a spot of the survey stands on the worktop's own top face (the support the
+    survey surveyed it on is the worktop's, at its height)."""
+    return spot.surface == wt.name and abs(float(spot.z) - float(wt.z)) <= 1e-6
+
+
+def candidates(facts: Facts, wt: Surface | None = None) -> list[Spot]:
+    """The reference survey's worktop spots, best first, ranked for `REF_MOUNT`: where the
+    scene's worktop objects are staged and where every arm is tried (a robot of any other
+    kind is placed on the worktop's surface by the general search). Only the spots on the
+    worktop (`wt`, the scene's `worktop(facts)` when not given) are worktop spots (spec
+    §2.2, §2.3: the objects and an arm stand on the worktop): REF's search goes on over
+    other table-height tops and other counter regions, which are left out."""
+    wt = worktop(facts) if wt is None else wt
+    if wt is None:
         return []
     if facts.kind == "robocasa":
-        return counter_candidates(facts, mount) if facts.regions else []
-    return tabletop_candidates(facts, mount)
+        spots = counter_candidates(facts, REF_MOUNT) if facts.regions else []
+    else:
+        spots = tabletop_candidates(facts, REF_MOUNT)
+    return [s for s in spots if on_worktop(s, wt)]

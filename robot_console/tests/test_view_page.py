@@ -3,12 +3,13 @@
 The page speaks rosbridge itself; the fake server records every op it sends, so the tests
 check what reached the wire, not only what the page displays. Contract: controls are live as
 soon as the target validates; changed values are sent at once (topic publishes and action
-goals streamed while dragging, throttled with the last value always delivered; services and
-action-group buttons once per click); limits are never exceeded; no bounded control is ever
+goals streamed while dragging, throttled with the last value always delivered; to an action
+server that does not preempt, one goal at a time, the latest value held until the running
+goal's result; services and action-group buttons once per click); limits are never exceeded; no bounded control is ever
 stopped or cancelled by the page. The 3D model is posed from the joint positions the robot
 reports (where the profile documents them) and its commanded joints edit their controls through
 the same path. For a mobile profile the page also offers teleop.sh's hold-to-move base motion
-(console spec §2.2 as amended), tested at the end of this file; elsewhere, loading such
+(console spec §2.2), tested at the end of this file; elsewhere, loading such
 a page sends its start-up stop and nothing else.
 """
 
@@ -27,20 +28,22 @@ from robot_console.profiles import SUPPORTED_IDS, Field, load, load_all, profile
 from robot_console.rosbridge import Rosbridge
 from robot_console.teleop_core import command_topics, stop_ops
 from robot_console.view import make_server
-from test_discovery import without_camera
+from test_discovery import SUBSET_DROPPED, ns_camera_arm, without_row
 from test_profiles import AINEX_SERVOS, GET_POSITION, SET_POSITION, angle2pulse
-from wirespec import drop, merge, retype, wire_spec
+from wirespec import drop, merge, retype, wire_spec, with_hidden_action_endpoints
 
 pytestmark = pytest.mark.browser
 playwright = pytest.importorskip("playwright.sync_api")
 
-SO_ARM = "/joint_trajectory_controller/follow_joint_trajectory"
-SO_GRIP = "/gripper_controller/gripper_cmd"
+REBOT = "rebot_b601_rs (namespace /rebotarm)"     # the reBot's target at its documented default namespace
+ARM = "/rebotarm/follow_joint_trajectory"
+GRIP = "/rebotarm/gripper/command"
+REBOT_JS = "/rebotarm/joint_states"
 HEAD_PAN = "/head_pan_controller/command"
 HEAD_TILT = "/head_tilt_controller/command"
 GOAL_CONNS_MAX = 3          # console.js: open goal connections per control
 # The profiles' documented read-only position queries, which the page polls once a target is
-# validated (console spec §2.2, amended): not commands (FakeRosbridge.read_only).
+# validated (console spec §2.2): not commands (FakeRosbridge.read_only).
 POLLED = {r.service for p in load_all() for r in p.reads if r.poll_s}
 
 
@@ -92,10 +95,30 @@ def serve_variants(monkeypatch, *variants):
     monkeypatch.setattr(discovery_mod, "load_all", profiles)
 
 
-def so101_spec(exec_s=20.0, namespace=None):
-    spec = wire_spec(load("so101"), namespace=namespace) if namespace else wire_spec(load("so101"))
+def rebot_spec(exec_s=20.0, namespace=None, profile=None, include_optional=False):
+    """The reBot's wire: its arm server rejects a goal while one runs, its gripper's runs goals
+    side by side (the profile's `busy`), each goal running `exec_s`; its sensors publish samples,
+    and its optional D405 topics are on the wire only with ``include_optional``."""
+    spec = wire_spec(profile or load("rebot_b601_rs"), namespace=namespace, include_optional=include_optional)
     for a in spec["actions"]:
         a["exec_s"] = exec_s                 # goals outlive the test unless preempted
+    return spec
+
+
+def preempting_rebot():
+    """The reBot as if its action servers preempted a running goal with a new one (as a
+    ros2_control controller does): no packaged profile's server preempts, so the page's streaming
+    of preempting goals is tested on this variant (tests only)."""
+    p = load("rebot_b601_rs")
+    return dataclasses.replace(p, controls=tuple(dataclasses.replace(c, busy="preempt") for c in p.controls))
+
+
+def preempting(monkeypatch, exec_s=20.0):
+    """Serve the preempting variant in place of the reBot; its wire, with preempting servers."""
+    p = preempting_rebot()
+    serve_variants(monkeypatch, p)
+    spec = rebot_spec(exec_s, profile=p)
+    assert {a["busy"] for a in spec["actions"]} == {"preempt"}
     return spec
 
 
@@ -216,7 +239,7 @@ def test_every_profile_camera_is_shown_live_then_stale(view, pid):
     """Console spec §4, for each profile: every supported stream is displayed under its resolved
     topic name, live while frames arrive and visibly stale (never live) once they stop."""
     p = load(pid)
-    srv, page = view(wire_spec(p))
+    srv, page = view(wire_spec(p, include_optional=True))     # an optional camera is on the wire only with this
     cams = page.locator('[data-testid="camera"]')
     assert sorted(cams.evaluate_all("els => els.map(e => e.dataset.topic)")) == sorted(c.topic for c in p.cameras)
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')",
@@ -276,18 +299,239 @@ def test_missing_profile_camera_is_a_visible_state(view, monkeypatch):
     assert "MISSING" in page.locator('[data-testid="camera-state"]').inner_text()
 
 
+def test_optional_wrist_camera_missing_is_visible_and_live_when_present(view):
+    """The reBot's boot starts no camera: its D405 colour and depth streams are optional profile cameras.
+    On a wire without them the target still validates and both cameras show MISSING (console spec
+    §2.3); on a wire with them the page shows both live, at their global names."""
+    both = ["/camera/camera/color/image_raw", "/camera/camera/aligned_depth_to_color/image_raw"]
+    srv, page = view(rebot_spec())
+    assert page.locator('[data-testid="target"]').inner_text() == REBOT
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'missing')")
+    cams = page.locator('[data-testid="camera"]')
+    assert cams.evaluate_all("els => els.map(e => e.dataset.topic)") == both
+    assert all("optional camera" in t for t in page.locator('[data-testid="camera"] .ov-detail').all_inner_texts())
+    assert not disabled(page, "arm_trajectory")
+    srv, page = view(rebot_spec(include_optional=True))
+    assert page.locator('[data-testid="target"]').inner_text() == REBOT
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')")
+    assert page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.topic)") == both
+    assert {o["topic"] for o in srv.ops_of("subscribe")} >= set(both)
+    assert unprompted(srv, "rebot_b601_rs") == []
+
+
+def depth_card(page):
+    return page.locator('[data-testid="camera"][data-kind="depth"]')
+
+
+def card_pixels(page, points):
+    """RGB of the depth card's canvas at (x, y) points."""
+    return depth_card(page).locator("canvas").first.evaluate(
+        "(c, pts) => pts.map(([x, y]) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data).slice(0, 3))", points)
+
+
+def test_depth_camera_card_is_a_false_colour_map_over_the_cameras_range(view):
+    """The reBot's D405 depth stream (16UC1 millimetres) is its second camera card: drawn as the
+    false-colour map scaled to the profile's 0.07-0.5 m, 0 black, with a legend that names the range."""
+    from fake_rosbridge import depth_mm
+    from robot_console.camera import depth_lut
+    srv, page = view(rebot_spec(include_optional=True))
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')")
+    assert page.locator('[data-testid="camera"][data-kind="color"]').count() == 1
+    card = depth_card(page)
+    assert card.count() == 1 and card.get_attribute("data-topic") == "/camera/camera/aligned_depth_to_color/image_raw"
+    assert "16UC1" in card.locator(".cam-meta").inner_text()
+    w, h = 8, 6                                             # the fake wire's frame (fake_rosbridge.image_msg)
+    mid = next(i for i in range(1, w * h) if depth_mm(i, w * h) == 285)
+    lut = depth_lut()
+    got = card_pixels(page, [[0, 0], [1, 0], [mid % w, mid // w], [w - 1, h - 1]])
+    want = [[0, 0, 0], lut[0].tolist(), lut[128].tolist(), lut[255].tolist()]
+    assert got == want, (got, want)                          # no depth is black; near, middle, far of the range
+    legend = card.locator('[data-testid="depth-legend"]')
+    assert legend.locator('[data-testid="depth-near"]').inner_text() == "0.07 m"
+    assert legend.locator('[data-testid="depth-far"]').inner_text() == "0.50 m"
+    assert "no depth" in legend.inner_text()
+    ends = legend.locator('[data-testid="depth-bar"]').evaluate(
+        "c => [0, 255].map((x) => Array.from(c.getContext('2d').getImageData(x, 0, 1, 1).data).slice(0, 3))")
+    assert ends == [lut[0].tolist(), lut[255].tolist()]      # the legend is the map the image is drawn with
+    assert page.locator('[data-testid="camera"][data-kind="color"] [data-testid="depth-legend"]').count() == 0
+    srv.paused.add("/camera/camera/aligned_depth_to_color/image_raw")
+    page.wait_for_function("document.querySelector('[data-kind=depth]').dataset.state === 'stale'", timeout=8000)
+    assert page.locator('[data-testid="camera"][data-kind="color"]').get_attribute("data-state") == "live"
+    assert unprompted(srv, "rebot_b601_rs") == []
+
+
+def test_depth_camera_frames_in_another_encoding_are_unsupported(view):
+    """The depth camera documents 16UC1 only: any other encoding shows UNSUPPORTED, never a colour map."""
+    srv, page = view(rebot_spec(include_optional=True))
+    srv.frame_encoding["/camera/camera/aligned_depth_to_color/image_raw"] = "mono8"
+    page.wait_for_function("document.querySelector('[data-kind=depth]').dataset.state === 'unsupported'", timeout=8000)
+    assert "UNSUPPORTED" in depth_card(page).locator('[data-testid="camera-state"]').inner_text()
+
+
 def test_no_cameras_is_a_visible_state(view, monkeypatch):
     """A validated target without cameras shows that state, and its controls (console spec §2.3).
-    Every packaged profile has a camera, so the page is handed an SO-101 booted without one."""
-    serve_variants(monkeypatch, without_camera(load("so101")))
-    srv, page = view(drop(so101_spec(), "/image_raw"))
-    assert page.locator('[data-testid="target"]').inner_text() == "so101"
+    No packaged profile lacks a camera, so the page is handed the reBot profile without its camera."""
+    bare = dataclasses.replace(load("rebot_b601_rs"), cameras=())
+    serve_variants(monkeypatch, bare)
+    srv, page = view(rebot_spec(profile=bare))
+    assert page.locator('[data-testid="target"]').inner_text() == REBOT
     page.wait_for_function("getComputedStyle(document.querySelector('[data-testid=no-cameras]')).display !== 'none'")
     assert "No cameras" in page.locator('[data-testid="no-cameras"]').inner_text()
     assert page.locator('[data-testid="camera"]').count() == 0
-    assert page.locator('[data-testid="control"]').count() == len(load("so101").controls)
+    assert page.locator('[data-testid="control"]').count() == len(load("rebot_b601_rs").controls)
     assert not disabled(page, "arm_trajectory")
     assert srv.command_ops() == []
+
+
+# ------------------------------------------------------------------ sensor panel (console spec §2.5)
+
+SENSOR_TOPICS = [s.topic for s in load("rebot_b601_rs").sensors]
+
+
+def sensor(page, sid):
+    return page.locator(f'[data-testid="sensor"][data-sensor="{sid}"]')
+
+
+def sensor_state(page, sid):
+    return sensor(page, sid).get_attribute("data-state")
+
+
+def sval(page, sid, field):
+    """The raw value the sensor panel shows for a field (data-value), as text."""
+    return sensor(page, sid).locator(f'[data-field="{field}"] [data-testid="sensor-value"]').get_attribute("data-value")
+
+
+def sbit(page, sid, bit):
+    return sensor(page, sid).locator(f'[data-testid="sensor-bit"][data-bit="{bit}"]').get_attribute("data-set")
+
+
+def wait_sensors(page, state="live", sid=None, timeout=8000):
+    sel = f'[data-testid="sensor"]' + (f'[data-sensor="{sid}"]' if sid else "")
+    page.wait_for_function(
+        "([sel, st]) => { const e = [...document.querySelectorAll(sel)]; "
+        "return e.length > 0 && e.every((x) => x.dataset.state === st); }", arg=[sel, state], timeout=timeout)
+
+
+def test_sensor_panel_shows_the_profile_sensors_read_only(view):
+    """The reBot's page lists each of its profile sensors under its resolved topic; every one reports
+    (a latched topic as its last value, a periodic one live), and the page only subscribes to them:
+    nothing is published, advertised or called for a sensor."""
+    srv, page = view(rebot_spec())
+    assert page.locator('[data-testid="target"]').inner_text() == REBOT
+    panel = page.locator('[data-testid="sensors"]')
+    assert panel.is_visible() and "sensors" in panel.inner_text().lower()
+    ids = [s.id for s in load("rebot_b601_rs").sensors]
+    assert page.locator('[data-testid="sensor"]').evaluate_all("els => els.map(e => e.dataset.sensor)") == ids
+    assert page.locator('[data-testid="sensor"]').evaluate_all("els => els.map(e => e.dataset.topic)") == \
+        [f"/rebotarm{t}" for t in SENSOR_TOPICS]
+    wait_sensors(page, "live", sid="joint_states")
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every((e) => ['live','latched'].includes(e.dataset.state))")
+    assert sensor_state(page, "arm_status") == "latched"
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == f"{len(ids)} of {len(ids)} reporting"
+    subscribed = {o["topic"] for o in srv.ops_of("subscribe")}
+    assert {f"/rebotarm{t}" for t in SENSOR_TOPICS} <= subscribed
+    assert unprompted(srv, "rebot_b601_rs") == []                       # read-only: nothing was sent
+    assert srv.ops_of("advertise") == [] and srv.ops_of("publish") == []
+
+
+def test_sensor_values_fields_and_status_bits(view):
+    """Each shown field is the message's own value: a joint's position, velocity and torque, the
+    arrays of joint_states by joint, the documented bits of status_code set or clear, and the
+    arm status' booleans and lists."""
+    srv, page = view(rebot_spec())
+    wait_sensors(page, "live", sid="joint3_state")
+    assert sval(page, "joint3_state", "joint_name") == "joint3"
+    assert [sval(page, "joint3_state", f) for f in ("position", "velocity", "torque")] == ["0.75", "-0.375", "4.5"]
+    shown = sensor(page, "joint3_state").locator('[data-field="position"] .sf-value').inner_text()
+    assert shown == "0.750"
+    assert sensor(page, "joint3_state").locator('[data-field="velocity"] .sf-value').inner_text() == "−0.375"
+    assert sval(page, "joint3_state", "status_code") == "5"
+    assert [sbit(page, "joint3_state", b) for b in range(6)] == ["true", "false", "true", "false", "false", "false"]
+    assert sensor(page, "joint3_state").locator('[data-testid="sensor-bit"][data-set="true"]').evaluate_all(
+        "els => els.map(e => e.textContent)") == ["undervoltage", "overtemperature"]
+    assert sval(page, "gripper_state", "joint_name") == "gripper"
+    wait_sensors(page, "live", sid="joint_states")
+    assert sval(page, "joint_states", "joint1_position") == "0.1"
+    assert sval(page, "joint_states", "joint6_effort") == "3"
+    assert sval(page, "joint_states", "gripper_joint2_velocity") == "-0.08"
+    assert sensor(page, "joint_states").locator('[data-group="gripper_joint1"] [data-testid="sensor-field"]').count() == 3
+    page.wait_for_function("document.querySelector('[data-sensor=arm_status]').dataset.state === 'latched'")
+    assert [sval(page, "arm_status", f) for f in ("mode", "enabled", "control_loop_active", "state_machine")] == \
+        ["mit", "true", "true", "IDLE"]
+    assert sval(page, "arm_status", "joint_names") == "joint1,joint2,joint3,joint4,joint5,joint6"
+    assert sensor(page, "arm_status").locator('[data-field="error_codes"] .sf-value').inner_text() == "(none)"
+    assert sensor(page, "arm_status").locator('[data-field="per_joint_status_code"] .sf-value').inner_text() == "0, 0, 0, 0, 0, 0"
+
+
+def test_sensor_values_follow_new_messages(view):
+    """A new message changes the shown values; a status word without flags clears every bit; a
+    latched arm status republished (a service call, a trajectory goal) changes at once; a byte array
+    that rosbridge sends as base64 shows its bytes."""
+    srv, page = view(rebot_spec())
+    wait_sensors(page, "live", sid="joint1_state")
+    page.wait_for_function("document.querySelector('[data-sensor=arm_status]').dataset.state === 'latched'")
+    from wirespec import sensor_sample
+    msg = dict(sensor_sample("/joints/joint1/state", "rebotarm_msgs/msg/JointMotorState"),
+               position=-1.25, torque=0.0, status_code=0b110010)
+    srv.set_sample("/rebotarm/joints/joint1/state", msg)
+    page.wait_for_function("document.querySelector('[data-sensor=joint1_state] [data-field=position] [data-testid=sensor-value]').dataset.value === '-1.25'")
+    assert [sbit(page, "joint1_state", b) for b in range(6)] == ["false", "true", "false", "false", "true", "true"]
+    srv.set_sample("/rebotarm/joints/joint1/state", dict(msg, status_code=0))
+    page.wait_for_function("document.querySelector('[data-sensor=joint1_state] [data-field=status_code] [data-testid=sensor-value]').dataset.value === '0'")
+    assert {sbit(page, "joint1_state", b) for b in range(6)} == {"false"}
+    arm = sensor_sample("/arm_status", "rebotarm_msgs/msg/ArmStatus")
+    srv.set_sample("/rebotarm/arm_status", dict(arm, state_machine="TRAJ_RUNNING", enabled=False,
+                                                per_joint_status_code="AAECAwQF", error_codes=["E1", "E2"]))
+    page.wait_for_function("document.querySelector('[data-sensor=arm_status] [data-field=state_machine] [data-testid=sensor-value]').dataset.value === 'TRAJ_RUNNING'")
+    assert sval(page, "arm_status", "enabled") == "false"
+    assert sensor(page, "arm_status").locator('[data-field="per_joint_status_code"] .sf-value').inner_text() == "0, 1, 2, 3, 4, 5"
+    assert sensor(page, "arm_status").locator('[data-field="error_codes"] .sf-value').inner_text() == "E1, E2"
+    assert sensor_state(page, "arm_status") == "latched"
+
+
+def test_sensor_without_message_is_waiting_and_a_silent_one_goes_stale(view):
+    """No message yet is its own state (a latched topic never delivered stays so, not stale); a periodic
+    sensor that stops is stale after its threshold with its values marked frozen, and live again when
+    it resumes. The others are unaffected."""
+    srv, page = view(rebot_spec())
+    wait_sensors(page, "live", sid="joint2_state")
+    srv.paused.add("/rebotarm/joints/joint2/state")
+    page.wait_for_function("document.querySelector('[data-sensor=joint2_state]').dataset.state === 'stale'", timeout=6000)
+    assert "STALE" in sensor(page, "joint2_state").locator('[data-testid="sensor-state"]').inner_text()
+    assert "frozen" in sensor(page, "joint2_state").locator('[data-testid="sensor-meta"]').inner_text()
+    assert sensor_state(page, "joint1_state") == "live" and sensor_state(page, "arm_status") == "latched"
+    srv.paused.discard("/rebotarm/joints/joint2/state")
+    page.wait_for_function("document.querySelector('[data-sensor=joint2_state]').dataset.state === 'live'", timeout=6000)
+
+
+def test_sensors_that_never_published_are_waiting(view, fake):
+    srv = fake(rebot_spec())
+    srv.paused |= {"/rebotarm/joints/joint5/state", "/rebotarm/arm_status"}
+    srv, page = view(srv=srv)
+    wait_sensors(page, "live", sid="joint4_state")
+    assert sensor_state(page, "joint5_state") == "waiting" and sensor_state(page, "arm_status") == "waiting"
+    assert "NO MESSAGE YET" in sensor(page, "joint5_state").locator('[data-testid="sensor-state"]').inner_text()
+    assert "no message received yet" in sensor(page, "arm_status").locator('[data-testid="sensor-meta"]').inner_text()
+    page.wait_for_timeout(1600)                       # longer than a periodic threshold: waiting, never stale
+    assert sensor_state(page, "joint5_state") == "waiting"
+    assert sval(page, "joint5_state", "position") == ""
+    assert sensor(page, "joint5_state").locator('[data-field="position"] .sf-value').inner_text() == "—"
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == f"{len(SENSOR_TOPICS) - 2} of {len(SENSOR_TOPICS)} reporting"
+
+
+def test_sensors_show_disconnected_after_connection_loss(view):
+    srv, page = view(rebot_spec())
+    wait_sensors(page, "live", sid="joint_states")
+    srv.drop_all()
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every((e) => e.dataset.state === 'lost')", timeout=6000)
+    assert "DISCONNECTED" in sensor(page, "joint1_state").locator('[data-testid="sensor-state"]').inner_text()
+
+
+def test_profiles_without_sensors_show_no_sensor_panel(view):
+    srv, page = view(wire_spec(load("myagv")))
+    assert page.locator('[data-testid="target"]').inner_text() == "myagv"
+    assert page.locator('[data-testid="sensors"]').count() == 1 and not page.locator('[data-testid="sensors"]').is_visible()
+    assert page.locator('[data-testid="sensor"]').count() == 0
 
 
 def test_mobile_base_page_has_camera_base_motion_and_no_bounded_controls(view):
@@ -323,7 +567,7 @@ def test_nothing_is_sent_before_validation(view):
 
 
 @pytest.mark.parametrize("robot,name,bad", [("ainex", HEAD_PAN, "std_msgs/Float64"),
-                                            ("so101", "/joint_states", "sensor_msgs/msg/Imu")])
+                                            ("rebot_b601_rs", REBOT_JS, "sensor_msgs/msg/Imu")])
 def test_explicit_selection_cannot_bypass_type_checks(view, robot, name, bad):
     srv, page = view(retype(wire_spec(load(robot)), name, bad), robot=robot)
     assert page.locator('[data-testid="target"]').inner_text() == "none"
@@ -334,7 +578,42 @@ def test_explicit_selection_cannot_bypass_type_checks(view, robot, name, bad):
     assert srv.command_ops() == []
 
 
-@pytest.mark.parametrize("robot", ["so101", "ainex", "rosmaster_x3_plus"])
+@pytest.mark.parametrize("robot", [None, "rebot_b601_rs"])
+def test_hidden_action_services_type_check_the_action_as_python_does(view, robot):
+    """A ROS 2 rosapi that lists the hidden `_action` services reveals an action's type through its
+    send_goal service (discovery.py, dialect.ros2_action_from_send_goal). The page checks that type
+    as Python does (console spec §3, §4): with the documented type the arm action is verified and
+    the target validates; with another action's type it is refused, also when selected explicitly."""
+    good = with_hidden_action_endpoints(rebot_spec(), ARM, "control_msgs/action/FollowJointTrajectory")
+    bad = with_hidden_action_endpoints(rebot_spec(), ARM, "control_msgs/action/GripperCommand")
+    p = load(robot) if robot else None
+    for spec, ok in ((good, True), (bad, False)):
+        srv, page = view(spec, robot=robot)
+        rb = Rosbridge(srv.url).connect()
+        try:
+            g = fetch_graph(rb)
+        finally:
+            rb.close()
+        assert g.actions[ARM] == ("control_msgs/action/FollowJointTrajectory" if ok else "control_msgs/action/GripperCommand")
+        shown = page.locator('[data-testid="target"]').inner_text()
+        if ok:
+            t = select_target(g, p, None)
+            assert ARM not in {n for _, n, _ in t.validation.unverified}         # verified, not only named
+            assert shown == t.label == REBOT
+            assert page.evaluate(f"RC.state.target.validation.unverified.includes('{ARM}')") is False
+        else:
+            with pytest.raises(SelectionError) as e:
+                select_target(g, p, None)
+            want = f"wrong type on action {ARM}: expected control_msgs/action/FollowJointTrajectory, found control_msgs/action/GripperCommand"
+            assert want in e.value.reason, e.value.reason
+            assert shown == "none"
+            reason = page.locator('[data-testid="reason"]').inner_text()
+            assert want in reason, reason
+            assert page.locator('[data-testid="control"]').count() == 0
+        assert srv.command_ops() == []
+
+
+@pytest.mark.parametrize("robot", ["rebot_b601_rs", "ainex", "rosmaster_x3_plus"])
 def test_nothing_is_sent_on_load_or_reload(view, robot):
     """Apart from the read-only poll and, for a mobile profile, the start-up stop of every load."""
     srv, page = view(wire_spec(load(robot), include_optional=True))
@@ -347,20 +626,22 @@ def test_nothing_is_sent_on_load_or_reload(view, robot):
     only_startup(srv, page, robot, loads=2)
 
 
-@pytest.mark.parametrize("robot", ["so101", "ainex"])
+@pytest.mark.parametrize("robot", ["rebot_b601_rs", "ainex"])
 def test_page_states_the_sending_contract_and_has_no_arm_switch(view, robot):
     """No arm switch, no Esc behaviour, no stop for a bounded control; only a mobile profile's
-    base motion has a STOP button (console spec §2.2 as amended)."""
-    srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
+    base motion has a STOP button (console spec §2.2)."""
+    srv, page = view(rebot_spec() if robot == "rebot_b601_rs" else wire_spec(load(robot)))
     note = page.locator('[data-testid="send-note"]').inner_text()
     assert "Changes are sent to the robot immediately, and only base motion is stopped automatically." in note
     assert "keeps running" in note
+    # how an action control whose server does not preempt holds changes (console spec §2.2)
+    assert "keeps one goal at a time, your latest change goes out when that goal ends" in " ".join(note.split())
     assert f"Controls live on {robot}" in page.locator('[data-testid="live-card"]').inner_text()
     for sel in ("#enable", '[data-testid="enable"]', '[data-testid="stop-all"]', '[data-testid="armed-pill"]',
                 '[data-testid="stop-status"]', '[data-testid="startup"]'):
         assert page.locator(sel).count() == 0, sel
     assert page.locator('#controls button:has-text("stop"), #controls button:has-text("cancel")').count() == 0
-    if robot == "so101":
+    if robot == "rebot_b601_rs":
         assert "STOP" not in page.locator("body").inner_text()
         assert not page.locator('[data-testid="motion"]').is_visible()
     else:
@@ -399,7 +680,7 @@ def test_ros1_head_slider_and_pad_stream(view):
     assert len(pubs) >= 5 and min(gaps(pubs)) > 0.07
     assert pubs[-1]["msg"] == {"position": final, "duration": 0.5}
     # The head pad streams both axes while dragged. Its left is the robot's left: a negative
-    # head_pan on the model's -Z axis (console spec §2.1, amended), as teleop's Left key.
+    # head_pan on the model's -Z axis (console spec §2.1), as teleop's Left key.
     pad = page.locator(".pad")
     pad.scroll_into_view_if_needed()
     labels = pad.locator(".pad-lbl").all_inner_texts()
@@ -447,46 +728,53 @@ def test_out_of_range_values_are_never_sent(view):
     page.wait_for_timeout(300)
     assert srv.published(HEAD_PAN) == []
     assert "above documented maximum" in status(page, "head_pan")
-    srv2, page2 = view(so101_spec())
-    num(page2, "arm_trajectory", "shoulder_pan").fill("2.5")
-    num(page2, "arm_trajectory", "shoulder_pan").press("Tab")
+    srv2, page2 = view(rebot_spec())
+    num(page2, "arm_trajectory", "joint1").fill("3.0")                  # joint1: -2.8..2.8 rad
+    num(page2, "arm_trajectory", "joint1").press("Tab")
     page2.wait_for_timeout(400)
     assert srv2.ops_of("send_action_goal") == []
     assert "above documented maximum" in status(page2, "arm_trajectory")
 
 
 def test_slider_cannot_leave_documented_limits(view):
-    srv, page = view(so101_spec())
-    f = num(page, "arm_trajectory", "shoulder_pan")
-    r = rng(page, "arm_trajectory", "shoulder_pan")
+    srv, page = view(rebot_spec(exec_s=0.3))
+    f = num(page, "arm_trajectory", "joint1")
+    r = rng(page, "arm_trajectory", "joint1")
     r.evaluate("r => { r.value = '99'; r.dispatchEvent(new Event('input', {bubbles: true})); }")
-    assert float(f.input_value()) == 1.91986
+    assert float(f.input_value()) == 2.8
     r.evaluate("r => { r.value = '-99'; r.dispatchEvent(new Event('input', {bubbles: true})); }")
-    assert float(f.input_value()) == -1.91986
-    final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 1.3, steps=20, step_ms=30)   # past the end
-    assert final == 1.91986
+    assert float(f.input_value()) == -2.8
+    final = drag(page, "arm_trajectory", "joint1", 0.5, 1.3, steps=20, step_ms=30)   # past the end
+    assert final == 2.8
     page.wait_for_timeout(1200)
-    sent = [g["args"]["trajectory"]["points"][0]["positions"][0] for g in goals(srv, SO_ARM)]
-    assert sent and all(-1.91986 <= v <= 1.91986 for v in sent) and sent[-1] == 1.91986
+    sent = [g["args"]["trajectory"]["points"][0]["positions"][0] for g in goals(srv, ARM)]
+    assert sent and all(-2.8 <= v <= 2.8 for v in sent) and sent[-1] == 2.8
 
 
-# ------------------------------------------------------------------ action goals stream and preempt
+# ------------------------------------------------------------------ action goals: preempting servers
 
-def test_action_drag_streams_preempting_goals_with_bounded_connections(view):
-    srv, page = view(so101_spec())
+def kind_text(page, cid):
+    return control(page, cid).locator(".ctl-kind").inner_text()
+
+
+def test_action_drag_streams_preempting_goals_with_bounded_connections(view, monkeypatch):
+    """A server that preempts its running goal (the preempting variant): goals stream at about 5
+    per second while dragging, each preempting the previous one, the final value delivered."""
+    srv, page = view(preempting(monkeypatch))
+    assert "each new one" in kind_text(page, "arm_trajectory") and "preempts" in kind_text(page, "arm_trajectory")
     base = srv.open_clients()
     seen = []
     t0 = time.monotonic()
-    final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.1, steps=50, step_ms=40,
+    final = drag(page, "arm_trajectory", "joint1", 0.5, 0.1, steps=50, step_ms=40,
                  during=lambda: seen.append(srv.open_clients()))
     dur = time.monotonic() - t0                                          # longer than 2 s on a loaded host
     page.wait_for_timeout(800)
-    gs = goals(srv, SO_ARM)
+    gs = goals(srv, ARM)
     assert 5 <= len(gs) <= dur / 0.2 + 3, (len(gs), dur)                 # about 5 per s
     assert min(gaps(gs)) > 0.1, gaps(gs)                         # throttled (each goal has its own connection: arrival jitter)
     g = gs[-1]
     assert g["args"]["trajectory"]["points"][0]["positions"][0] == final < -1.0
-    assert g["args"]["trajectory"]["joint_names"][0] == "shoulder_pan_joint" and g["feedback"] is True
+    assert g["args"]["trajectory"]["joint_names"] == [f"joint{i}" for i in range(1, 7)] and g["feedback"] is True
     # Each goal preempted the previous one; only the latest still runs.
     assert [srv.goals[x["id"]]["done"] for x in gs] == [True] * (len(gs) - 1) + [False]
     assert max(seen) <= base + GOAL_CONNS_MAX, seen
@@ -495,20 +783,14 @@ def test_action_drag_streams_preempting_goals_with_bounded_connections(view):
     no_stop_ops(srv)
 
 
-def test_gripper_slider_streams_goals(view):
-    srv, page = view(so101_spec())
-    final = drag(page, "gripper", "position", 0.0, 0.6, steps=25, step_ms=40)
-    page.wait_for_timeout(800)
-    gs = goals(srv, SO_GRIP)
-    assert len(gs) >= 3 and gs[-1]["args"]["command"]["position"] == [final] and final > 0.8
-    assert gs[-1]["args"]["command"]["name"] == ["gripper_joint"]
-
-
-def test_silent_action_server_bounds_goals_and_connections(view):
-    """A server that never acknowledges: about one goal per second, and never more than
+@pytest.mark.parametrize("server", ["preempt", "reject"])
+def test_silent_action_server_bounds_goals_and_connections(view, monkeypatch, server):
+    """A server that never acknowledges a goal (and, where it rejects goals while one runs, never
+    answers a rejected one, as rosbridge before 2.5 does not): a goal unacknowledged after 1 s holds
+    nothing back, so about one goal per second, the final value delivered, and never more than
     GOAL_CONNS_MAX goal connections at any moment (sampled every 5 ms through a 5 s drag)."""
-    srv, page = view(so101_spec())
-    srv.action_behaviour[SO_ARM] = "silent"                              # never acknowledges a goal
+    srv, page = view(preempting(monkeypatch) if server == "preempt" else rebot_spec())
+    srv.action_behaviour[ARM] = "silent"                                 # never acknowledges a goal
     base = srv.open_clients()
     seen, stop = [], threading.Event()
 
@@ -519,25 +801,204 @@ def test_silent_action_server_bounds_goals_and_connections(view):
     th = threading.Thread(target=sample, daemon=True)
     th.start()
     try:
-        final = drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.9, steps=130, step_ms=40)
+        final = drag(page, "arm_trajectory", "joint1", 0.5, 0.9, steps=130, step_ms=40)
         page.wait_for_timeout(1500)                                      # the trailing goal after the ack timeout
     finally:
         stop.set()
         th.join()
-    gs = goals(srv, SO_ARM)
+    gs = goals(srv, ARM)
     assert 4 <= len(gs) <= 10, len(gs)                                   # about one per second
     assert gs[-1]["args"]["trajectory"]["points"][0]["positions"][0] == final
     assert max(seen) <= base + GOAL_CONNS_MAX, (base, max(seen))
 
 
+def test_slow_preempting_server_bounds_connections_while_goals_retire(view, monkeypatch):
+    """A preempting server that acknowledges slowly: the first two goals' acknowledgements (and
+    results) arrive 2 s late, so after 1 s each holds nothing back and three goal connections
+    are open; the third goal is acknowledged after 0.3 s, which retires the two older goals and
+    lets the next goal go out at once. Their connections still count until they have closed:
+    the next goal's connection opens only then, so never more than GOAL_CONNS_MAX are open
+    (console spec §2.2), sampled every 5 ms through a 4 s drag; the final value is delivered."""
+    srv, page = view(preempting(monkeypatch))
+    srv.reply_delay[ARM] = 2.0
+    base = srv.open_clients()
+    seen, stop = [], threading.Event()
+
+    def sample():
+        while not stop.is_set():
+            seen.append(srv.open_clients())
+            if len(goals(srv, ARM)) >= 2:
+                srv.reply_delay[ARM] = 0.3                               # from the third goal on
+            time.sleep(0.005)
+    th = threading.Thread(target=sample, daemon=True)
+    th.start()
+    try:
+        final = drag(page, "arm_trajectory", "joint1", 0.5, 0.9, steps=100, step_ms=40)
+        page.wait_for_timeout(1000)
+    finally:
+        stop.set()
+        th.join()
+    gs = goals(srv, ARM)
+    assert len(gs) >= 5, len(gs)                 # two slow goals, then one per acknowledgement
+    assert gs[-1]["args"]["trajectory"]["points"][0]["positions"][0] == final
+    assert max(seen) == base + GOAL_CONNS_MAX, (base, max(seen))         # bounded, and the bound was reached
+    assert srv.wait_for(lambda: srv.open_clients() == base + 1, 2.0), srv.open_clients()   # the latest goal's
+    no_stop_ops(srv)
+
+
+# ------------------------------------------------------------------ action goals: servers that do not preempt
+
+def joint1_of(g):
+    return g["args"]["trajectory"]["points"][0]["positions"][0]
+
+
+def finished_with(srv, action, value_of, final, timeout=6.0):
+    """Wait until the latest goal of `action` carries `final` and has ended; its goals."""
+    def ok():
+        gs = goals(srv, action)
+        return bool(gs) and value_of(gs[-1]) == final and srv.goals.get(gs[-1]["id"], {}).get("done") is True
+    assert srv.wait_for(ok, timeout), [value_of(g) for g in goals(srv, action)]
+    return goals(srv, action)
+
+
+def one_at_a_time(srv, gs):
+    """Every goal was sent after the previous goal's result."""
+    for a, b in zip(gs, gs[1:]):
+        done = srv.goals[a["id"]]["t_done"]
+        assert done is not None and b["_t"] >= done, (a["id"], b["_t"] - (done or 0))
+
+
+def test_rebot_arm_drag_holds_the_latest_value_until_the_running_goal_ends(view):
+    """The reBot's arm server rejects a goal while one runs (ros_actions.py#L46-L59, profile `busy`),
+    so a drag keeps one goal outstanding: changes made while it runs are held (only the latest)
+    and go out when its result arrives; nothing is cancelled and the server rejects nothing; the
+    final value is delivered after the running goal's result; each goal's connection closes after
+    its result (console spec §2.2, §4)."""
+    srv, page = view(rebot_spec(exec_s=0.5))
+    assert "one at a time" in kind_text(page, "arm_trajectory")
+    assert "rejects a new goal while one runs" in kind_text(page, "arm_trajectory")
+    base = srv.open_clients()
+    seen, outstanding, shown = [], [], []
+
+    def during():
+        seen.append(srv.open_clients())
+        outstanding.append(sum(1 for g in list(srv.goals.values()) if g["action"] == ARM and not g["done"]))
+        shown.append(status(page, "arm_trajectory"))
+    t0 = time.monotonic()
+    final = drag(page, "arm_trajectory", "joint1", 0.5, 0.1, steps=50, step_ms=40, during=during)
+    dur = time.monotonic() - t0
+    gs = finished_with(srv, ARM, joint1_of, final)
+    assert final < -1.0 and 3 <= len(gs) <= dur / 0.5 + 2, (len(gs), dur)   # paced by the running goals
+    one_at_a_time(srv, gs)
+    assert max(outstanding) == 1 and srv.rejected == []
+    assert any(s.startswith("running:") and "latest value is held" in s for s in shown), shown
+    assert gs[-1]["args"]["trajectory"]["joint_names"] == [f"joint{i}" for i in range(1, 7)]
+    page.wait_for_function("document.querySelector('[data-control=arm_trajectory]').dataset.phase === 'done'", timeout=3000)
+    assert "goal succeeded" in status(page, "arm_trajectory")
+    page.wait_for_timeout(300)
+    assert len(goals(srv, ARM)) == len(gs)                               # an unchanged value is not resent
+    assert max(seen) <= base + GOAL_CONNS_MAX, seen
+    assert srv.open_clients() == base, (srv.open_clients(), base)        # every goal's connection closed
+    no_stop_ops(srv)
+
+
+def test_rebot_gripper_goals_go_one_at_a_time(view):
+    """The gripper's server runs a goal beside the running one (ros_actions.py#L51-L59): the page
+    still keeps one goal outstanding, so goals do not pile up on it, and delivers the final value.
+    The goal carries the motor angle (0 closed .. 5 open rad) and the vendor's max_effort 0."""
+    srv, page = view(rebot_spec(exec_s=0.3))
+    assert "beside the running one" in kind_text(page, "gripper")
+    base = srv.open_clients()
+    seen = []
+    final = drag(page, "gripper", "position", 0.0, 0.6, steps=25, step_ms=40,
+                 during=lambda: seen.append(srv.open_clients()))
+    gs = finished_with(srv, GRIP, lambda g: g["args"]["command"]["position"], final)
+    assert len(gs) >= 2 and final > 2.0
+    one_at_a_time(srv, gs)
+    assert gs[-1]["args"]["command"]["max_effort"] == 0.0
+    assert max(seen) <= base + GOAL_CONNS_MAX, seen
+    assert srv.wait_for(lambda: srv.open_clients() == base, 2.0), (srv.open_clients(), base)   # every goal's connection closed
+    no_stop_ops(srv)
+
+
+def test_change_after_the_result_is_sent_even_when_it_equals_the_last_goal(view):
+    """Goals of a control whose server does not preempt are paced at about 5 per second, as a
+    preempting server's are. Here the running goal (joint2 0.5) ends before the pacing lets the
+    value held meanwhile (0.6) go out, and the value is set back to 0.5 while no goal is
+    outstanding: that change replaces the held value and is sent, although it equals the last
+    goal's (console spec §2.2); 0.6 is never sent."""
+    srv, page = view(rebot_spec(exec_s=0.03))
+    r = page.evaluate("""async () => {
+      const cs = RC.state.controls.get("arm_trajectory"), f = cs.inputs.joint2;
+      const set = (v) => { f.value = String(v); f.dispatchEvent(new Event("input")); f.dispatchEvent(new Event("change")); };
+      const until = async (p) => {
+        const end = Date.now() + 3000;
+        while (!p()) { if (Date.now() > end) throw new Error("timed out"); await new Promise((ok) => setTimeout(ok, 1)); }
+      };
+      set(0.5);
+      await until(() => cs.goal && !cs.goal.done);
+      set(0.6);                                        // held: the goal is outstanding
+      const held = cs.th.pending && cs.th.held;
+      await until(() => cs.goal.done);
+      const paced = !!cs.th.timer && cs.th.held;       // the held value waits for the pacing
+      set(0.5);                                        // no goal outstanding: back to the last goal's value
+      return { held, paced, sinceSent: Date.now() - cs.th.last };
+    }""")
+    assert r["held"] and r["paced"] and r["sinceSent"] < 200, r
+    joint2 = lambda g: g["args"]["trajectory"]["points"][0]["positions"][1]      # noqa: E731
+    assert srv.wait_for(lambda: len(goals(srv, ARM)) >= 2, 3.0), [joint2(g) for g in goals(srv, ARM)]
+    page.wait_for_timeout(500)
+    gs = goals(srv, ARM)
+    assert [joint2(g) for g in gs] == [0.5, 0.5], [joint2(g) for g in gs]
+    assert gaps(gs)[0] > 0.1, gaps(gs)                                   # paced (arrival jitter aside)
+    one_at_a_time(srv, gs)
+    page.wait_for_function("document.querySelector('[data-control=arm_trajectory]').dataset.phase === 'done'", timeout=3000)
+    no_stop_ops(srv)
+
+
+def test_rejected_goal_is_shown_as_rejected_and_not_resent(view):
+    """While another client's goal runs, the reBot's arm server rejects the page's goal; rosbridge
+    reports it (result false, "Action goal was rejected") and the page shows it as rejected, not
+    as a status code, and does not resend it. A later change goes out and is accepted. During a
+    drag, each rejected goal's result releases the held latest value, so the final value is
+    delivered once the server is free."""
+    srv, page = view(rebot_spec(exec_s=0.5))
+    srv.occupy(ARM, 1.5)                                                 # another client's goal runs
+    f = num(page, "arm_trajectory", "joint2")
+    f.fill("0.5")
+    f.press("Enter")
+    page.wait_for_function("document.querySelector('[data-control=arm_trajectory]').dataset.phase === 'rejected'", timeout=5000)
+    shown = status(page, "arm_trajectory")
+    assert shown.startswith("rejected: the action server rejected the goal") and "Action goal was rejected" in shown, shown
+    assert "status" not in shown and "undefined" not in shown, shown
+    assert control(page, "arm_trajectory").get_attribute("data-status") == "bad"
+    assert len(goals(srv, ARM)) == 1 and len(srv.rejected) == 1
+    page.wait_for_timeout(1600)                                          # the other goal ends: nothing is resent
+    assert len(goals(srv, ARM)) == 1
+    f.fill("0.6")
+    f.press("Enter")
+    gs = finished_with(srv, ARM, lambda g: g["args"]["trajectory"]["points"][0]["positions"][1], 0.6)
+    assert len(gs) == 2 and gs[-1]["id"] in srv.goals                    # accepted
+    # A drag while the server is busy: rejected goals, then the final value once it is free.
+    srv.occupy(ARM, 1.0)
+    n = len(goals(srv, ARM))
+    final = drag(page, "arm_trajectory", "joint1", 0.5, 0.8, steps=40, step_ms=40)
+    gs = finished_with(srv, ARM, joint1_of, final)[n:]
+    assert len(srv.rejected) >= 2 and srv.goals.get(gs[-1]["id"]) is not None
+    assert len(gs) <= 2.2 / 0.2 + 3, len(gs)                             # throttled, also while rejected
+    no_stop_ops(srv)
+
+
 def test_use_measured_and_reset_send_their_values(view):
-    srv, page = view(so101_spec())
-    names = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_flex_joint", "wrist_flex_joint", "wrist_roll_joint", "gripper_joint"]
+    """The reBot's measured joints are copied into the arm goal; the gripper's measured motor angle is
+    the controller's finger position mapped back (gripper_joint2 = motor / 5 * 0.0715 m)."""
+    srv, page = view(rebot_spec(exec_s=0.3))
     stop = threading.Event()
+    srv.paused.add(REBOT_JS)                 # this pump publishes the joint states, not the wire's sample
 
     def pump():
         while not stop.is_set():
-            srv._broadcast("/joint_states", {"name": names, "position": [0.25, -0.5, 0.75, 0.0, 0.1, 0.4]})
+            srv._broadcast(REBOT_JS, {"name": REBOT_JOINTS, "position": [0.25, 0.5, 0.75, 0.0, 0.1, -0.2, 0.02, 0.0286]})
             time.sleep(0.05)
     th = threading.Thread(target=pump, daemon=True)
     th.start()
@@ -546,15 +1007,15 @@ def test_use_measured_and_reset_send_their_values(view):
         assert "+0.250" in control(page, "arm_trajectory").locator(".measured").first.inner_text()
         assert srv.command_ops() == []                                   # feedback is read-only
         control(page, "arm_trajectory").get_by_role("button", name="Use measured").click()
-        assert float(num(page, "arm_trajectory", "elbow_flex").input_value()) == 0.75
+        assert float(num(page, "arm_trajectory", "joint3").input_value()) == 0.75
         assert float(num(page, "gripper", "position").input_value()) == 0       # per control
         page.wait_for_timeout(400)
-        assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"] == [0.25, -0.5, 0.75, 0.0, 0.1]
+        assert goals(srv, ARM)[-1]["args"]["trajectory"]["points"][0]["positions"] == [0.25, 0.5, 0.75, 0.0, 0.1, -0.2]
         control(page, "gripper").get_by_role("button", name="Use measured").click()
-        assert float(num(page, "gripper", "position").input_value()) == 0.4
+        assert float(num(page, "gripper", "position").input_value()) == 2.0
         control(page, "arm_trajectory").get_by_role("button", name="Reset to defaults").click()
         page.wait_for_timeout(400)
-        assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"] == [0.0] * 5
+        assert goals(srv, ARM)[-1]["args"]["trajectory"]["points"][0]["positions"] == [0.0] * 6
     finally:
         stop.set()
     page.wait_for_function("document.querySelector('[data-control=arm_trajectory] .measured').dataset.state === 'none'", timeout=5000)
@@ -614,7 +1075,7 @@ def polls(srv):
 
 
 def test_ainex_pose_is_polled_once_validated_and_shown_without_a_click(view, fake):
-    """Console spec §2.2 (amended): once the target is validated the page asks the
+    """Console spec §2.2: once the target is validated the page asks the
     documented read-only query about once a second, one call at a time, with every servo; the model
     shows the robot's pose (head turned, knees bent, arms down) within about 2 s, the controls show
     the measured values in rad and degrees, and targets not yet changed follow them. Nothing is
@@ -824,14 +1285,14 @@ def test_each_control_shows_its_sending_done_and_failed_state(view):
 
 
 def test_aborted_goal_is_a_visible_failure(view):
-    srv, page = view(so101_spec(exec_s=0.6))
-    srv.action_behaviour[SO_GRIP] = "abort"
+    srv, page = view(rebot_spec(exec_s=0.6))
+    srv.action_behaviour[GRIP] = "abort"
     num(page, "gripper", "position").fill("0.5")
     num(page, "gripper", "position").press("Enter")
     page.wait_for_function("document.querySelector('[data-control=gripper]').dataset.phase === 'failed'", timeout=8000)
     assert "aborted" in status(page, "gripper")
     page.wait_for_timeout(300)
-    assert len(goals(srv, SO_GRIP)) == 1                                      # a failure is not retried
+    assert len(goals(srv, GRIP)) == 1                                         # a failure is not retried
     no_stop_ops(srv)
 
 
@@ -928,6 +1389,7 @@ def test_controls_without_their_prerequisites_are_unavailable(view, pid):
             assert disabled(page, c.id)
     c = p.controls[0]
     required = next(n for n in c.prerequisites if n not in optional)
+    required = p.resolve(required, p.namespace.default if p.namespace else "")    # on the wire
     srv, page = view(drop(wire_spec(p, include_optional=True), required), robot=pid)
     assert page.locator('[data-testid="target"]').inner_text() == "none"
     assert required in page.locator('[data-testid="reason"]').inner_text()
@@ -937,14 +1399,14 @@ def test_controls_without_their_prerequisites_are_unavailable(view, pid):
 
 # ------------------------------------------------------------------ no bounded control is stopped automatically
 
-@pytest.mark.parametrize("robot", ["so101", "ainex", "rosmaster_x3_plus"])
+@pytest.mark.parametrize("robot", ["rebot_b601_rs", "ainex", "rosmaster_x3_plus"])
 def test_release_escape_focus_hide_and_close_send_no_stop_for_bounded_controls(view, browser, robot):
     """Console spec §2.2/§4: release, focus loss, page hide or close send no stop or cancel for a
     bounded control. A mobile profile's base motion requests its own documented stop on focus loss
     and page hide (and nothing else); an arm's page sends nothing at all."""
-    srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
+    srv, page = view(rebot_spec() if robot == "rebot_b601_rs" else wire_spec(load(robot)))
     p = load(robot)
-    cid, field = {"so101": ("arm_trajectory", "shoulder_pan"), "ainex": ("head_pan", "position"),
+    cid, field = {"rebot_b601_rs": ("arm_trajectory", "joint1"), "ainex": ("head_pan", "position"),
                   "rosmaster_x3_plus": ("arm_pose", "j1")}[robot]
     if not p.is_arm:
         started(page)
@@ -965,43 +1427,44 @@ def test_release_escape_focus_hide_and_close_send_no_stop_for_bounded_controls(v
     else:
         assert new and all(is_stop(p, o) for o in new), new                # base motion's stops only
     no_stop_ops(srv)
-    if robot == "so101":
-        latest = goals(srv, SO_ARM)[-1]
+    if robot == "rebot_b601_rs":
+        latest = goals(srv, ARM)[-1]
         assert srv.goals[latest["id"]]["done"] is False                  # the goal keeps running
 
 
 def test_target_change_sends_nothing_and_rebinds_controls(view):
-    p = load("so101")
-    spec = merge(so101_spec(namespace="arm1"), so101_spec(namespace="arm2"))
-    srv, page = view(spec, robot="so101", namespace="arm1")
-    assert page.locator('[data-testid="target"]').inner_text() == "so101 (namespace /arm1)"
-    drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.7, steps=8, step_ms=40)
+    """Two reBots booted with arm_namespace arm1 and arm2: goals go to the selected one only (joint
+    names are the same on both: the controller does not prefix them)."""
+    spec = merge(rebot_spec(namespace="arm1"), rebot_spec(namespace="arm2"))
+    srv, page = view(spec, robot="rebot_b601_rs", namespace="arm1")
+    assert page.locator('[data-testid="target"]').inner_text() == "rebot_b601_rs (namespace /arm1)"
+    drag(page, "arm_trajectory", "joint1", 0.5, 0.7, steps=8, step_ms=40)
     page.wait_for_timeout(500)
-    arm1 = goals(srv, f"/arm1{SO_ARM}")
-    assert arm1 and arm1[-1]["args"]["trajectory"]["joint_names"][0] == "arm1/shoulder_pan_joint"
+    arm1 = goals(srv, "/arm1/follow_joint_trajectory")
+    assert arm1 and arm1[-1]["args"]["trajectory"]["joint_names"][0] == "joint1"
+    assert goals(srv, "/arm2/follow_joint_trajectory") == []
     before = len(srv.clients)
     page.fill('[data-testid="namespace"]', "arm2")
     page.click('[data-testid="select"]')
-    page.wait_for_function("document.querySelector('[data-testid=target]').innerText === 'so101 (namespace /arm2)'",
+    page.wait_for_function("document.querySelector('[data-testid=target]').innerText === 'rebot_b601_rs (namespace /arm2)'",
                            timeout=8000)
     assert len(srv.clients) == before + 1                               # a new connection for the new target
     page.wait_for_timeout(500)
     no_stop_ops(srv)
     assert srv.goals[arm1[-1]["id"]]["done"] is False                   # the old target's goal keeps running
-    assert len(goals(srv, f"/arm1{SO_ARM}")) == len(arm1)
-    drag(page, "arm_trajectory", "shoulder_pan", 0.5, 0.3, steps=5, step_ms=40)
+    assert len(goals(srv, "/arm1/follow_joint_trajectory")) == len(arm1)
+    drag(page, "arm_trajectory", "joint1", 0.5, 0.3, steps=5, step_ms=40)
     page.wait_for_timeout(500)
-    arm2 = goals(srv, f"/arm2{SO_ARM}")
-    assert arm2 and arm2[-1]["args"]["trajectory"]["joint_names"][0] == "arm2/shoulder_pan_joint"
-    assert len(goals(srv, f"/arm1{SO_ARM}")) == len(arm1)
-    assert p.id == "so101"
+    arm2 = goals(srv, "/arm2/follow_joint_trajectory")
+    assert arm2 and arm2[-1]["args"]["trajectory"]["joint_names"][0] == "joint1"
+    assert len(goals(srv, "/arm1/follow_joint_trajectory")) == len(arm1)
 
 
 def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
     """Every pair of ROS 1 profiles shares required names and none is namespace-capable, so two
     validated ROS 1 targets cannot share one wire: the change goes through a refused selection
     and back. Each selection validates afresh on a new connection; the change sends nothing to the
-    old target but base motion's stop, before leaving it (console spec §2.2 as amended),
+    old target but base motion's stop, before leaving it (console spec §2.2),
     and the new validated target gets its start-up stop."""
     srv, page = view(wire_spec(load("ainex")))
     p = load("ainex")
@@ -1038,10 +1501,10 @@ def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
     assert [p["msg"]["position"] for p in srv.published(HEAD_PAN)] == [0.2, 0.3]     # once, from the new target
 
 
-@pytest.mark.parametrize("robot", ["so101", "ainex"])
+@pytest.mark.parametrize("robot", ["rebot_b601_rs", "ainex"])
 def test_connection_loss_disables_controls_sends_no_stop_and_never_reconnects(view, robot):
-    srv, page = view(so101_spec() if robot == "so101" else wire_spec(load(robot)))
-    cid, field = ("arm_trajectory", "shoulder_pan") if robot == "so101" else ("head_pan", "position")
+    srv, page = view(rebot_spec() if robot == "rebot_b601_rs" else wire_spec(load(robot)))
+    cid, field = ("arm_trajectory", "joint1") if robot == "rebot_b601_rs" else ("head_pan", "position")
     if robot == "ainex":
         started(page)
     drag(page, cid, field, 0.5, 0.6, steps=5, step_ms=40)
@@ -1068,14 +1531,21 @@ def test_connection_loss_disables_controls_sends_no_stop_and_never_reconnects(vi
 
 # ------------------------------------------------------------------ reported joint values; the 3D model
 
-SO_JOINTS = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_flex_joint", "wrist_flex_joint",
-             "wrist_roll_joint", "gripper_joint"]
+REBOT_JOINTS = [f"joint{i}" for i in range(1, 7)] + ["gripper_joint1", "gripper_joint2"]
 X3_JOINTS = ["arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "grip_joint"]
 
 
+def feedback_topic(pid):
+    """The wire name of the profile model's joint-state feedback at the documented default namespace."""
+    p = load(pid)
+    return p.resolve(p.raw["model"]["feedback"]["topic"], p.namespace.default if p.namespace else "")
+
+
 def joint_states(srv, names, positions, topic="/joint_states", period=0.05):
-    """Publish a JointState from the robot every `period` s until the returned event is set."""
+    """Publish a JointState from the robot every `period` s until the returned event is set (in
+    place of the topic's own sample, which the wire stops publishing meanwhile)."""
     stop = threading.Event()
+    srv.paused.add(topic)
 
     def run():
         while not stop.is_set():
@@ -1138,40 +1608,88 @@ def test_reported_arm_angles_are_shown_in_the_controls_units(view):
 
 
 def test_model_follows_reported_joint_positions(view):
-    """SO-101: each joint of the model is posed from /joint_states; when a joint moves, the same
-    joint of the model turns by the same angle. Without fresh reports the page says so."""
-    srv, page = view(so101_spec())
+    """reBot: each joint of the model, the arm's six and the two fingers, is posed from
+    /rebotarm/joint_states; when a joint moves, the same joint of the model turns by the same angle.
+    Without fresh reports the page says so."""
+    srv, page = view(rebot_spec())
     m = model(page)
-    assert m["rendered"] and set(m["clickable"]) == set(SO_JOINTS)
-    assert {m["sources"][j] for j in SO_JOINTS} == {"target"}
+    assert m["rendered"] and set(m["clickable"]) == set(REBOT_JOINTS)
+    assert {m["sources"][j] for j in REBOT_JOINTS} == {"target"}
+    # an arm joint is named by its trajectory field; the one gripper field moves both fingers, so
+    # each finger is named by the control and the joint
+    assert m["labels"] == {**{f"joint{i}": f"Joint {i}" for i in range(1, 7)},
+                           "gripper_joint1": "Gripper (gripper_joint1)", "gripper_joint2": "Gripper (gripper_joint2)"}
     assert "not reported" in page.locator('[data-testid="model-pose"]').inner_text()
-    pose = [0.5, -0.25, 0.75, 0.1, -0.2, 0.3]
-    stop = joint_states(srv, SO_JOINTS, pose)
+    pose = [0.5, 0.6, 0.9, 0.1, -0.2, 0.3, 0.02, 0.0286]
+    stop = joint_states(srv, REBOT_JOINTS, pose, topic=REBOT_JS)
     try:
-        page.wait_for_function("RC.state.model.sources.shoulder_pan_joint === 'reported'", timeout=5000)
+        page.wait_for_function("RC.state.model.sources.joint1 === 'reported'", timeout=5000)
         m = model(page)
-        assert [m["joints"][j] for j in SO_JOINTS] == pose
-        assert {m["sources"][j] for j in SO_JOINTS} == {"reported"}
-        assert "reported on /joint_states" in page.locator('[data-testid="model-pose"]').inner_text()
+        assert [m["joints"][j] for j in REBOT_JOINTS] == pose
+        assert {m["sources"][j] for j in REBOT_JOINTS} == {"reported"}
+        assert f"reported on {REBOT_JS}" in page.locator('[data-testid="model-pose"]').inner_text()
         before = m["world"]
     finally:
         stop.set()
-    stop = joint_states(srv, SO_JOINTS, [0.5 - 0.4] + pose[1:])
+    stop = joint_states(srv, REBOT_JOINTS, [0.5 - 0.4] + pose[1:], topic=REBOT_JS)
     try:
-        page.wait_for_function("Math.abs(RC.state.model.joints.shoulder_pan_joint - 0.1) < 1e-9", timeout=5000)
+        page.wait_for_function("Math.abs(RC.state.model.joints.joint1 - 0.1) < 1e-9", timeout=5000)
         after = model(page)["world"]
     finally:
         stop.set()
-    # The links after shoulder_pan turned about its axis (vertical, to the URDF's 5-decimal pi in
-    # its origin rpy) by the same 0.4 rad.
-    pan = before["shoulder_pan_joint"]
-    ang = lambda p: math.atan2(p[1] - pan[1], p[0] - pan[0])           # noqa: E731
-    for j in ("elbow_flex_joint", "wrist_flex_joint"):
+    # The links after joint1 turned about its axis (vertical: its origin has no rotation) by the
+    # same 0.4 rad.
+    base = before["joint1"]
+    ang = lambda p: math.atan2(p[1] - base[1], p[0] - base[0])         # noqa: E731
+    for j in ("joint3", "joint5", "gripper_joint1"):
         turn = (ang(after[j]) - ang(before[j]) + math.pi) % (2 * math.pi) - math.pi
         assert abs(turn) == pytest.approx(0.4, abs=1e-4), j
         assert after[j][2] == pytest.approx(before[j][2], abs=1e-5)
-    page.wait_for_function("RC.state.model.sources.shoulder_pan_joint === 'target'", timeout=5000)   # stale: says so
+    page.wait_for_function("RC.state.model.sources.joint1 === 'target'", timeout=5000)   # stale: says so
     assert srv.command_ops() == []
+
+
+@pytest.mark.parametrize("model_feedback", [True, False])
+def test_joint_prefix_namespace_and_ros2_camera_on_the_page(view, monkeypatch, model_feedback):
+    """No packaged profile composes joint names with its namespace or has a ROS 2 camera; the
+    synthetic arm of test_discovery.ns_camera_arm does (joint_prefix "{ns}/"). Selected at namespace
+    arm1 next to a second one at arm2: its sensor_msgs/msg/Image camera is shown live under
+    /arm1; the joints it reports as "arm1/jointN" are shown measured (through the model's
+    documented feedback, or else the trajectory's joint names) and pose the model; and its goals
+    name "arm1/joint1".."arm1/joint6"."""
+    p = ns_camera_arm(model_feedback)
+    serve_variants(monkeypatch, p)
+    spec = merge(rebot_spec(exec_s=0.3, namespace="arm1", profile=p), rebot_spec(exec_s=0.3, namespace="arm2", profile=p))
+    srv, page = view(spec, robot="ns_camera_arm", namespace="arm1")
+    assert page.locator('[data-testid="target"]').inner_text() == "ns_camera_arm (namespace /arm1)"
+    assert page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.topic)") == ["/arm1/camera/image_raw"]
+    page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'live'", timeout=8000)
+    names = [f"arm1/{j}" for j in REBOT_JOINTS]
+    pose = [0.25, 0.5, 0.75, 0.0, 0.1, -0.2, 0.02, 0.0286]
+    stop = joint_states(srv, [j for j in REBOT_JOINTS], [9.0] * 8, topic="/arm2/joint_states")    # the other arm
+    stop1 = joint_states(srv, names, pose, topic="/arm1/joint_states")
+    try:
+        page.wait_for_function("document.querySelector('[data-control=arm_trajectory] .measured').dataset.state === 'live'",
+                               timeout=5000)
+        assert "+0.250" in readout(page, "arm_trajectory", "joint1").inner_text()
+        assert "+0.750" in readout(page, "arm_trajectory", "joint3").inner_text()
+        if model_feedback:
+            page.wait_for_function("RC.state.model.sources.joint1 === 'reported'", timeout=5000)
+            assert [model(page)["joints"][j] for j in REBOT_JOINTS] == pose
+        else:
+            assert model(page)["sources"]["joint1"] == "target"            # the model documents no feedback
+    finally:
+        stop.set()
+        stop1.set()
+    f = num(page, "arm_trajectory", "joint1")
+    f.fill("0.4")
+    f.press("Enter")
+    assert srv.wait_for(lambda: len(goals(srv, "/arm1/follow_joint_trajectory")) == 1)
+    (g,) = goals(srv, "/arm1/follow_joint_trajectory")
+    assert g["args"]["trajectory"]["joint_names"] == [f"arm1/joint{i}" for i in range(1, 7)]
+    assert g["args"]["trajectory"]["points"][0]["positions"][0] == 0.4
+    assert goals(srv, "/arm2/follow_joint_trajectory") == []
+    no_stop_ops(srv)
 
 
 def urdf_forward(model, q):
@@ -1206,12 +1724,12 @@ def urdf_forward(model, q):
 
 
 @pytest.mark.parametrize("robot,names,pose", [
-    ("so101", SO_JOINTS, [0.5, -0.25, 0.75, 0.1, -0.2, 0.3]),
+    ("rebot_b601_rs", REBOT_JOINTS, [0.5, 0.6, 0.9, 0.1, -0.2, 0.3, 0.02, 0.0286]),     # fingers slide (m)
     ("rosmaster_x3_plus", X3_JOINTS, [0.3, -0.6, 0.9, -0.4, 1.2, -1.0]),
 ])
 def test_model_pose_is_the_urdf_pose_of_the_reported_joints(view, robot, names, pose):
     srv, page = view(wire_spec(load(robot)))
-    stop = joint_states(srv, names, pose)
+    stop = joint_states(srv, names, pose, topic=feedback_topic(robot))
     try:
         page.wait_for_function(f"RC.state.model.sources['{names[0]}'] === 'reported'", timeout=5000)
         world = model(page)["world"]
@@ -1224,8 +1742,9 @@ def test_model_pose_is_the_urdf_pose_of_the_reported_joints(view, robot, names, 
 
 
 def test_a_prismatic_joint_slides_along_its_axis(view, monkeypatch):
-    """No packaged model has a prismatic joint, so the page is handed a myAGV model with a reported
-    prismatic joint (tilted origin, non-unit axis) and a frame after it: it slides, it does not turn."""
+    """The reBot's fingers are the packaged prismatic joints (posed above); they are leaves with unit
+    axes, so the page is also handed a myAGV model with a reported prismatic joint (tilted origin,
+    non-unit axis) and a frame after it: it slides, it does not turn."""
     packaged = view_mod.all_profiles_json
     extra = [{"name": "lift", "type": "prismatic", "parent": "base_up", "child": "lift_link", "xyz": [0.05, 0.02, 0.1],
               "rpy": [0.3, -0.2, 1.1], "axis": [0, 3, 4], "min": 0, "max": 0.2, "reported": "lift"},
@@ -1252,9 +1771,13 @@ def test_a_prismatic_joint_slides_along_its_axis(view, monkeypatch):
     only_startup(srv, page, "myagv")
 
 
-def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
-    srv, page = view(so101_spec())
-    x, y = select_in_model(page, "shoulder_pan_joint")
+def test_dragging_a_model_joint_changes_its_control_and_sends_it(view, fake):
+    srv = fake(rebot_spec(exec_s=0.3))
+    srv.paused.add(REBOT_JS)                           # the robot reports no joint positions: the model follows its target
+    srv, page = view(srv=srv)
+    select_in_model(page, "joint1")
+    page.wait_for_timeout(600)                         # the click brings joint1's control into view: let it settle
+    x, y = model_point(page, "joint1")
     page.mouse.move(x, y)
     page.mouse.down()
     for i in range(1, 16):
@@ -1262,20 +1785,20 @@ def test_dragging_a_model_joint_changes_its_control_and_sends_it(view):
         page.wait_for_timeout(40)
     page.mouse.up()
     page.wait_for_timeout(800)
-    v = float(num(page, "arm_trajectory", "shoulder_pan").input_value())
-    assert v == pytest.approx(60 * 2 * 1.91986 / 300, abs=0.011)          # 300 px span the documented range
-    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v
-    assert model(page)["joints"]["shoulder_pan_joint"] == pytest.approx(v)
+    v = float(num(page, "arm_trajectory", "joint1").input_value())
+    assert v == pytest.approx(60 * 2 * 2.8 / 300, abs=0.011)             # 300 px span the documented range
+    assert goals(srv, ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v
+    assert model(page)["joints"]["joint1"] == pytest.approx(v)
     page.keyboard.press("ArrowRight")                                    # the selected joint, by key
     page.wait_for_timeout(600)
-    v2 = float(num(page, "arm_trajectory", "shoulder_pan").input_value())
-    assert v2 == pytest.approx(v + 2 * 1.91986 / 100, abs=0.011)
-    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v2
+    v2 = float(num(page, "arm_trajectory", "joint1").input_value())
+    assert v2 == pytest.approx(v + 2 * 2.8 / 100, abs=0.011)
+    assert goals(srv, ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == v2
     for _ in range(60):                                                  # never past the documented limit
         page.keyboard.press("Shift+ArrowRight")
     page.wait_for_timeout(800)
-    assert float(num(page, "arm_trajectory", "shoulder_pan").input_value()) == 1.91986
-    assert goals(srv, SO_ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == 1.91986
+    assert float(num(page, "arm_trajectory", "joint1").input_value()) == 2.8
+    assert goals(srv, ARM)[-1]["args"]["trajectory"]["points"][0]["positions"][0] == 2.8
     no_stop_ops(srv)
 
 
@@ -1304,8 +1827,10 @@ def test_ainex_head_joints_in_the_model_publish_the_head_controls(view):
 
 
 @pytest.mark.parametrize("robot", SUPPORTED_IDS)
-def test_model_renders_and_every_commanded_joint_is_clickable(view, robot):
-    srv, page = view(wire_spec(load(robot), include_optional=True))
+def test_model_renders_and_every_commanded_joint_is_clickable(view, fake, robot):
+    srv = fake(wire_spec(load(robot), include_optional=True))
+    srv.paused.add(REBOT_JS)                               # the reBot's wire reports no joint positions here: the model shows its targets
+    srv, page = view(srv=srv)
     expected = {j["name"] for j in load(robot).raw["model"]["joints"] if j.get("command") and not j.get("mimic")}
     m = model(page)
     assert m["rendered"] and set(m["clickable"]) == expected
@@ -1320,9 +1845,11 @@ def test_model_renders_and_every_commanded_joint_is_clickable(view, robot):
 # ------------------------------------------------------------------ same contracts as Python
 
 CASES = {
-    "so101": lambda: wire_spec(load("so101")),
-    "so101-arm1": lambda: wire_spec(load("so101"), namespace="arm1"),
-    "two-so101": lambda: merge(wire_spec(load("so101"), namespace="arm1"), wire_spec(load("so101"), namespace="arm2")),
+    "rebot": lambda: wire_spec(load("rebot_b601_rs")),
+    "rebot-arm1": lambda: wire_spec(load("rebot_b601_rs"), namespace="arm1"),
+    "rebot-default-and-arm2": lambda: merge(wire_spec(load("rebot_b601_rs")), wire_spec(load("rebot_b601_rs"), namespace="arm2")),
+    "two-rebots": lambda: merge(wire_spec(load("rebot_b601_rs"), namespace="arm1"),
+                                wire_spec(load("rebot_b601_rs"), namespace="arm2")),
     "ambiguous": lambda: merge(wire_spec(load("myagv")), wire_spec(load("rosmaster_x3_plus"))),
     "missing": lambda: drop(wire_spec(load("ainex")), "/walking/command"),
 }
@@ -1349,28 +1876,28 @@ def test_page_selection_matches_python(view, case):
 def test_page_does_not_select_a_subsumed_profile(view, monkeypatch):
     """As discovery.py (test_discovery.py): a wire presenting every name one profile requires, and
     more, is the larger profile's, and the smaller one is refused even when selected explicitly.
-    No two packaged profiles nest, so the page's catalog also holds a profile of the SO-101 booted
-    without its camera."""
-    serve_variants(monkeypatch, without_camera(load("so101"), "so101_nocam"))
-    for robot, shown in ((None, "so101"), ("so101_nocam", "none")):
-        srv, page = view(so101_spec(), robot=robot)
+    No two packaged profiles nest, so the page's catalog also holds a profile of the reBot booted
+    without its move_to_pose action."""
+    serve_variants(monkeypatch, without_row(load("rebot_b601_rs"), SUBSET_DROPPED, "rebot_subset"))
+    for robot, shown in ((None, REBOT), ("rebot_subset", "none")):
+        srv, page = view(rebot_spec(), robot=robot)
         rb = Rosbridge(srv.url).connect()
         try:
             g = fetch_graph(rb)
         finally:
             rb.close()
         assert page.locator('[data-testid="target"]').inner_text() == shown
-        assert select_target(g, None, None).label == "so101"
+        assert select_target(g, None, None).label == REBOT
         if robot:
             reason = page.locator('[data-testid="reason"]').inner_text()
-            assert "presents so101, whose interface contains all of so101_nocam" in reason, reason
+            assert f"presents {REBOT}, whose interface contains all of rebot_subset" in reason, reason
             assert page.locator('[data-testid="control"]').count() == 0
         assert srv.command_ops() == []
-    srv, page = view(drop(so101_spec(), "/image_raw"))                  # without the camera: the smaller one
-    assert page.locator('[data-testid="target"]').inner_text() == "so101_nocam"
+    srv, page = view(drop(rebot_spec(), "/rebotarm" + SUBSET_DROPPED))    # without that row: the smaller one
+    assert page.locator('[data-testid="target"]').inner_text() == "rebot_subset (namespace /rebotarm)"
 
 
-# ------------------------------------------------------------------ base motion (console spec §2.2, §4 as amended)
+# ------------------------------------------------------------------ base motion (console spec §2.2, §4)
 
 MOBILE = ["myagv", "ainex", "rosmaster_x3_plus"]
 KEY_SIGN = {"w": (1, 0, 0), "s": (-1, 0, 0), "a": (0, 1, 0), "d": (0, -1, 0), "q": (0, 0, 1), "e": (0, 0, -1)}
@@ -1758,8 +2285,8 @@ def test_motion_keys_typed_into_editable_fields_move_nothing(view, pid):
 
 
 def test_arm_profile_offers_no_base_motion(view):
-    assert [p.id for p in load_all() if p.is_arm] == ["so101"]
-    srv, page = view(so101_spec())
+    assert [p.id for p in load_all() if p.is_arm] == ["rebot_b601_rs"]
+    srv, page = view(rebot_spec())
     assert page.evaluate("RC.motion()") is None
     assert not page.locator('[data-testid="motion"]').is_visible()
     assert page.locator('[data-testid^="hold-"]').count() == 0 and page.locator('[data-testid="stop"]').count() == 0

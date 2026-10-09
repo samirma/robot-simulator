@@ -4,7 +4,7 @@ graspable objects drawn from its object library, standing on counter tops -- the
 not this project's reading of them -- at most 24 and about eight per square metre of
 counter, not touching one another, the same on every start. Those in the worktop objects' area are cleared.
 They come to rest where they are set and stay there, the scene solved by constraint island
-(§2.1, amended)."""
+(§2.1)."""
 
 import json
 import math
@@ -122,7 +122,7 @@ def test_robocasa_objects_stand_on_counters_and_repeat(scene, logdir):
     assert touching(*(int(v) for v in scene.split(":")[1].split("-"))) == []
 
 
-#: §2.1 (amended): RoboCasa's objects rest where they are set and stay there
+#: §2.1: RoboCasa's objects rest where they are set and stay there
 REST_SCENES = ("robocasa:1-1", "robocasa:3-5", "robocasa:5-2")
 REST_PORT = 9287
 #: how far a resting object may move between the two readings, metres

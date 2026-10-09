@@ -40,15 +40,15 @@ def test_the_worktop_is_the_largest_table_height_top_when_nothing_is_on_any():
 def test_a_surface_holding_the_task_categories_ranks_first():
     f = facts(scene(APPLE_ON_SIDE))
     assert ws.worktop(f).name == "side_table"
-    first = ws.candidates(f, "so101")[0]
+    first = ws.candidates(f)[0]
     assert first.surface == "side_table" and abs(first.z - 0.8) < 1e-9
 
 
 def test_spots_are_deterministic_on_the_surface_and_inside_its_edges():
     f = facts(scene())
-    a, b = ws.candidates(f, "so101"), ws.candidates(facts(scene()), "so101")
+    a, b = ws.candidates(f), ws.candidates(facts(scene()))
     assert [(s.xy.tolist(), s.z, s.yaw) for s in a] == [(s.xy.tolist(), s.z, s.yaw) for s in b]
-    inset = ws.MOUNT["so101"].footprint / 2 + 0.02
+    inset = ws.REF_MOUNT.footprint / 2 + 0.02
     for s in a:
         assert 0.9 + inset - 1e-9 <= s.xy[0] <= 2.1 - inset + 1e-9
         assert -0.4 + inset - 1e-9 <= s.xy[1] <= 0.4 - inset + 1e-9
@@ -59,8 +59,8 @@ def test_the_first_spot_faces_the_most_worktop():
     """REF's coverage rule: of the headings at the chosen cell, none puts more of the arm's
     forward workspace over the worktop."""
     f = facts(scene())
-    m = ws.MOUNT["so101"]
-    s = ws.candidates(f, "so101")[0]
+    m = ws.REF_MOUNT
+    s = ws.candidates(f)[0]
     offsets = ws._workspace_offsets(m.reach, m.workspace_radius)
 
     def coverage(yaw):
@@ -73,8 +73,13 @@ def test_the_first_spot_faces_the_most_worktop():
     assert coverage(s.yaw) >= best - 0.06
 
 
-def test_a_robot_without_a_mount_has_no_spots():
-    assert ws.candidates(facts(scene()), "myagv") == []
+def test_the_spots_are_ranked_for_the_reference_arm_mount():
+    """Spec Terms, the reference survey's spots: ranked for the reference's own arm mount,
+    whatever robot later stands there."""
+    m = ws.REF_MOUNT
+    assert (m.reach, m.radius, m.height, m.footprint) == ((0.15, 0.35), 0.20, 0.45, 0.14)
+    assert abs(m.workspace_radius - 0.45) < 1e-12
+    assert not hasattr(ws, "MOUNT")
 
 
 def test_counter_mount_against_the_back_edge_facing_the_room():
@@ -88,14 +93,14 @@ def test_counter_mount_against_the_back_edge_facing_the_room():
     f.kind = "robocasa"
     f.regions = [{"name": "counter/top", "centre": np.array([0.0, 0.0]),
                   "half": np.array([0.5, 0.3]), "top_z": 0.9, "rot": 0.0}]
-    spots = ws.candidates(f, "so101")
+    spots = ws.candidates(f)
     first = spots[0]
     assert np.allclose(first.xy, [0.0, 0.3 - 0.2]) and abs(first.yaw + math.pi / 2) < 1e-12
     assert first.z == 0.9
     # then REF's tabletop search over the counter, then the front edge facing the wall
     assert any("chosen for" in s.why for s in spots[1:])
     front = [s for s in spots if s.why.startswith("front edge")]
-    assert front and np.allclose(front[0].xy, [0.0, -0.3 + ws.MOUNT["so101"].footprint / 2])
+    assert front and np.allclose(front[0].xy, [0.0, -0.3 + ws.REF_MOUNT.footprint / 2])
     assert abs(front[0].yaw - math.pi / 2) < 1e-12
     assert ws.worktop(f).name == "counter/top"
 
@@ -107,4 +112,36 @@ def test_a_robocasa_kitchen_with_no_counter_region_has_no_worktop():
     for regions in ([], None):
         rc = ws.Facts("robocasa", f.model, f.data, regions=regions)
         assert ws.worktop(rc) is None
-        assert ws.candidates(rc, "so101") == []
+        assert ws.candidates(rc) == []
+
+
+def test_every_spot_is_on_the_worktop():
+    """Spec §2.2, §2.3: the six objects and an arm stand on the worktop; REF's search goes
+    on over the other table-height tops (and, on RoboCasa, the other counter regions),
+    which are no worktop spots."""
+    ball = ('<body name="ball_1" pos="1.5 0 0.78"><freejoint/>'
+            '<geom type="sphere" size="0.03" mass="0.1"/></body>')
+    f = facts(scene(APPLE_ON_SIDE + ball))
+    wt = ws.worktop(f)
+    every = ws.tabletop_candidates(f, ws.REF_MOUNT)
+    assert {s.surface for s in every} == {"side_table", "table"}     # REF's whole search
+    spots = ws.candidates(f)
+    assert spots and all(s.surface == wt.name == "side_table" and s.z == wt.z for s in spots)
+    key = lambda sp: (sp.xy.tolist(), sp.z, sp.yaw, sp.surface)
+    assert [key(s) for s in every if s.surface == "side_table"] == [key(s) for s in spots]
+    # RoboCasa: two counter regions, the roomier one the worktop
+    xml = """<mujoco><worldbody><geom name="floor" type="plane" size="5 5 .1"/>
+      <geom name="wall" type="box" size="4 0.05 1.2" pos="0 0.35 1.2"/>
+      <body name="counter"><geom type="box" size="0.5 0.3 0.45" pos="0 0 0.45"/></body>
+      <body name="small"><geom type="box" size="0.3 0.3 0.45" pos="2 0 0.45"/></body>
+      </worldbody></mujoco>"""
+    rc = facts(xml)
+    rc.kind = "robocasa"
+    rc.regions = [{"name": "counter/top", "centre": np.array([0.0, 0.0]),
+                   "half": np.array([0.5, 0.3]), "top_z": 0.9, "rot": 0.0},
+                  {"name": "small/top", "centre": np.array([2.0, 0.0]),
+                   "half": np.array([0.3, 0.3]), "top_z": 0.9, "rot": 0.0}]
+    assert {s.surface for s in ws.counter_candidates(rc, ws.REF_MOUNT)} == {"counter/top",
+                                                                          "small/top"}
+    spots = ws.candidates(rc)
+    assert spots and {s.surface for s in spots} == {ws.worktop(rc).name} == {"counter/top"}

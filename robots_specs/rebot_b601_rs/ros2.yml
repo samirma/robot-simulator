@@ -8,6 +8,9 @@ name: reBot Arm B601-RS
 dialect: ros2
 ros_distribution: jazzy
 interface_authority: manufacturer
+# The camera rows come from the approved community camera boot (Seeed's B601-RS grasping guide: the Intel RealSense D405 on
+# realsense2_camera, see boot and the realsense-ros source): approved, not manufacturer-provided, and required (not optional).
+camera_boot_authority: approved_community
 sources:
 - id: reBotArmController_ROS2
   url: https://github.com/Seeed-Projects/reBotArmController_ROS2
@@ -36,6 +39,30 @@ sources:
     recommended system, CAN set-up) and https://wiki.seeedstudio.com/rebot_b601_rs_getting_started/ (PCAN-USB adapter, 48
     V supply)'
   retrieved: '2026-10-08'
+- id: wiki-grasping-demo
+  url: https://wiki.seeedstudio.com/rebot_arm_b601_rs_grasping_demo/
+  revision: 2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a
+  branch: docusaurus-version
+  role: 'vendor documentation (wiki-documents, sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md):
+    the B601-RS grasping guide, whose D405 steps build the RealSense SDK v2.58.1 and the realsense-ros wrapper and start the
+    camera with `ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true depth_module.depth_profile:=640x360x30
+    depth_module.color_profile:=640x360x30`; source of the camera boot'
+  retrieved: '2026-10-09'
+- id: realsense-ros
+  url: https://github.com/IntelRealSense/realsense-ros
+  revision: 9a11121700cb4780e273e34141f6402fe184321d
+  branch: ros2-master
+  role: 'approved community camera boot, release 4.58.4 (realsense2_camera, node realsense2_camera_node); not manufacturer-provided
+    for the arm, Intel''s own driver for the D405. Seeed''s guide builds the fork xiehuangbao888/realsense-ros, whose ros2-master
+    is this same commit (checked 2026-10-09). Its camera streams are required'
+  retrieved: '2026-10-09'
+- id: rebot_visual_grasp
+  url: https://github.com/xiehuangbao888/rebot_visual_grasp
+  revision: dd28d65598deec767cf95fa45521d69b38155833
+  branch: main
+  role: 'community wrist-camera package that Seeed''s guide clones (step 3): the D405 mount of the B601-RS (config/wrist_extrinsics_d405.yaml,
+    description/urdf/rebotarm_rs_with_d405.urdf.xacro), a hand-eye result for one unit'
+  retrieved: '2026-10-09'
 - id: motorbridge
   url: https://github.com/motorbridge/motorbridge
   revision: c652ce420e7da1008fa1864cc7f47d7d7c57fdb6
@@ -85,11 +112,17 @@ boot:
     and the gripper in MIT mode, enables them and starts a 500 Hz loop that holds the current pose (MIT target, gravity
     feedforward) and the gripper''s current position. Every topic, service and action is under arm_namespace rebotarm. On
     shutdown (Ctrl+C) the node runs safe_home (gripper closed, arm to all-zero) and, with disable_after_safe_home true,
-    disables the motors.'
+    disables the motors. Camera: the boot starts no camera driver; Seeed''s B601-RS grasping guide runs the Intel RealSense
+    D405 as the wrist camera with the realsense-ros wrapper (`ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
+    depth_module.depth_profile:=640x360x30 depth_module.color_profile:=640x360x30`) beside the arm boot, so the camera is served
+    by this approved community camera boot: /camera/camera (realsense2_camera_node) with its colour and aligned-depth streams
+    (640x360 at 30 Hz, global names under /camera/camera, not under /rebotarm), and the mount transform of the community
+    rebot_visual_grasp package. This camera boot is approved, not manufacturer-provided, and its camera streams are required.'
   commands:
   - sudo ip link set can0 type can bitrate 1000000
   - sudo ip link set can0 up
   - ros2 launch rebotarm_bringup bringup.launch.py model:=rs channel:=can0
+  - ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true depth_module.depth_profile:=640x360x30 depth_module.color_profile:=640x360x30   # approved community camera boot (realsense-ros 4.58.4)
   launch_files:
   - source: reBotArmController_ROS2
     path: src/rebotarm_bringup/launch/bringup.launch.py
@@ -97,6 +130,12 @@ boot:
   - source: reBotArmController_ROS2
     path: src/rebotarm_bringup/launch/rviz_urdf_compat.py
     role: robot_description generator (run by the launch's Command substitution)
+  - source: realsense-ros
+    path: realsense2_camera/launch/rs_launch.py
+    role: approved community camera boot (the guide's launch with align_depth.enable and the 640x360x30 colour and depth profiles)
+  - source: wiki-grasping-demo
+    path: sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md
+    role: the guide's D405 camera command (L886-L898) and topics (L952-L962)
   data_files:
   - source: reBotArmController_ROS2
     path: src/rebotarm_bringup/config/rebotarm_hardware.yaml
@@ -107,13 +146,17 @@ boot:
   - source: reBotArmController_ROS2
     path: src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf
     role: input of robot_description and the SDK's Pinocchio model (urdf_path override)
+  - source: rebot_visual_grasp
+    path: config/wrist_extrinsics_d405.yaml
+    role: the wrist D405's mount on gripper_end (the camera boot's mount transform)
   hardware: 'reBot Arm B601-RS, 6 DOF plus gripper: RobStride RS-06 on joint1-joint3 (CAN ids 0x01-0x03) and RS-00 on joint4-joint6
     (0x04-0x06) and the gripper (0x07), all with host (feedback) id 0xFD, one CAN bus at 1 Mbit/s. Gripper: the RS-00 turns
     a module-1 16-tooth pinion between two racks on an MGN9 rail (DevArm BOM). Host: Ubuntu 24.04, ROS 2 Jazzy, Python 3.12
     (the wiki''s main reference; Humble on 22.04 also documented), motorbridge 0.5.6 from PyPI, Pinocchio from ros-jazzy-pinocchio.
     CAN adapter: the kit''s USB-to-CAN board with PCAN-USB firmware (Linux peak_usb SocketCAN), interface can0, 1 Mbit/s,
     120 ohm termination switch. Power: DC 48 V (MeanWell LRS-600-48, 48 V 12.5 A, recommended) through an XT30 2+2 power
-    separation board. No camera, lidar or IMU is started by the boot (Seeed publishes optional wrist-camera mounts only).'
+    separation board. Wrist camera of the camera boot: Intel RealSense D405 (USB 3.0, 640x360 colour and depth at 30 Hz, no
+    IMU) on the community D405 mount (Seeed''s grasping guide). No lidar or IMU. The arm boot itself starts no camera driver.'
 model:
   urdf: ReBot_Arm_RS.urdf
   urdf_sha256: 978568c1b73310ec134b8f2285295f46d0c32c904d397bd097e3bcc81507b77b
@@ -159,6 +202,9 @@ model:
       are reported asymmetric (0.0100 and 0.0143 m per motor rad), while the rack-and-pinion moves both equally; Seeed''s
       fake driver and MoveIt pick-place config use 0.045 m per finger at 5.0 rad instead. Positive finger travel opens (each
       finger axis points away from the jaw centre)'
+    - 'wrist camera: the model adds the D405''s colour optical frame as a camera named camera_color_optical_frame on gripper_end
+      (sensors.cameras); robot_description (the arm boot''s) has no camera link, the camera frames reach /tf_static from the
+      camera boot (tf)'
     - 'velocity and effort limits: URDF effort 36 N m (joint1-joint3) and 14 N m (joint4-joint6) equal motorbridge''s RS-06
       and RS-00 MIT torque ranges; URDF velocity 50 rad/s (joint1-joint3) equals the RS-06 MIT velocity range but 40 rad/s
       (joint4-joint6) exceeds the RS-00''s 33 rad/s; finger joints effort 500, velocity 10 (URDF values, no motor counterpart)'
@@ -178,6 +224,27 @@ nodes:
   - https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/launch/bringup.launch.py#L118-L125
   - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L78
   notes: Remaps /joint_states to /rebotarm/joint_states (arm_namespace).
+- name: /camera/camera
+  package: realsense2_camera
+  executable: realsense2_camera_node
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L155-L162
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L886-L898
+  notes: 'Approved community camera boot (realsense-ros 4.58.4), not manufacturer-provided: the node of rs_launch.py (camera_name
+    camera in namespace camera) for the D405, with the guide''s arguments. Its colour and aligned-depth streams are required.
+    Its remaining launch and dynamic parameters (exposure, gain, filters, point cloud, IMU) and its metadata, extrinsics and
+    device services have no served counterpart: the optional rows below.'
+- name: /camera_mount_tf
+  package: tf2_ros
+  executable: static_transform_publisher
+  source:
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/description/urdf/rebotarm_rs_with_d405.urdf.xacro#L17-L46
+  notes: 'Approved community camera boot: the mount of the community rebot_visual_grasp package (gripper_end -> camera_mount_link
+    -> camera_bottom_screw_frame -> camera_link, published there by robot_state_publisher from the package''s xacro) as
+    one static transform gripper_end -> camera_link, composed from the three fixed joints (import.md, "Wrist camera"), run as
+    the stock tf2_ros static_transform_publisher with the node name camera_mount_tf; the arm boot''s robot_description stays
+    the boot''s.'
 - name: /rviz2
   package: rviz2
   executable: rviz2
@@ -712,6 +779,8 @@ topics:
   direction: out
   nodes:
   - /robot_state_publisher
+  - /camera/camera
+  - /camera_mount_tf
   rate: non_periodic
   latched: true
   qos:
@@ -721,8 +790,199 @@ topics:
   source:
   - https://github.com/ros/robot_state_publisher/blob/d1b994d2d2eb19e4d2886be57211114134f25b50/src/robot_state_publisher.cpp#L279-L298
   - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
-  notes: The 16 fixed transforms (link6 -> gripper_end and the 15 compat-split visual links), published once.
+  notes: 'The 16 fixed transforms of /robot_state_publisher (link6 -> gripper_end and the 15 compat-split visual links),
+    the camera boot''s four (camera_link to the depth and colour frames and their optical frames, from /camera/camera) and
+    the mount transform of /camera_mount_tf, each node publishing its own once.'
+- name: /camera/camera/color/image_raw
+  type: sensor_msgs/msg/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: the stream profile's fps, 30 in the guide's 640x360x30 arguments
+  frame_id: camera_color_optical_frame
+  camera: true
+  qos:
+    reliability: reliable
+    durability: volatile
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L279-L280
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L211-L221
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L952-L962
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L242-L243
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'The colour stream, rgb8, 640x360 (the guide''s depth_module.color_profile; the D405''s colour sensor is its depth module).
+    Unrectified (image_raw). Image QoS is the driver''s SYSTEM_DEFAULT (reliable, volatile), camera info DEFAULT.'
+- name: /camera/camera/color/camera_info
+  type: sensor_msgs/msg/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with its image
+  frame_id: camera_color_optical_frame
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L279-L280
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L952-L962
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L794-L852
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'The colour stream''s intrinsics (the device''s factory calibration on the robot; sensors.cameras d405_color).'
+- name: /camera/camera/aligned_depth_to_color/image_raw
+  type: sensor_msgs/msg/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: the stream profile's fps, 30 in the guide's 640x360x30 arguments
+  frame_id: camera_color_optical_frame
+  camera: true
+  qos:
+    reliability: reliable
+    durability: volatile
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L311-L314
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L623-L626
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L270-L305
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L952-L962
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L242-L243
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'Depth aligned to colour (align_depth.enable:=true), 16UC1 in millimetres (the driver rescales the sensor''s depth units to
+    mm, ROS_DEPTH_SCALE 0.001), 0 where there is no depth, in the colour optical frame; sensors.cameras d405_depth.'
+- name: /camera/camera/aligned_depth_to_color/camera_info
+  type: sensor_msgs/msg/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with its image
+  frame_id: camera_color_optical_frame
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L311-L314
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L623-L626
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L952-L962
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L794-L852
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'The aligned depth''s camera info is the colour stream''s (the same intrinsics and frame).'
+- name: /camera/camera/depth/image_rect_raw
+  type: sensor_msgs/msg/Image
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: the stream profile's fps, 30 in the guide's 640x360x30 arguments
+  frame_id: camera_depth_optical_frame
+  camera: true
+  optional: true
+  qos:
+    reliability: reliable
+    durability: volatile
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L279-L280
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L211-L221
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L242-L243
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'The rectified depth stream (the driver publishes it with enable_depth); not served: the guide uses the aligned depth.'
+- name: /camera/camera/depth/camera_info
+  type: sensor_msgs/msg/CameraInfo
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with its image
+  frame_id: camera_depth_optical_frame
+  optional: true
+  qos:
+    reliability: reliable
+    durability: volatile
+    depth: 10
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L279-L280
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/base_realsense_node.cpp#L794-L852
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/profile_manager.cpp#L298-L299
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/constants.h#L83-L84
+  notes: 'The depth stream''s intrinsics; not served.'
+- name: /camera/camera/color/metadata
+  type: realsense2_camera_msgs/msg/Metadata
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with its stream's frames
+  frame_id: camera_color_optical_frame
+  optional: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L365-L367
+  notes: The stream's frame metadata (JSON); not served.
+- name: /camera/camera/depth/metadata
+  type: realsense2_camera_msgs/msg/Metadata
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: 30
+  rate_basis: source
+  rate_note: published with its stream's frames
+  frame_id: camera_depth_optical_frame
+  optional: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L365-L367
+  notes: The stream's frame metadata (JSON); not served.
+- name: /camera/camera/extrinsics/depth_to_color
+  type: realsense2_camera_msgs/msg/Extrinsics
+  direction: out
+  nodes:
+  - /camera/camera
+  rate: non_periodic
+  latched: true
+  optional: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L373-L380
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L99-L250
+  notes: The depth-to-colour extrinsics, published once; not served.
 services:
+- name: /camera/camera/hw_reset
+  type: std_srvs/srv/Empty
+  node: /camera/camera
+  optional: true
+  source: https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L563-L568
+  notes: Resets the camera hardware; not served (no device).
+- name: /camera/camera/device_info
+  type: realsense2_camera_msgs/srv/DeviceInfo
+  node: /camera/camera
+  optional: true
+  source: https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L570-L574
+  notes: The device's name, serial number and firmware; not served.
+- name: /camera/camera/calib_config_read
+  type: realsense2_camera_msgs/srv/CalibConfigRead
+  node: /camera/camera
+  optional: true
+  source: https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L576-L580
+  notes: Reads the device's calibration configuration; not served.
+- name: /camera/camera/calib_config_write
+  type: realsense2_camera_msgs/srv/CalibConfigWrite
+  node: /camera/camera
+  optional: true
+  source: https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/rs_node_setup.cpp#L582-L586
+  notes: Writes the device's calibration configuration; not served.
 - name: /rebotarm/enable
   type: std_srvs/srv/Trigger
   node: /reBotArmController
@@ -1010,6 +1270,206 @@ parameters:
   - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
   notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
 - node: /robot_state_publisher
+  name: qos_overrides./tf_static.publisher.reliability
+  value: reliable
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera/camera
+  name: camera_name
+  value: camera
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/parameters.cpp#L27-L28
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L23
+  notes: 'launch argument camera_name (default camera); with camera_namespace camera it gives the node name /camera/camera'
+- node: /camera/camera
+  name: enable_color
+  value: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L36
+  notes: 'launch argument enable_color (default true)'
+- node: /camera/camera
+  name: enable_depth
+  value: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L40
+  notes: 'launch argument enable_depth (default true)'
+- node: /camera/camera
+  name: align_depth.enable
+  value: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L82
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L894-L897
+  notes: 'the guide''s align_depth.enable:=true: depth aligned to colour (aligned_depth_to_color topics)'
+- node: /camera/camera
+  name: depth_module.color_profile
+  value: 640x360x30
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L50
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L894-L897
+  notes: 'the guide''s colour profile width x height x fps (the D405''s colour comes from its depth module)'
+- node: /camera/camera
+  name: depth_module.depth_profile
+  value: 640x360x30
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L44
+  - https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L894-L897
+  notes: 'the guide''s depth profile width x height x fps'
+- node: /camera/camera
+  name: depth_module.color_format
+  value: RGB8
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L51
+  notes: 'launch default: colour as rgb8'
+- node: /camera/camera
+  name: depth_module.depth_format
+  value: Z16
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L45
+  notes: 'launch default: depth as 16UC1'
+- node: /camera/camera
+  name: enable_sync
+  value: false
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L60
+  notes: 'launch default: no synchronised frame sets'
+- node: /camera/camera
+  name: publish_tf
+  value: true
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L75
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/parameters.cpp#L31-L33
+  notes: 'launch default: the camera frames are published'
+- node: /camera/camera
+  name: tf_publish_rate
+  value: 0.0
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L76
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/parameters.cpp#L35-L40
+  notes: 'launch default 0.0: the camera frames go once on /tf_static, none on /tf'
+- node: /camera/camera
+  name: base_frame_id
+  value: link
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L94
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/parameters.cpp#L85-L87
+  notes: 'launch default link: the root frame is camera_link (camera_name + _ + base_frame_id)'
+- node: /camera/camera
+  name: tf_prefix
+  value: ''
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/launch/rs_launch.py#L95
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/parameters.cpp#L90-L92
+  notes: 'launch default: no prefix on the frame ids'
+- node: /camera/camera
+  name: qos_overrides./tf_static.publisher.depth
+  value: 1
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L21-L36
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera/camera
+  name: qos_overrides./tf_static.publisher.history
+  value: keep_last
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L21-L36
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera/camera
+  name: qos_overrides./tf_static.publisher.reliability
+  value: reliable
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L21-L36
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera_mount_tf
+  name: frame_id
+  value: gripper_end
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the transform''s parent frame'
+- node: /camera_mount_tf
+  name: child_frame_id
+  value: camera_link
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the transform''s child frame'
+- node: /camera_mount_tf
+  name: translation.x
+  value: -0.10873
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s position in gripper_end (m); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: translation.y
+  value: 0.00908
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s position in gripper_end (m); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: translation.z
+  value: 0.10761
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s position in gripper_end (m); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: rotation.x
+  value: 0.002551156568676766
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s orientation as a quaternion (rpy 0.003575 0.537753 -0.006233 rad); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: rotation.y
+  value: 0.2656413869422842
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s orientation as a quaternion (rpy 0.003575 0.537753 -0.006233 rad); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: rotation.z
+  value: -0.0034793584541038983
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s orientation as a quaternion (rpy 0.003575 0.537753 -0.006233 rad); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: rotation.w
+  value: 0.9640622589896827
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_node.cpp#L65-L98
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/src/static_transform_broadcaster_program.cpp#L251-L260
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  notes: 'the mount''s orientation as a quaternion (rpy 0.003575 0.537753 -0.006233 rad); import.md, "Wrist camera"'
+- node: /camera_mount_tf
+  name: qos_overrides./tf_static.publisher.depth
+  value: 1
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera_mount_tf
+  name: qos_overrides./tf_static.publisher.history
+  value: keep_last
+  source:
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/static_transform_broadcaster.hpp#L64-L70
+  - https://github.com/ros2/geometry2/blob/f702874b1c8535d6a038230ab2cda0ba5d521ebd/tf2_ros/include/tf2_ros/qos.hpp#L63-L71
+  notes: read-only QoS override parameter declared by rclcpp for the /tf_static broadcaster
+- node: /camera_mount_tf
   name: qos_overrides./tf_static.publisher.reliability
   value: reliable
   source:
@@ -1343,6 +1803,93 @@ tf:
   rate: 18.2
   source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf#L754-L771
   notes: prismatic gripper_joint2, from /rebotarm/joint_states
+- parent: gripper_end
+  child: camera_link
+  static: true
+  publisher: /camera_mount_tf
+  rate: non_periodic
+  xyz:
+  - -0.10873
+  - 0.00908
+  - 0.10761
+  rpy:
+  - 0.003575
+  - 0.537753
+  - -0.006233
+  source:
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+  - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/description/urdf/rebotarm_rs_with_d405.urdf.xacro#L17-L46
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_description/urdf/_d405.urdf.xacro#L50-L82
+  notes: 'The community D405 mount composed (gripper_end -> camera_mount_link -> camera_bottom_screw_frame -> camera_link; import.md,
+    "Wrist camera"), rounded to 5 decimals (m) and 6 (rad). Hand-eye result for one unit, from the community package; basis source'
+- parent: camera_link
+  child: camera_depth_frame
+  static: true
+  publisher: /camera/camera
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L99-L250
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/base_realsense_node.h#L85-L90
+  notes: 'the depth stream is the base stream: identity (tfs.cpp calcAndAppendTransformMsgs)'
+- parent: camera_depth_frame
+  child: camera_depth_optical_frame
+  static: true
+  publisher: /camera/camera
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L99-L250
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/base_realsense_node.h#L85-L90
+  notes: 'ROS frame to optical frame, rpy -pi/2 0 -pi/2 (tfs.cpp)'
+- parent: camera_link
+  child: camera_color_frame
+  static: true
+  publisher: /camera/camera
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - 0.0
+  - 0.0
+  - 0.0
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L99-L250
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/base_realsense_node.h#L85-L90
+  notes: 'depth-to-colour extrinsics: the D405''s colour and depth are one sensor, so identity (the factory extrinsic is the device''s; the RealSense xacro''s nominal colour offset is 0)'
+- parent: camera_color_frame
+  child: camera_color_optical_frame
+  static: true
+  publisher: /camera/camera
+  rate: non_periodic
+  xyz:
+  - 0.0
+  - 0.0
+  - 0.0
+  rpy:
+  - -1.5707963267948966
+  - 0.0
+  - -1.5707963267948966
+  source:
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/src/tfs.cpp#L99-L250
+  - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_camera/include/base_realsense_node.h#L85-L90
+  notes: 'ROS frame to optical frame, rpy -pi/2 0 -pi/2 (tfs.cpp)'
 motions:
 - id: arm
   velocity_driven: false
@@ -1547,7 +2094,164 @@ motions:
     is that 0.12 rad test, result.position the motor angle. A grasped object stops the fingers short of the target, squeezed
     by the motor's MIT torque kp * error (kp 50 N m/rad, at most the RS-00's 14 N m)
 sensors:
-  cameras: []
+  cameras:
+  - id: d405_color
+    image_topic: /camera/camera/color/image_raw
+    info_topic: /camera/camera/color/camera_info
+    frame_id: camera_color_optical_frame
+    width: 640
+    height: 360
+    rate: 30
+    encoding: rgb8
+    hfov_deg: 87.0
+    hfov_basis: manufacturer
+    hfov_note: Intel's D405 field of view 87 x 58 deg (+-3 deg), colour and depth alike
+    intrinsics:
+      fx: 337.2
+      fy: 337.2
+      cx: 319.5
+      cy: 179.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d405.html
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at run time
+        (base_realsense_node.cpp L794-L852); no value is in the pinned sources. The estimate keeps Intel''s published field of
+        view 87 x 58 deg (colour and depth alike) as 87 deg across the 640 px: fx = fy = 320 / tan(43.5 deg) = 337.2,
+        square pixels (56.2 deg vertical for the 360 rows), centred principal point, no distortion. The aligned depth shares the colour
+        intrinsics.'
+    mount:
+      parent: gripper_end
+      xyz:
+      - -0.10873
+      - 0.00908
+      - 0.10761
+      rpy:
+      - -2.108552138
+      - 0.0030704291
+      - -1.5788604741
+      basis: source
+      source:
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/description/urdf/rebotarm_rs_with_d405.urdf.xacro#L17-L46
+      - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_description/urdf/_d405.urdf.xacro#L50-L82
+      notes: 'the colour optical frame at camera_link (the D405''s colour sensor sits at its depth origin) turned by the
+        optical rotation: the community mount''s hand-eye result for one unit, composed in import.md ("Wrist camera"),
+        rounded to 5 decimals (m) and 6 (rad)'
+    hardware: Intel RealSense D405 colour (RGB8 640x360@30, from the depth module, USB 3.0)
+  - id: d405_depth
+    image_topic: /camera/camera/aligned_depth_to_color/image_raw
+    info_topic: /camera/camera/aligned_depth_to_color/camera_info
+    frame_id: camera_color_optical_frame
+    width: 640
+    height: 360
+    rate: 30
+    encoding: 16UC1
+    hfov_deg: 87.0
+    hfov_basis: manufacturer
+    hfov_note: Intel's D405 field of view 87 x 58 deg (+-3 deg), colour and depth alike
+    intrinsics:
+      fx: 337.2
+      fy: 337.2
+      cx: 319.5
+      cy: 179.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d405.html
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at run time
+        (base_realsense_node.cpp L794-L852); no value is in the pinned sources. The estimate keeps Intel''s published field of
+        view 87 x 58 deg (colour and depth alike) as 87 deg across the 640 px: fx = fy = 320 / tan(43.5 deg) = 337.2,
+        square pixels (56.2 deg vertical for the 360 rows), centred principal point, no distortion. The aligned depth shares the colour
+        intrinsics.'
+    mount:
+      parent: gripper_end
+      xyz:
+      - -0.10873
+      - 0.00908
+      - 0.10761
+      rpy:
+      - -2.108552138
+      - 0.0030704291
+      - -1.5788604741
+      basis: source
+      source:
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/description/urdf/rebotarm_rs_with_d405.urdf.xacro#L17-L46
+      - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_description/urdf/_d405.urdf.xacro#L50-L82
+      notes: 'the colour optical frame at camera_link (the D405''s colour sensor sits at its depth origin) turned by the
+        optical rotation: the community mount''s hand-eye result for one unit, composed in import.md ("Wrist camera"),
+        rounded to 5 decimals (m) and 6 (rad)'
+    range_m:
+    - 0.07
+    - 0.5
+    range_basis: manufacturer
+    hardware: Intel RealSense D405 stereo depth aligned to colour (16UC1 mm, 0 where there is no depth); Intel's ideal range
+      7 to 50 cm
+  - id: d405_depth_rect
+    image_topic: /camera/camera/depth/image_rect_raw
+    info_topic: /camera/camera/depth/camera_info
+    frame_id: camera_depth_optical_frame
+    width: 640
+    height: 360
+    rate: 30
+    encoding: 16UC1
+    hfov_deg: 87.0
+    hfov_basis: manufacturer
+    hfov_note: Intel's D405 field of view 87 x 58 deg (+-3 deg), colour and depth alike
+    optional: true
+    intrinsics:
+      fx: 337.2
+      fy: 337.2
+      cx: 319.5
+      cy: 179.5
+      distortion_model: plumb_bob
+      d:
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      - 0.0
+      basis: estimate
+      source: https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d405.html
+      notes: 'ESTIMATE. On the robot CameraInfo carries the unit''s factory calibration, read from the device at run time
+        (base_realsense_node.cpp L794-L852); no value is in the pinned sources. The estimate keeps Intel''s published field of
+        view 87 x 58 deg (colour and depth alike) as 87 deg across the 640 px: fx = fy = 320 / tan(43.5 deg) = 337.2,
+        square pixels (56.2 deg vertical for the 360 rows), centred principal point, no distortion. The aligned depth shares the colour
+        intrinsics.'
+    mount:
+      parent: gripper_end
+      xyz:
+      - -0.10873
+      - 0.00908
+      - 0.10761
+      rpy:
+      - -2.108552138
+      - 0.0030704291
+      - -1.5788604741
+      basis: source
+      source:
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/config/wrist_extrinsics_d405.yaml#L6-L16
+      - https://github.com/xiehuangbao888/rebot_visual_grasp/blob/dd28d65598deec767cf95fa45521d69b38155833/description/urdf/rebotarm_rs_with_d405.urdf.xacro#L17-L46
+      - https://github.com/IntelRealSense/realsense-ros/blob/9a11121700cb4780e273e34141f6402fe184321d/realsense2_description/urdf/_d405.urdf.xacro#L50-L82
+      notes: 'the colour optical frame at camera_link (the D405''s colour sensor sits at its depth origin) turned by the
+        optical rotation: the community mount''s hand-eye result for one unit, composed in import.md ("Wrist camera"),
+        rounded to 5 decimals (m) and 6 (rad)'
+    range_m:
+    - 0.07
+    - 0.5
+    range_basis: manufacturer
+    hardware: Intel RealSense D405 rectified depth (not served; the guide uses the aligned depth)
   lidars: []
   imus: []
 tolerances:
@@ -1576,6 +2280,22 @@ tolerances:
   source: https://github.com/Seeed-Projects/reBotArmController_ROS2/blob/7506dc0fc5c2a7787dcb974d89d13f9f49d16d61/src/rebotarmcontroller/rebotarmcontroller/hardware_manager.py#L13
   notes: the driver's own goal test (_GRIPPER_GOAL_TOLERANCE_RAD); on /rebotarm/joint_states that is 0.0012 m on gripper_joint1
     and 0.0017 m on gripper_joint2
+- figure: camera and lidar mount poses
+  applies_to: sensors.cameras[*].mount
+  tolerance:
+    absolute: 0.002
+    unit: m
+  basis: estimate
+  notes: the community mount is one unit's hand-eye result, rounded to 0.01 mm; the position of the colour sensor inside the D405
+    case is the device's factory extrinsic. Orientation is exact
+- figure: camera horizontal field of view
+  applies_to: sensors.cameras[*].hfov_deg
+  tolerance:
+    absolute: 3.0
+    unit: deg
+  basis: manufacturer
+  source: https://store.intelrealsense.com/buy-intel-realsense-depth-camera-d405.html
+  notes: Intel states 87 +-3 deg; intrinsics are an estimate (see sensors.cameras[*].intrinsics)
 - figure: end-effector repeatability
   applies_to:
   - gripper_end

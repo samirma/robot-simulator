@@ -85,7 +85,7 @@ def walk_row(rid):
 def walk_step_periods(rid):
     """Gait periods per walk step, as the robot's record defines it
     (`motions[walk].command.step_definition`; x_move_amplitude in m per step, one step = one
-    gait period, amended)."""
+    gait period)."""
     cmd = walk_row(rid)["command"]
     unit = next(f["unit"] for f in cmd["fields"] if f["field"] == "x_move_amplitude")
     assert cmd.get("step_definition") and "one step = one gait period" in unit, \
@@ -96,7 +96,7 @@ def walk_step_periods(rid):
 def check_walk(d, rid, m):
     """A passing walk against the record: its commanded displacement is x_move_amplitude per
     completed gait period, and the measured forward displacement is within the recorded
-    walk-displacement tolerance of it (`tolerances`, amended)."""
+    walk-displacement tolerance of it (`tolerances`)."""
     prm = m["command"]["set_param"]
     period = prm["period_time"] / 1000.0
     periods = m["gait_periods_completed"]
@@ -114,7 +114,7 @@ def check_walk(d, rid, m):
 def check_action_group(d, rid, m):
     """The action group played is the record's smoke example, with its basis reported: an
     estimated group is labelled as one (`motions[action_group].command.smoke_example`,
-    `smoke_example_basis`, amended)."""
+    `smoke_example_basis`)."""
     cmd = next(x for x in interface(rid)["motions"] if x["id"] == "action_group")["command"]
     want = cmd.get("smoke_example") or cmd["example"]
     assert m["command"]["message"] == want, (d, m["command"]["message"], want)
@@ -262,7 +262,10 @@ def test_worktop_cases_record_their_staged_objects(engine, rid):
     staged = spawned.get("staged") or {}
     assert set(staged) == WORKTOP_OBJECTS, f"{d}: staged {sorted(staged)}"
     for name, o in staged.items():
-        assert o["body"] == f"task_{name}" and len(o["pos"]) == 3 and len(o["quat"]) == 4, name
+        # the documented `staged` row (simulator/README.md, control port `robots`):
+        # {object: {body, pos, quat}}; the body's name is the simulation's own
+        assert isinstance(o.get("body"), str) and o["body"] and len(o["pos"]) == 3 \
+            and len(o["quat"]) == 4, name
         # around the arm: inside the staging area, 0.55 m around the arm's base frame
         # (simulator spec §2.3; the farthest reference pose, the bowl's, is 0.42 m out)
         dxy = math.hypot(o["pos"][0] - spawned["xyz"][0], o["pos"][1] - spawned["xyz"][1])

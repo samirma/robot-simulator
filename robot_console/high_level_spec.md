@@ -30,7 +30,7 @@ are the shell entry points (`teleop.sh`, `view.sh`).
 | Entry point | Responsibility |
 | --- | --- |
 | `teleop.sh` | Keyboard teleoperation of a supported mobile robot, with all its discovered supported cameras shown live. |
-| `view.sh` | Browser page showing the connected robot's cameras, with per-robot controls. |
+| `view.sh` | Browser page showing the connected robot's cameras and read-only sensors, with per-robot controls. |
 | `python -m robot_console.fleet` | Non-interactive wire check (§2.4): validate the wire's robots against the profiles and their cameras. |
 
 ### 1.1 Supported profiles and interface selection
@@ -42,12 +42,17 @@ The console owns the following profiles; these are the only accepted robot ids:
 | `myagv` | ROS 1 | Base motion |
 | `ainex` | ROS 1 | Walking and head control |
 | `rosmaster_x3_plus` | ROS 1 | Base motion |
-| `so101` | ROS 2 | Not supported (arm) |
+| `rebot_b601_rs` | ROS 2 | Not supported (arm) |
 
 Each packaged profile is the console's normative typed interface and control catalog.
 It records its pinned authoritative sources, required interface evidence for identification,
 command and feedback names/types, units, limits, documented stop/cancel operations,
-camera types, the per-axis teleoperation speed a held key commands (for mobile profiles),
+for each action control what its server does with a goal that arrives while another of its
+goals runs (preempts the running goal, rejects the new one, or runs it beside the running one),
+camera types (a camera of an optional add-on, such as a wrist camera, is itself optional),
+the read-only `sensors` the view page may show (manufacturer topics, each an output topic of
+the profile with its type, the message fields to show and a stale threshold, or none for a
+latched topic), the per-axis teleoperation speed a held key commands (for mobile profiles),
 and the exact bounded controls allowed on the page. Every catalog entry
 must trace to those sources; undocumented controls or invented feedback are prohibited.
 Optional endpoints gate only the capability that needs them. An exposed control requires all of its
@@ -130,9 +135,10 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
 
 * One static page speaking rosbridge to `--url`. It shows the selected target's cameras
   (§2.3), only the bounded controls its profile's catalog lists (§1.1), such as a head
-  position, an arm trajectory, a gripper position or a listed bounded action, and, for a
-  teleoperable profile, the base motion below. It offers no generic topic publication or
-  subscription.
+  position, an arm trajectory, a gripper position or a listed bounded action, the profile's
+  read-only sensors (§2.5) and, for a teleoperable profile, the base motion below. It
+  subscribes to nothing but the target's cameras and its profile's sensors, and it offers no
+  generic topic publication or subscription.
 * Robot selection, and namespace selection where supported, follows §1.1. Without a
   validated target the page shows the reason and a robot selector, and offers no controls.
 * Controls are live as soon as the target passes typed validation; there is no arm or
@@ -142,9 +148,25 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
   states (this poll never commands motion and stops on connection loss or target change);
   and, for a teleoperable profile, it attempts the documented stop once before base motion
   is enabled, as `teleop.sh` does at every start, and shows the outcome.
-  A value the user changes is sent to the validated target immediately:
+  A value the user changes is sent to the validated target immediately, except that an
+  action control whose server does not preempt holds it while the control's goal runs:
   * a topic-publish control publishes while its slider, or the AiNex head pad, is dragged,
-    at about 10 messages per second.
+    at about 10 messages per second;
+  * an action control whose server preempts its running goal sends goals while its slider
+    is dragged, at about 5 per second, each preempting the previous one;
+  * an action control whose server rejects a goal that arrives while another of its goals
+    runs, or runs that goal beside the running one, has at most one goal outstanding (below).
+    While its goal is outstanding, the page holds a changed value, keeping only the latest,
+    and sends nothing. When the goal stops being outstanding, normally because its result
+    arrives (whatever its status: succeeded, canceled, aborted or rejected), the held value
+    is sent as the next goal if it differs from the last goal sent, and is dropped
+    otherwise, so a drag delivers its final value after the running goal's result. A value
+    changed while no goal is outstanding is sent as the next goal, also when it equals the
+    last goal's, and replaces a held value still waiting to be sent. As for a server that
+    preempts, the control sends goals no more often than about 5 per second: a goal due
+    sooner after the previous one waits for that pacing. The page never cancels the running
+    goal to make room for a newer one. A goal that rosbridge reports the server rejected is
+    shown as rejected, with that reason, and is not resent.
 * The page supports performing actions, as `teleop.sh` does. For a teleoperable profile
   (`myagv`, `ainex`, `rosmaster_x3_plus`) it offers `teleop.sh`'s base motion and AiNex head
   keys (§2.1) with the same profile speeds, limits and stop: the keys act while the page,
@@ -165,16 +187,23 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
 * Every control commands a single finite target. Values are clamped to the documented
   limits, and a value outside them is shown as invalid and never sent. Where the profile
   documents measured joint positions, the page shows them and can copy them into the
-  targets. Each control shows its sending, done and failed state.
+  targets. Each control shows its sending, done and failed state, and an action control
+  also its running and rejected states.
 * Apart from base motion, the page never stops or cancels anything: no bounded control has
   a stop button or key, and the page sends no stop or cancel for one on release, focus
-  loss, page hide or unload, target change or connection loss. A goal keeps running if the
-  tab is closed. The page states that changes are sent immediately and that only base
-  motion is stopped automatically.
+  loss, page hide or unload, target change or connection loss, or to make room for a newer
+  goal. A goal keeps running if the tab is closed. The page states that changes are sent
+  immediately and that only base motion is stopped automatically, and how an action
+  control whose server does not preempt holds changes while its goal runs.
 * ROS 2 action goals use one rosbridge connection each, because stock rosbridge
-  serializes a client's operations while its goal runs. A superseded goal's connection
-  closes once the next goal is acknowledged (or after its own result), at most three are
-  open per control, and the next goal waits at most 1 s for that acknowledgement.
+  serializes a client's operations while its goal runs. A goal is acknowledged by its first
+  feedback or its result, and is outstanding from when it is sent until its result arrives,
+  its connection is lost, or it has gone 1 s without acknowledgement. The next goal of a
+  control waits at most 1 s for the previous goal's acknowledgement and, where the server
+  does not preempt, for the result of an acknowledged goal; a rosbridge that never answers
+  a rejected goal therefore holds the next one back for 1 s only. A goal's connection
+  closes after its result, a superseded goal's once the next goal is acknowledged, and at
+  most three are open per control.
 * Connection loss disables the controls. The page then shows the disconnected state and
   connects again only when reloaded. A target change requires new validation; apart from
   the base-motion stop above, it sends nothing to the old target and leaves goals already
@@ -191,7 +220,17 @@ image source. Each stream shows live images and a visible unavailable, unsupport
 stale or failed state when applicable. Profiles define a finite stale-image threshold
 from documented rates or an explicitly identified console policy. Never present a frozen
 frame as live. Having no cameras is a visible state, not a connection failure for
-independent controls. Exiting closes subscriptions and the connection.
+independent controls. A camera the profile marks optional that is not on the wire is shown
+as unavailable and does not fail validation. A profile lists only the streams the page
+shows. A depth camera's depth stream (a raw single-channel 16-bit image, `16UC1`) is a
+camera of the profile of kind `depth`, beside the camera's colour stream. The profile
+gives its metres per value and its range (near, far); the stream is drawn as a
+false-colour map scaled to that range (nearer, warm, to farther, cool; values beyond the
+range take the end colours), a value of 0 (no depth) is black, and the page shows a
+legend with the range and the black "no depth" swatch. A depth camera documents `16UC1`
+only; another encoding is an unsupported frame. Both entry points and the wire check
+decode a depth frame with that scale, and a 16-bit stream with no scale (an untied one)
+is stretched to its own maximum. Exiting closes subscriptions and the connection.
 
 ### 2.4 Wire check — `python -m robot_console.fleet`
 
@@ -206,7 +245,27 @@ python -m robot_console.fleet [--url ws://…] [--expect <id>]
   case fails, naming the candidates found.
 * Report each profile camera as live, stale or missing (§2.3). The check publishes nothing
   and ends with a non-zero status when validation fails, an expected camera is not live, no
-  supported robot is discovered, or the wire is unreachable.
+  supported robot is discovered, or the wire is unreachable. A missing or not live optional
+  camera is reported as optional and does not fail the check.
+
+### 2.5 Sensor panel
+
+The view page shows the selected target's profile `sensors`: manufacturer data topics
+(motor states, joint states, arm status) that the profile records as output topics, each
+with its type, the message fields shown (a path into the message, a unit, and for a status
+word the documented meaning of each bit) and a stale threshold, or none for a latched
+non-periodic topic.
+
+* The panel is read-only: the page subscribes to the profile's sensor topics once the target
+  is validated and never publishes, calls or cancels anything for them. A profile without
+  sensors shows no panel.
+* Each sensor shows its resolved topic, its current field values, the age of its last
+  message and a state: no message yet, live, stale (the last message is older than the
+  threshold; the values are marked frozen), last value (a latched topic that has delivered,
+  never stale), missing from the wire, or disconnected. Values are never presented as
+  current once the state is not live or last value. A status word shows each documented bit
+  as set or clear. Undocumented fields are not shown.
+* Sensors share the page's single connection and are unsubscribed on a target change.
 
 ## 3. Constraints
 
@@ -221,7 +280,9 @@ The console has these constraints:
 For each supported profile, verify against its independently derived authoritative
 interface that discovery selects the correct target or refuses ambiguity; explicit
 selection cannot bypass type checks; unsupported controls remain unavailable; and camera
-discovery displays all supported streams with visible failure/staleness states. Verify
+discovery displays all supported streams with visible failure/staleness states, and a
+profile's sensors show current values, each bit of a status word, and visible
+no-message/stale/last-value states. Verify
 namespace behaviour only where the documented hardware interface supports it, including
 refusal of overrides for other profiles. The installed console must run without sibling
 source trees and use the same profile against matching physical and simulated wires.
@@ -242,7 +303,11 @@ For the page, on ROS 1 and ROS 2 wires, verify that:
   has no arm switch or `Esc` behaviour;
 * dragging a topic-publish or action control streams throttled values and delivers the
   final value;
-* action goals preempt one another, and their connections stay bounded;
+* on an action server that preempts, each goal preempts the previous one; on one that
+  rejects a goal while another runs, or runs goals side by side, a drag keeps at most one
+  goal outstanding, sends no cancel and delivers the final value after the running goal's
+  result, and a rejected goal is shown as rejected; either way the goal connections stay
+  bounded;
 * service and action-group controls send once per click;
 * out-of-range values are never sent, and pending and failed states are visible;
 * release, focus loss, page hide or close, a target change and connection loss send no stop

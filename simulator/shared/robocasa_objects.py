@@ -8,7 +8,7 @@ with the same sampler, and stands each on a free spot of a counter top (RoboCasa
 `Counter.get_reset_regions()`, via `scenes.counter_regions`), upright, not touching another
 object. The draw is a deterministic function of the layout and style.
 
-Each stays where it is set (spec §2.1, amended): the scene is solved by
+Each stays where it is set (spec §2.1): the scene is solved by
 constraint island (`scenes.solve_by_island`), and an object that does not stand still
 upright -- a dish brush or whisk that tips over off its end, a marshmallow that keeps
 rolling -- is drawn again (`stands_still`: set alone on a flat top the way the counters get

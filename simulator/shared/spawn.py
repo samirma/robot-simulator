@@ -350,10 +350,7 @@ class Spawn:
                "--ulimit", "nofile=1024:524288",
                "--add-host", "host.docker.internal:host-gateway",
                "-v", f"{SIM_ROOT}:/opt/rsim/simulator:ro",
-               "-v", f"{REPO_ROOT / 'robots_specs'}:/opt/rsim/robots_specs:ro",
-               # compiled output of the simulator's ROS packages, built once per revision
-               # from the read-only mount (never a copy of the code in the image)
-               "-v", "rsim-wire-build:/opt/rsim_build"]
+               "-v", f"{REPO_ROOT / 'robots_specs'}:/opt/rsim/robots_specs:ro"]
         for k, v in env.items():
             cmd += ["-e", f"{k}={v}"]
         cmd += [w.image, "python3", "-u", "/opt/rsim/simulator/shared/wire/supervisor.py"]

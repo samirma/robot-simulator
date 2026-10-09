@@ -18,7 +18,8 @@ import numpy as np
 
 import common
 from robots import _plan
-from robots._ros1_drivers import YdLidar, camera_row, encode, fill_camera_info, tf_message
+from robots._camera import camera_row, encode, fill_camera_info
+from robots._ros1_drivers import YdLidar, tf_message
 
 LIBS = Path(__file__).resolve().parent / "sim_libs"
 

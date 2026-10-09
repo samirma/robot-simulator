@@ -78,3 +78,36 @@ def test_stream_states():
     assert s.state() == cam.LIVE
     s.missing = True
     assert s.state() == cam.MISSING
+
+
+def test_depth_is_a_false_colour_map_scaled_to_the_camera_range():
+    """A depth camera's 16UC1 frame (millimetres) is drawn over its range, not stretched to its own
+    maximum; 0 is black; values nearer or farther than the range take the end colours."""
+    lut = cam.depth_lut()
+    assert lut.shape == (256, 3)
+    assert lut[0].tolist() == list(cam.DEPTH_STOPS[0][1]) and lut[255].tolist() == list(cam.DEPTH_STOPS[-1][1])
+    vals = [0, 30, 70, 285, 500, 900]
+    scale = (0.001, (0.07, 0.5))
+    little = [b for v in vals for b in int(v).to_bytes(2, "little")]
+    out = cam.decode_image(img("16UC1", little, w=6), ("16UC1",), scale)
+    assert out.shape == (1, 6, 3)
+    assert out[0, 0].tolist() == [0, 0, 0]                                  # no depth
+    assert out[0, 1].tolist() == out[0, 2].tolist() == lut[0].tolist()      # at or nearer than near
+    assert out[0, 3].tolist() == lut[128].tolist()                          # the middle of the range
+    assert out[0, 4].tolist() == out[0, 5].tolist() == lut[255].tolist()    # at or beyond far
+    big = dict(img("16UC1", [b for v in vals for b in int(v).to_bytes(2, "big")], w=6), is_bigendian=1)
+    assert cam.decode_image(big, None, scale).tolist() == out.tolist()
+    # a 16-bit stream with no scale (an untied one) is stretched to its own maximum, as before
+    assert cam.decode_image(img("16UC1", [0, 0, 0xFF, 0xFF])).tolist() == [[[0, 0, 0], [255, 255, 255]]]
+
+
+def test_target_specs_carry_a_depth_cameras_scale():
+    from robot_console.profiles import load
+    p = load("rebot_b601_rs")
+
+    class T:
+        profile = p
+        wire = staticmethod(lambda n: n)
+    specs = {s.topic: s for s in cam.target_specs(T)}
+    assert specs["/camera/camera/color/image_raw"].depth is None
+    assert specs["/camera/camera/aligned_depth_to_color/image_raw"].depth == (0.001, (0.07, 0.5))

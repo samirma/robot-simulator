@@ -8,14 +8,18 @@ import signal
 import subprocess
 import time
 
+import numpy as np
 import pytest
 
 from conftest import (REPO, SIM, Spawn, docker_containers, docker_ok, port_free, running_sim,
                       wait_port_free)
 
 import protocol
+from rosbridge_client import Rosbridge
 
 SIM_PORT = 9381
+#: the worktop robot of the robot specification
+ARM = "rebot_b601_rs"
 pytestmark = pytest.mark.skipif(not docker_ok(), reason="Docker is not running")
 
 
@@ -84,21 +88,21 @@ def test_duplicate_and_busy_refusals_and_isolation(sim, logdir):
     assert "already spawned" in dup.text()
     assert port_free(9395)
     # a second spawn while another starts up is refused (on the worktop, so that it is
-    # refused even if so101 is ready by then)
-    b = Spawn("so101", SIM_PORT, 9396, log=logdir / "lc-b.log")
+    # refused even if the arm is ready by then)
+    b = Spawn(ARM, SIM_PORT, 9396, log=logdir / "lc-b.log")
     assert wait(lambda: "placed on" in b.text() or b.proc.poll() is not None, 300)
     busy = Spawn("ainex", SIM_PORT, 9397, placement="worktop", log=logdir / "lc-busy.log")
     code = busy.wait_exit(120)
     if "spawn ready" not in b.text():
         assert code != 0 and "starting up" in busy.text()
     b.wait_ready()
-    # the worktop now holds so101: another robot is refused there, nothing left behind
+    # the worktop now holds the arm: another robot is refused there, nothing left behind
     other = Spawn("ainex", SIM_PORT, 9397, placement="worktop", log=logdir / "lc-other.log")
-    assert other.wait_exit(120) != 0 and "worktop already holds so101" in other.text()
+    assert other.wait_exit(120) != 0 and f"worktop already holds {ARM}" in other.text()
     assert "ainex" not in robots() and not containers("ainex")
-    # removing so101 does not disturb the myAGV
+    # removing the arm does not disturb the myAGV
     assert b.stop() == 0
-    assert_released("so101", [9396])
+    assert_released(ARM, [9396])
     after = c.call("readings", robot="myagv")
     assert after["sim_time"] > before["sim_time"]
     moved = sum((x - y) ** 2 for x, y in zip(after["base"]["pos"], before["base"]["pos"])) ** 0.5
@@ -109,23 +113,23 @@ def test_duplicate_and_busy_refusals_and_isolation(sim, logdir):
 
 
 def test_worktop_objects_come_and_go_with_the_arm(sim, logdir):
-    """The six worktop objects are the scene's, there before spawn.sh so101 and after it
+    """The six worktop objects are the scene's, there before spawn.sh starts the arm and after it
     ends, with the island's own loose objects cleared for them throughout."""
     c = protocol.Client("127.0.0.1", SIM_PORT)
     s0 = c.call("scene")
     names = s0["free_bodies"]
     assert {n for n in names if n.startswith("task_")} >= {"task_apple", "task_bowl"}
     before = c.call("bodies", names=names)["bodies"]
-    sp = Spawn("so101", SIM_PORT, 9396, log=logdir / "lc-objects.log")
+    sp = Spawn(ARM, SIM_PORT, 9396, log=logdir / "lc-objects.log")
     sp.wait_ready()
-    me = robots()["so101"]
+    me = robots()[ARM]
     assert set(me["staged"]) == {"apple", "plate", "bowl", "mug", "banana", "lemon"}
     assert sorted(n.split("_")[0] for n in me["cleared"]) == ["apple", "book", "bread"]
     assert "worktop objects staged" in sp.text()
     sunk = c.call("bodies", names=me["cleared"])["bodies"]
     assert all(b["pos"][2] < -40 for b in sunk.values())
     assert sp.stop() == 0
-    assert_released("so101", [9396])
+    assert_released(ARM, [9396])
     sc = c.call("scene")
     assert sc["staging"] == s0["staging"] and sorted(sc["free_bodies"]) == sorted(names)
     after = c.call("bodies", names=names)["bodies"]
@@ -136,65 +140,124 @@ def test_worktop_objects_come_and_go_with_the_arm(sim, logdir):
 
 
 def test_sigkill_releases_robot_containers_ports_and_id(sim, logdir):
-    sp = Spawn("so101", SIM_PORT, 9396, log=logdir / "lc-kill.log")
+    sp = Spawn(ARM, SIM_PORT, 9396, log=logdir / "lc-kill.log")
     sp.wait_ready()
     os.kill(sp.proc.pid, signal.SIGKILL)
     sp.proc.wait()
-    assert_released("so101", [9396])
-    again = Spawn("so101", SIM_PORT, 9396, log=logdir / "lc-kill2.log")
+    assert_released(ARM, [9396])
+    again = Spawn(ARM, SIM_PORT, 9396, log=logdir / "lc-kill2.log")
     again.wait_ready()
     assert again.stop() == 0
-    assert_released("so101", [9396])
+    assert_released(ARM, [9396])
 
 
-def test_container_exit_ends_the_spawn(sim, logdir):
-    sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-cexit.log")
+#: the wire port of the robot that keeps running while another one fails
+BYSTANDER_PORT = 9399
+
+
+@pytest.fixture(scope="class")
+def bystander(sim, logdir):
+    """The worktop robot, running beside the failures below (spec §5 Lifecycle: isolation
+    of existing robots)."""
+    sp = Spawn(ARM, SIM_PORT, BYSTANDER_PORT, log=logdir / "lc-bystander.log")
     sp.wait_ready()
-    subprocess.run(["docker", "kill", *containers("myagv")], stdout=subprocess.DEVNULL)
-    assert sp.wait_exit(60) != 0
-    assert "container exited" in sp.text()
-    assert_released("myagv", [9391])
+    yield sp
+    assert sp.stop() == 0
+    assert_released(ARM, [BYSTANDER_PORT])
 
 
-def test_serving_process_failure_ends_the_spawn(sim, logdir):
-    sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-proc.log")
-    sp.wait_ready()
-    (name,) = containers("myagv")
-    subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "rosbridge_websocket"])
-    # the container itself keeps running; the spawn notices the wire stopped serving
-    assert sp.wait_exit(60) != 0
-    assert "stopped serving" in sp.text() or "lost node" in sp.text()
-    assert_released("myagv", [9391])
-
-
-def test_vendor_node_failure_ends_the_spawn(sim, logdir):
-    sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-node.log")
-    sp.wait_ready()
-    (name,) = containers("myagv")
-    subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "robot_pose_ekf"])
-    assert sp.wait_exit(60) != 0 and "lost node(s) /robot_pose_ekf" in sp.text()
-    assert_released("myagv", [9391])
-
-
-def test_partially_failed_startup_leaves_nothing(sim, logdir):
-    """The robot is added and its wire container started, then the wire fails during its
-    startup (the supervisor's test hook): the attempt removes all it created."""
-    env_before = os.environ.get("RSIM_TEST_FAIL_WIRE")
-    os.environ["RSIM_TEST_FAIL_WIRE"] = "1"
-    try:
-        sp = Spawn("myagv", SIM_PORT, 9392, placement="floor", log=logdir / "lc-partial.log")
-    finally:
-        if env_before is None:
-            del os.environ["RSIM_TEST_FAIL_WIRE"]
-        else:
-            os.environ["RSIM_TEST_FAIL_WIRE"] = env_before
-    assert sp.wait_exit(400) != 0
-    assert "failed to start" in sp.text()
-    assert_released("myagv", [9392])
-    assert "myagv" not in robots()
+def bystander_state(sp) -> dict:
+    """What a failure elsewhere must not change of the running robot: its row, its wire
+    container (by id, running), its base pose and joint positions."""
     c = protocol.Client("127.0.0.1", SIM_PORT)
-    assert c.call("robots")["starting"] is None
-    c.close()
+    try:
+        rd = c.call("readings", robot=ARM)
+    finally:
+        c.close()
+    (name,) = containers(ARM)
+    ids = subprocess.run(["docker", "inspect", "-f", "{{.Id}} {{.State.Running}}", name],
+                         stdout=subprocess.PIPE, text=True).stdout.split()
+    return {"row": robots()[ARM], "container": (name, *ids), "base": rd["base"],
+            "joints": {k: v["position"] for k, v in rd["joints"].items()}}
+
+
+def assert_undisturbed(sp, before: dict):
+    """The bystander is as it was: its spawn still runs, its row, container and pose are
+    unchanged, its joints within 0.01 rad of where they were, and its wire still serves."""
+    after = bystander_state(sp)
+    assert sp.proc.poll() is None, sp.text()[-2000:]
+    assert after["row"] == before["row"]
+    assert after["container"] == before["container"] and after["container"][-1] == "true"
+    for k in ("pos", "quat"):
+        assert np.allclose(after["base"][k], before["base"][k], atol=1e-6), k
+    moved = {k: abs(after["joints"][k] - v) for k, v in before["joints"].items()}
+    assert max(moved.values()) < 0.01, moved
+    rb = Rosbridge("127.0.0.1", BYSTANDER_PORT)
+    try:
+        nodes = set(rb.call("/rosapi/nodes", timeout=30)["nodes"])
+    finally:
+        rb.close()
+    assert {"/reBotArmController", "/robot_state_publisher"} <= nodes, nodes
+
+
+class TestAFailureLeavesTheOtherRobotsAlone:
+    """Every failure of a spawn -- its container exiting, its serving process or a vendor
+    node failing, its startup failing part way -- ends that spawn and removes all of it,
+    with another robot running beside it that keeps its row, container, wire and state."""
+
+    def test_container_exit_ends_the_spawn(self, sim, bystander, logdir):
+        before = bystander_state(bystander)
+        sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-cexit.log")
+        sp.wait_ready()
+        subprocess.run(["docker", "kill", *containers("myagv")], stdout=subprocess.DEVNULL)
+        assert sp.wait_exit(60) != 0
+        assert "container exited" in sp.text()
+        assert_released("myagv", [9391])
+        assert_undisturbed(bystander, before)
+
+    def test_serving_process_failure_ends_the_spawn(self, sim, bystander, logdir):
+        before = bystander_state(bystander)
+        sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-proc.log")
+        sp.wait_ready()
+        (name,) = containers("myagv")
+        subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "rosbridge_websocket"])
+        # the container itself keeps running; the spawn notices the wire stopped serving
+        assert sp.wait_exit(60) != 0
+        assert "stopped serving" in sp.text() or "lost node" in sp.text()
+        assert_released("myagv", [9391])
+        assert_undisturbed(bystander, before)
+
+    def test_vendor_node_failure_ends_the_spawn(self, sim, bystander, logdir):
+        before = bystander_state(bystander)
+        sp = Spawn("myagv", SIM_PORT, 9391, placement="floor", log=logdir / "lc-node.log")
+        sp.wait_ready()
+        (name,) = containers("myagv")
+        subprocess.run(["docker", "exec", name, "pkill", "-9", "-f", "robot_pose_ekf"])
+        assert sp.wait_exit(60) != 0 and "lost node(s) /robot_pose_ekf" in sp.text()
+        assert_released("myagv", [9391])
+        assert_undisturbed(bystander, before)
+
+    def test_partially_failed_startup_leaves_nothing(self, sim, bystander, logdir):
+        """The robot is added and its wire container started, then the wire fails during
+        its startup (the supervisor's test hook): the attempt removes all it created."""
+        before = bystander_state(bystander)
+        env_before = os.environ.get("RSIM_TEST_FAIL_WIRE")
+        os.environ["RSIM_TEST_FAIL_WIRE"] = "1"
+        try:
+            sp = Spawn("myagv", SIM_PORT, 9392, placement="floor", log=logdir / "lc-partial.log")
+        finally:
+            if env_before is None:
+                del os.environ["RSIM_TEST_FAIL_WIRE"]
+            else:
+                os.environ["RSIM_TEST_FAIL_WIRE"] = env_before
+        assert sp.wait_exit(400) != 0
+        assert "failed to start" in sp.text()
+        assert_released("myagv", [9392])
+        assert "myagv" not in robots()
+        c = protocol.Client("127.0.0.1", SIM_PORT)
+        assert c.call("robots")["starting"] is None
+        c.close()
+        assert_undisturbed(bystander, before)
 
 
 def test_simulation_end_ends_every_spawn_nonzero(logdir):

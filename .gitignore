@@ -59,7 +59,7 @@ robots_specs/**/*.dae
 # The fetched folders themselves (robots_specs/tools/fetch_meshes.py; every file in them
 # is listed in robots_specs/meshes.sha256), the STLs it derives from COLLADA, and its
 # staging directory.
-robots_specs/so101/assets/
+robots_specs/rebot_b601_rs/description/
 robots_specs/myagv/urdf/
 robots_specs/ainex/meshes/
 robots_specs/rosmaster_x3_plus/meshes/

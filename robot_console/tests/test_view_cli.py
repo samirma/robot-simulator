@@ -8,7 +8,7 @@ import pytest
 from robot_console import view
 
 CONSOLE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ACCEPTED = "Accepted ids: myagv, ainex, rosmaster_x3_plus, so101\n"     # the whole list
+ACCEPTED = "Accepted ids: myagv, ainex, rosmaster_x3_plus, rebot_b601_rs\n"     # the whole list
 
 
 @pytest.mark.parametrize("rid", ["turtlebot", "so100"])
@@ -20,7 +20,7 @@ def test_view_refuses_unknown_robot_ids(rid, capsys):
 
 @pytest.mark.parametrize("rid", ["myagv", "ainex", "rosmaster_x3_plus"])
 def test_view_refuses_a_namespace_where_the_hardware_documents_none(rid, capsys):
-    """Console spec §1.1: only so101's hardware interface is namespace-configurable."""
+    """Console spec §1.1: only rebot_b601_rs's hardware interface is namespace-configurable."""
     assert view.main(["--robot", rid, "--namespace", "robot1", "--no-open"]) == 2
     assert "no namespace override" in capsys.readouterr().err
 

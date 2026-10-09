@@ -35,6 +35,21 @@
       [name + "/feedback"]: `${pkg}/${base}ActionFeedback`, [name + "/result"]: `${pkg}/${base}ActionResult`,
     };
   }
+  // [topics, services] behind a ROS 2 action `name` of `pkg/action/X` (dialect.ros2_action_endpoints).
+  function ros2ActionEndpoints(name, type) {
+    const [pkg, base] = normType(type).split("/");
+    return [
+      { [name + "/_action/feedback"]: `${pkg}/action/${base}_FeedbackMessage`, [name + "/_action/status"]: "action_msgs/msg/GoalStatusArray" },
+      { [name + "/_action/send_goal"]: `${pkg}/action/${base}_SendGoal`, [name + "/_action/cancel_goal"]: "action_msgs/srv/CancelGoal",
+        [name + "/_action/get_result"]: `${pkg}/action/${base}_GetResult` },
+    ];
+  }
+  // `/x/_action/send_goal` of `pkg/action/X_SendGoal` -> [`/x`, `pkg/action/X`] (dialect.ros2_action_from_send_goal).
+  function ros2ActionFromSendGoal(service, type) {
+    const suffix = "/_action/send_goal";
+    const m = /^([^/]+)\/action\/(.+)_SendGoal$/.exec(String(type || "").trim());
+    return service.endsWith(suffix) && m ? [service.slice(0, -suffix.length), `${m[1]}/action/${m[2]}`] : null;
+  }
 
   // ------------------------------------------------------------------ transport
   class RosConn {
@@ -109,11 +124,6 @@
       try { this.ws.close(); } catch (e) {}
       this.closed = true;
     }
-    // Close, resolving once the socket has closed (or after timeoutMs).
-    closeAndWait(timeoutMs = 500) {
-      this.close();
-      return Promise.race([this.wsClosed, new Promise((r) => setTimeout(r, timeoutMs))]);
-    }
   }
 
   // ------------------------------------------------------------------ graph
@@ -143,9 +153,19 @@
           }
         }
       }
-    } else if (dialect === "ros2" && services_list.includes("/rosapi/action_servers")) {
-      const ar = await conn.call("/rosapi/action_servers");
-      for (const a of ar.action_servers || []) actions[a] = null;
+    } else if (dialect === "ros2") {
+      if (services_list.includes("/rosapi/action_servers")) {
+        const ar = await conn.call("/rosapi/action_servers");
+        for (const a of ar.action_servers || []) actions[a] = null;
+      }
+      for (const [s, t] of Object.entries(services)) {        // a rosapi that does list hidden services
+        const hit = ros2ActionFromSendGoal(s, t);
+        if (hit) actions[hit[0]] = hit[1];
+      }
+      for (const [a, t] of Object.entries(actions)) {
+        const [tp, sv] = ros2ActionEndpoints(a, t || "x/action/X");
+        [...Object.keys(tp), ...Object.keys(sv)].forEach((x) => parts.add(x));
+      }
     }
     return { dialect, topics, services, actions, parts };
   }
@@ -323,7 +343,30 @@
   const BPP = { rgb8: 3, bgr8: 3, "8uc3": 3, rgba8: 4, bgra8: 4, mono8: 1, "8uc1": 1, mono16: 2, "16uc1": 2,
     yuv422: 2, uyvy: 2, yuv422_yuy2: 2, yuyv: 2 };
   const YUV422 = ["yuv422", "uyvy", "yuv422_yuy2", "yuyv"];
-  function decodeImage(msg, allowed) {
+  // The depth false-colour map (stops and colour of "no depth" as camera.py's DEPTH_STOPS): 256 RGB
+  // rows, near (warm) first. A depth camera's 16-bit value times its unit_m is metres, scaled to its
+  // range_m; 0 is no depth and is black.
+  const DEPTH_STOPS = [[0, [213, 32, 39]], [0.17, [244, 125, 32]], [0.34, [250, 224, 50]], [0.5, [80, 200, 100]],
+    [0.67, [40, 180, 220]], [0.84, [50, 90, 210]], [1, [70, 40, 140]]];
+  const DEPTH_LUT = (() => {
+    const lut = [];
+    for (let i = 0; i < 256; i++) {
+      const x = i / 255;
+      let k = 1;
+      while (k < DEPTH_STOPS.length - 1 && x > DEPTH_STOPS[k][0]) k++;
+      const [p0, c0] = DEPTH_STOPS[k - 1], [p1, c1] = DEPTH_STOPS[k];
+      const f = (x - p0) / (p1 - p0);
+      lut.push(c0.map((v, j) => Math.round(v + (c1[j] - v) * f)));
+    }
+    return lut;
+  })();
+  const depthColor = (v, unit, range) => {
+    if (v === 0) return [0, 0, 0];
+    const t = Math.min(1, Math.max(0, (v * unit - range[0]) / (range[1] - range[0])));
+    return DEPTH_LUT[Math.floor(t * 255 + 0.5)];
+  };
+  // `depth` = { unit, range } of a depth camera: its 16-bit frames are drawn as that map.
+  function decodeImage(msg, allowed, depth) {
     const enc = String(msg.encoding || "").toLowerCase();
     if (allowed && allowed.length && !allowed.map((x) => x.toLowerCase()).includes(enc)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
     if (!(enc in BPP)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
@@ -347,7 +390,11 @@
           case "rgba8": put(o, at(row + 4 * x), at(row + 4 * x + 1), at(row + 4 * x + 2)); break;
           case "bgra8": put(o, at(row + 4 * x + 2), at(row + 4 * x + 1), at(row + 4 * x)); break;
           case "mono8": case "8uc1": { const v = at(row + x); put(o, v, v, v); break; }
-          case "mono16": case "16uc1": { const v = msg.is_bigendian ? at(row + 2 * x) : at(row + 2 * x + 1); put(o, v, v, v); break; }
+          case "mono16": case "16uc1": {
+            const a = at(row + 2 * x), b = at(row + 2 * x + 1);
+            if (depth) { const c = depthColor(msg.is_bigendian ? (a << 8) | b : (b << 8) | a, depth.unit, depth.range); put(o, c[0], c[1], c[2]); break; }
+            const v = msg.is_bigendian ? a : b; put(o, v, v, v); break;
+          }
           case "yuv422": case "uyvy": case "yuv422_yuy2": case "yuyv": {
             const b0 = row + 4 * (x >> 1); const yuy = enc === "yuv422_yuy2" || enc === "yuyv";
             const Y = at(yuy ? b0 + (x & 1 ? 2 : 0) : b0 + (x & 1 ? 3 : 1));
@@ -362,7 +409,7 @@
   }
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
-    lost: false, streams: [], controls: new Map(), feedback: new Map(), reads: new Map(),
+    lost: false, streams: [], sensors: [], controls: new Map(), feedback: new Map(), reads: new Map(),
     padGroup: null, model: null, groups: [], poll: null, mo: null, changing: false });
 
   // ------------------------------------------------------------------ DOM helpers
@@ -383,10 +430,13 @@
   const degText = (rad) => { const d = Math.round(rad * 180 / Math.PI); return (d < 0 ? "−" : "") + Math.abs(d) + "°"; };
   // A value with its unit, and degrees next to radians: "+0.82 rad (47°)".
   const valueText = (v, unit, d) => `${signed(v, d)} ${unit}` + (unit === "rad" ? ` (${degText(v)})` : "");
+  // The resolution a field is entered, stepped and copied at. A joint angle keeps 0.01 rad over its
+  // whole range (an arm's base or wrist joint spans more than 5 rad), so a measured position copied
+  // into the target stays within 0.005 rad of the measurement.
   function decimals(f) {
     if (f.integer) return 0;
     const span = f.max - f.min;
-    return span <= 5 ? 2 : span <= 50 ? 1 : 0;
+    return span <= 5 || f.unit === "rad" ? 2 : span <= 50 ? 1 : 0;
   }
 
   // ------------------------------------------------------------------ status surfaces
@@ -406,29 +456,46 @@
   function clearCameras() {
     for (const s of S.streams) { try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} }
     S.streams = []; $("cameras").innerHTML = ""; $("cameras").dataset.count = "0";
+    clearSensors();
   }
-  function addCamera(topic, type, staleS, encodings, tied, missing) {
+  // The colour legend of a depth camera: the map near to far over the camera's range, 0 black.
+  function depthLegend(depth) {
+    const bar = h("canvas", { class: "depth-bar", width: 256, height: 1, "data-testid": "depth-bar", "aria-hidden": "true" });
+    const g = bar.getContext("2d");
+    DEPTH_LUT.forEach((c, i) => { g.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`; g.fillRect(i, 0, 1, 1); });
+    const m = (v) => `${Number(v).toFixed(2)} m`;
+    return h("div", { class: "depth-legend", "data-testid": "depth-legend" },
+      h("span", { class: "depth-swatch", title: "no depth" }),
+      h("span", { class: "depth-end", "data-testid": "depth-near", text: m(depth.range[0]) }),
+      bar,
+      h("span", { class: "depth-end", "data-testid": "depth-far", text: m(depth.range[1]) }),
+      h("span", { class: "depth-note", text: "near to far · black = no depth" }));
+  }
+  function addCamera(topic, type, staleS, encodings, tied, missing, optional, depth) {
     const canvas = h("canvas", { width: 640, height: 480 });
-    const fig = h("figure", { class: "cam notlive", "data-testid": "camera", "data-topic": topic, "data-state": "waiting" },
+    const fig = h("figure", { class: "cam notlive", "data-testid": "camera", "data-topic": topic, "data-state": "waiting",
+        "data-kind": depth ? "depth" : "color" },
       h("div", { class: "cam-view" }, canvas,
         h("div", { class: "cam-overlay" }, h("div", { class: "ov-title" }), h("div", { class: "ov-detail" })),
         h("span", { class: "cam-badge state", "data-testid": "camera-state", role: "status" })),
+      depth ? depthLegend(depth) : null,
       h("figcaption", { class: "cam-caption" },
         h("code", { text: topic }),
+        depth ? h("span", { class: "cam-kind", text: "depth" }) : null,
         tied ? null : h("span", { class: "untied", "data-testid": "untied", text: "not tied to a target" }),
         h("span", { class: "cam-meta" })));
     $("cameras").appendChild(fig);
     const n = $("cameras").children.length;
     $("cameras").dataset.count = n > 3 ? "many" : String(n);
-    const s = { topic, type, staleS, encodings, tied, div: fig, canvas, last: null, frames: 0, error: null,
-      unsupported: false, missing, started: performance.now(), times: [], w: 0, h: 0, enc: "" };
+    const s = { topic, type, staleS, encodings, tied, depth: depth || null, div: fig, canvas, last: null, frames: 0, error: null,
+      unsupported: false, missing, optional: !!optional, started: performance.now(), times: [], w: 0, h: 0, enc: "" };
     if (!missing) s.sid = S.conn.subscribe(topic, type, (m) => onFrame(s, m), 50);
     S.streams.push(s);
     return s;
   }
   function onFrame(s, m) {
     try {
-      const img = decodeImage(m, s.encodings);
+      const img = decodeImage(m, s.encodings, s.depth);
       if (s.canvas.width !== img.width || s.canvas.height !== img.height) {
         s.canvas.width = img.width; s.canvas.height = img.height;
         s.div.querySelector(".cam-view").style.setProperty("--ar", `${img.width} / ${img.height}`);
@@ -442,7 +509,7 @@
   }
   // [state, badge, detail]. Never "live" unless a frame arrived within the stale threshold.
   function cameraState(s, now) {
-    if (s.missing) return ["missing", "MISSING", "unavailable: the topic is not on the wire"];
+    if (s.missing) return ["missing", "MISSING", s.optional ? "unavailable: this optional camera is not on the wire" : "unavailable: the topic is not on the wire"];
     if (S.lost) return ["failed", "DISCONNECTED", "Connection lost: this image is frozen, not live. Reload the page to connect again."];
     if (s.unsupported) return ["unsupported", "UNSUPPORTED", s.error];
     if (s.error) return ["failed", "FAILED", "failed: " + s.error];
@@ -483,10 +550,120 @@
     $("no-cameras").style.display = none ? "" : "none";
     $("no-cameras").textContent = none ? (S.target ? "No cameras for this robot's profile." : "No cameras discovered on the wire.") : "";
     $("cam-summary").textContent = none ? "" : `${live} of ${S.streams.length} live`;
+    tickSensors(now);
     tickFeedback(now);
     drawModel();
   }
   setInterval(tick, 200);
+
+  // ------------------------------------------------------------------ sensors (read-only)
+  // The profile's `sensors` (console spec §2.5): manufacturer topics the page only subscribes to
+  // and shows. Nothing here sends: a sensor has no control and no stop.
+  function clearSensors() {
+    for (const s of S.sensors) { try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} }
+    S.sensors = [];
+    $("sensor-list").innerHTML = ""; $("sensors-panel").hidden = true; $("sensor-summary").textContent = "";
+  }
+  const SENSOR_THROTTLE_MS = 100;
+  // An array field: a JSON array, or the base64 string rosbridge may use for a byte array.
+  function asList(v) {
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") { try { return Array.from(atob(v), (c) => c.charCodeAt(0)); } catch (e) { return null; } }
+    return null;
+  }
+  function addSensor(t, def) {
+    const topic = t.wire(def.topic), missing = !(topic in S.graph.topics);
+    const groups = [];                       // fields of one group are shown together, in profile order
+    for (const f of def.fields) {
+      let g = groups.find((x) => x.id === f.group);
+      if (!g) groups.push(g = { id: f.group, fields: [] });
+      g.fields.push(f);
+    }
+    const cells = new Map();                 // field name -> { f, value, unit, bits: Map(bit -> element) }
+    const body = h("div", { class: "sensor-body" });
+    for (const g of groups) {
+      const row = h("div", { class: g.id ? "sensor-group" : "sensor-fields sensor-group", "data-group": g.id || null },
+        g.id ? h("span", { class: "sensor-group-label", text: g.id }) : null);
+      for (const f of g.fields) {
+        const value = h("span", { class: "sf-value", "data-testid": "sensor-value", "data-value": "", text: "—" });
+        const cell = { f, value, bits: new Map() };
+        const kids = [h("span", { class: "sf-label", text: f.label }), value];
+        if (f.kind === "number" && f.unit) kids.push(h("span", { class: "sf-unit", text: f.unit }));
+        if (f.kind === "bits") {
+          const wrap = h("span", { class: "sf-bits" });
+          for (const b of f.bits) {
+            const el = h("span", { class: "sf-bit", "data-testid": "sensor-bit", "data-bit": b.bit, "data-set": "unknown", text: b.label });
+            cell.bits.set(b.bit, el); wrap.append(el);
+          }
+          kids.push(wrap);
+        }
+        row.append(h("div", { class: "sensor-field", "data-testid": "sensor-field", "data-field": f.name }, kids));
+        cells.set(f.name, cell);
+      }
+      body.append(row);
+    }
+    const state = h("span", { class: "sensor-state", "data-testid": "sensor-state", role: "status" });
+    const meta = h("span", { class: "sensor-meta", "data-testid": "sensor-meta" });
+    const el = h("article", { class: "sensor", "data-testid": "sensor", "data-sensor": def.id, "data-topic": topic,
+        "data-state": "waiting", "data-wide": def.fields.length > 8 ? "true" : null },
+      h("div", { class: "sensor-head" },
+        h("div", {}, h("div", { class: "sensor-title", text: def.label }), h("code", { class: "sensor-topic", text: topic })),
+        state),
+      body, meta);
+    $("sensor-list").appendChild(el);
+    $("sensors-panel").hidden = false;
+    const s = { def, topic, el, state, meta, cells, msg: null, last: null, count: 0, dirty: false, missing, started: performance.now() };
+    if (!missing) s.sid = S.conn.subscribe(topic, def.type, (m) => { s.msg = m; s.last = performance.now(); s.count++; s.dirty = true; }, SENSOR_THROTTLE_MS);
+    S.sensors.push(s);
+    return s;
+  }
+  function sensorValue(cell, msg) {
+    const { f, value } = cell;
+    const v = readPath(msg, f.path);
+    let text = "—", raw = "";
+    if (f.kind === "number") {
+      if (typeof v === "number" && Number.isFinite(v)) { raw = String(v); text = v.toFixed(f.decimals == null ? 3 : f.decimals).replace("-", "−"); }
+    } else if (f.kind === "text") {
+      if (typeof v === "string") { raw = v; text = v === "" ? "(empty)" : v; }
+    } else if (f.kind === "bool") {
+      if (typeof v === "boolean") { raw = text = String(v); }
+    } else if (f.kind === "list") {
+      const a = asList(v);
+      if (a) { raw = a.join(","); text = a.length ? a.join(", ") : "(none)"; }
+    } else if (f.kind === "bits") {
+      const n = typeof v === "number" ? v : Array.isArray(v) || v == null ? NaN : Number(v);
+      const ok = Number.isInteger(n) && n >= 0;
+      if (ok) { raw = text = String(n); }
+      for (const [bit, el] of cell.bits) el.dataset.set = ok ? String(((n >>> bit) & 1) === 1) : "unknown";
+    }
+    if (value.textContent !== text) value.textContent = text;
+    value.dataset.value = raw;
+  }
+  // [state, badge]: never "live" unless a message arrived within the sensor's stale threshold; a
+  // latched or non-periodic topic (stale_after_s null) is "latched" with its last message's age.
+  function sensorState(s, now) {
+    if (s.missing) return ["missing", "MISSING"];
+    if (S.lost) return ["lost", "DISCONNECTED"];
+    if (s.last == null) return ["waiting", "NO MESSAGE YET"];
+    if (s.def.stale_after_s == null) return ["latched", "LAST VALUE"];
+    return (now - s.last) / 1000 <= s.def.stale_after_s ? ["live", "LIVE"] : ["stale", "STALE"];
+  }
+  function tickSensors(now) {
+    let live = 0;
+    for (const s of S.sensors) {
+      if (s.dirty) { s.dirty = false; for (const c of s.cells.values()) sensorValue(c, s.msg); }
+      const [st, badge] = sensorState(s, now);
+      if (st === "live" || st === "latched") live++;
+      if (s.state.textContent !== badge) s.state.textContent = badge;
+      s.el.dataset.state = st;
+      const age = s.last == null ? "" : (now - s.last) / 1000;
+      s.meta.textContent = st === "missing" ? "the topic is not on the wire"
+        : s.last == null ? "no message received yet"
+        : `${s.count} message${s.count === 1 ? "" : "s"} · last ${age < 1 ? Math.round(age * 1000) + " ms" : age.toFixed(1) + " s"} ago`
+          + (st === "stale" ? ` (threshold ${s.def.stale_after_s} s; the values are frozen)` : st === "lost" ? " (connection lost; the values are frozen)" : "");
+    }
+    $("sensor-summary").textContent = S.sensors.length ? `${live} of ${S.sensors.length} reporting` : "";
+  }
 
   // ------------------------------------------------------------------ reported joint positions
   // Shown only where the profile documents them: explicitly, by its model's joints that name a
@@ -690,7 +867,7 @@
 
   // ------------------------------------------------------------------ polled positions
   // The read the profile marks `poll_s` is its documented read-only joint-position query (console
-  // spec §2.2, amended): once the target is validated the page calls it about every
+  // spec §2.2): once the target is validated the page calls it about every
   // poll_s seconds, one call at a time, so the model and the measured values follow a robot that
   // publishes no joint states. It commands nothing, is never called before validation, and stops
   // on connection loss and on a target change.
@@ -716,9 +893,16 @@
   // ------------------------------------------------------------------ sending
   // Values changed on the page go to the robot at once; no bounded control is ever stopped or
   // cancelled by the page. Topic publishes stream while a value is dragged; action goals stream at a
-  // lower rate, each new goal preempting the previous one on the action server. Both use a
-  // throttle with a leading and a trailing edge that reads the inputs when it fires, so the
-  // last value is always sent. Service calls and choice buttons send once per click.
+  // lower rate, as the profile records the action server's handling of a goal that arrives while
+  // another of its goals runs (the control's `busy`). A server that preempts gets each new goal
+  // as it comes, ending the previous one. A server that rejects it, or runs it beside the running
+  // one, gets one goal of the control at a time ("serial"): while a goal runs, changes are held
+  // (only the latest value counts) and go out when that goal's result arrives, whatever its
+  // status, if they differ from the last goal sent; a change made while no goal runs is sent even
+  // when it equals the last goal's. Nothing is cancelled to make room. Both use a throttle (for
+  // action goals, either kind, about 5 per second) with a leading and a trailing edge that reads
+  // the inputs when it fires, so the last value is always sent. Service calls and choice buttons
+  // send once per click.
   const STREAM_MS = { publish: 100, action: 200 };
   const GOAL_ACK_MS = 1000;     // the next goal waits for the previous one to show life, at most this long
   const GOAL_CONNS_MAX = 3;     // per control: open goal connections (the latest goal and superseded ones)
@@ -730,12 +914,15 @@
     if (c.kind === "call") return "click";
     return c.fields.some((f) => !f.choices) ? "stream" : "click";
   }
+  // One goal at a time: an action control whose server does not preempt (profile `busy`).
+  const isSerial = (c) => c.kind === "action" && c.busy !== "preempt";
   const liveOk = (cs) => !!S.target && !!S.conn && !S.lost && cs.available && !cs.dead;
 
   // Every control shows the phase of its latest send: sending (on its way, or waiting for the
-  // answer), running (a goal the action server acknowledged), done, failed, or invalid (a value
-  // outside the documented limits, never sent). The text starts with the phase.
-  const PHASE_CLS = { sending: "warn", running: "warn", done: "ok", failed: "bad", invalid: "bad" };
+  // answer), running (a goal the action server acknowledged), done, failed, rejected (a goal the
+  // action server refused) or invalid (a value outside the documented limits, never sent). The
+  // text starts with the phase.
+  const PHASE_CLS = { sending: "warn", running: "warn", done: "ok", failed: "bad", rejected: "bad", invalid: "bad" };
   function setStatus(id, phase, text) {
     const cs = S.controls.get(id); if (!cs) return;
     const cls = PHASE_CLS[phase] || "dim";
@@ -743,26 +930,54 @@
     cs.status = { phase, cls, text }; cs.statusEl.textContent = text; cs.statusEl.className = "status " + cls;
     cs.div.dataset.status = cls; cs.div.dataset.phase = phase;
   }
+  function heldText(c) {
+    return "goal running; the action server " + (c.busy === "reject" ? "rejects a new goal while one runs"
+      : "would run a new goal beside it") + ", so your latest value is held and sent when this goal's result arrives";
+  }
 
-  // A value of a streamed control changed: send it now, or as soon as the throttle allows.
+  // A value of a streamed control changed: send it now, or as soon as the throttle (and, for a
+  // serial control, the running goal) allows.
   function trigger(cs) {
     if (!liveOk(cs) || cs.mode !== "stream") return;
+    queue(cs);
+  }
+  function queue(cs) {
+    // A change made while no goal is outstanding is sent as the next goal (as the pacing allows)
+    // even when it equals the last goal's: it replaces a held value still waiting for the pacing,
+    // which would otherwise be dropped as unchanged.
+    if (cs.serial && !goalHolds(cs)) cs.th.held = false;
     cs.th.pending = true; pump(cs);
-    if (cs.th.pending && (!cs.status || cs.status.phase !== "sending")) setStatus(cs.ctrl.id, "sending", "the new value goes out as the rate limit allows…");
+    if (!cs.th.pending) return;
+    if (cs.serial && cs.goal && cs.goal.acked && !cs.goal.done) setStatus(cs.ctrl.id, "running", heldText(cs.ctrl));
+    else if (!cs.status || cs.status.phase !== "sending") setStatus(cs.ctrl.id, "sending", "the new value goes out as the rate limit allows…");
+  }
+  // The latest goal holds the next one back: for at most GOAL_ACK_MS until the action server
+  // acknowledges it (feedback or result) and, for a serial control, once acknowledged, until its
+  // result. A goal that is still unacknowledged after GOAL_ACK_MS holds nothing back (rosbridge
+  // before 2.5 never answers a goal the server rejected).
+  function goalHolds(cs) {
+    const g = cs.goal;
+    if (!g || g.done) return false;
+    return g.acked ? cs.serial : Date.now() - g.sentAt < GOAL_ACK_MS;
   }
   function pump(cs) {
     const th = cs.th;
     if (!th.pending || th.timer || th.busy || !liveOk(cs)) return;
-    if (cs.ctrl.kind === "action" && cs.goal && !cs.goal.acked && Date.now() - cs.goal.sentAt < GOAL_ACK_MS) return;
+    if (cs.ctrl.kind === "action" && goalHolds(cs)) { if (cs.serial) th.held = true; return; }
     const wait = th.last + STREAM_MS[cs.ctrl.kind === "action" ? "action" : "publish"] - Date.now();
     if (wait > 0) { th.timer = setTimeout(() => { th.timer = null; pump(cs); }, wait); return; }
-    th.pending = false; th.last = Date.now(); th.busy = true;
-    Promise.resolve(startControl(cs)).catch(() => {}).finally(() => { th.busy = false; pump(cs); });
+    const held = th.held;
+    th.pending = false; th.held = false; th.last = Date.now(); th.busy = true;
+    Promise.resolve(startControl(cs, held)).catch(() => {}).finally(() => { th.busy = false; pump(cs); });
   }
-  // One send per click.
-  function fire(cs) { if (liveOk(cs)) startControl(cs); }
+  // One send per click (a serial control's click waits for its running goal, as a change does).
+  function fire(cs) {
+    if (!liveOk(cs)) return;
+    if (cs.serial) queue(cs); else startControl(cs);
+  }
 
-  async function startControl(cs) {
+  // `held`: the value was held while a goal ran; it is sent only if it differs from that goal's.
+  async function startControl(cs, held = false) {
     const c = cs.ctrl, t = S.target, conn = S.conn;
     if (!liveOk(cs)) return false;
     const values = {};
@@ -772,6 +987,7 @@
     try { payload = fill(c.template, values, jointPrefix(t.profile, t.namespace)); }
     catch (e) { setStatus(c.id, "invalid", "not sent: " + e.message); return false; }
     const name = t.wire(c.name);
+    if (held && cs.goal && cs.goal.key === JSON.stringify(payload)) return false;    // nothing new to send
     try {
       if (c.kind === "publish") {
         conn.publish(name, payload, c.type); cs.sent++;
@@ -793,54 +1009,70 @@
   // ROS 2: stock rosbridge (Humble, Jazzy) handles one client's send_action_goal to completion
   // before that client's next op, so each goal gets its own connection. Its result or feedback
   // acknowledges it; once the latest goal is acknowledged the superseded goals' connections
-  // close (closing one cancels nothing on stock rosbridge). At most GOAL_CONNS_MAX are open,
-  // counting the new goal's: the oldest superseded ones close (and are closed) before it opens.
+  // close (closing one cancels nothing on stock rosbridge), and a goal's connection closes after
+  // its result. At most GOAL_CONNS_MAX are open, counting the new goal's and those of retired
+  // goals whose sockets are still closing (cs.closing): the oldest superseded goals close at
+  // once, and the new goal's connection opens only once enough of the others have closed.
   async function sendGoal2(cs, conn, name, payload) {
     const c = cs.ctrl;
-    const room = cs.goals.slice(0, Math.max(0, cs.goals.length - (GOAL_CONNS_MAX - 1)));
-    await Promise.all(room.map((o) => retireGoal(cs, o, true)));
+    const oldest = cs.goals.slice(0, Math.max(0, cs.goals.length - (GOAL_CONNS_MAX - 1)));
+    oldest.forEach((o) => retireGoal(cs, o, true));
+    while (cs.goals.length + cs.closing.size > GOAL_CONNS_MAX - 1) await Promise.race([...cs.closing].map((o) => o.closed));
     if (!liveOk(cs) || S.conn !== conn) return;
     const gc = new RosConn(conn.url); await gc.connect(5000);
     if (!liveOk(cs) || S.conn !== conn) { gc.close(); return; }
-    const g = { conn: gc, id: randomId(), sentAt: Date.now(), acked: false, done: false };
+    const g = { conn: gc, id: randomId(), key: JSON.stringify(payload), sentAt: Date.now(), acked: false, done: false };
     cs.goal = g; cs.goals.push(g);
     const ack = () => {
       if (g.acked) return;
       g.acked = true;
       if (cs.goal === g) {
-        if (!g.done) setStatus(c.id, "running", "goal running (acknowledged by the action server)");
+        if (!g.done) setStatus(c.id, "running", cs.th.pending && cs.serial ? heldText(c) : "goal running (acknowledged by the action server)");
         for (const o of [...cs.goals]) if (o !== g) retireGoal(cs, o);
       }
-      pump(cs);
     };
-    gc.handlers.set("action_feedback:" + g.id, ack);
+    gc.handlers.set("action_feedback:" + g.id, () => { if (!g.acked) { ack(); pump(cs); } });
     gc.handlers.set("action_result:" + g.id, (m) => {
       g.done = true; ack();
-      if (cs.goal === g) {
-        // GoalStatus: 4 succeeded, 5 canceled, 6 aborted; anything but success did not reach the target
-        const st = { 4: "succeeded", 5: "canceled", 6: "aborted", 2: "canceled" }[m.status] || `ended (status ${m.status})`;
-        setStatus(c.id, m.result !== false && m.status === 4 ? "done" : "failed",
-          "goal " + st + (m.result === false ? ": " + JSON.stringify(m.values) : ""));
-      }
+      if (cs.goal === g) showResult(cs, m);
       retireGoal(cs, g);
+      pump(cs);                           // a value held for a serial control goes out now
     });
     gc.onlost = () => {
       if (!g.done && cs.goal === g) setStatus(c.id, "failed", "goal connection lost; outcome unknown");
-      g.done = true; retireGoal(cs, g);
+      g.done = true; retireGoal(cs, g); pump(cs);
     };
     gc.send({ op: "send_action_goal", id: g.id, action: name, action_type: c.type, args: payload, feedback: true });
     setStatus(c.id, "sending", "goal sent, waiting for the action server…");
     setTimeout(() => pump(cs), GOAL_ACK_MS + 10);
-    const old = cs.goals.filter((o) => o !== g);
-    for (let i = 0; i < old.length && cs.goals.length > GOAL_CONNS_MAX; i++) retireGoal(cs, old[i]);
   }
-  // `now`: close at once and resolve when the socket has closed (making room for a new goal).
+  // A goal's result. GoalStatus: 4 succeeded, 5 canceled, 6 aborted (2 canceling); anything but
+  // success did not reach the target. rosbridge answers a goal it could not run with result false
+  // and its reason; from rosbridge_suite 2.5 that includes a goal the action server rejected
+  // ("Action goal was rejected", status 0, rosbridge_library internal/actions.py).
+  function showResult(cs, m) {
+    const c = cs.ctrl;
+    if (m.result === false) {
+      const why = typeof m.values === "string" ? m.values : JSON.stringify(m.values);
+      if (/reject/i.test(why)) {
+        setStatus(c.id, "rejected", `the action server rejected the goal (rosbridge: ${why})` + (c.busy === "reject"
+          ? "; it rejects a goal while another of its goals runs, from this page or any other client" : ""));
+      } else setStatus(c.id, "failed", "rosbridge could not run the goal: " + why);
+      return;
+    }
+    const st = { 4: "succeeded", 5: "canceled", 6: "aborted", 2: "canceled" }[m.status]
+      || (m.status == null ? "ended without a status" : `ended (status ${m.status})`);
+    setStatus(c.id, m.status === 4 ? "done" : "failed", "goal " + st);
+  }
+  // A retired goal leaves cs.goals and its connection closes (`now`: at once, else shortly);
+  // until its socket has closed it still counts as open (cs.closing). Resolves then.
   function retireGoal(cs, g, now = false) {
-    const i = cs.goals.indexOf(g); if (i < 0) return Promise.resolve();
+    const i = cs.goals.indexOf(g); if (i < 0) return g.closed || Promise.resolve();
     cs.goals.splice(i, 1);
-    if (now) return g.conn.closeAndWait(500);
-    setTimeout(() => g.conn.close(), 50);
-    return Promise.resolve();
+    cs.closing.add(g);
+    g.closed = g.conn.wsClosed.then(() => { cs.closing.delete(g); });
+    if (now) g.conn.close(); else setTimeout(() => g.conn.close(), 50);
+    return g.closed;
   }
 
   // Controls of a target that is being replaced: no further sends. The latest unfinished goal
@@ -849,7 +1081,7 @@
     for (const cs of S.controls.values()) {
       cs.dead = true;
       if (cs.th.timer) { clearTimeout(cs.th.timer); cs.th.timer = null; }
-      cs.th.pending = false;
+      cs.th.pending = false; cs.th.held = false;                 // a held value is not sent
       for (const g of [...cs.goals]) if (g !== cs.goal || g.done) retireGoal(cs, g);
     }
   }
@@ -890,9 +1122,14 @@
   // ------------------------------------------------------------------ controls UI
   function kindText(c) {
     if (c.kind === "call") return "Service call · once per click";
-    if (c.kind === "action") return sendMode(c) === "stream"
-      ? "Action goal · sent as you change it (≈5 per s); each goal preempts the previous one"
-      : "Action goal · once per click";
+    if (c.kind === "action") {
+      const one = c.busy === "reject" ? "the action server rejects a new goal while one runs"
+        : "the action server would run a new goal beside the running one";
+      if (sendMode(c) !== "stream") return "Action goal · once per click" + (isSerial(c) ? `; one goal at a time (${one})` : "");
+      return isSerial(c)
+        ? `Action goal · one at a time: ${one}, so while a goal runs only your latest value is kept, and it is sent when that goal ends`
+        : "Action goal · sent as you change it (≈5 per s); the action server preempts the running goal with each new one";
+    }
     return sendMode(c) === "stream" ? "Topic publish · sent as you change it (≈10 per s)" : "Topic publish · once per click";
   }
 
@@ -1048,7 +1285,8 @@
     const reads = reason ? [] : readsOf(c.id);
     const cs = { ctrl: c, div, inputs: {}, fields: {}, available: !reason, status: null, afterBuild: [], fb: reason ? null : feedbackFor(c, t),
       reads, polled: reads.filter((x) => x.r.poll_s), group: row ? c.group : null,
-      mode: sendMode(c), th: { pending: false, timer: null, busy: false, last: 0 }, goal: null, goals: [], sent: 0, dead: false };
+      mode: sendMode(c), serial: isSerial(c), th: { pending: false, held: false, timer: null, busy: false, last: 0 },
+      goal: null, goals: [], closing: new Set(), sent: 0, dead: false };
     if (!row) {
       div.append(h("div", { class: "ctl-head" },
         h("div", {}, h("h3", { text: c.label }), h("div", { class: "ctl-kind", text: kindText(c) }))));
@@ -1138,7 +1376,7 @@
     syncGroup(gr, performance.now());
   }
   function syncGroup(gr, now) {
-    const n = gr.members.length, ph = { failed: 0, invalid: 0, sending: 0 };
+    const n = gr.members.length, ph = { failed: 0, rejected: 0, invalid: 0, sending: 0 };
     for (const cs of gr.members) {
       const typedBad = Object.values(cs.fields).some((fs) => fs.div.classList.contains("invalid"));
       const p = typedBad ? "invalid" : cs.status ? cs.status.phase : null;
@@ -1151,10 +1389,10 @@
     if (gr.meta.textContent !== meta) gr.meta.textContent = meta;
     gr.meta.title = x && x.err ? `read of ${x.wire} failed: ${x.err}` : "";
     const parts = [];
-    for (const k of ["failed", "invalid", "sending"]) if (ph[k]) parts.push(`${ph[k]} ${k}`);
+    for (const k of ["failed", "rejected", "invalid", "sending"]) if (ph[k]) parts.push(`${ph[k]} ${k}`);
     const st = parts.join(" · ");
     if (gr.state.textContent !== st) gr.state.textContent = st;
-    gr.state.dataset.state = ph.failed || ph.invalid ? "bad" : ph.sending ? "warn" : "";
+    gr.state.dataset.state = ph.failed || ph.rejected || ph.invalid ? "bad" : ph.sending ? "warn" : "";
   }
 
   // AiNex-style head: one pad drives both head targets; dragging it streams head_pan and
@@ -1321,12 +1559,15 @@
     return all.find((x) => liveOk(x.cs)) || all.find((x) => x.cs.available) || all[0] || null;
   }
   // The joint's name on the page: its control's label where that control commands only this
-  // joint (an AiNex servo), else the commanding field's label (one joint of an arm trajectory).
+  // joint (an AiNex servo), else the commanding field's label (one joint of an arm trajectory), or,
+  // where that field moves several joints (one gripper motor driving both fingers), the control's
+  // label and the joint's name.
   function jointLabel(J) {
     const b = editField(J);
     if (!b) return J.name;
-    const n = M.commanded.filter((x) => (x.command || []).some((c) => c.control === b.cs.ctrl.id)).length;
-    return n === 1 ? b.cs.ctrl.label : b.fs.f.label;
+    const binds = (pred) => M.commanded.filter((x) => (x.command || []).some(pred)).length;
+    if (binds((c) => c.control === b.cs.ctrl.id) === 1) return b.cs.ctrl.label;
+    return binds((c) => c.control === b.cs.ctrl.id && c.field === b.fs.f.name) > 1 ? `${b.cs.ctrl.label} (${J.name})` : b.fs.f.label;
   }
   // The latest polled measurement of a bound field: {v, x, sentAt}, or null.
   function polledOf(b) {
@@ -1513,7 +1754,8 @@
     pose.dataset.state = (n.reported || n.measured) && !n.target ? "reported" : n.reported || n.measured ? "partial" : "not-reported";
     for (const J of M.commanded) {
       const chip = M.chips.get(J.name), b = editField(J);
-      const txt = `${jointLabel(J)} ${signed(Math.round(J.q * 100) / 100 || 0, 2)}`;
+      const d = J.type === "prismatic" ? 3 : 2;                    // m (a finger's travel is centimetres) or rad
+      const txt = `${jointLabel(J)} ${signed(Math.round(J.q * 10 ** d) / 10 ** d || 0, d)}`;
       if (chip.firstChild.textContent !== txt) chip.firstChild.textContent = txt;
       chip.dataset.src = J.src; chip.setAttribute("aria-pressed", String(M.selected === J.name));
       chip.disabled = !(b && liveOk(b.cs));
@@ -1647,7 +1889,7 @@
   })();
 
   // ------------------------------------------------------------------ base motion
-  // teleop.sh's base motion and AiNex head keys (console spec §2.1, §2.2 as amended),
+  // teleop.sh's base motion and AiNex head keys (console spec §2.1, §2.2),
   // for a teleoperable profile only. The contract is the profile's `teleop` section, built by
   // teleop_core.page_contract from the same profile data teleop uses (§3), and the state machine
   // below is teleop_core.TeleopCore's: held keys commanded at their recorded speed within the
@@ -2153,7 +2395,9 @@
     $("robot").value = t.profile.id; $("namespace").value = t.namespace; syncNsField(); $("namespace").value = t.namespace;
     setValidation("ok", `${t.label} validated`,
       `${t.profile.name} · ${t.profile.dialect === "ros2" ? "ROS 2" : "ROS 1"} · typed interface matches the packaged profile`, "");
-    for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics));
+    for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics), c.optional,
+      c.kind === "depth" ? { unit: c.unit_m, range: c.range_m } : null);
+    for (const sd of t.profile.sensors || []) addSensor(t, sd);
     if (t.profile.teleop) S.mo = makeMotion(t, conn);             // base motion: shown at once, enabled by the start-up stop
     renderControls(); updateLock();
     startPoll(t, conn);                                         // validated: the read-only position poll
@@ -2226,6 +2470,7 @@
     sel.value = S.config.robot || ""; $("namespace").value = S.config.namespace || "";
     $("namespace").disabled = !nsAllowed(); syncNsField(); $("namespace").value = S.config.namespace || "";
     await connectAndSelect(S.config.robot, S.config.namespace);
+    tick();                     // the camera states (or "no cameras") laid out now, not on the next tick
     RC.ready = true;
   }
   boot().catch((e) => { setValidation("bad", "Page error", "", "page error: " + e.message); RC.ready = true; });

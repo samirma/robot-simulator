@@ -126,8 +126,8 @@ def test_model_joints_are_the_vendor_joints(pid):
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
 def test_only_fixed_frames_are_left_out_and_the_root_is_the_vendor_root(pid):
-    """An undrawn joint is a fixed leaf frame (camera, imu), or the identity above the model's root
-    (the boot's world link of the SO-101 bringup)."""
+    """An undrawn joint is a fixed leaf frame (camera, imu), or an identity frame above the model's
+    root (a boot's world link)."""
     m = load(pid).raw["model"]
     _, joints, _ = vendor(pid)
     children = {j["child"] for j in joints.values()}

@@ -145,7 +145,7 @@ def test_sensor_button_stream_follows_enable(make_node):
 def test_detection_image_result_after_enter(make_node):
     """<node>/image_result after enter: the undrawn frame, rgb8, with the recorded frame id
     (the node's name) and stamped with its publish time, as the vendor's cv2_image2ros
-    stamps it (the record, amended); nothing on /object/pixel_coords."""
+    stamps it (the record); nothing on /object/pixel_coords."""
     import time
 
     import common

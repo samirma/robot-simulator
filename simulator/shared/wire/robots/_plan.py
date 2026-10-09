@@ -11,51 +11,16 @@ WIRE = Path(__file__).resolve().parents[1]
 class Plan:
     def __init__(self):
         self.procs = []     # (label, command)
-        self.oneshots = []  # (label, command): boot steps the wire is ready only once they
-        #                     have exited with status 0 (a controller spawner)
         self.params = {}    # ROS 1 parameter name -> value, overriding / supplying ros.yml values
         self.prepare = []   # shell commands run (in order, to completion) before the graph
         self.overlays = []  # setup.bash files sourced for every process
-        self.helpers = []   # (label, command): non-ROS processes (simulated hardware buses)
 
     def add(self, label, cmd):
         self.procs.append((label, [str(c) for c in cmd]))
 
-    def add_oneshot(self, label, cmd):
-        self.oneshots.append((label, [str(c) for c in cmd]))
-
-
-def build_overlay(plan: Plan, pkg_dirs, distro: str):
-    """Build ROS 2 packages of the simulator (read-only mount) into the shared build volume,
-    once per source revision, and source the result."""
-    import hashlib
-
-    h = hashlib.sha256(distro.encode())
-    for d in pkg_dirs:
-        for p in sorted(Path(d).rglob("*")):
-            if p.is_file():
-                h.update(str(p.relative_to(d)).encode())
-                h.update(p.read_bytes())
-    target = f"/opt/rsim_build/{distro}-{h.hexdigest()[:12]}"
-    srcs = " ".join(str(d) for d in pkg_dirs)
-    # One builder at a time per volume (flock); a finished build is marked by `done`.
-    plan.prepare.append(
-        f"source /opt/ros/{distro}/setup.bash; mkdir -p /opt/rsim_build; "
-        f"exec 9>/opt/rsim_build/.lock; flock 9; if [ ! -f {target}/done ]; then "
-        f"rm -rf {target} && mkdir -p {target} && cd {target} && colcon --log-base "
-        f"{target}/log build --base-paths {srcs} --build-base {target}/build "
-        f"--install-base {target}/install --cmake-args -DCMAKE_BUILD_TYPE=Release "
-        f"> {target}/build.log 2>&1 || {{ tail -40 {target}/build.log; exit 1; }}; "
-        f"touch {target}/done; fi")
-    plan.overlays.append(f"{target}/install/local_setup.bash")
-
 
 def ros1_emulated(plan: Plan, node: str):
     plan.add(node, ["python3", "-u", str(WIRE / "ros1_node.py"), node])
-
-
-def ros2_emulated(plan: Plan, nodes):
-    plan.add("sim-nodes", ["python3", "-u", str(WIRE / "ros2_node.py"), *nodes])
 
 
 def ros1_name(node: str) -> list:

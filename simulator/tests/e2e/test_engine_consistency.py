@@ -87,7 +87,7 @@ def test_same_interface_and_behaviour_on_both_engines(rid, sims, logdir):
         t0 = time.time()
         motions = {m["id"] for m in iface.get("motions") or []}
         if "drive" in motions:
-            legs = {e: motion.drive_legs(sp.port, rid) for e, sp in spawns.items()}
+            legs = {e: motion.drive_legs(sp.port, rid, sp.sim_port) for e, sp in spawns.items()}
             assert drive_differences(rid, legs["molmospaces"], legs["robocasa"]) == []
         if "walk" in motions:
             # each engine against the record (the nominal commanded displacement within the

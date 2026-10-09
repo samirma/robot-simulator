@@ -1,5 +1,5 @@
 <mujoco model="rebot_b601_rs">
-  <!-- DERIVED MODEL - not manufacturer-provided. Converted from Seeed's official ReBot_Arm_RS.urdf (Seeed-Projects/reBotArmController_ROS2 @ 7506dc0fc5c2a7787dcb974d89d13f9f49d16d61, src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf; equal to reBot-DevArm @ 0dfb49b apart from mesh URIs) by robots_specs/tools/models/rebot_b601_rs.py, following robots_specs/rebot_b601_rs/import.md. Kinematics, inertials, meshes, materials and limits are the URDF's. Adaptations listed in import.md: Seeed's mujoco_collision finger parts as finger contact, the coupled rack-and-pinion gripper (tendon + equality, one actuator in motor rad), position actuators with the boot's MIT gains, the boot's gravity feed-forward as gravcomp, collision filtering, the gripper_end site and the home keyframe. -->
+  <!-- DERIVED MODEL - not manufacturer-provided. Converted from Seeed's official ReBot_Arm_RS.urdf (Seeed-Projects/reBotArmController_ROS2 @ 7506dc0fc5c2a7787dcb974d89d13f9f49d16d61, src/rebotarm_bringup/description/RS/urdf/ReBot_Arm_RS.urdf; equal to reBot-DevArm @ 0dfb49b apart from mesh URIs) by robots_specs/tools/models/rebot_b601_rs.py, following robots_specs/rebot_b601_rs/import.md. Kinematics, inertials, meshes, materials and limits are the URDF's. Adaptations listed in import.md: Seeed's mujoco_collision finger parts as finger contact, the coupled rack-and-pinion gripper (tendon + equality, one actuator in motor rad), position actuators with the boot's MIT gains, the boot's gravity feed-forward as gravcomp, self-collision with Seeed's excluded body pairs, the gripper_end site, the D405 wrist camera and the home keyframe. -->
   <compiler angle="radian" meshdir="." autolimits="true" inertiafromgeom="false" />
   <default>
     <default class="rebot">
@@ -7,10 +7,10 @@
         <geom type="mesh" group="2" contype="0" conaffinity="0" density="0" />
       </default>
       <default class="collision">
-        <geom type="mesh" group="3" contype="1" conaffinity="0" density="0" rgba="0.8 0.2 0.2 0.4" />
+        <geom type="mesh" group="3" contype="1" conaffinity="1" density="0" rgba="0.8 0.2 0.2 0.4" />
       </default>
       <default class="finger">
-        <geom type="mesh" group="3" contype="1" conaffinity="0" density="0" condim="4" friction="1 0.005 0.0001" rgba="0.2 0.5 0.9 0.4" />
+        <geom type="mesh" group="3" contype="1" conaffinity="1" density="0" condim="4" friction="1 0.005 0.0001" rgba="0.2 0.5 0.9 0.4" />
       </default>
     </default>
   </default>
@@ -137,6 +137,7 @@
                       <geom class="finger" mesh="colored_left_finger_travel_stop_yellow" pos="-1.54050548823e-07 0.041939000269 -7.32309494507e-05" quat="0.499998163397 0.499999999997 0.499999999997 0.500001836603" />
                     </body>
                     <site name="gripper_end" size="0.005" group="4" />
+                    <camera name="camera_color_optical_frame" pos="-0.10873 0.00908 0.10761" quat="0.611836565455 0.348746335081 -0.349674536966 -0.617867080477" fovy="56.187297622" resolution="640 360" />
                   </body>
                 </body>
               </body>
@@ -146,6 +147,18 @@
       </body>
     </body>
   </worldbody>
+  <contact>
+    <exclude body1="world" body2="link1" />
+    <exclude body1="base_link" body2="link1" />
+    <exclude body1="link1" body2="link2" />
+    <exclude body1="link2" body2="link3" />
+    <exclude body1="link2" body2="link5" />
+    <exclude body1="link3" body2="link4" />
+    <exclude body1="link3" body2="link5" />
+    <exclude body1="link4" body2="link5" />
+    <exclude body1="link5" body2="link6" />
+    <exclude body1="gripper_left" body2="gripper_right" />
+  </contact>
   <tendon>
     <fixed name="gripper">
       <joint joint="gripper_joint1" coef="62.5" />

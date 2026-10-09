@@ -1,6 +1,6 @@
-"""Reference parity (spec §5 *Reference parity*): on each engine's default scene the SO-101
-stands where the reference project stood it, with the reference's six objects at the
-reference's poses and the same scene objects cleared; and the scene `start` loads, with
+"""Reference parity (spec §5 *Reference parity*): on each engine's default scene the six
+worktop objects are staged where the reference project stood its arm, at the reference's
+poses, with the same scene objects cleared; and the scene `start` loads, with
 no robot, is the reference's default scene with its robot left out -- on MolmoSpaces the
 same bodies, geoms and meshes, the six objects at the same poses and pixel-identical
 renders; on RoboCasa the reference kitchen's fixtures -- every one where the reference has
@@ -12,10 +12,10 @@ The reference is run from a checkout of github.com/samirma/robot-simulator rev 3
 -- the one named by `RSIM_REF_DIR`, or else extracted from this repository's own history
 (`git archive 34547ae simulator robots_specs`, the reference being this workspace's prior
 version), so the check runs wherever that revision is at hand and is skipped only where
-it is not -- through `reference/ref_driver.py`, in this engine's own environment. This project's side is a real simulation's `spawn` reply for
-the SO-101, and for the scene `reference/our_scene.py`: `Simulation.load()` as `start`
-runs it, before any physics step, so both scenes are compared as compiled and drawn by the
-same code (`reference/scene_views.py`).
+it is not -- through `reference/ref_driver.py`, in this engine's own environment, for the
+reference's own arm. This project's side is `reference/our_scene.py`: `Simulation.load()`
+as `start` runs it, before any physics step, so both scenes are compared as compiled and
+drawn by the same code (`reference/scene_views.py`).
 
     simulator/molmospaces/.venv/bin/python -m pytest \\
         simulator/tests/integration/test_reference_parity.py     # [RSIM_REF_DIR=<ref>]
@@ -30,7 +30,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from conftest import REPO, SIM, TESTS, engine_ready, running_sim
+from conftest import REPO, SIM, TESTS, engine_ready
 
 #: the reference project's revision (spec Terms)
 REF_REV = "34547ae"
@@ -73,7 +73,8 @@ def driver(engine: str, script: str, *args, ref: str) -> dict:
 
 
 def reference(engine: str, *args, ref: str) -> dict:
-    return driver(engine, "ref_driver.py", engine, "--robot", "so101", *args, ref=ref)
+    """The reference's own choice for its own arm (`ref_driver.py`'s default robot)."""
+    return driver(engine, "ref_driver.py", engine, *args, ref=ref)
 
 
 def angle(a: float, b: float) -> float:
@@ -92,34 +93,26 @@ def the_references(names) -> list:
 
 
 @pytest.mark.parametrize("engine", list(ENGINES))
-def test_so101_stands_where_the_reference_stood_it(engine, logdir, ref_dir):
+def test_the_staging_spot_is_where_the_reference_stood_its_arm(engine, logdir, ref_dir):
     if not engine_ready(engine):
         pytest.skip(f"{engine} is not set up")
     ref = reference(engine, ref=ref_dir)
-    scene, port = ENGINES[engine]
-    with running_sim(engine, scene, port, logdir) as sim:
-        c = sim.client()
-        res = c.call("spawn", robot="so101", placement="worktop", ports=[])
-        c.call("commit")
-        try:
-            report = {"engine": engine, "ref": ref, "ours": res}
-            (logdir / f"parity-{engine}.json").write_text(json.dumps(report, indent=1))
-            # the spot: xy and surface height within 1 um, heading within 1e-9 rad
-            assert np.max(np.abs(np.subtract(res["xyz"][:2], ref["xy"]))) <= 1e-6, (res["xyz"], ref["xy"])
-            assert abs(res["surface_z"] - ref["z"]) <= 1e-6, (res["surface_z"], ref["z"])
-            assert angle(res["yaw"], ref["yaw"]) <= 1e-9, (res["yaw"], ref["yaw"])
-            # the base: within 3 mm of the reference's graft height
-            assert abs(res["xyz"][2] - ref["mount_z"]) <= 0.003, (res["xyz"][2], ref["mount_z"])
-            # the six objects, as staged, within 1 um (and the same orientation)
-            assert set(res["staged"]) == set(ref["objects"])
-            for name, o in ref["objects"].items():
-                assert same_pose(res["staged"][name], o), name
-            # the same scene objects cleared from the working area -- of the reference's
-            # scene: on RoboCasa, RoboCasa's own objects there are cleared as well
-            assert the_references(res["cleared"]) == sorted(ref["cleared"])
-        finally:
-            c.call("remove")
-            c.close()
+    ours = driver(engine, "our_scene.py", engine, "--scene", ENGINES[engine][0], ref=ref_dir)
+    frame = ours["frame"]
+    report = {"engine": engine, "ref": ref, "ours": {k: ours[k] for k in
+                                                     ("frame", "objects", "cleared")}}
+    (logdir / f"parity-{engine}.json").write_text(json.dumps(report, indent=1))
+    # the spot: xy and surface height within 1 um, heading within 1e-9 rad
+    assert np.max(np.abs(np.subtract(frame["xy"], ref["xy"]))) <= 1e-6, (frame, ref["xy"])
+    assert abs(frame["z"] - ref["z"]) <= 1e-6, (frame["z"], ref["z"])
+    assert angle(frame["yaw"], ref["yaw"]) <= 1e-9, (frame["yaw"], ref["yaw"])
+    # the six objects, as staged, within 1 um (and the same orientation)
+    assert set(ours["objects"]) == set(ref["objects"])
+    for name, o in ref["objects"].items():
+        assert same_pose(ours["objects"][name], o), name
+    # the same scene objects cleared from the working area -- of the reference's scene:
+    # on RoboCasa, RoboCasa's own objects there are cleared as well
+    assert the_references(ours["cleared"]) == sorted(ref["cleared"])
 
 
 @pytest.mark.parametrize("engine", list(ENGINES))
@@ -140,7 +133,7 @@ def test_start_scene_is_the_reference_scene_without_its_robot(engine, tmp_path, 
     if engine == "robocasa":
         # except the fixtures RoboCasa's own fixture placement sets on a counter (a toaster,
         # a knife block...), which the reference left where the layout put them (on 1-1, at
-        # the world origin): each stands off the floor now (§2.1, amended)
+        # the world origin): each stands off the floor now (§2.1)
         placed = ours["placed_fixtures"]
         assert placed, "RoboCasa placed no fixture"
         moved = [n for n in moved if not any(n.startswith(f + "_") for f in placed)]

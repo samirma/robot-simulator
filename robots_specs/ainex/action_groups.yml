@@ -8,7 +8,7 @@
 # has playable, documented groups. They are not Hiwonder motions:
 #
 # * `wave`, `raise_hands` and `nod`: arm and head motions with this record's own names.
-# * stand-ins under the vendor's own names (amended): one group for every name the
+# * stand-ins under the vendor's own names: one group for every name the
 #   pinned vendor code plays (each group's `vendor_source` is the line that names it), so a
 #   client that plays a vendor name gets a visible motion resembling what the name says. They
 #   are invented: the vendor files' content is unknown. The pinned code also names `three` and
@@ -21,7 +21,7 @@ basis: estimate
 reason: >-
   No vendor action group is in a pinned source. These groups are invented motions. `wave`,
   `raise_hands` and `nod` move only the arms and head, both feet left at the init pose. The
-  stand-ins under the vendor's names (amended) also move the legs, conservatively:
+  stand-ins under the vendor's names also move the legs, conservatively:
   their leg offsets were computed by inverse kinematics on model.xml for a pelvis shifted,
   raised, lowered, pitched or yawed over planted flat soles, or for one foot lifted at most
   4.5 cm with the pelvis first moved over the other foot; checked in a MuJoCo simulation of
@@ -101,7 +101,7 @@ groups:
       - {time_ms: 400, offsets_rad: {head_tilt: 0.1}}
       - {time_ms: 400, offsets_rad: {head_tilt: -0.4}}
       - {time_ms: 400, offsets_rad: {}}
-  # ---- stand-ins under the vendor names (amended), in the order: postures,
+  # ---- stand-ins under the vendor names, in the order: postures,
   # gestures, kicks, steps in place, get-ups, carrying and placing
   stand:
     description: >-

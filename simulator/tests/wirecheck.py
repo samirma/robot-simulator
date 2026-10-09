@@ -49,6 +49,10 @@ def infra_service(name: str, dialect: str) -> bool:
 
 
 def infra_param(name: str, dialect: str) -> bool:
+    """ROS infrastructure parameters as the simulator spec's Terms define them: the ROS
+    master's own (ROS 1), rosbridge's and rosapi's, and the parameters the client library
+    declares on every ROS 2 node -- `use_sim_time`, `start_type_description_service` and
+    the QoS overrides of the node's own /rosout and /parameter_events publishers."""
     if dialect == "ros1":
         return name in ("/rosdistro", "/rosversion", "/run_id") or \
             name.startswith(("/roslaunch/", "/rosbridge_websocket/", "/rosapi/"))
@@ -90,15 +94,41 @@ def snapshot(port: int, rid: str) -> dict:
         actions = []
         if dialect == "ros2":
             actions = rb.call("/rosapi/action_servers", {}, timeout=30).get("action_servers", [])
-        try:   # every parameter name; Humble's rosapi can give up on a slow node
-            names = rb.call("/rosapi/get_param_names", timeout=40).get("names", [])
-        except Exception:
-            names = []
+        names = param_names(rb, params)
         return {"nodes": nodes, "topics": topics, "services": services, "params": params,
                 "param_names": [n for n in names if not infra_param(n, dialect)],
                 "actions": actions}
     finally:
         rb.close()
+
+
+#: attempts at listing every parameter name before the snapshot fails
+PARAM_NAMES_ATTEMPTS = 3
+
+
+def param_names(rb, found: dict, attempts: int = PARAM_NAMES_ATTEMPTS) -> list:
+    """Every parameter name on the wire (/rosapi/get_param_names). rosapi can give up on a
+    slow node and answer an error or a partial list; a list that lacks a parameter the wire
+    answered for by name (`found`) is partial. Asked again on either, and after `attempts`
+    an error, never an empty list: the contract's and engine consistency's parameter checks
+    must not pass on a listing that was never made."""
+    last = None
+    for k in range(attempts):
+        if k:
+            time.sleep(2.0)
+        try:
+            names = list(rb.call("/rosapi/get_param_names", timeout=40).get("names") or [])
+        except Exception as exc:
+            last = f"failed: {exc}"
+            continue
+        # a namespace parameter (a dict) is listed as its leaves
+        lacking = sorted(k for k in found if k not in names and not any(
+            n.startswith((k + "/", k + ".")) for n in names))
+        if not names or lacking:
+            last = f"lacks {lacking[:5] or 'every name'}"
+            continue
+        return names
+    raise RuntimeError(f"/rosapi/get_param_names {last} ({attempts} attempts)")
 
 
 def _same(a, b) -> bool:
@@ -172,6 +202,118 @@ def contract_problems(rid: str, snap: dict) -> list:
         if not _same(got, v):
             out.append(f"parameter {key} = {str(got)[:80]!r}, recorded {str(v)[:80]!r}")
     return out
+
+
+# ---------------------------------------------------------------- message fields
+
+_BOOL = {"bool", "boolean"}
+_INT = {"byte", "char", "octet", "int8", "uint8", "int16", "uint16", "int32", "uint32",
+        "int64", "uint64"}
+_FLOAT = {"float32", "float64", "float", "double"}
+#: arrays of these rosbridge sends as one base64 string
+_BINARY = {"uint8", "char", "octet", "byte"}
+
+
+def norm_type(t: str) -> str:
+    """`pkg/msg/Type`, `pkg/srv/Type_Response`... as rosapi's typedefs name them:
+    `pkg/Type` (ROS 2 rosapi drops the interface kind)."""
+    parts = t.split("/")
+    return f"{parts[0]}/{parts[-1]}" if len(parts) == 3 else t
+
+
+def typedef_problems(value, root: str, typedefs: list, where: str = "") -> list:
+    """Every way a message (as rosbridge delivers it) differs from its declared type, field
+    for field and through every nested message: a missing or extra field, a value of the
+    wrong kind (bool, integer, number, string, nested message, ROS 1 time), an array that
+    is not one or a fixed-size array of another length. `typedefs`: rosapi's
+    message_details (or service_response_details, action_result_details) answer, `root`
+    the type of `value` among them."""
+    defs = {norm_type(d["type"]): d for d in typedefs}
+    out = []
+
+    def scalar(v, t, at):
+        base = t.split("<=")[0]
+        if base in _BOOL:
+            ok = isinstance(v, bool)
+        elif base in _INT:
+            ok = isinstance(v, int) and not isinstance(v, bool)
+        elif base in _FLOAT:
+            ok = v is None or (isinstance(v, (int, float)) and not isinstance(v, bool))
+        elif base in ("string", "wstring"):
+            ok = isinstance(v, str)
+        elif base in ("time", "duration"):           # ROS 1 builtins
+            ok = isinstance(v, dict) and set(v) == {"secs", "nsecs"} and \
+                all(isinstance(x, int) for x in v.values())
+        elif norm_type(base) in defs:
+            check(v, norm_type(base), at)
+            return
+        else:
+            out.append(f"{at}: type {t} has no definition in rosapi's answer")
+            return
+        if not ok:
+            out.append(f"{at}: {str(v)[:40]!r} is no {t}")
+
+    def check(v, typ, at):
+        d = defs.get(norm_type(typ))
+        if d is None:
+            out.append(f"{at or typ}: no definition of {typ}")
+            return
+        if not isinstance(v, dict):
+            out.append(f"{at or typ}: {str(v)[:40]!r} is no {typ} message")
+            return
+        names = list(d["fieldnames"])
+        if set(v) != set(names):
+            out.append(f"{at or typ}: fields {sorted(v)}, declared {sorted(names)}")
+        for name, t, n in zip(names, d["fieldtypes"], d["fieldarraylen"]):
+            if name not in v:
+                continue
+            x, here = v[name], f"{at}.{name}" if at else name
+            if n < 0:
+                scalar(x, t, here)
+                continue
+            if t.split("<=")[0] in _BINARY and isinstance(x, str):
+                import base64
+
+                try:
+                    size = len(base64.b64decode(x, validate=True))
+                except ValueError:
+                    out.append(f"{here}: not base64 {t}[]")
+                    continue
+            elif isinstance(x, list):
+                size = len(x)
+                for i, e in enumerate(x):
+                    scalar(e, t, f"{here}[{i}]")
+            else:
+                out.append(f"{here}: {str(x)[:40]!r} is no {t}[] array")
+                continue
+            if n > 0 and size != n:
+                out.append(f"{here}: {size} elements, declared {t}[{n}]")
+
+    check(value, root, where)
+    return out
+
+
+def type_details(rb, kind: str, typ: str) -> list:
+    """rosapi's typedefs of a message type (`kind` "message"), a service's response
+    ("service_response") or an action's result ("action_result"), asked once per wire
+    connection and type."""
+    _cache = rb.__dict__.setdefault("_rsim_typedefs", {})
+    key = (kind, typ)
+    if key not in _cache:
+        service = {"message": "/rosapi/message_details",
+                   "service_response": "/rosapi/service_response_details",
+                   "action_result": "/rosapi/action_result_details"}[kind]
+        _cache[key] = rb.call(service, {"type": typ}, timeout=20)["typedefs"]
+    return _cache[key]
+
+
+def typed_problems(rb, kind: str, typ: str, value, where: str) -> list:
+    """`typedef_problems` of a message, service response or action result received over
+    `rb`, against its declared type as the wire's own rosapi defines it."""
+    defs = type_details(rb, kind, typ)
+    if not defs:
+        return [f"{where}: rosapi has no definition of {typ}"]
+    return typedef_problems(value, defs[0]["type"], defs, where)
 
 
 # ---------------------------------------------------------------- frames and transforms
@@ -370,8 +512,9 @@ def measure_on_graph(container: str, rid: str, topics, seconds: float) -> dict:
     # stream of a robot would add its own scheduling jitter to the gaps it measures
     procs = []
     for a in args:
-        cmd = (f"source /opt/ros/{distro}/setup.bash; for f in /opt/rsim_ws/devel/setup.bash "
-               f"/home/ubuntu/ros_ws/devel/setup.bash; do [ -f $f ] && source $f; done; "
+        cmd = (f"source /opt/ros/{distro}/setup.bash; for f in /opt/rsim_ws/install/setup.bash "
+               f"/opt/rsim_ws/devel/setup.bash /home/ubuntu/ros_ws/devel/setup.bash; do "
+               f"[ -f $f ] && source $f; done; "
                f"RSIM_PROBE_WARMUP={PROBE_WARMUP_S} python3 {probe} {seconds} {a}")
         procs.append(subprocess.Popen(["docker", "exec", container, "bash", "-c", cmd],
                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True))
@@ -386,6 +529,43 @@ def measure_on_graph(container: str, rid: str, topics, seconds: float) -> dict:
         merged["times"].update(got["times"])
         merged["stamps"].update(got.get("stamps", {}))
     return merged
+
+
+def tf_rates(iface: dict) -> dict:
+    """{"<parent> -> <child>": recorded rate} of the served transforms the record gives a
+    rate of their own (sent on /tf, each by its publisher at that rate)."""
+    return {f"{r['parent']} -> {r['child']}": _rate(r) for r in served(iface.get("tf"))
+            if _rate(r) is not None}
+
+
+def measure_tf_on_graph(container: str, rid: str, seconds: float) -> dict:
+    """Arrival times and header stamps of each transform on /tf, on the wire's own graph
+    (`tf_rate_probe.py` inside its container): {"window", "times", "stamps"} keyed
+    "<parent> -> <child>"."""
+    import subprocess
+
+    iface = interface(rid)
+    distro = iface["ros_distribution"]
+    cmd = (f"source /opt/ros/{distro}/setup.bash; for f in /opt/rsim_ws/install/setup.bash "
+           f"/opt/rsim_ws/devel/setup.bash /home/ubuntu/ros_ws/devel/setup.bash; do "
+           f"[ -f $f ] && source $f; done; RSIM_PROBE_WARMUP={PROBE_WARMUP_S} python3 "
+           f"/opt/rsim/simulator/tests/tf_rate_probe.py {iface['dialect']} {seconds}")
+    res = subprocess.run(["docker", "exec", container, "bash", "-c", cmd],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         timeout=seconds + 90)
+    lines = [l for l in res.stdout.splitlines() if l.startswith("{")]
+    if not lines:
+        raise RuntimeError(f"tf rate probe failed: {res.stderr[-2000:]}")
+    return json.loads(lines[-1])
+
+
+def tf_rate_problems(measured: dict, iface: dict) -> list:
+    """Spec §5 acceptance bounds for each transform with a recorded rate of its own: on
+    /tf at its rate within +-10%, no gap over three of its periods, its header stamps the
+    times it stands for (`rate_problems`), over a window of at least five of its periods;
+    a transform with a recorded rate that never comes fails."""
+    rates = tf_rates(iface)
+    return rate_problems(measured, rates)
 
 
 def rate_problems(measured: dict, rates: dict, multi=()) -> list:

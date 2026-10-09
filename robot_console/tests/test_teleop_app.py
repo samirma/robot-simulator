@@ -183,6 +183,32 @@ def test_input_loss_stops_and_exits_nonzero(fake):
     assert srv.published("/cmd_vel")[-1]["msg"] == p.stop[0].msg
 
 
+def test_unexpected_error_attempts_the_stop_then_propagates(fake):
+    """Console spec §2.1: an exit the process can handle clears motion intent and attempts the
+    documented stop. An unexpected error (here the window failing to draw while W is held) does
+    so before the error propagates out of teleop (a non-zero status)."""
+    p = load("myagv")
+    srv = fake(wire_spec(p))
+    failed_at = []
+
+    def broken_draw():
+        raise RuntimeError("draw failed")
+
+    def break_window():
+        failed_at.append(time.monotonic())
+        app._draw = broken_draw
+    script = Script([(5, [down(pg.K_w)])], hooks={20: break_window})
+    app = TeleopApp(srv.url, None, None, events=script, max_seconds=20)
+    with pytest.raises(RuntimeError, match="draw failed"):
+        app.run()
+    moves = [o for o in srv.published("/cmd_vel") if o["msg"] != p.stop[0].msg]
+    assert moves and min(o["_t"] for o in moves) < failed_at[0], "W was held when the error came"
+    assert [o for o in stop_ops(srv, p) if o["_t"] > failed_at[0]], "the stop was attempted after the error"
+    assert srv.published("/cmd_vel")[-1]["msg"] == p.stop[0].msg
+    assert not app.core.enabled and not app.core.held
+    assert any("teleop ending (error: RuntimeError)" in m for m in app.core.messages + app.lines)
+
+
 def test_ainex_head_arrows(fake):
     p = load("ainex")
     srv = fake(wire_spec(p))
@@ -195,7 +221,7 @@ def test_ainex_head_arrows(fake):
     pans = [o["msg"]["position"] for o in srv.published("/head_pan_controller/command")]
     tilts = [o["msg"]["position"] for o in srv.published("/head_tilt_controller/command")]
     # Left turns the head left: a negative pan on the vendor model's -Z head_pan axis
-    # (ainex.urdf.xacro#L786-L787; console spec §2.1 as amended)
+    # (ainex.urdf.xacro#L786-L787; console spec §2.1)
     assert pans and pans == sorted(pans, reverse=True) and min(pans) >= p.head["pan"].min
     assert min(pans) < -0.5
     assert tilts and max(tilts) <= p.head["tilt"].max
@@ -220,14 +246,14 @@ def test_connection_lost_while_advertising_ends_with_status_4(fake, monkeypatch)
 
 
 def test_launcher_header_describes_automatic_enable():
-    """teleop.sh's header follows console spec §2.1 as amended."""
+    """teleop.sh's header follows console spec §2.1."""
     with open(os.path.join(CONSOLE, "teleop.sh")) as f:
         text = f.read()
     assert "Enter enable commands" not in text and "re-enable" in text
 
 
 def test_automatically_identified_arm_is_refused(fake):
-    srv = fake(wire_spec(load("so101")))
+    srv = fake(wire_spec(load("rebot_b601_rs")))
     code, app = run_app(srv.url, [(2, [down(pg.K_ESCAPE)])])
     assert code == 2
     assert any("myagv, ainex, rosmaster_x3_plus" in line for line in app.lines)
@@ -322,7 +348,7 @@ def test_every_start_stops_once_without_resumed_motion(fake):
 @pytest.mark.parametrize("args, word", [
     (["--robot", "turtlebot"], "unknown robot id"),
     (["--robot", "so100"], "unknown robot id"),
-    (["--robot", "so101"], "is an arm"),
+    (["--robot", "rebot_b601_rs"], "is an arm"),
     (["--robot", "myagv", "--namespace", "robot1"], "no namespace override"),
 ])
 def test_refusals(args, word):

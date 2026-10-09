@@ -12,25 +12,27 @@ from robot_console.profiles import SUPPORTED_IDS, all_profiles_json, load, load_
 
 TRACE = re.compile(r"^(?P<key>[A-Za-z0-9_.-]+):(?P<path>[^#\s]+)#L\d+")
 
-# Every catalog field that commands a joint, and that joint's name in the vendor URDF; listed
-# here independently of the profiles' model sections.
-_ARM = ["shoulder_pan", "shoulder_lift", "elbow_flex", "wrist_flex", "wrist_roll"]
+# Every catalog field that commands a joint, and the names of the joints in the vendor URDF it
+# commands; listed here independently of the profiles' model sections.
 COMMANDED = {
-    "so101": {**{("arm_trajectory", a): f"{a}_joint" for a in _ARM}, ("gripper", "position"): "gripper_joint"},
+    "rebot_b601_rs": {**{("arm_trajectory", f"joint{i}"): {f"joint{i}"} for i in range(1, 7)},
+                      # the one gripper motor drives both prismatic fingers
+                      ("gripper", "position"): {"gripper_joint1", "gripper_joint2"}},
     # every AiNex servo: its control (named as the joint) commands the joint, in the joint's rad
-    "ainex": {(j, "position"): j for j in (
+    "ainex": {(j, "position"): {j} for j in (
         "head_pan", "head_tilt", "l_sho_pitch", "l_sho_roll", "l_el_pitch", "l_el_yaw", "l_gripper", "r_sho_pitch",
         "r_sho_roll", "r_el_pitch", "r_el_yaw", "r_gripper", "l_hip_yaw", "l_hip_roll", "l_hip_pitch", "l_knee",
         "l_ank_pitch", "l_ank_roll", "r_hip_yaw", "r_hip_roll", "r_hip_pitch", "r_knee", "r_ank_pitch", "r_ank_roll")},
-    "rosmaster_x3_plus": {**{("arm_pose", f"j{i}"): f"arm_joint{i}" for i in range(1, 6)},
-                          ("arm_pose", "gripper"): "grip_joint", ("gripper", "angle"): "grip_joint"},
+    "rosmaster_x3_plus": {**{("arm_pose", f"j{i}"): {f"arm_joint{i}"} for i in range(1, 6)},
+                          ("arm_pose", "gripper"): {"grip_joint"}, ("gripper", "angle"): {"grip_joint"}},
     "myagv": {},
 }
 
 
 def bindings(pid):
+    """(control, field, joint row, binding) of every command binding of the profile's model."""
     m = load(pid).raw["model"]
-    return {(b["control"], b["field"]): (j, b) for j in m["joints"] for b in j.get("command") or []}
+    return [(b["control"], b["field"], j, b) for j in m["joints"] for b in j.get("command") or []]
 
 
 def field(pid, cid, name):
@@ -40,9 +42,17 @@ def field(pid, cid, name):
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
 def test_every_commanding_field_is_bound_to_its_joint(pid):
-    assert {k: j["name"] for k, (j, _) in bindings(pid).items()} == COMMANDED[pid]
-    for (cid, name), (j, _) in bindings(pid).items():
-        assert field(pid, cid, name).choices is None and not j.get("mimic") and j["type"] == "revolute"
+    got = {}
+    for cid, name, j, _ in bindings(pid):
+        got.setdefault((cid, name), set()).add(j["name"])
+    assert got == COMMANDED[pid]
+    for cid, name, j, b in bindings(pid):
+        assert field(pid, cid, name).choices is None and not j.get("mimic"), j["name"]
+        # a revolute joint turns by the field (in its rad, or through a documented mapping); a
+        # prismatic joint slides in m, so only a documented mapping can bind a field to it
+        assert j["type"] in ("revolute", "prismatic"), j["name"]
+        if j["type"] == "prismatic":
+            assert "scale" in b or "offset" in b, j["name"]
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -86,12 +96,14 @@ def test_feedback_is_a_documented_joint_state_output(pid):
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
 def test_unit_mappings_keep_field_limits_within_the_joint_limits(pid):
-    for (cid, name), (j, b) in bindings(pid).items():
+    for cid, name, j, b in bindings(pid):
         f = field(pid, cid, name)
         scale, offset = float(b.get("scale", 1)), float(b.get("offset", 0))
         lo, hi = sorted((f.min * scale + offset, f.max * scale + offset))
-        # 0.04 rad: the ROSMASTER driver maps its 30 deg gripper end to -pi/2 where the URDF stops at -1.54
-        assert j["min"] - 0.04 <= lo <= hi <= j["max"] + 0.04, (cid, name, lo, hi, j["min"], j["max"])
+        # 0.04 rad: the ROSMASTER driver maps its 30 deg gripper end to -pi/2 where the URDF stops at
+        # -1.54; a prismatic joint (m) stays within its limits up to rounding
+        tol = 0.04 if j["type"] == "revolute" else 1e-9
+        assert j["min"] - tol <= lo <= hi <= j["max"] + tol, (cid, name, lo, hi, j["min"], j["max"])
         if "scale" not in b and "offset" not in b:
             assert f.unit == "rad"
 
@@ -103,15 +115,33 @@ def test_rosmaster_mapping_is_the_drivers_joint_states_mapping():
         if gripper:
             deg = (deg - 30) * 90 / 150
         return (deg - 90) * math.pi / 180
-    for (cid, name), (j, b) in bindings("rosmaster_x3_plus").items():
+    for cid, name, j, b in bindings("rosmaster_x3_plus"):
         f = field("rosmaster_x3_plus", cid, name)
         for deg in (f.min, (f.min + f.max) / 2, f.max):
             got = deg * float(b["scale"]) + float(b["offset"])
             assert got == pytest.approx(driver(deg, j["name"] == "grip_joint"), abs=1e-6), (cid, name, deg)
 
 
+def test_rebot_finger_mapping_is_the_controllers_joint_states_mapping():
+    """The controller publishes each finger's joint_states position as the gripper motor's ratio
+    between close 0.0 and open 5.0 (rebotarm_hardware.yaml, model rs), clamped to 0..1, times that
+    finger's RS limit 0.05 / 0.0715 m (ros_publishers.py), which are the URDF's finger limits: the
+    model's bindings are that mapping, so a fully open gripper draws both fingers at their limits."""
+    def driver(motor):
+        ratio = max(0.0, min(1.0, (motor - 0.0) / (5.0 - 0.0)))
+        return {"gripper_joint1": ratio * 0.05, "gripper_joint2": ratio * 0.0715}
+    f = field("rebot_b601_rs", "gripper", "position")
+    fingers = [(j, b) for cid, name, j, b in bindings("rebot_b601_rs") if (cid, name) == ("gripper", "position")]
+    assert sorted(j["name"] for j, _ in fingers) == ["gripper_joint1", "gripper_joint2"]
+    for j, b in fingers:
+        assert j["type"] == "prismatic" and j["max"] == driver(f.max)[j["name"]] and j["min"] == driver(f.min)[j["name"]]
+        for motor in (f.min, 1.25, 2.5, 4.0, f.max):
+            got = motor * float(b["scale"]) + float(b.get("offset", 0))
+            assert got == pytest.approx(driver(motor)[j["name"]], abs=1e-12), (j["name"], motor)
+
+
 def test_ainex_head_pan_turns_about_minus_z_and_its_label_says_so():
-    """Console spec §2.1 (amended): a negative head_pan turns the head to the robot's left."""
+    """Console spec §2.1: a negative head_pan turns the head to the robot's left."""
     pan = next(j for j in load("ainex").raw["model"]["joints"] if j["name"] == "head_pan")
     assert pan["axis"] == [0, 0, -1]
     label = field("ainex", "head_pan", "position").label
@@ -121,7 +151,7 @@ def test_ainex_head_pan_turns_about_minus_z_and_its_label_says_so():
 def test_ainex_model_feedback_is_the_polled_read_of_every_commanded_field():
     """The AiNex boot publishes no joint states (feedback null); the profile's polled read measures
     the field that commands each movable joint, so the model can follow the robot (console spec
-    §2.2, amended). Bindings are the identity: the controller's rad is the URDF joint's
+    §2.2). Bindings are the identity: the controller's rad is the URDF joint's
     (ainex_controller.py#L196-L203 sends the same goal_position to Gazebo and, as pulses, to the servo)."""
     p = load("ainex")
     m = p.raw["model"]

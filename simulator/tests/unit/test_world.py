@@ -14,6 +14,9 @@ import scenes
 import worktop_objects
 from world import Instance, World
 
+#: the worktop robot of the robot specification
+ARM = "rebot_b601_rs"
+
 
 def make_world(with_object=False):
     spec = mujoco.MjSpec.from_string(scenes.TEST_SCENE_XML)
@@ -84,17 +87,18 @@ def add_to_world(w, build):
 
 
 def displaced_world():
-    """The test scene as `start` leaves it -- its six worktop objects staged where the
-    SO-101 is placed, the loose objects there cleared -- then a fixed post on that spot, so
-    no arm fits at the scene's objects any more, and a loose jar that has since come to
-    stand behind the spot the arm takes instead (so it is cleared for that arm)."""
+    """The test scene as `start` leaves it -- its six worktop objects staged at their
+    staging spot, the loose objects there cleared -- then a fixed post on that spot, so no
+    arm fits at the scene's objects any more, and a loose jar that has since come to stand
+    behind the spot the arm takes instead (so it is cleared for that arm)."""
     w, s = world_with_loose_objects()
-    rm = robot_model.load(registry.get("so101"))
-    pl = placement.place(w, s, rm, "worktop", False, "so101/")
-    w.stage_scene(pl.staging)
-    add_to_world(w, lambda wb: wb.add_body(name="post", pos=[*map(float, pl.xyz[:2]), 0.85])
+    rm = robot_model.load(registry.get(ARM))
+    staging = placement.stage_objects(w, s)
+    w.stage_scene(staging)
+    add_to_world(w, lambda wb: wb.add_body(name="post", pos=[*map(float, staging.frame_pos[:2]),
+                                                             0.85])
                  .add_geom(type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.03, 0.03, 0.09]))
-    away = placement.place(w, s, rm, "worktop", False, "so101/")
+    away = placement.place(w, s, rm, "worktop", False, ARM + "/")
     assert not away.at_scene_objects
     behind = away.xyz[:2] - 0.2 * np.array([np.cos(away.yaw), np.sin(away.yaw)])
 
@@ -106,15 +110,16 @@ def displaced_world():
     add_to_world(w, jar)
     for _ in range(200):
         mujoco.mj_step(w.model, w.data)
-    return w, s, pl.staging
+    return w, s, staging
 
 
 def test_arm_away_from_the_scene_objects_takes_them_and_puts_them_back():
     """Spec §2.3 *Arms and the objects*, §5 Lifecycle: an arm that does not fit where the
-    scene's objects are stands at its own survey spot, the six objects staged around it and
-    the loose objects there cleared; removing it puts the six back where the scene staged
-    them and returns what was cleared for it with the pose and velocity it had when
-    cleared, while the other robots and scene objects keep their state bit for bit."""
+    scene's objects are stands at the first of the reference survey's spots where it fits,
+    the six objects staged around it and the loose objects there cleared; removing it puts
+    the six back where the scene staged them and returns what was cleared for it with the
+    pose and velocity it had when cleared, while the other robots and scene objects keep
+    their state bit for bit."""
     w, s, scene = displaced_world()
     scene_poses = scene.poses()
     agv = spawn(w, s, "myagv", "floor")
@@ -131,7 +136,7 @@ def test_arm_away_from_the_scene_objects_takes_them_and_puts_them_back():
     t0, cup, jar, agv0 = w.data.time, free_state(w, "cup"), free_state(w, "jar"), \
         robot_state(w, "myagv/")
     nbody = w.model.nbody
-    arm = spawn(w, s, "so101", "worktop")
+    arm = spawn(w, s, ARM, "worktop")
     # not at the scene's spot: the arm brought the scene's objects along
     assert arm.staging is not None and arm.info.get("displaced_scene_objects")
     assert not np.allclose(arm.xyz[:2], scene.frame_pos[:2])
@@ -150,7 +155,7 @@ def test_arm_away_from_the_scene_objects_takes_them_and_puts_them_back():
     for _ in range(50):
         mujoco.mj_step(w.model, w.data)
     t1, cup1, agv1 = w.data.time, free_state(w, "cup"), robot_state(w, "myagv/")
-    w.remove("so101")
+    w.remove(ARM)
     assert w.data.time == t1 and same(free_state(w, "cup"), cup1)
     assert same(robot_state(w, "myagv/"), agv1)
     # the six are back where the scene staged them; the scene's own clearing stays
@@ -169,51 +174,51 @@ def test_a_failed_add_away_from_the_scene_objects_rolls_back_robot_and_staging()
     """A displaced arm whose model fails to compile in: robot, its staging and the scene's
     objects all stay as they were, and the next add works."""
     w, s, scene = displaced_world()
-    r = registry.get("so101")
-    pl = placement.place(w, s, robot_model.load(r), "worktop", False, "so101/")
+    r = registry.get(ARM)
+    pl = placement.place(w, s, robot_model.load(r), "worktop", False, ARM + "/")
     assert pl.staging is not None and "jar" in pl.staging.cleared
     model, version, nbody = w.model, w.version, w.model.nbody
     jar = free_state(w, "jar")
     broken = robot_model.load(r)
     broken.spec.body(broken.root).add_geom(type=mujoco.mjtGeom.mjGEOM_MESH, meshname="nowhere")
     with pytest.raises(Exception):
-        w.add(Instance("so101", broken, "so101/", "worktop", pl.xyz, pl.yaw), staging=pl.staging)
+        w.add(Instance(ARM, broken, ARM + "/", "worktop", pl.xyz, pl.yaw), staging=pl.staging)
     assert w.model is model and w.version == version and w.robots == {}
     # the spec is as it was: the next add (the same placement) succeeds and goes away cleanly
     st = worktop_objects.Staging(pl.staging.frame_pos, pl.staging.yaw, pl.staging.cleared)
-    w.add(Instance("so101", robot_model.load(r), "so101/", "worktop", pl.xyz, pl.yaw), staging=st)
+    w.add(Instance(ARM, robot_model.load(r), ARM + "/", "worktop", pl.xyz, pl.yaw), staging=st)
     assert free_state(w, "jar") is None
-    w.remove("so101")
+    w.remove(ARM)
     assert w.model.nbody == nbody and same(free_state(w, "jar"), jar)
     for name, pos in object_poses(w).items():
         assert np.allclose(pos, scene.poses()[name][0], atol=1e-6), name
 
 
-def test_a_failed_add_rolls_back_robot_and_staging(monkeypatch):
-    w, s = world_with_loose_objects()
-    r = registry.get("so101")
+def test_a_failed_staging_rolls_back_robot_and_staging(monkeypatch):
+    """A displaced arm whose staging cannot be applied (the objects' meshes missing): the
+    robot, its staging and the scene's own objects all stay as they were, and the next add
+    (the same placement) works and goes away cleanly."""
+    w, s, scene = displaced_world()
+    r = registry.get(ARM)
     rm = robot_model.load(r)
-    pl = placement.place(w, s, rm, "worktop", r.mobile, "so101/")
-    assert pl.staging.cleared
-    gone = pl.staging.cleared[0]
+    pl = placement.place(w, s, rm, "worktop", r.mobile, ARM + "/")
+    assert pl.staging is not None and "jar" in pl.staging.cleared
     model, nq, version = w.model, w.model.nq, w.version
-    mug = free_state(w, gone)
-    # the meshes are not where the staging looks for them: the recompile fails
-    monkeypatch.setattr(worktop_objects, "ASSETS", worktop_objects.ASSETS / "nowhere")
-    monkeypatch.setattr(worktop_objects, "missing_assets", lambda: [])
-    inst = Instance("so101", rm, "so101/", "worktop", pl.xyz, pl.yaw)
-    with pytest.raises(Exception):
-        w.add(inst, staging=pl.staging)
+    jar = free_state(w, "jar")
+    monkeypatch.setattr(worktop_objects, "missing_assets", lambda: ["x"])
+    with pytest.raises(worktop_objects.AssetsMissing):
+        w.add(Instance(ARM, rm, ARM + "/", "worktop", pl.xyz, pl.yaw), staging=pl.staging)
     assert w.model is model and w.version == version and w.robots == {}
     monkeypatch.undo()
-    # the spec is as it was: the next add (the same staging) succeeds
     st = worktop_objects.Staging(pl.staging.frame_pos, pl.staging.yaw, pl.staging.cleared)
-    w.add(Instance("so101", rm, "so101/", "worktop", pl.xyz, pl.yaw), staging=st)
-    assert free_state(w, gone) is None
-    w.remove("so101")
+    w.add(Instance(ARM, rm, ARM + "/", "worktop", pl.xyz, pl.yaw), staging=st)
+    assert free_state(w, "jar") is None
+    w.remove(ARM)
     assert w.model.nq == nq
-    now = free_state(w, gone)
-    assert np.array_equal(now[0], mug[0]) and np.array_equal(now[1], mug[1])
+    now = free_state(w, "jar")
+    assert np.array_equal(now[0], jar[0]) and np.array_equal(now[1], jar[1])
+    for name, pos in object_poses(w).items():
+        assert np.allclose(pos, scene.poses()[name][0], atol=1e-6), name
 
 
 def joint_state(w, prefix):
@@ -244,7 +249,7 @@ def test_add_and_remove_preserve_the_survivors_state():
     cup_before = (w.data.qpos[w.model.jnt_qposadr[ja]:w.model.jnt_qposadr[ja] + 7].copy(),
                   w.data.qvel[w.model.jnt_dofadr[ja]:w.model.jnt_dofadr[ja] + 6].copy())
     ctrl = {w.model.actuator(a).name: float(w.data.ctrl[a]) for a in range(w.model.nu)}
-    arm = spawn(w, s, "so101", "worktop")
+    arm = spawn(w, s, ARM, "worktop")
     assert w.data.time == t0
     after = joint_state(w, "myagv/")
     for k, v in before.items():
@@ -260,17 +265,17 @@ def test_add_and_remove_preserve_the_survivors_state():
         mujoco.mj_step(w.model, w.data)
     before = joint_state(w, "myagv/")
     t1 = w.data.time
-    w.remove("so101")
+    w.remove(ARM)
     assert w.data.time == t1 and joint_state(w, "myagv/") == before
-    assert mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_BODY, "so101/base_link") < 0
-    assert "so101" not in w.robots and arm is not None
+    assert mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_BODY, ARM + "/base_link") < 0
+    assert ARM not in w.robots and arm is not None
 
 
 def test_new_robot_starts_at_home_at_rest():
     w, s = make_world()
-    inst = spawn(w, s, "so101", "worktop")
+    inst = spawn(w, s, ARM, "worktop")
     for name, q in inst.rm.home.items():
-        j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, "so101/" + name)
+        j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, ARM + "/" + name)
         assert abs(w.data.qpos[w.model.jnt_qposadr[j]] - q) < 1e-12
 
 
@@ -310,6 +315,41 @@ def test_physics_loop_keeps_real_time():
         assert snap["version"] == w.version and snap["qpos"].shape == (w.model.nq,)
     finally:
         w.stop()
+
+
+def test_a_diverging_step_is_undone_not_the_whole_world_reset():
+    """The divergence guard (simulator/README.md, Timing): a step that sends a body's
+    velocity off the scale leaves every position as it was before that step and every
+    velocity zero, with simulation time going on -- MuJoCo's own auto-reset, which would
+    put time, every robot and every scene object back to their initial state, is off."""
+    w, s = world_with_loose_objects()
+    logs = []
+    w.log = logs.append
+    assert w.model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
+    cup = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_BODY, "cup")
+    j = w.model.body_jntadr[cup]
+    a, v = w.model.jnt_qposadr[j], w.model.jnt_dofadr[j]
+    w.start()
+    try:
+        time.sleep(0.3)
+
+        def blow_up():
+            w.data.qvel[v] = 1e40
+            return w.data.time, w.data.qpos.copy()
+
+        t_before, q_before = w.call(blow_up)
+        time.sleep(0.5)
+        with w.lock:
+            t_after, q_after, qv = w.data.time, w.data.qpos.copy(), w.data.qvel.copy()
+    finally:
+        w.stop()
+    assert any("physics diverged" in line for line in logs), logs
+    assert t_after > t_before + 0.3                          # time went on, not back to 0
+    assert np.all(np.isfinite(q_after)) and np.all(np.abs(qv) < 1.0)
+    assert np.allclose(q_after[a:a + 3], q_before[a:a + 3], atol=1e-3)   # the cup stayed
+    assert np.allclose(q_after, q_before, atol=1e-3)          # and so did everything else
+    # the robot-free test world was never reset to its initial state
+    assert w.model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_AUTORESET)
 
 
 def test_rtf_warning_when_physics_cannot_keep_up(capsys, monkeypatch):
@@ -352,29 +392,31 @@ def object_poses(w):
 
 
 def test_scene_objects_exist_without_a_robot_and_survive_every_robot():
-    """Staged at start, the six worktop objects are the scene's: an arm that fits where they
-    are stands there and leaves them alone; and after any arm leaves they are where the
-    scene staged them."""
+    """Staged at start, with no robot, at the first of the reference survey's spots, the six
+    worktop objects are the scene's: an arm that fits where they are stands there and
+    leaves them alone; and after any arm leaves they are where the scene staged them."""
     w, s = make_world()
     nbody = w.model.nbody
-    rm = robot_model.load(registry.get("so101"))
-    pl = placement.place(w, s, rm, "worktop", False, "so101/")
-    w.stage_scene(pl.staging)
-    assert w.model.nbody > nbody and w.scene_nbody == w.model.nbody
-    poses = pl.staging.poses()
+    staging = placement.stage_objects(w, s)
+    first = s.spots()[0]
+    assert np.allclose(staging.frame_pos[:2], first.xy) and staging.yaw == first.yaw
+    assert abs(staging.frame_pos[2] - first.z - worktop_objects.FRAME_ABOVE_SURFACE) < 1e-12
+    w.stage_scene(staging)
+    assert w.model.nbody > nbody and w.scene_nbody == w.model.nbody and w.robots == {}
+    poses = staging.poses()
     for name, pos in object_poses(w).items():
         assert pos is not None and np.allclose(pos, poses[name][0], atol=1e-6)
     # an arm placed at the scene's spot brings no objects of its own
-    inst = spawn(w, s, "so101", "worktop")
-    assert inst.staging is None and np.allclose(inst.xyz[:2], pl.staging.frame_pos[:2])
-    w.remove("so101")
+    inst = spawn(w, s, ARM, "worktop")
+    assert inst.staging is None and np.allclose(inst.xyz[:2], staging.frame_pos[:2])
+    w.remove(ARM)
     for name, pos in object_poses(w).items():
         assert pos is not None and np.allclose(pos, poses[name][0], atol=0.02)
 
 
 @pytest.mark.parametrize("rid", registry.ids())
 def test_every_registry_robot_loads_as_one_body(rid):
-    """Every robot is a single body (spec §2.3, amended): its own model with one
+    """Every robot is a single body (spec §2.3): its own model with one
     top body, starting from its `home` keyframe; no assembly machinery is left."""
     r = registry.get(rid)
     if registry.missing_files(r):

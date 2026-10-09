@@ -214,6 +214,43 @@ input::placeholder { color: var(--faint); }
   border-radius: var(--r); background: var(--surface-2);
 }
 
+/* ------------------------------------------------------------------ sensors (read-only) */
+.sensors-panel {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-lg); box-shadow: var(--shadow);
+  padding: 14px 16px 16px; min-width: 0;
+}
+.sensors-panel[hidden] { display: none; }
+#sensor-list { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 720px) { #sensor-list { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); } }
+.sensor { border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2); padding: 8px 10px 10px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.sensor[data-wide="true"] { grid-column: 1 / -1; }
+.sensor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.sensor-title { font-weight: 650; font-size: 13px; overflow-wrap: anywhere; min-width: 0; }
+.sensor-topic { color: var(--muted); font-size: 11.5px; font-family: var(--mono); overflow-wrap: anywhere; }
+.sensor-state {
+  font-size: 10.5px; font-weight: 800; letter-spacing: .08em; padding: 1px 8px; border-radius: 999px;
+  border: 1px solid var(--border-strong); color: var(--muted); background: var(--surface); white-space: nowrap;
+}
+.sensor[data-state="live"] .sensor-state { color: var(--ok); background: var(--ok-bg); border-color: var(--ok-line); }
+.sensor[data-state="latched"] .sensor-state { color: var(--info); background: var(--info-bg); border-color: var(--info-line); }
+.sensor[data-state="stale"] .sensor-state, .sensor[data-state="waiting"] .sensor-state { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.sensor[data-state="missing"] .sensor-state, .sensor[data-state="lost"] .sensor-state, .sensor[data-state="failed"] .sensor-state { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); }
+.sensor-body { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.sensor-group { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; width: 100%; }
+.sensor-group-label { font-family: var(--mono); font-size: 12px; font-weight: 700; min-width: 8.5em; }
+.sensor-field { display: inline-flex; align-items: baseline; gap: 6px; font-size: 13px; min-width: 0; }
+.sf-label { color: var(--muted); }
+.sf-value { font-family: var(--mono); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.sf-unit { color: var(--faint); font-size: 12px; }
+.sensor:not([data-state="live"]):not([data-state="latched"]) .sf-value { opacity: .55; }
+.sf-bits { display: inline-flex; flex-wrap: wrap; gap: 3px; }
+.sf-bit {
+  font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--faint);
+  background: var(--surface); text-transform: lowercase; white-space: nowrap;
+}
+.sf-bit[data-set="true"] { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); font-weight: 700; }
+.sensor-meta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+
 /* ------------------------------------------------------------------ cameras */
 .cameras-panel { padding: 14px 16px 16px; min-width: 0; }
 #cameras { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
@@ -232,9 +269,15 @@ input::placeholder { color: var(--faint); }
 #cameras[data-count="1"] .cam-view { max-height: calc(100vh - 300px); min-height: 220px; }
 /* with base motion the camera leaves room for the motion pad below it */
 .workspace.has-motion #cameras[data-count="1"] .cam-view { max-height: calc(100vh - 420px); }
-.cam canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
+.cam-view canvas { width: 100%; height: 100%; display: block; object-fit: contain; image-rendering: auto; }
 .cam[data-state="live"] .cam-view { border-color: var(--ok-line); }
-.cam:not([data-state="live"]) canvas { filter: grayscale(1) brightness(.35) blur(1px); }
+.cam:not([data-state="live"]) .cam-view canvas { filter: grayscale(1) brightness(.35) blur(1px); }
+/* a depth camera's colour legend: the map near to far over its range, the swatch for "no depth" */
+.depth-legend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.depth-bar { flex: 1 1 120px; min-width: 80px; height: 12px; border-radius: 3px; border: 1px solid var(--border); image-rendering: pixelated; }
+.depth-swatch { width: 12px; height: 12px; border-radius: 3px; background: #000; border: 1px solid var(--border); flex: none; }
+.depth-note { flex-basis: 100%; font-family: inherit; color: var(--faint); }
+.cam-kind { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
 .cam-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 4px;
   padding: 16px; color: #f2f4f7; pointer-events: none;
@@ -572,7 +615,7 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
   .target-form .btn { flex: 1 1 auto; }
   #controls { grid-template-columns: minmax(0, 1fr); }
   .num-wrap input.num { width: 70px; }
-  .cameras-panel, .target-card, .live-card, .control, .pad-card, .model-card, .motion-card { padding: 12px; }
+  .cameras-panel, .sensors-panel, .target-card, .live-card, .control, .pad-card, .model-card, .motion-card { padding: 12px; }
   .motion-body { grid-template-columns: minmax(0, 1fr); }
   .dpad { grid-template-columns: repeat(3, 58px); }
   .control.jrow { padding: 8px 2px; }
@@ -681,6 +724,14 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
         </details>
       </div>
     </section>
+
+    <section class="sensors-panel" id="sensors-panel" data-testid="sensors" aria-labelledby="sensors-h" hidden>
+      <div class="panel-head">
+        <h2 id="sensors-h" class="section-title">Sensors</h2>
+        <span id="sensor-summary" class="panel-meta" data-testid="sensor-summary"></span>
+      </div>
+      <div id="sensor-list" data-testid="sensor-list"></div>
+    </section>
     </div>
 
     <section class="control-panel" id="control-panel" aria-labelledby="ctl-h" tabindex="-1">
@@ -700,6 +751,9 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
           <strong>Changes are sent to the robot immediately, and only base motion is stopped automatically.</strong>
           Sliders, the head pad and the model's joints send while you drag, a typed number when you
           commit it (Enter or leaving the field), and service and action-group buttons once per click.
+          An action control sends goals as you drag where its action server preempts the running
+          goal; elsewhere it keeps one goal at a time, your latest change goes out when that goal
+          ends, and a goal the server refuses is shown as rejected.
           ‘Read measured’ asks the robot for its measured positions once per click; where the profile
           documents a read-only position query, the page asks it about once a second after validation
           (it commands nothing). For these controls, leaving, reloading or closing this page and a lost

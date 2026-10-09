@@ -1,7 +1,17 @@
-# Stock ROS 2 Jazzy + rosbridge_suite: the console's real-rosbridge test wire for the so101
-# profile, whose pinned ros2_so_arm bringup targets Jazzy (ParallelGripperCommand etc.).
+# Stock ROS 2 Jazzy + rosbridge_suite: the console's real-rosbridge test wire for the rebot_b601_rs
+# profile, whose pinned reBotArmController_ROS2 bringup targets Jazzy. The vendor interface package
+# rebotarm_msgs is built from that pinned revision into /ws (sourced by nodes/run_wire.sh), so the
+# test wire presents the vendor's own types.
 FROM ros:jazzy-ros-base
+ARG REBOTARM_ROS2=7506dc0fc5c2a7787dcb974d89d13f9f49d16d61
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-jazzy-rosbridge-suite ros-jazzy-control-msgs ros-jazzy-controller-manager-msgs \
-      ros-jazzy-tf2-msgs python3-numpy \
+      ros-jazzy-rosbridge-suite ros-jazzy-control-msgs ros-jazzy-tf2-msgs ros-jazzy-rosidl-default-generators \
+      python3-colcon-common-extensions python3-numpy curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+RUN mkdir -p /ws/src \
+    && curl -fsSL "https://github.com/Seeed-Projects/reBotArmController_ROS2/archive/${REBOTARM_ROS2}.tar.gz" \
+       | tar -xz -C /tmp \
+    && mv "/tmp/reBotArmController_ROS2-${REBOTARM_ROS2}/src/rebotarm_msgs" /ws/src/ \
+    && rm -rf /tmp/reBotArmController_ROS2-* \
+    && . /opt/ros/jazzy/setup.sh && cd /ws && colcon build --packages-select rebotarm_msgs \
+    && rm -rf /ws/build /ws/log

@@ -1,5 +1,5 @@
 """The robot registry is the robot specification's robot files, robots_specs/<id>.md, parsed
-as they are now (robot specification §2, amended)."""
+as they are now (robot specification §2)."""
 
 import re
 
@@ -10,7 +10,7 @@ def test_every_robot_file_is_a_registry_entry():
     table = re.findall(r"^\| `([^`]+)` \|", registry.SPEC.read_text(), re.M)
     files = {p.stem for p in registry.SPECS.glob("*.md")} - {"high_level_spec", "SCHEMA"}
     assert set(registry.ids()) == set(table) == files
-    assert set(registry.ids()) == {"myagv", "so101", "ainex", "rosmaster_x3_plus"}
+    assert set(registry.ids()) == {"myagv", "rebot_b601_rs", "ainex", "rosmaster_x3_plus"}
     for r in registry.robots():
         assert r.name in registry.SPEC.read_text(), r.id
 
@@ -21,13 +21,14 @@ def test_kinds_files_and_dialects():
         assert r.folder == f"robots_specs/{r.id}/"
         assert r.urdf and r.urdf.startswith(r.folder)
         assert r.ros_file in (f"{r.folder}ros.yml", f"{r.folder}ros2.yml")
-    assert registry.get("so101").dialect == "ros2"
+    assert registry.get("rebot_b601_rs").dialect == "ros2"
     assert registry.get("myagv").dialect == "ros1"
-    assert registry.get("so101").mjcf == "robots_specs/so101/so101_new_calib.xml"
+    r = registry.get("rebot_b601_rs")
+    assert r.mjcf is None and r.model_path() == r.folder_path / "model.xml"
 
 
 def test_robots_are_single_bodies():
-    """No assembly of robots (simulator spec §2.3, amended)."""
+    """No assembly of robots (simulator spec §2.3)."""
     for name in ("components", "wires", "mounting_transform"):
         assert not hasattr(registry, name), name
     for r in registry.robots():

@@ -26,7 +26,7 @@ MAX_GEOM = 20000
 # Largest near clipping plane of a model (robot) camera, metres. MuJoCo puts the near plane
 # at vis.map.znear x stat.extent, and the extent of a composed household world is tens of
 # metres, which put it several centimetres in front of the lens and cut away whatever is
-# that close (the SO-101 wrist camera lost its own gripper jaws). A real camera has no near
+# that close (a wrist camera lost its own robot's gripper jaws). A real camera has no near
 # plane; 1 cm keeps everything a robot camera sees of its own body.
 CAMERA_NEAR = 0.01
 
@@ -253,6 +253,18 @@ def joint_readings(world, inst) -> dict:
             continue
         qa, va = m.jnt_qposadr[j], m.jnt_dofadr[j]
         out[name] = [float(d.qpos[qa]), float(d.qvel[va]), float(d.qfrc_actuator[va])]
+    return out
+
+
+def joint_gravcomp(world, inst) -> dict:
+    """{joint: gravity compensation force} of the robot's hinge and slide joints: the part
+    of the joint's force that the model's gravcomp applies (MuJoCo's qfrc_gravcomp). A
+    joint with actuatorgravcomp carries it in its effort (`joint_readings`)."""
+    m, d = world.model, world.data
+    out = {}
+    for name, j in world.robot_elements(inst, mujoco.mjtObj.mjOBJ_JOINT):
+        if m.jnt_type[j] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
+            out[name] = float(d.qfrc_gravcomp[m.jnt_dofadr[j]])
     return out
 
 

@@ -6,10 +6,9 @@ It attaches to the simulation with the spawn's token, starts the ROS graph (ROS 
 master; ROS 2: nothing to start), sets the recorded parameters, starts rosbridge_websocket
 and rosapi on the wire port, then every node of the robot's wire plan (`robots/<id>.py`): the
 stock ROS packages the recorded boot runs where they need no hardware, and the simulated
-drivers for the rest. When every recorded node, topic, service and action is on the graph,
-every one-shot step of the plan (such as a controller spawner, which exits once its
-controllers are active) has succeeded and every recorded periodic output has delivered its
-first sample (`first_samples.py`), it prints RSIM-WIRE-READY. It exits -- and the
+drivers for the rest. When every recorded node, topic, service and action is on the graph
+and every recorded periodic output has delivered its first sample (`first_samples.py`), it
+prints RSIM-WIRE-READY. It exits -- and the
 container with it -- when the simulation removes the robot or ends.
 """
 
@@ -121,15 +120,13 @@ def main() -> int:
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
 
-    for step in getattr(plan, "prepare", []):
-        log("preparing: building the simulator's ROS packages (first use of this revision)")
+    for step in plan.prepare:
+        log(f"preparing: {step[:200]}")
         res = subprocess.run(["bash", "-c", step])
         if res.returncode != 0:
             log("preparing the wire failed")
             return 1
-    OVERLAYS.extend(getattr(plan, "overlays", []))
-    for name, cmd in getattr(plan, "helpers", []):
-        start(name, cmd)
+    OVERLAYS.extend(plan.overlays)
 
     if dialect == "ros1":
         start("roscore", ["roscore", "-p", "11311"])
@@ -145,8 +142,7 @@ def main() -> int:
                 pass
             time.sleep(0.2)
         for row in common.served(iface.get("parameters")):
-            value = plan.params.get(row["name"], common.param_value(robot, row)) \
-                if hasattr(plan, "params") else common.param_value(robot, row)
+            value = plan.params.get(row["name"], common.param_value(robot, row))
             if isinstance(value, dict) and "generated" in value:
                 raise SystemExit(f"parameter {row['name']} is generated but the wire plan "
                                  "gives no value for it")
@@ -158,17 +154,15 @@ def main() -> int:
                             "rosbridge_websocket_launch.xml", f"port:={WIRE_PORT}", "address:=0.0.0.0"])
     for name, cmd in plan.procs:
         start(name, cmd)
-    oneshots = [(name, start(name, cmd)) for name, cmd in getattr(plan, "oneshots", [])]
     if os.environ.get("RSIM_TEST_FAIL_WIRE"):
         # test hook (tests/e2e/test_lifecycle.py): this wire fails during startup
         log("RSIM_TEST_FAIL_WIRE: failing this wire's startup on purpose")
         stop_all()
         return 3
 
-    # Ready once rosbridge answers, the graph holds every recorded node, topic, service and
-    # action (all but the optional rows) and every one-shot step has exited with status 0:
-    # a controller spawner exits once its controllers are active, so their action servers
-    # accept goals. ROS 1 actions are on the graph as their status topics.
+    # Ready once rosbridge answers and the graph holds every recorded node, topic, service
+    # and action (all but the optional rows). ROS 1 actions are on the graph as their status
+    # topics.
     need_nodes = {n["name"] for n in common.served(iface.get("nodes"))}
     need_topics = {t["name"] for t in common.served(iface.get("topics"))}
     need_services = {s["name"] for s in common.served(iface.get("services"))}
@@ -177,13 +171,6 @@ def main() -> int:
     t0 = time.time()
     missing = None
     while time.time() - t0 < 150:
-        failed = [f"{name} (status {p.returncode})" for name, p in oneshots
-                  if p.poll() not in (None, 0)]
-        if failed:
-            rb.close()
-            log(f"startup step failed: {', '.join(failed)}")
-            stop_all()
-            return 1
         try:
             nodes = set(rb.call("/rosapi/nodes", timeout=10).get("nodes", []))
             topics = set(rb.call("/rosapi/topics", timeout=10).get("topics", []))
@@ -198,8 +185,7 @@ def main() -> int:
             time.sleep(1)
             continue
         missing = sorted(need_nodes - nodes) + sorted(need_topics - topics) + \
-            sorted(need_services - services) + sorted(need_actions - actions) + \
-            [name for name, p in oneshots if p.poll() is None]
+            sorted(need_services - services) + sorted(need_actions - actions)
         if not missing:
             break
         time.sleep(0.5)

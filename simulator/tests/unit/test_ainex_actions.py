@@ -3,7 +3,7 @@ specification's estimated groups, `robots_specs/ainex/action_groups.yml` (named 
 ros.yml's motions[action_group].command.estimated_groups), as offsets from the recorded
 init pose -- `wave`, `raise_hands` and `nod` the same groups, frame for frame, the simulator
 served from its own code before the record held them, and the record's
-stand-ins under the vendor's names (amended) -- converted to pulses by the servo
+stand-ins under the vendor's names -- converted to pulses by the servo
 map, each written as the .d6a the vendor player reads by that name."""
 
 from __future__ import annotations

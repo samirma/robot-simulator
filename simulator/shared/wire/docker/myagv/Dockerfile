@@ -1,5 +1,7 @@
 # myAGV wire image: the Noetic wire base plus the vendor's own robot_pose_ekf (a modified copy
-# that publishes nav_msgs/Odometry), built from the pinned myagv_ros revision.
+# that publishes nav_msgs/Odometry), built from the pinned myagv_ros revision. Its one package
+# (liborocos-bfl-dev, Ubuntu's) comes from the base image's dated Ubuntu archive snapshot
+# (snapshot.ubuntu.com focal 20261002T223000Z).
 ARG BASE
 FROM ${BASE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]

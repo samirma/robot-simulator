@@ -61,9 +61,10 @@ def test_wheel_install_runs_without_the_source_tree(tmp_path, fake):
     r = run(["uv", "pip", "install", "-q", "--python", str(venv / "bin" / "python"), str(wheel)])
     assert r.returncode == 0, r.stderr
     shutil.rmtree(tmp_path / "src")                            # no source tree at all
-    srv = fake(wire_spec(load("so101")))
+    srv = fake(wire_spec(load("rebot_b601_rs")))
     r = run([str(venv / "bin" / "python"), "-m", "robot_console.fleet", "--url", srv.url])
-    assert r.returncode == 0 and "robot so101: typed validation PASS" in r.stdout, r.stdout + r.stderr
+    assert r.returncode == 0 and "robot rebot_b601_rs (namespace /rebotarm): typed validation PASS" in r.stdout, \
+        r.stdout + r.stderr
     r = run([str(venv / "bin" / "python"), "-c",
              "from robot_console.view import make_server; s = make_server('ws://127.0.0.1:1', None, None);"
              "import urllib.request, threading; threading.Thread(target=s.serve_forever, daemon=True).start();"

@@ -8,7 +8,9 @@ key-up events (key repeat is disabled and ignored), so a held key is known to be
 Exit status: 0 ordinary exit (Esc or closing the window); 1 no validated target; 2 refused
 (unknown id, arm, namespace override); 3 wire unreachable; 4 connection lost;
 5 keyboard input lost; 128+N after a handled signal N (SIGINT 130, SIGTERM 143, SIGHUP 129,
-SIGQUIT 131), each of which clears motion intent and attempts the stop first.
+SIGQUIT 131), each of which clears motion intent and attempts the stop first. Any other error
+also clears motion intent and attempts the stop first, then propagates (a traceback and
+Python's non-zero status).
 """
 
 from __future__ import annotations
@@ -118,6 +120,9 @@ class TeleopApp:
             code = self._session(rb)
         except TransportError as exc:     # the connection broke while subscribing or advertising
             code = self._connection_lost(self.lost or str(exc))
+        except BaseException as exc:      # any other failure ends teleop: stop first, then fail
+            self._failed(exc)
+            raise
         finally:
             if self.cams:
                 self.cams.close()
@@ -233,6 +238,19 @@ class TeleopApp:
             if not out.ok:
                 self.say(REENABLE_LIMITATION)
         return code
+
+    def _failed(self, exc: BaseException) -> None:
+        """An unexpected error ends teleop: as on an ordinary exit, clear motion intent and attempt
+        the documented stop (console spec §2.1); the error then propagates (non-zero status)."""
+        self.say(f"teleop failed: {type(exc).__name__}: {exc}")
+        if self.core is None:
+            return
+        try:
+            out = self.core.shutdown(f"teleop ending (error: {type(exc).__name__})")
+            if not out.ok:
+                self.say(REENABLE_LIMITATION)
+        except Exception as stop_exc:  # noqa: BLE001 - report it; the original error propagates
+            self.say(f"STOP FAILED (teleop ending after an error): {stop_exc}")
 
     def _connection_lost(self, reason: str) -> int:
         """Clear intent, show the failure and that no stop can be delivered, end non-zero."""

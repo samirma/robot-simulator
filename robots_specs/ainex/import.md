@@ -88,10 +88,10 @@ body pitch 0.2609658522284916 rad described below). Its rules are:
    (the init pose leaves the torso leaning 15° forward of the feet, matching the gait's
    `hip_pitch_offset` 15°), root height 0.2029 m (soles 0.5 mm above z = 0). With joints at
    zero (qpos0) the legs are straight and the robot is not balanced; use `home`.
-   **Arms (changed):** `home` is the spawn pose, so its arms are not the boot's
-   (`init_pose.yaml` raises them, shoulder roll ±1.293 with the elbows yawed ±1.926) but
-   relaxed down at the sides like a person at rest: shoulder roll -1.45 (left) and +1.45
-   (right), shoulder pitch, elbow pitch and elbow yaw 0. Legs, head and root are the boot's.
+   **Arms (not the boot's):** `home` is the spawn pose, and it holds the arms relaxed down
+   at the sides like a person at rest, where `init_pose.yaml` raises them (shoulder roll
+   ±1.293 with the elbows yawed ±1.926): shoulder roll -1.45 (left) and +1.45 (right),
+   shoulder pitch, elbow pitch and elbow yaw 0. Legs, head and root are the boot's.
 
 ## robot_description versus the model
 
@@ -125,7 +125,7 @@ controller and the URDF, recorded in `ros.yml` `model.robot_description`:
 | Servo resolution 240° / 1000 pulses | vendor code (`ainex_controller.py#L24`) |
 | Sole friction 1.5 | vendor Gazebo value (`gazebo.xacro`), not a hardware measurement |
 | Camera 640×480, frame `camera`, 30 Hz | boot launch + usb_cam 0.3.7 defaults |
-| Camera intrinsics fx = fy = 270 px, cx 320, cy 240, D = 0 | **estimate**, see below |
+| Camera intrinsics fx = fy = 270 px, cx 319.5, cy 239.5, D = 0 | **estimate**, see below |
 
 ### Camera calibration
 
@@ -135,9 +135,12 @@ manufacturer's field-of-view figures conflict: the official docs (chapter 1) giv
 "FOV 170°" for a 640×480 USB camera; retail listings give "120° wide-angle". The model uses
 the documented 170° read as the diagonal of an equidistant fisheye lens,
 f = 400 px / (85° in rad) = 270 px, rendered as a pinhole camera with zero distortion
-(hfov 99.7°, vfov 83.27° = the MuJoCo `fovy`). The simulator publishes CameraInfo with this
-K and P and zero D, consistent with the render. This is an estimate, not a calibration; a
-real-robot calibration file should replace it when available.
+(hfov 99.7°, vfov 83.27° = the MuJoCo `fovy`), with the principal point at the image centre
+in ROS pixel coordinates (pixel centres at whole numbers), cx = (640 − 1)/2 = 319.5 and
+cy = (480 − 1)/2 = 239.5, where MuJoCo's symmetric frustum projects the optical axis. The
+simulator publishes CameraInfo with this K and P and zero D, consistent with the render. This
+is an estimate, not a calibration; a real-robot calibration file should replace it when
+available.
 
 ### Camera pose
 
@@ -158,12 +161,13 @@ Interface values the controller board reports at run time, which no pinned sourc
   the raw value is taken to be millivolts. Neither the unit nor the report interval is in a
   pinned source (`ros.yml` `/ros_robot_controller/battery`).
 * **Action groups**: no vendor group is in a pinned source. `action_groups.yml` defines the
-  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only) and, amended, a stand-in under each of the 21 vendor names the pinned code plays (`stand`,
-  `walk_ready`, `greet`, `twist`, `hand_open`, `hand_back`, `left_shot`, `right_shot`, ...;
-  each group's `vendor_source` cites the line). Their content is invented, resembling the
-  name: postures, gestures, small kicks and steps in place on one foot, crouches. Leg offsets
-  come from inverse kinematics on `model.xml` (pelvis shifted sideways at most 3.5 cm, raised
-  1.5 cm or lowered at most 3.5 cm, pitched at most 0.3 rad or yawed at most 0.25 rad over flat
+  estimated groups `wave`, `raise_hands` and `nod` (arm and head motions only) and a
+  stand-in under each of the 21 vendor names the pinned code plays (`stand`, `walk_ready`,
+  `greet`, `twist`, `hand_open`, `hand_back`, `left_shot`, `right_shot`, ...; each group's
+  `vendor_source` cites the line). Their content is invented, resembling the name: postures,
+  gestures, small kicks and steps in place on one foot, crouches. Leg offsets come from
+  inverse kinematics on `model.xml` (pelvis shifted sideways at most 3.5 cm, raised 1.5 cm
+  or lowered at most 3.5 cm, pitched at most 0.3 rad or yawed at most 0.25 rad over flat
   soles; a free foot lifted at most 4.5 cm, the pelvis first over the other foot), every
   group ends at the init pose, and each was checked in a MuJoCo simulation of `model.xml` on a
   flat floor to leave the robot standing where it was.

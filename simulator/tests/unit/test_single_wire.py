@@ -1,4 +1,4 @@
-"""One body and one wire per robot (spec §2.3, amended): no assembly machinery is
+"""One body and one wire per robot (spec §2.3): no assembly machinery is
 left in the simulator's code, and a wire attaches to its robot by the spawn token alone."""
 
 import re
@@ -34,9 +34,9 @@ def test_a_wire_attaches_by_its_token_alone(monkeypatch):
 
         def call(self, op, **fields):
             calls.append((op, fields))
-            return {"robot": "so101", "describe": {}}
+            return {"robot": "rebot_b601_rs", "describe": {}}
 
     monkeypatch.setattr(common.protocol, "Client", Simulation)
     monkeypatch.setenv("RSIM_TOKEN", "t0k3n")
     link = common.SimLink()
-    assert calls == [("wire", {"token": "t0k3n"})] and link.robot_id == "so101"
+    assert calls == [("wire", {"token": "t0k3n"})] and link.robot_id == "rebot_b601_rs"

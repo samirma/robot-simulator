@@ -547,7 +547,7 @@ head:
       servo_controller.yaml#L222-L231 init 500, 0..1000). Hardware/URDF limit +-2.09 rad
       (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L788-L790). Direction: the
       vendor model's head_pan joint turns about -Z (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787),
-      so a negative pan turns the head to the robot's left (console spec §2.1, amended): teleop's
+      so a negative pan turns the head to the robot's left (console spec §2.1): teleop's
       Left key and the page's head pad send a negative pan for left. Note for hardware checks: the vendor app's
       find-ball 'left' uses pan pulse 650, a positive pan (app_node.py#L144-L146).
     policy: "slew 1.0 rad/s (servo max ~0.2 s/60 deg, ainex_controller.py#L177); duration 0.2 s per command as the app's manual head moves (app_node.py#L684)"
@@ -610,7 +610,7 @@ controls:
     type: ainex_interfaces/HeadState
     template: {position: "$position", duration: "$duration"}
     fields:
-      - {name: position, label: "Pan (- = left, + = right)", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89", note: "Sign: the vendor model's head_pan turns about -Z (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec §2.1, amended)."}
+      - {name: position, label: "Pan (- = left, + = right)", min: -1.57, max: 1.57, default: 0.0, unit: rad, source: "ainex:src/ainex_app/scripts/app_node.py#L89", note: "Sign: the vendor model's head_pan turns about -Z (ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro#L786-L787; console spec §2.1)."}
       - {name: duration, label: "Duration", min: 0.2, max: 2.0, default: 0.5, unit: s, policy: "console policy; controller converts to ms (ainex_controller.py#L339)"}
     stop: null
     prerequisites: [/head_pan_controller/command]
@@ -990,7 +990,7 @@ reads:
     poll_s: 1.0
     poll_policy: >-
       console policy: the documented read-only joint-position query the page polls once the target is validated
-      (console spec §2.2, amended), one call at a time, about every second, never before validation, stopped on
+      (console spec §2.2), one call at a time, about every second, never before validation, stopped on
       connection loss or target change. It only reads (the node answers from bus_servo_read_position, #L128-L137); on the
       hardware every servo is one serial round trip, retried on a 0.1 s timeout
       (ainex:src/ainex_driver/ros_robot_controller/src/ros_robot_controller/ros_robot_controller_sdk.py#L446-L465), so the
@@ -1029,7 +1029,7 @@ reads:
 reads_note: >-
   A read maps each answered value to a control field as field = (raw - offset) / scale. The page calls a read service
   only when the user clicks its button, except a read with poll_s, which it calls about every poll_s seconds once the
-  target is validated (console spec §2.2, amended); nothing is read before validation or on load.
+  target is validated (console spec §2.2); nothing is read before validation or on load.
 
 model:
   source: "ainex:src/ainex_simulations/ainex_description/urdf/ainex.urdf.xacro"

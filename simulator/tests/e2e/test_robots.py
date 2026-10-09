@@ -70,13 +70,11 @@ def container(sp) -> str:
 def readiness(port, rid) -> list:
     """What a client finds the moment the readiness line is out, asked once with no retry
     (spec §2.3: a spawn succeeds only when its wire is ready to accept its recorded
-    commands): every recorded action server is up and, where the robot runs ros2_control,
-    every loaded controller is active, those serving the recorded actions among them."""
+    commands): every recorded action server is up."""
     iface = wirecheck.interface(rid)
     if iface["dialect"] != "ros2":
         return []
     actions = wirecheck.served(iface.get("actions"))
-    services = {s["name"] for s in wirecheck.served(iface.get("services"))}
     out = []
     try:
         rb = Rosbridge("127.0.0.1", port)
@@ -86,13 +84,6 @@ def readiness(port, rid) -> list:
         up = set(rb.call("/rosapi/action_servers", {}, timeout=30).get("action_servers", []))
         out += [f"action {a['name']} not served at readiness" for a in actions
                 if a["name"] not in up]
-        if "/controller_manager/list_controllers" in services:
-            listed = rb.call("/controller_manager/list_controllers", {}, timeout=30)
-            state = {c["name"]: c.get("state") for c in listed.get("controller") or []}
-            out += [f"controller {n} is {s} at readiness" for n, s in state.items()
-                    if s != "active"]
-            out += [f"controller {a['node'].lstrip('/')} of {a['name']} not loaded at readiness"
-                    for a in actions if a["node"].lstrip("/") not in state]
     except Exception as exc:
         out.append(f"asking at readiness: {exc}")
     finally:
@@ -125,7 +116,7 @@ def limited(row) -> list:
 
 
 def field_joint(f) -> str:
-    """The joint a command field names in parentheses: `positions[0] (shoulder_pan_joint)`."""
+    """The joint a command field names in parentheses: `positions[0] (joint1)`."""
     return re.search(r"\((\w+)", f["field"]).group(1)
 
 
@@ -171,6 +162,26 @@ def test_ready_means_ready(robot):
     assert robot.at_ready == []
 
 
+def test_the_repository_reaches_the_wire_read_only(robot):
+    """Spec §2.4: simulator code reaches a container through a read-only mount, never a
+    copy -- the wire's container mounts the simulator and the robot specification
+    read-only, and nothing else of the host."""
+    import json
+    import subprocess
+
+    from conftest import REPO, SIM
+
+    info = json.loads(subprocess.run(["docker", "inspect", container(robot)],
+                                     stdout=subprocess.PIPE, text=True, check=True).stdout)[0]
+    mounts = {m["Destination"]: m for m in info["Mounts"]}
+    want = {"/opt/rsim/simulator": SIM, "/opt/rsim/robots_specs": REPO / "robots_specs"}
+    assert set(mounts) == set(want), mounts
+    for dest, src in want.items():
+        m = mounts[dest]
+        assert m["Type"] == "bind" and m["RW"] is False and "ro" in m["Mode"].split(","), m
+        assert m["Source"] == str(src), (m["Source"], src)
+
+
 # ---------------------------------------------------------------- recorded figures
 
 #: Where each recorded tolerance (`tolerances[]`, by a fragment of its figure) is judged;
@@ -187,13 +198,39 @@ JUDGED_BY = {
                           "residual motion": "test_motion", "arm joint": "test_motion",
                           "gripper": "test_motion", "camera and lidar mount poses": "here",
                           "camera horizontal field of view": "here"},
-    "so101": {"arm joint": "test_motion", "gripper": "test_motion"},
+    "rebot_b601_rs": {"arm joint final position": "test_motion",
+                      "gripper motor final position": "test_motion",
+                      "end-effector repeatability": "test_motion",
+                      "camera and lidar mount poses": "here",
+                      "camera horizontal field of view": "here"},
 }
 
 
-def mount_poses(robot, iface, row) -> list:
-    """Each camera and lidar of the compiled model (at its home pose) sits at its recorded
-    mount, relative to the mount's parent link."""
+#: "Exactly", for a figure the record gives no tolerance (spec §5 Acceptance bounds): a
+#: sensor's mount to within the precision a model file stores its poses with
+EXACT_M = 1e-6
+EXACT_RAD = 1e-6
+
+
+def rpy_matrix(roll, pitch, yaw) -> np.ndarray:
+    """URDF fixed-axis roll, pitch, yaw (Rz Ry Rx)."""
+    x, y, z = (_quat_mat(math.cos(a / 2), *(math.sin(a / 2) * e))
+               for a, e in ((roll, np.eye(3)[0]), (pitch, np.eye(3)[1]), (yaw, np.eye(3)[2])))
+    return z @ y @ x
+
+
+#: a MuJoCo camera looks along its -z, x right, y up; in the frame a record names it by,
+#: that is (columns) -y, z, -x of a link frame (x forward, z up: URDF's camera_link) or
+#: x, -y, -z of an optical frame (REP 103 `_optical`: z forward, x right, y down)
+CAMERA_AXES = {"link": np.array([[0.0, 0.0, -1.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+               "optical": np.diag([1.0, -1.0, -1.0])}
+
+
+def mount_poses(robot, iface, row=None) -> list:
+    """Every served camera, lidar and IMU of the compiled model (at its home pose) sits at
+    its recorded mount relative to the mount's parent link, position and orientation: the
+    position within the recorded "camera and lidar mount poses" tolerance where the record
+    gives one (cameras and lidars), every other figure exactly (`EXACT_M`, `EXACT_RAD`)."""
     import mujoco
 
     import robot_model
@@ -204,33 +241,57 @@ def mount_poses(robot, iface, row) -> list:
     if key >= 0:
         mujoco.mj_resetDataKeyframe(m, d, key)
     mujoco.mj_forward(m, d)
-    lim = row["tolerance"]["absolute"]
     sensors = iface.get("sensors") or {}
     out = []
     for kind, obj, rows in (("camera", mujoco.mjtObj.mjOBJ_CAMERA, sensors.get("cameras")),
-                            ("lidar", mujoco.mjtObj.mjOBJ_SITE, sensors.get("lidars"))):
+                            ("lidar", mujoco.mjtObj.mjOBJ_SITE, sensors.get("lidars")),
+                            ("imu", mujoco.mjtObj.mjOBJ_SITE, sensors.get("imus"))):
+        lim = row["tolerance"]["absolute"] if row is not None and kind != "imu" else EXACT_M
         for s in wirecheck.served(rows):
             mount = s["mount"]
-            i = mujoco.mj_name2id(m, obj, s["frame_id"].lstrip("/"))
+            name = s["frame_id"].lstrip("/")
+            i = mujoco.mj_name2id(m, obj, name)
             b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, mount["parent"].lstrip("/"))
             if i < 0 or b < 0:
                 out.append(f"{kind} {s['frame_id']} or its mount parent {mount['parent']} is "
                            "not on the model")
                 continue
-            pos = d.cam_xpos[i] if kind == "camera" else d.site_xpos[i]
-            local = d.xmat[b].reshape(3, 3).T @ (pos - d.xpos[b])
+            if kind == "camera":
+                pos = d.cam_xpos[i]
+                rot = d.cam_xmat[i].reshape(3, 3) @ \
+                    CAMERA_AXES["optical" if "optical" in name else "link"].T
+            else:
+                pos, rot = d.site_xpos[i], d.site_xmat[i].reshape(3, 3)
+            parent = d.xmat[b].reshape(3, 3)
+            local = parent.T @ (pos - d.xpos[b])
             err = float(np.linalg.norm(local - np.asarray(mount["xyz"], float)))
             if err > lim:
-                out.append(f"{kind} {s['frame_id']} is {err * 1000:.1f} mm from its recorded mount")
+                out.append(f"{kind} {s['frame_id']} is {err * 1000:.3f} mm from its recorded "
+                           f"mount (allowed {lim * 1000:.3f} mm)")
+            want = rpy_matrix(*[float(v) for v in mount["rpy"]])
+            cos = (np.trace(want.T @ (parent.T @ rot)) - 1) / 2
+            ang = math.acos(max(-1.0, min(1.0, cos)))
+            if ang > EXACT_RAD:
+                out.append(f"{kind} {s['frame_id']} is turned {ang:.2e} rad from its recorded "
+                           f"mount rpy {mount['rpy']}")
     return out
 
 
-def fields_of_view(robot, iface, row) -> list:
-    """Each camera's horizontal field of view, from the rendered camera's fovy and from the
-    wire's CameraInfo (where it carries a calibration), within the recorded figure."""
-    lim = row["tolerance"]["absolute"]
+def stated(x: float) -> int:
+    """The decimals a recorded figure is stated with (53.98: 2)."""
+    text = repr(float(x))
+    return len(text.split(".")[1].rstrip("0")) if "." in text and "e" not in text else 0
+
+
+def fields_of_view(robot, iface, row=None) -> list:
+    """Each served camera's horizontal field of view, from the rendered camera's fovy and
+    from the wire's CameraInfo (where it carries a calibration): within the recorded
+    "camera horizontal field of view" tolerance where the record gives one, else exactly
+    -- the figure as the record states it (rounded to its decimals)."""
     cams = [c for c in wirecheck.served((iface.get("sensors") or {}).get("cameras"))
             if c.get("hfov_deg") is not None]
+    if not cams:
+        return []
     c = protocol.Client("127.0.0.1", robot.sim_port)
     try:
         fovy = {x["name"]: x["fovy"] for x in c.call("describe", robot=robot.robot)["cameras"]}
@@ -248,10 +309,16 @@ def fields_of_view(robot, iface, row) -> list:
         k = (info or {}).get("K") or (info or {}).get("k") or [0.0]
         if k[0] > 0:
             got["CameraInfo"] = math.degrees(2 * math.atan(w / 2 / k[0]))
+        want = float(cam["hfov_deg"])
         for src, hfov in got.items():
-            if abs(hfov - cam["hfov_deg"]) > lim:
-                out.append(f"{cam['image_topic']}: {src} hfov {hfov:.2f} deg, recorded "
-                           f"{cam['hfov_deg']}")
+            if row is not None:
+                bad = abs(hfov - want) > row["tolerance"]["absolute"]
+            else:
+                bad = round(hfov, stated(want)) != round(want, stated(want))
+            if bad:
+                out.append(f"{cam['image_topic']}: {src} hfov {hfov:.4f} deg, recorded "
+                           f"{cam['hfov_deg']}" + ("" if row is not None else " (no tolerance "
+                                                    "recorded: exactly)"))
     return out
 
 
@@ -271,23 +338,33 @@ def standing_height(robot, iface, row) -> list:
     return []
 
 
-FIGURE_CHECKS = {"camera and lidar mount poses": mount_poses,
-                 "camera horizontal field of view": fields_of_view,
-                 "standing height": standing_height}
+FIGURE_CHECKS = {"standing height": standing_height}
+#: the sensor figures judged for every served sensor of every robot, with the recorded
+#: tolerance row where there is one and exactly where there is none
+SENSOR_CHECKS = {"camera and lidar mount poses": mount_poses,
+                 "camera horizontal field of view": fields_of_view}
 
 
 def test_recorded_figures(robot):
     """Every recorded tolerance is judged by some check (`JUDGED_BY`); the figures no other
-    check judges are judged here, before any motion (the robot in its init pose)."""
+    check judges are judged here, before any motion (the robot in its init pose). Every
+    served sensor's mount (position and orientation) and every camera's field of view are
+    judged here for every robot (spec §5 Sensors: the recorded sensor poses, calibration
+    and characteristics), within the recorded tolerance or, with none, exactly."""
     iface = wirecheck.interface(robot.robot)
     judged = JUDGED_BY.get(robot.robot, {})
     problems = []
+    rows = {}
     for row in iface.get("tolerances") or []:
         hits = [f for f in judged if f in row["figure"]]
         if len(hits) != 1:
             problems.append(f"no check judges the recorded figure {row['figure']!r}")
+        elif hits[0] in SENSOR_CHECKS:
+            rows[hits[0]] = row
         elif judged[hits[0]] == "here":
             problems += FIGURE_CHECKS[hits[0]](robot, iface, row)
+    for figure, check in SENSOR_CHECKS.items():
+        problems += check(robot, iface, rows.get(figure))
     assert problems == []
 
 
@@ -301,10 +378,14 @@ def test_contract(robot):
 
 def test_frames_and_message_fields(robot):
     """Each recorded output topic with a frame (and a child frame) carries it, and a
-    message of every periodic topic has exactly its declared type's fields."""
+    message of every periodic and every latched output topic matches its declared type
+    field for field, through every nested message (spec §5 Contracts). Event outputs,
+    service responses and action results the other checks receive are judged the same way
+    where they are received (`typed`)."""
     iface = wirecheck.interface(robot.robot)
-    rows = [t for t in wirecheck.served(iface["topics"])
-            if t["name"] in wirecheck.periodic_topics(robot.robot)]
+    periodic = wirecheck.periodic_topics(robot.robot)
+    rows = [t for t in wirecheck.served(iface["topics"]) if t.get("direction") == "out"
+            and (t["name"] in periodic or t.get("latched"))]
     got = wirecheck.sample(robot.port, [t["name"] for t in rows])
     problems = []
     rb = Rosbridge("127.0.0.1", robot.port)
@@ -314,10 +395,7 @@ def test_frames_and_message_fields(robot):
             if msg is None:
                 problems.append(f"{t['name']}: no message")
                 continue
-            det = rb.call("/rosapi/message_details", {"type": t["type"]}, timeout=20)
-            top = det["typedefs"][0]
-            if set(top["fieldnames"]) != set(msg):
-                problems.append(f"{t['name']}: fields {sorted(msg)} != {sorted(top['fieldnames'])}")
+            problems += wirecheck.typed_problems(rb, "message", t["type"], msg, t["name"])
             fid = t.get("frame_id")
             if fid is not None and "header" in msg and msg["header"].get("frame_id") != fid:
                 problems.append(f"{t['name']}: frame {msg['header'].get('frame_id')!r}, "
@@ -329,6 +407,20 @@ def test_frames_and_message_fields(robot):
     finally:
         rb.close()
     assert problems == []
+
+
+def typed(rb, rid, kind, name, value) -> list:
+    """`wirecheck.typed_problems` of what a check received from robot `rid`: a message of
+    the recorded topic `name` (`kind` "message"), the response of the recorded service
+    `name` ("service_response") or the result of the recorded action `name`
+    ("action_result"), against the type the record declares for it."""
+    iface = wirecheck.interface(rid)
+    section = {"message": "topics", "service_response": "services",
+               "action_result": "actions"}[kind]
+    typ = next(r["type"] for r in iface.get(section) or [] if r["name"] == name)
+    if kind == "action_result":
+        value = value.get("values") or {}
+    return wirecheck.typed_problems(rb, kind, typ, value, f"{name} ({kind.replace('_', ' ')})")
 
 
 def test_tf_tree(robot):
@@ -352,45 +444,128 @@ def test_rates(robot):
         m = wirecheck.measure_on_graph(container(robot), robot.robot, list(rates), window)
         problems += wirecheck.rate_problems(m, rates, wirecheck.multi_publisher(iface))
         problems += real_time_problems(robot.sim_port, t0)
+    # each transform the record gives a rate of its own, on its own (spec §5 Acceptance
+    # bounds), not only /tf as a whole
+    edges = wirecheck.tf_rates(iface)
+    if edges:
+        window = max(6.0, 5.5 / min(edges.values()))
+        t0 = time.time()
+        m = wirecheck.measure_tf_on_graph(container(robot), robot.robot, window)
+        problems += wirecheck.tf_rate_problems(m, iface)
+        problems += real_time_problems(robot.sim_port, t0)
     assert problems == []
 
 
 # ---------------------------------------------------------------- motions
 
 
-def so101_arm(port, sim_port):
+REBOT = "rebot_b601_rs"
+REBOT_ARM = [f"joint{i}" for i in range(1, 7)]
+#: action_msgs/GoalStatus of a goal's result, as rosbridge reports it (`status`)
+SUCCEEDED, ABORTED = 4, 6
+REBOT_FINGERS = ["gripper_joint1", "gripper_joint2"]
+#: how long after a goal the reBot is watched still holding it: the record has no command
+#: watchdog (motions[arm|gripper].watchdog.present false), so nothing drops the hold
+HOLD_S = 5.0
+
+
+def rebot_motor(joints: dict) -> float:
+    """The gripper motor angle (rad) of the model's fingers: its tendon, 62.5 (q1 + q2)."""
+    return 62.5 * (joints["gripper_joint1"] + joints["gripper_joint2"])
+
+
+def rebot_goal(positions, seconds) -> dict:
+    """A FollowJointTrajectory goal of one point, as the recorded example has it."""
+    return {"trajectory": trajectory(REBOT_ARM, positions, seconds)}
+
+
+def rebot_follow(rb, positions, seconds) -> dict:
+    return rb.action("/rebotarm/follow_joint_trajectory",
+                     "control_msgs/action/FollowJointTrajectory",
+                     rebot_goal(positions, seconds), timeout=seconds + 30)
+
+
+def rebot_arm(port, sim_port):
+    """The recorded examples: the arm trajectory (Seeed's ready point with joint1 at 0.3,
+    4 s) succeeds and the joints settle at its point within the recorded tolerance, judged
+    by the recorded feedback (/rebotarm/joint_states) and the simulation's joints, the
+    gripper_end returning there to within the recorded repeatability after a round trip to
+    the zero pose; then the gripper goal (5.0 rad, fully open) is reached, the result and
+    /rebotarm/joint_states reporting it as recorded, and it closes again."""
     out = []
-    names = ["shoulder_pan_joint", "shoulder_lift_joint", "elbow_flex_joint", "wrist_flex_joint",
-             "wrist_roll_joint"]
-    target = [0.3, -0.3, 0.3, 0.3, 0.5]
-    t_arm = motion.tol("so101", "arm joint")["absolute"]
-    t_grip = motion.tol("so101", "gripper")["absolute"]
+    iface = wirecheck.interface(REBOT)
+    ex = motion_row(iface, "arm")["command"]["example"]["trajectory"]
+    point = ex["points"][-1]
+    target = [float(v) for v in point["positions"]]
+    seconds = float(point["time_from_start"]["sec"]) + point["time_from_start"]["nanosec"] * 1e-9
+    t_arm = motion.tol(REBOT, "arm joint final position")["absolute"]
+    t_grip = motion.tol(REBOT, "gripper motor final position")["absolute"]
+    t_rep = motion.tol(REBOT, "end-effector repeatability")["absolute"]
     rb = Rosbridge("127.0.0.1", port)
     try:
-        rb.advertise("/joint_trajectory_controller/joint_trajectory",
-                     "trajectory_msgs/msg/JointTrajectory")
-        time.sleep(0.8)
-        rb.publish("/joint_trajectory_controller/joint_trajectory", trajectory(names, target))
-        err = motion.wait_joints(sim_port, "so101", dict(zip(names, target)), t_arm, 8)
+        res = rb.action("/rebotarm/follow_joint_trajectory",
+                        "control_msgs/action/FollowJointTrajectory", {"trajectory": ex},
+                        timeout=seconds + 30)
+        if res.get("status") != SUCCEEDED or (res.get("values") or {}).get("error_code") != 0:
+            out.append(f"arm trajectory result: {res}")
+        out += typed(rb, REBOT, "action_result", "/rebotarm/follow_joint_trajectory", res)
+        err = motion.wait_joints(sim_port, REBOT, dict(zip(REBOT_ARM, target)), t_arm, 4)
         if max(err.values()) > t_arm:
-            out.append(f"so101 arm error {err}")
-        # the gripper action: goal reached, result reported
-        res = rb.action("/gripper_controller/gripper_cmd",
-                        "control_msgs/action/ParallelGripperCommand",
-                        {"command": {"name": ["gripper_joint"], "position": [1.0],
-                                     "velocity": [], "effort": []}}, timeout=20)
-        if not res.get("result", False):
-            out.append(f"so101 gripper action result: {res}")
-        # no effort state interface is configured: effort is not measured and reads 0.0,
-        # never the controller's uninitialised member
-        effort = ((res.get("values") or {}).get("state") or {}).get("effort")
-        if effort != [0.0]:
-            out.append(f"so101 gripper result state.effort {effort}, expected [0.0]")
-        err = motion.wait_joints(sim_port, "so101", {"gripper_joint": 1.0}, t_grip, 8)
-        if err["gripper_joint"] > t_grip:
-            out.append(f"so101 gripper error {err}")
-        if not motion.at_rest(sim_port, "so101", names + ["gripper_joint"]):
-            out.append("so101 not at rest after its goal")
+            out.append(f"arm joints off the trajectory's point: {err}")
+        if not motion.at_rest(sim_port, REBOT, REBOT_ARM):
+            out.append("arm not at rest after its trajectory")
+        # no command watchdog: HOLD_S on, the arm still holds the trajectory's point
+        time.sleep(HOLD_S)
+        j = motion.joints(sim_port, REBOT)
+        drift = {n: round(j[n] - t, 4) for n, t in zip(REBOT_ARM, target)
+                 if abs(j[n] - t) > t_arm}
+        if drift:
+            out.append(f"{HOLD_S:.0f} s after its goal the arm no longer holds the "
+                       f"trajectory's point: {drift}")
+        js = _first(rb, "/rebotarm/joint_states")
+        fed = dict(zip(js["name"], js["position"])) if js else {}
+        bad = {n: round(fed.get(n, math.inf) - t, 4) for n, t in zip(REBOT_ARM, target)
+               if not abs(fed.get(n, math.inf) - t) <= t_arm}
+        if bad:
+            out.append(f"/rebotarm/joint_states off the trajectory's point: {bad}")
+        before = np.asarray(motion.readings(sim_port, REBOT)["sites"]["gripper_end"]["pos"])
+        rebot_follow(rb, [0.0] * 6, 3)
+        rebot_follow(rb, target, 3)
+        motion.at_rest(sim_port, REBOT, REBOT_ARM)
+        time.sleep(1.0)
+        again = np.asarray(motion.readings(sim_port, REBOT)["sites"]["gripper_end"]["pos"])
+        if np.linalg.norm(again - before) > t_rep:
+            out.append(f"gripper_end came back {np.linalg.norm(again - before) * 1000:.2f} mm "
+                       f"from where it was, recorded repeatability {t_rep * 1000:.1f} mm")
+        # the gripper: open fully, the recorded example
+        grip = motion_row(iface, "gripper")["command"]
+        res = rb.action(grip["name"], grip["type"], grip["example"], timeout=20)
+        want = float(grip["example"]["command"]["position"])
+        values = res.get("values") or {}
+        if res.get("status") != SUCCEEDED or values.get("reached_goal") is not True or \
+                not abs(float(values.get("position", math.inf)) - want) < t_grip:
+            out.append(f"gripper command result: {res}")
+        out += typed(rb, REBOT, "action_result", grip["name"], res)
+        motor = rebot_motor(motion.joints(sim_port, REBOT))
+        if abs(motor - want) > t_grip:
+            out.append(f"gripper motor at {motor:.3f} rad, commanded {want}")
+        # no command watchdog: HOLD_S on, the gripper still holds its goal
+        time.sleep(HOLD_S)
+        motor = rebot_motor(motion.joints(sim_port, REBOT))
+        if abs(motor - want) > t_grip:
+            out.append(f"{HOLD_S:.0f} s after its goal the gripper motor is at {motor:.3f} "
+                       f"rad, commanded {want}")
+        js = _first(rb, "/rebotarm/joint_states")
+        fed = dict(zip(js["name"], js["position"])) if js else {}
+        ratio = min(max(want / 5.0, 0.0), 1.0)
+        for n, limit, t in (("gripper_joint1", 0.05, 0.0012), ("gripper_joint2", 0.0715, 0.0017)):
+            if not abs(fed.get(n, math.inf) - ratio * limit) <= t:
+                out.append(f"/rebotarm/joint_states {n} {fed.get(n)}, recorded "
+                           f"{ratio * limit:.4f} m at {want} motor rad")
+        if not motion.at_rest(sim_port, REBOT, REBOT_FINGERS):
+            out.append("gripper not at rest after its goal")
+        rb.action(grip["name"], grip["type"], {"command": {"position": 0.0, "max_effort": 0.0}},
+                  timeout=20)
     finally:
         rb.close()
     return out
@@ -426,7 +601,9 @@ def rosmaster_arm(port, sim_port):
         # the recorded measured feedback: /CurrentAngle answers the six servo angles (deg,
         # servo order 1..6; -1 only for a servo that did not answer) -- here every servo
         # answers, at the commanded angle within the recorded tolerance
-        angles = rb.call("/CurrentAngle", {"apply": ""}, timeout=20).get("angles") or []
+        reply = rb.call("/CurrentAngle", {"apply": ""}, timeout=20)
+        out += typed(rb, "rosmaster_x3_plus", "service_response", "/CurrentAngle", reply)
+        angles = reply.get("angles") or []
         lim = [math.degrees(t_arm)] * 5 + [math.degrees(t_grip) * 150 / 90]
         if len(angles) != 6 or any(a == -1 or abs(a - s) > l + 1
                                    for a, s, l in zip(angles, servo, lim)):
@@ -456,6 +633,8 @@ def ainex_head(port, sim_port):
         got = {int(p["id"]): int(p["position"]) for p in reply.get("position") or []}
         want = {23: 500 + 0.5 * per_rad, 24: 500 + motion.joints(sim_port, "ainex")["head_tilt"]
                 * per_rad}
+        out += typed(rb, "ainex", "service_response",
+                     "/ros_robot_controller/bus_servo/get_position", reply)
         if reply.get("success") is not True or set(got) != {23, 24}:
             out.append(f"bus_servo/get_position answered {reply}, recorded success and "
                        "positions of servos 23 and 24")
@@ -493,7 +672,19 @@ def ainex_walk(port, sim_port):
         time.sleep(0.3)
         t0 = time.monotonic()
         rb.call(ex["start"]["service"], ex["start"]["request"])
-        time.sleep(4.0)
+        time.sleep(3.5)
+        # no command watchdog (motions[walk].watchdog.present false): 3.5 s after the one
+        # start the gait still runs and the legs still move
+        state = rb.call("/walking/is_walking", {}, timeout=20)
+        out += typed(rb, "ainex", "service_response", "/walking/is_walking", state)
+        a = motion.joints(sim_port, "ainex")
+        time.sleep(0.2)
+        b = motion.joints(sim_port, "ainex")
+        legs = max(abs(b[k] - a[k]) for k in a if k[2:].startswith(("hip", "knee", "ank")))
+        if state.get("state") is not True or legs < 0.01:
+            out.append(f"walk: 3.5 s after its start the gait has stopped (is_walking "
+                       f"{state.get('state')}, legs moved {legs:.3f} rad in 0.2 s)")
+        time.sleep(max(0.0, 4.0 - (time.monotonic() - t0)))
         rb.call("/walking/command", {"command": "stop"}, timeout=20)
         periods = round((time.monotonic() - t0) / period)
         time.sleep(1.5)
@@ -531,7 +722,7 @@ STANDING_TILT_RAD = 0.05
 
 def ainex_action_group(port, sim_port):
     """The recorded vendor example, `left_shot`: no pinned source holds its .d6a, so it plays
-    the record's stand-in under that name (amended), a small kick on one foot --
+    the record's stand-in under that name, a small kick on one foot --
     its legs move, then the robot stands where it stood, upright, at its standing height,
     every joint back at the init pose. Then the record's smoke example, one of its own
     estimated groups (robots_specs/ainex/action_groups.yml) -- it moves the right arm and ends
@@ -593,11 +784,12 @@ def ainex_action_group(port, sim_port):
 #: The checks of each robot's recorded motions, by the `motions[].id`s each one covers, in
 #: the order they run; a recorded motion no check covers fails test_motion.
 MOTION_CHECKS = {
-    "myagv": {("drive",): lambda port, sim_port: motion.drive(port, "myagv")},
+    "myagv": {("drive",): lambda port, sim_port: motion.drive(port, "myagv", sim_port)},
     "rosmaster_x3_plus": {
-        ("drive",): lambda port, sim_port: motion.drive(port, "rosmaster_x3_plus"),
+        ("drive",): lambda port, sim_port: motion.drive(port, "rosmaster_x3_plus",
+                                                     sim_port),
         ("arm", "gripper"): rosmaster_arm},
-    "so101": {("arm", "gripper"): so101_arm},
+    REBOT: {("arm", "gripper"): rebot_arm},
     "ainex": {("head",): ainex_head,
               ("walk",): lambda port, sim_port: ainex_walk(port, sim_port)[0],
               ("action_group",): ainex_action_group},
@@ -671,6 +863,7 @@ def ainex_app_nodes(port, sim_port) -> list:
         try:
             time.sleep(1.5)
             reply = rb.call("/app/set_running", {"data": False}, timeout=20)
+            out += typed(rb, "ainex", "service_response", "/app/set_running", reply)
             if reply.get("success") is not False:
                 out.append(f"/app/set_running false answered {reply}, app_node answers "
                            f"success false")
@@ -687,6 +880,8 @@ def ainex_app_nodes(port, sim_port) -> list:
             out.append("/sensor/button/get_button_state still published while disabled")
         rb.call("/sensor/button/enable", {"data": True})
         states = collect(rb, "/sensor/button/get_button_state", 1.0)
+        for m in states[-1:]:
+            out += typed(rb, "ainex", "message", "/sensor/button/get_button_state", m)
         if not states:
             out.append("/sensor/button/get_button_state did not resume once enabled")
         elif any(m.get("data") is not True for m in states):
@@ -699,9 +894,11 @@ def ainex_app_nodes(port, sim_port) -> list:
                                  queue_length=1)
             finally:
                 rb.call(f"{node}/exit", {})
-            # the recorded frame (the node's name string, amended)
+            # the recorded frame (the node's name string)
             want = next(t for t in iface["topics"]
                         if t["name"] == f"{node}/image_result").get("frame_id")
+            for m in frames[-1:]:
+                out += typed(rb, "ainex", "message", f"{node}/image_result", m)
             if not frames:
                 out.append(f"{node}/image_result not published after {node}/enter")
             elif (frames[-1]["encoding"], frames[-1]["header"]["frame_id"]) != ("rgb8", want):
@@ -720,7 +917,10 @@ def rosmaster_camera_services(port, sim_port) -> list:
     out = []
     rb = Rosbridge("127.0.0.1", port)
     try:
-        info = rb.call("/camera/get_color_camera_info", {}, timeout=20).get("info") or {}
+        reply = rb.call("/camera/get_color_camera_info", {}, timeout=20)
+        out += typed(rb, "rosmaster_x3_plus", "service_response",
+                     "/camera/get_color_camera_info", reply)
+        info = reply.get("info") or {}
         pub = _first(rb, "/camera/rgb/camera_info", timeout=10.0)
         k_srv, k_pub = info.get("K", info.get("k")), (pub or {}).get("K", (pub or {}).get("k"))
         if pub is None:
@@ -752,7 +952,63 @@ def rosmaster_camera_services(port, sim_port) -> list:
 
 
 #: Recorded command behaviours beyond the motions, per robot.
-BEHAVIOUR_CHECKS = {"ainex": ainex_app_nodes, "rosmaster_x3_plus": rosmaster_camera_services}
+#: a calibration no recorded camera has, sent with set_camera_info
+SENT_CALIBRATION = {"distortion_model": "plumb_bob", "D": [0.01, -0.02, 0.001, 0.002, 0.0],
+                    "K": [600.5, 0.0, 321.25, 0.0, 601.5, 238.75, 0.0, 0.0, 1.0],
+                    "R": [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                    "P": [600.5, 0.0, 321.25, 0.0, 0.0, 601.5, 238.75, 0.0, 0.0, 0.0, 1.0, 0.0]}
+CALIBRATION_FIELDS = ("width", "height", "distortion_model", "D", "K", "R", "P", "binning_x",
+                      "binning_y", "roi")
+
+
+def usb_cam_calibration(rid):
+    """usb_cam's set_camera_info (camera_info_manager): it answers success, and the
+    calibration it was sent is the CameraInfo the node publishes from then on, field for
+    field, its header the frame's; sending the recorded calibration back restores it."""
+
+    def check(port, sim_port) -> list:
+        iface = wirecheck.interface(rid)
+        cam = next(c for c in wirecheck.served(iface["sensors"]["cameras"])
+                   if c.get("info_topic"))
+        node = next(t for t in iface["topics"] if t["name"] == cam["image_topic"])["nodes"][0]
+        service = f"{node}/set_camera_info"
+        out = []
+        rb = Rosbridge("127.0.0.1", port)
+        try:
+            before = _first(rb, cam["info_topic"], throttle_rate=200, queue_length=1)
+            if before is None:
+                return [f"{cam['info_topic']}: no CameraInfo"]
+            for sent in (dict(before, **SENT_CALIBRATION), before):
+                reply = rb.call(service, {"camera_info": sent}, timeout=20)
+                out += typed(rb, rid, "service_response", service, reply)
+                if reply.get("success") is not True:
+                    out.append(f"{service} answered {reply}, camera_info_manager answers "
+                               "success once it stored the calibration")
+                time.sleep(0.5)
+                got = _first(rb, cam["info_topic"], throttle_rate=200, queue_length=1) or {}
+                off = [f for f in CALIBRATION_FIELDS if got.get(f) != sent.get(f)]
+                if off:
+                    out.append(f"{cam['info_topic']} after {service}: {off} are not the "
+                               f"calibration sent ({ {f: got.get(f) for f in off} })")
+                if (got.get("header") or {}).get("frame_id") != cam["frame_id"]:
+                    out.append(f"{cam['info_topic']} after {service}: frame "
+                               f"{(got.get('header') or {}).get('frame_id')!r}, recorded "
+                               f"{cam['frame_id']!r}")
+        finally:
+            rb.close()
+        return out
+
+    return check
+
+
+def checks(*fns):
+    """Several behaviour checks run as one."""
+    return lambda port, sim_port: [p for fn in fns for p in fn(port, sim_port)]
+
+
+BEHAVIOUR_CHECKS = {"ainex": checks(ainex_app_nodes, usb_cam_calibration("ainex")),
+                    "myagv": usb_cam_calibration("myagv"),
+                    "rosmaster_x3_plus": rosmaster_camera_services}
 
 
 def test_recorded_behaviours(robot):
@@ -977,41 +1233,43 @@ def test_sensors(robot):
 # ---------------------------------------------------------------- limits (keep last)
 
 
-def so101_limits(robot, iface) -> list:
-    """Each arm joint, then the gripper, commanded beyond its recorded maximum: none goes
-    past it (within its recorded tolerance)."""
+def rebot_limits(robot, iface) -> list:
+    """Each arm joint commanded beyond its recorded maximum (the driver passes it on
+    unclamped, as recorded): none goes past it, within the recorded tolerance; a gripper
+    position beyond its recorded maximum aborts the goal, as recorded, and the gripper
+    stays where it was."""
     port, sim_port = robot.port, robot.sim_port
     out = []
     arm = limited(motion_row(iface, "arm"))
     names = [field_joint(f) for f in arm]
-    t_arm = motion.tol("so101", "arm joint")["absolute"]
-    t_grip = motion.tol("so101", "gripper")["absolute"]
+    assert names == REBOT_ARM, names
+    t_arm = motion.tol(REBOT, "arm joint final position")["absolute"]
+    t_grip = motion.tol(REBOT, "gripper motor final position")["absolute"]
     rb = Rosbridge("127.0.0.1", port)
     try:
-        topic = motion_row(iface, "arm")["command"]["name"]
-        rb.advertise(topic, motion_row(iface, "arm")["command"]["type"])
-        time.sleep(0.8)
         for f, name in zip(arm, names):
             hi = float(f["max"])
-            rb.publish(topic, trajectory(names, [motion.beyond(hi) if n == name else 0.0
-                                                 for n in names]))
-            peak = motion.peak_joint(sim_port, "so101", name, 3.0)
+            goal = rebot_goal([motion.beyond(hi) if n == name else 0.0 for n in names], 2)
+            rb.send({"op": "send_action_goal", "action": "/rebotarm/follow_joint_trajectory",
+                     "action_type": "control_msgs/action/FollowJointTrajectory", "args": goal,
+                     "id": f"limit:{name}", "feedback": False})
+            peak = motion.peak_joint(sim_port, REBOT, name, 3.0)
             if peak > hi + t_arm:
                 out.append(f"{name} reached {peak:.3f} rad, recorded maximum {hi}")
-        rb.publish(topic, trajectory(names, [0.0] * len(names)))
-        motion.wait_joints(sim_port, "so101", dict.fromkeys(names, 0.0), t_arm, 8)
+            rebot_follow(rb, [0.0] * len(names), 2)
+        motion.wait_joints(sim_port, REBOT, dict.fromkeys(names, 0.0), t_arm, 8)
         grip = motion_row(iface, "gripper")
-        f = limited(grip)[0]
-        hi = float(f["max"])
-        try:
-            rb.action(grip["command"]["name"], grip["command"]["type"],
-                      {"command": {"name": ["gripper_joint"], "position": [motion.beyond(hi)],
-                                   "velocity": [], "effort": []}}, timeout=20)
-        except TimeoutError:
-            pass   # a goal past the jaw's travel may stall; the position is what counts
-        peak = motion.peak_joint(sim_port, "so101", "gripper_joint", 2.0)
-        if peak > hi + t_grip:
-            out.append(f"gripper_joint reached {peak:.3f} rad, recorded maximum {hi}")
+        hi = float(limited(grip)[0]["max"])
+        before = rebot_motor(motion.joints(sim_port, REBOT))
+        res = rb.action(grip["command"]["name"], grip["command"]["type"],
+                        {"command": {"position": motion.beyond(hi), "max_effort": 0.0}},
+                        timeout=20)
+        if res.get("status") != ABORTED:
+            out.append(f"a gripper goal beyond {hi} rad was not aborted: {res}")
+        motor = rebot_motor(motion.joints(sim_port, REBOT))
+        if motor > hi + t_grip or abs(motor - before) > t_grip:
+            out.append(f"the gripper motor went from {before:.3f} to {motor:.3f} rad on a goal "
+                       f"beyond {hi}")
     finally:
         rb.close()
     return out
@@ -1071,7 +1329,9 @@ def ainex_limits(robot, iface) -> list:
             rb.publish(topic, {"position": 0.0, "duration": 0.5})
             time.sleep(1.0)
         walk = motion_row(iface, "walk")
-        prm = rb.call("/walking/get_param", {})["parameters"]
+        reply = rb.call("/walking/get_param", {})
+        out += typed(rb, "ainex", "service_response", "/walking/get_param", reply)
+        prm = reply["parameters"]
         rb.advertise(walk["command"]["name"], walk["command"]["type"])
         time.sleep(0.5)
         for f in limited(walk):
@@ -1092,7 +1352,7 @@ def ainex_limits(robot, iface) -> list:
 
 #: How each robot's recorded command limits are exercised (drives through
 #: motion.drive_limits); a robot with limited command fields and no check fails.
-LIMIT_CHECKS = {"so101": so101_limits, "rosmaster_x3_plus": rosmaster_limits,
+LIMIT_CHECKS = {REBOT: rebot_limits, "rosmaster_x3_plus": rosmaster_limits,
                 "ainex": ainex_limits}
 
 

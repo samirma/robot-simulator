@@ -28,8 +28,10 @@ Conventions:
   than the authoritative boot runs. The simulator does not serve optional rows. Absent
   means `false`.
 * ROS infrastructure (rosbridge, rosapi, `/rosout`, `/rosout_agg`, `/parameter_events`,
-  master parameters, client-library logger/parameter/type-description services, ROS 2
-  action-internal topics and services) is never listed.
+  master parameters, client-library logger/parameter/type-description services, the
+  client-library parameters every ROS 2 node declares (`use_sim_time`,
+  `start_type_description_service`), ROS 2 action-internal topics and services) is never
+  listed.
 
 ## Top level
 
@@ -41,7 +43,7 @@ Conventions:
 | `dialect` | `ros1` \| `ros2` | must match the filename (`ros.yml` = `ros1`, `ros2.yml` = `ros2`) |
 | `ros_distribution` | str | e.g. `noetic`, `melodic`, `humble`, `jazzy` |
 | `interface_authority` | `manufacturer` \| `approved_community` | who defines the interface |
-| `camera_boot_authority` | `approved_community` | optional: the camera rows come from an approved community camera boot while the rest is `interface_authority` (myAGV) |
+| `camera_boot_authority` | `approved_community` | optional: the camera rows come from an approved community camera boot while the rest is `interface_authority` (myAGV: usb_cam; reBot B601-RS: the RealSense D405 of Seeed's grasping guide) |
 | `sources` | list | pinned sources (below) |
 | `boot` | map | the authoritative boot (below) |
 | `model` | map | URDF / MJCF files and `robot_description` (below) |
@@ -125,7 +127,7 @@ the fully qualified node. `value` is the literal boot value; for large values
 
 ### `tf[]`
 
-`{parent, child, static, publisher, rate, xyz?, rpy?, source, optional?}` — `static`
+`{parent, child, static, publisher, rate, xyz?, rpy?, source, optional?, notes?}` — `static`
 is `true` for fixed transforms; `rate` is Hz or `non_periodic` (latched `/tf_static`);
 `xyz`/`rpy` are given for fixed transforms.
 
@@ -199,7 +201,9 @@ groups are in no pinned source: the file of estimated groups and the playable ex
 `{figure, applies_to, tolerance{absolute?, relative?, unit?}, basis, source?, notes?}` —
 the acceptance tolerance for a physical or sensor figure the simulator reproduces (for
 example a commanded drive displacement read back from odometry, or a joint reaching its
-commanded position). `basis: manufacturer` when the vendor states the accuracy,
+commanded position). A tolerance bounds the error |measured − commanded| by
+max(`relative`·|commanded|, `absolute`): with only one of the two recorded, that one is the
+bound (the other counts as 0). `basis: manufacturer` when the vendor states the accuracy,
 otherwise `estimate` with the reason. Periodic rates are not listed here: the simulator
 spec fixes them at ±10%.
 
@@ -215,23 +219,25 @@ motion's `command.estimated_groups`. `tests/schema.py` checks it (`validate_acti
 | `basis`, `reason` | always `estimate`, and why |
 | `player` | `{path, file_format, source}`: where and in what format the vendor player reads a group |
 | `frames_are`, `pulse_source` | how a frame becomes servo commands, and the files that mapping uses |
-| `servos` | optional: that mapping, `{<joint>: [servo id, init pulse, sign]}` (sign `-1` where the servo's min > max), copied from `pulse_source`; when present every target's pulse, `init + angle * sign * 1000 / (240 deg in rad)`, stays inside 0-1000 (amended) |
+| `servos` | optional: that mapping, `{<joint>: [servo id, init pulse, sign]}` (sign `-1` where the servo's min > max), copied from `pulse_source`; when present every target's pulse, `init + angle * sign * 1000 / (240 deg in rad)`, stays inside 0-1000 |
 | `smoke_example` | a group name; equals the motion's `command.smoke_example.data` |
-| `groups` | `{<name>: {description, vendor_source?, frames: [{time_ms, offsets_rad: {<joint>: rad}}]}}` — offsets from the recorded init pose; every target stays inside the URDF joint limits; the last frame is the init pose (`offsets_rad: {}`) (amended) |
+| `groups` | `{<name>: {description, vendor_source?, frames: [{time_ms, offsets_rad: {<joint>: rad}}]}}` — offsets from the recorded init pose; every target stays inside the URDF joint limits; the last frame is the init pose (`offsets_rad: {}`) |
 
-A group that carries `vendor_source` is a **stand-in under a vendor name** (amended): the vendor's code or documentation plays a group of that name, whose content no
-pinned source holds, so the record defines an invented motion resembling what the name says,
-still an estimate. `vendor_source` is the pinned URL, or list of URLs, of the line(s) that
-name it, at the revision of a recorded source.
+A group that carries `vendor_source` is a **stand-in under a vendor name**: the vendor's code
+or documentation plays a group of that name, whose content no pinned source holds, so the
+record defines an invented motion resembling what the name says, still an estimate.
+`vendor_source` is the pinned URL, or list of URLs, of the line(s) that name it, at the
+revision of a recorded source.
 
 ## MuJoCo model conventions (`model.xml`)
 
-A derived `model.xml` (and the official `so101_new_calib.xml`) is loaded with
-`mujoco.MjModel.from_xml_path("robots_specs/<id>/<model.mjcf>")` once
+The model a robot's `model.mjcf` names (a derived `model.xml`, or an official MJCF where one
+exists) is loaded with `mujoco.MjModel.from_xml_path("robots_specs/<id>/<model.mjcf>")` once
 `robots_specs/tools/fetch_meshes.py` has fetched the meshes. Derived models follow:
 
 * Mesh `file`s are relative to the robot folder (`<compiler meshdir="."/>`): the fetched
-  upstream meshes (`assets/`, `meshes/`, `urdf/`) and the files `fetch_meshes.py` derives
+  upstream meshes, at the paths the URDF's `package://` URIs resolve to inside the robot
+  folder (`description/`, `meshes/`, `urdf/`), and the files `fetch_meshes.py` derives
   under `derived_meshes/` (same relative path): `<x>.stl` (a COLLADA file as one STL, for
   collision), `<x>.dae.m<k>.obj` + `<x>.dae.mtl` (a COLLADA visual, one OBJ per material with
   its own colour/texture) and `<x>.STL.part<k>.stl` (lossless parts of an STL over MuJoCo's
@@ -244,9 +250,18 @@ A derived `model.xml` (and the official `so101_new_calib.xml`) is loaded with
   the URDF root link. A mobile robot's top body carries `<freejoint name="root"/>`; an
   arm has none (it is fixed where it is placed).
 * Body names are URDF link names; joint names are the boot `robot_description`'s joint
-  names; each actuated joint has one actuator of the same name, in the command units the
-  interface uses (position actuators in rad or m, wheel velocity actuators in rad/s).
-  URDF `<mimic>` joints are `<equality><joint>` constraints.
+  names. Each drive the interface commands has one actuator, in the command units the
+  interface uses (position actuators in rad or m, wheel velocity actuators in rad/s):
+  * a drive that moves one joint: an actuator on that joint, named after the joint;
+  * a drive that moves several joints through a fixed coupling (one motor turning a pinion
+    between two racks, say): one actuator on a fixed `<tendon>` over those joints, named
+    as the boot names the drive, with tendon coefficients that make the tendon's length
+    the drive's position in those units. Each coupled joint is tied to another of them by
+    an `<equality><joint>` constraint, so that the constraints connect them all, and none
+    has an actuator of its own.
+
+  No joint is moved by more than one actuator. URDF `<mimic>` joints are
+  `<equality><joint>` constraints.
 * Visual geoms: `group="2" contype="0" conaffinity="0"`; collision geoms: `group="3"`.
 * Each camera the interface publishes is a `<camera>` named after its image `frame_id`,
   at the recorded mount, with `fovy` and `resolution` matching the recorded image size

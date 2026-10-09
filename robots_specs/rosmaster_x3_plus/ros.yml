@@ -621,7 +621,7 @@ topics:
   source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_nav/launch/yahboomcar_navigation.launch#L9
   notes: "map_server's ~frame_id default, which the launch does not set
     (https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/map_server/src/main.cpp#L72,
-    L157, the Noetic release 1.17.3; amended: frame recorded)."
+    L157, the Noetic release 1.17.3)."
 - name: /move_base_simple/goal
   type: geometry_msgs/PoseStamped
   direction: in
@@ -1395,7 +1395,7 @@ tf:
   - 0.0
   - 0.0
   - 0.0
-  source: yahboomcar_X3plus.urdf joint base_joint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L33-L37
 - parent: base_link
   child: imu_link
   static: true
@@ -1409,7 +1409,7 @@ tf:
   - 0.0
   - 3.1415
   - 1.5707
-  source: yahboomcar_X3plus.urdf joint base_imu
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L38-L42
 - parent: base_link
   child: camera_link
   static: true
@@ -1423,7 +1423,7 @@ tf:
   - 0.0
   - 0.0
   - 0.0
-  source: yahboomcar_X3plus.urdf joint astra_joint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L71-L75
 - parent: base_link
   child: laser_link
   static: true
@@ -1437,7 +1437,7 @@ tf:
   - 0.0
   - 0.0
   - 0.0
-  source: yahboomcar_X3plus.urdf joint laser_joint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L104-L108
 - parent: arm_link4
   child: mono_link
   static: true
@@ -1451,73 +1451,100 @@ tf:
   - 1.5708
   - 0.0
   - 0.0
-  source: yahboomcar_X3plus.urdf joint mono_joint
+  source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L510-L514
 - parent: base_link
   child: arm_link1
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint arm_joint1; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L138-L144
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: arm_link1
   child: arm_link2
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint arm_joint2; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L173-L179
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: arm_link2
   child: arm_link3
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint arm_joint3; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L208-L214
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: arm_link3
   child: arm_link4
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint arm_joint4; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L243-L249
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: arm_link4
   child: arm_link5
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint arm_joint5; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L278-L284
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: arm_link5
   child: rlink1
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint grip_joint; https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L314-L320
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
 - parent: rlink1
   child: rlink2
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint rlink_joint2 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L349-L355
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  notes: mimic of grip_joint, multiplier -1
 - parent: arm_link5
   child: rlink3
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint rlink_joint3 (mimic grip_joint x 1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L384-L390
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  notes: mimic of grip_joint, multiplier 1
 - parent: arm_link5
   child: llink1
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint llink_joint1 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L419-L425
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  notes: mimic of grip_joint, multiplier -1
 - parent: llink1
   child: llink2
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint llink_joint2 (mimic grip_joint x 1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L449-L455
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  notes: mimic of grip_joint, multiplier 1
 - parent: arm_link5
   child: llink3
   static: false
   publisher: /robot_state_publisher
   rate: 20
-  source: yahboomcar_X3plus.urdf joint llink_joint3 (mimic grip_joint x -1); https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  source:
+  - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L479-L485
+  - https://github.com/ros/robot_state_publisher/blob/85ed2140a0966f492a038d47f222f593047760c3/src/joint_state_listener.cpp#L154
+  notes: mimic of grip_joint, multiplier -1
 - parent: /laser_link
   child: /laser
   static: true
@@ -1710,8 +1737,8 @@ motions:
       FUNC_MOTION 0x12 with no adjust bit, Rosmaster_Lib.py L558-L577); the ranges are the library's documented X3PLUS
       input range. The firmware clamps vx and vy to +/-700 mm/s (app_motion.c L384-L392), converts to wheel speeds and
       clamps EACH WHEEL to +/-700 mm/s (app_mecanum.h L31, app_mecanum.c L45-L55); all-zero input brakes the motors
-      (protocol.c L520-L523, app_mecanum.c L34-L37). No IMU yaw-hold applies to /cmd_vel (amended; the
-      record said it did). The correction (ENABLE_YAW_ADJUST, app_motion.c L277-L289) runs only while g_yaw_adjust is
+      (protocol.c L520-L523, app_mecanum.c L34-L37). No IMU yaw-hold applies to /cmd_vel. The
+      correction (ENABLE_YAW_ADJUST, app_motion.c L277-L289) runs only while g_yaw_adjust is
       set, which only Mecanum_State does (app_mecanum.c L122-L124) for a FUNC_CAR_RUN command with the adjust bit
       (protocol.c L499-L507, Rosmaster_Lib set_car_run L537-L556, "not enabled" per its L532), which the boot never
       sends; FUNC_MOTION calls Mecanum_Ctrl, which ignores its adjust argument (protocol.c L511-L528, app_mecanum.c
@@ -1941,7 +1968,7 @@ sensors:
       basis: estimate
       source:
       - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
-      - yahboomcar_X3plus.urdf joint astra_joint
+      - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L71-L75
       notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
         extrinsic, estimated as zero
     hardware: Orbbec Astra Pro Plus colour sensor (MJPG 640x480@30 decoded to RGB888)
@@ -1986,7 +2013,7 @@ sensors:
       basis: estimate
       source:
       - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
-      - yahboomcar_X3plus.urdf joint astra_joint
+      - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L71-L75
       notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
         extrinsic, estimated as zero
     range_m:
@@ -2035,7 +2062,7 @@ sensors:
       basis: estimate
       source:
       - ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ob_camera_node.cpp#L694-L725
-      - yahboomcar_X3plus.urdf joint astra_joint
+      - ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L71-L75
       notes: optical frame at camera_link (URDF astra_joint); the colour-to-camera_link offset is the unit's factory
         extrinsic, estimated as zero
     hardware: Orbbec Astra Pro Plus IR sensor (native FoV 58.4 x 45.5 deg per Orbbec; the driver labels it with
@@ -2088,7 +2115,7 @@ sensors:
       - 3.1415
       - 1.5707
       basis: source
-      source: yahboomcar_X3plus.urdf joint base_imu
+      source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_description/urdf/yahboomcar_X3plus.urdf#L38-L42
     source: ROSMASTER-X3Plus_ROS1_code.zip!/yahboomcar_ws.zip!/yahboomcar_ws/src/yahboomcar_bringup/scripts/Mcnamu_X3plus.py#L64-L101
     notes: ICM20948 or MPU9250 on the expansion board; fused copy on /imu/data
 tolerances:

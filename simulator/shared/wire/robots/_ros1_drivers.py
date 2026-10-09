@@ -5,60 +5,14 @@ simulation's camera and lidar streams and publishing with the sample's acquisiti
 
 from __future__ import annotations
 
+import copy
 import math
 import time
 
 import numpy as np
 
 import common
-
-
-def camera_row(iface: dict, image_topic: str) -> dict:
-    for c in (iface.get("sensors") or {}).get("cameras") or []:
-        if c.get("image_topic") == image_topic:
-            return c
-    raise KeyError(image_topic)
-
-
-def fill_camera_info(info, cam: dict):
-    info.width, info.height = int(cam["width"]), int(cam["height"])
-    intr = cam.get("intrinsics") or {}
-    fx, fy = float(intr.get("fx", 0.0)), float(intr.get("fy", 0.0))
-    cx, cy = float(intr.get("cx", 0.0)), float(intr.get("cy", 0.0))
-    info.distortion_model = intr.get("distortion_model", "") or ""
-    d = [float(x) for x in intr.get("d") or []]
-    kname = "K" if hasattr(info, "K") else "k"
-    setattr(info, "D" if hasattr(info, "D") else "d", d)
-    setattr(info, kname, [fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0 if fx else 0.0])
-    setattr(info, "R" if hasattr(info, "R") else "r",
-            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0] if fx else [0.0] * 9)
-    setattr(info, "P" if hasattr(info, "P") else "p",
-            [fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0 if fx else 0.0, 0.0])
-    return info
-
-
-def encode(rgb: np.ndarray, encoding: str):
-    """(bytes, step) of an RGB frame in the recorded encoding."""
-    h, w, _ = rgb.shape
-    if encoding == "rgb8":
-        return rgb.tobytes(), w * 3
-    if encoding == "bgr8":
-        return rgb[:, :, ::-1].tobytes(), w * 3
-    if encoding in ("mono8",):
-        g = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2]).astype(np.uint8)
-        return g.tobytes(), w
-    if encoding in ("yuv422_yuy2", "yuyv"):
-        f = rgb.astype(np.float32)
-        y = 0.299 * f[:, :, 0] + 0.587 * f[:, :, 1] + 0.114 * f[:, :, 2]
-        u = -0.169 * f[:, :, 0] - 0.331 * f[:, :, 1] + 0.5 * f[:, :, 2] + 128
-        v = 0.5 * f[:, :, 0] - 0.419 * f[:, :, 1] - 0.081 * f[:, :, 2] + 128
-        out = np.empty((h, w * 2), np.uint8)
-        out[:, 0::4] = np.clip(y[:, 0::2], 0, 255)
-        out[:, 1::4] = np.clip((u[:, 0::2] + u[:, 1::2]) / 2, 0, 255)
-        out[:, 2::4] = np.clip(y[:, 1::2], 0, 255)
-        out[:, 3::4] = np.clip((v[:, 0::2] + v[:, 1::2]) / 2, 0, 255)
-        return out.tobytes(), w * 2
-    raise ValueError(f"unsupported encoding {encoding}")
+from robots._camera import camera_row, encode, fill_camera_info  # noqa: F401  (re-exported)
 
 
 def tf_message(rows, stamp: float):
@@ -109,7 +63,12 @@ class StaticTransformPublisher:
 
 class UsbCam:
     """usb_cam: the recorded camera's raw image and CameraInfo, from the simulation's
-    rendering of the model camera named after the image frame id."""
+    rendering of the model camera named after the image frame id.
+
+    Its CameraInfo is camera_info_manager's: the recorded calibration at start, and from a
+    `set_camera_info` call on, the calibration that call sent -- camera_info_manager stores
+    the request's camera_info (setCameraInfoService), answers success once it has saved it,
+    and usb_cam publishes it with every frame, header set to the frame's."""
 
     image_topic = None
 
@@ -139,23 +98,35 @@ class UsbCam:
         img.header.frame_id = c["frame_id"]
         img.height, img.width, img.encoding, img.is_bigendian, img.step = \
             h["height"], h["width"], c["encoding"], 0, step
-        if getattr(self.node, "dialect", "ros1") == "ros2":
-            import array
-
-            img.data = array.array("B", data)
-        else:
-            img.data = data
+        img.data = data
         self.node.publish(c["image_topic"], img)
-        if self.info is not None:
-            self.node.fill_header(self.info, c["info_topic"], h["stamp"])
-            self.node.publish(c["info_topic"], self.info)
+        info = self.info
+        if info is not None:
+            self.node.fill_header(info, c["info_topic"], h["stamp"])
+            self.node.publish(c["info_topic"], info)
 
     def on_service(self, name, req):
         if name.endswith("stop_capture"):
             self.capturing = False
         elif name.endswith("start_capture"):
             self.capturing = True
+        elif name.endswith("/set_camera_info") and self.info is not None:
+            return self._set_camera_info(req)
         return None
+
+    def _set_camera_info(self, req):
+        """camera_info_manager's setCameraInfoService: the request's camera_info becomes
+        the published calibration, every field of it (the header is the frame's when
+        published); the answer is success, as once the calibration is saved."""
+        from sensor_msgs.srv import SetCameraInfoResponse
+
+        info = self.node.new(self.cam["info_topic"])
+        sent = req.camera_info
+        for field in getattr(sent, "__slots__", None) or vars(sent):
+            if field != "header":
+                setattr(info, field, copy.deepcopy(getattr(sent, field)))
+        self.info = info      # one reference swap: a frame publishes the old or the new one
+        return SetCameraInfoResponse(success=True, status_message="")
 
 
 class YdLidar:

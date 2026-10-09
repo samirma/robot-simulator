@@ -45,8 +45,12 @@ def main():
             msg = cls()
             if t.get("camera"):
                 msg.height, msg.width, msg.encoding = 48, 64, t.get("encoding", "rgb8")
-                msg.step = msg.width * {"yuv422_yuy2": 2, "yuv422": 2, "mono8": 1, "rgba8": 4, "bgra8": 4}.get(msg.encoding, 3)
-                msg.data = bytes([(i * 7) % 256 for i in range(msg.step * msg.height)])
+                msg.step = msg.width * {"yuv422_yuy2": 2, "yuv422": 2, "mono8": 1, "rgba8": 4, "bgra8": 4, "16UC1": 2}.get(msg.encoding, 3)
+                if msg.encoding == "16UC1":               # little-endian millimetres, 0 = no depth, 70..500 mm
+                    n = msg.width * msg.height
+                    msg.data = b"".join((0 if i == 0 else 70 + round((i - 1) * 430 / (n - 2))).to_bytes(2, "little") for i in range(n))
+                else:
+                    msg.data = bytes([(i * 7) % 256 for i in range(msg.step * msg.height)])
             rate = t.get("rate_hz") or 1.0
             timers.append(rospy.Timer(rospy.Duration(1.0 / rate), lambda e, p=pub, m=msg: p.publish(m)))
     for s in spec.get("services", []):

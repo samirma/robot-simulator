@@ -96,7 +96,7 @@ boot:
     - {source: myagv_ros, path: myagv_odometry/launch/myagv_active.launch}
     - {source: usb_cam, path: nodes/usb_cam_node.cpp, role: approved community camera boot (rosrun with _camera_frame_id:=camera_link; no launch file)}
     - {source: myagv_ros, path: ydlidar_ros_driver/launch/X2.launch, role: included by myagv_active.launch (L25)}
-    - {source: myagv_ros, path: myagv_odometry/scripts/start_ydlidar.sh, role: "lidar power script (calls start_ydlidar.py, GPIO20)"}   # amended: role quoted (the unquoted comma split it into two keys)
+    - {source: myagv_ros, path: myagv_odometry/scripts/start_ydlidar.sh, role: "lidar power script (calls start_ydlidar.py, GPIO20)"}
     - {source: myagv_docs, path: MYAGV_PI_2023_EN/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.md, role: "documentation of the bring-up (L7-19)"}
   data_files:
     - {source: myagv_ros, path: myagv_urdf/urdf/myAGV.urdf, role: robot_description (textfile)}
@@ -273,8 +273,7 @@ topics:
     frame_id: ""
     notes: >-
       name [base_up], position [0.0] (the URDF's only movable joint, default position).
-      header.frame_id is empty: joint_state_publisher sets only the stamp (__init__.py#L217-L218;
-      amended: frame recorded).
+      header.frame_id is empty: joint_state_publisher sets only the stamp (__init__.py#L217-L218).
   - name: /tf
     type: tf2_msgs/TFMessage
     direction: out
@@ -310,7 +309,7 @@ topics:
       only when the filter updates with newer sensor data, so 30 Hz holds while /odom and /imu
       arrive faster than 30 Hz.
     frame_id: odom
-    child_frame_id: ""   # amended: recorded as a field (the notes state it)
+    child_frame_id: ""
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L436-L470
     notes: >-
       Pose from the EKF of /odom + /imu; twist copied from the last /odom; child_frame_id is left
@@ -405,7 +404,7 @@ topics:
     optional: true
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/navigation_active.launch#L13
     frame_id: map
-    notes: "amcl's global_frame_id, map (https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L1351; amended: frame recorded)"
+    notes: "amcl's global_frame_id, map (https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/amcl/src/amcl_node.cpp#L1351)"
   - name: /initialpose
     type: geometry_msgs/PoseWithCovarianceStamped
     direction: in
@@ -468,7 +467,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L97
     frame_id: map
-    notes: "the goal transformed into the global costmap's global_frame, map (goalToGlobalFrame, move_base.cpp#L542-L543, #L658-L668; amended: frame recorded)"
+    notes: "the goal transformed into the global costmap's global_frame, map (goalToGlobalFrame, move_base.cpp#L542-L543, #L658-L668)"
   - name: /move_base/recovery_status
     type: move_base_msgs/RecoveryStatus
     direction: out
@@ -542,7 +541,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/voxel_layer.cpp#L64
     frame_id: map
-    notes: "VoxelLayer (the global costmap's obstacle_layer); voxel_grid is not advertised (publish_voxel_map default false, L60-L62). Frame: the global costmap's global_frame, map (voxel_layer.cpp#L384; amended: frame recorded)"
+    notes: "VoxelLayer (the global costmap's obstacle_layer); voxel_grid is not advertised (publish_voxel_map default false, L60-L62). Frame: the global costmap's global_frame, map (voxel_layer.cpp#L384)"
   - name: /move_base/GlobalPlanner/plan
     type: nav_msgs/Path
     direction: out
@@ -568,7 +567,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L95
     frame_id: map
-    notes: "the global plan transformed into the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, #L413, goal_functions.cpp#L66; amended: frame recorded)"
+    notes: "the global plan transformed into the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, #L413, goal_functions.cpp#L66)"
   - name: /move_base/TrajectoryPlannerROS/local_plan
     type: nav_msgs/Path
     direction: out
@@ -577,7 +576,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L96
     frame_id: map
-    notes: "in the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, goal_functions.cpp#L66; amended: frame recorded)"
+    notes: "in the local costmap's global_frame, map (trajectory_planner_ros.cpp#L118, goal_functions.cpp#L66)"
   - name: /move_base/TrajectoryPlannerROS/cost_cloud
     type: sensor_msgs/PointCloud2
     direction: out
@@ -586,7 +585,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/map_grid_visualizer.cpp#L50-L51
     frame_id: map
-    notes: "sent each control cycle while executing, publish_cost_grid_pc true (base_local_planner_params.yaml L50); frame = the local costmap's global_frame, map (trajectory_planner_ros.cpp#L259-L260, map_grid_visualizer.cpp#L47, #L56; amended: frame recorded)"
+    notes: "sent each control cycle while executing, publish_cost_grid_pc true (base_local_planner_params.yaml L50); frame = the local costmap's global_frame, map (trajectory_planner_ros.cpp#L259-L260, map_grid_visualizer.cpp#L47, #L56)"
   # dynamic_reconfigure servers of the optional nodes and plugins
   - name: /amcl/parameter_descriptions
     type: dynamic_reconfigure/ConfigDescription
@@ -847,7 +846,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L55-L61
     frame_id: camera_link
-    notes: "encodes only depth encodings, so it publishes nothing for this rgb8 stream; it would carry the raw image header (codec.cpp#L215; amended: frame recorded)"
+    notes: "encodes only depth encodings, so it publishes nothing for this rgb8 stream; it would carry the raw image header (codec.cpp#L215)"
   - name: /usb_cam/image_raw/theora
     type: theora_image_transport/Packet
     direction: out
@@ -1302,7 +1301,7 @@ motions:
       date: 2026-09-30
       source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_odometry/src/myAGVSub.cpp#L4-L34
     feedback:
-      - {name: /odom, field: "pose.pose (x, y, yaw) and twist.twist"}   # amended: quoted (the unquoted commas split the field)
+      - {name: /odom, field: "pose.pose (x, y, yaw) and twist.twist"}
       - {name: /robot_pose_ekf/odom_combined, field: pose.pose}
     kinematics:
       type: mecanum
@@ -1314,12 +1313,13 @@ motions:
         w_fl = (vx - vy - (lx+ly) wz) / r;  w_fr = (vx + vy + (lx+ly) wz) / r;
         w_rl = (vx + vy - (lx+ly) wz) / r;  w_rr = (vx - vy + (lx+ly) wz) / r   (rad/s, positive = rolling forward)
       basis: estimate
-      source: robots_specs/myagv/import.md (wheel geometry measured on the official CAD mesh myagv_base.dae)
+      source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_urdf/urdf/myagv_base.dae
       notes: >-
         The MCU's own mixing is not published. The figures come from the official mesh (wheel
         diameter 80 mm, width 31.5 mm, wheel centres x +0.1124/-0.1014 m, y +0.09455/-0.10295 m
         in base_footprint) and the standard mecanum inverse kinematics; the roller handedness in
-        model.xml realises exactly this mixing.
+        model.xml realises exactly this mixing. The measurement on the mesh is in
+        robots_specs/myagv/import.md, "Wheels and mecanum rollers".
 
 sensors:
   cameras:
@@ -1410,7 +1410,7 @@ tolerances:
     basis: estimate
     notes: >-
       No manufacturer accuracy figure exists. Allows for the acceleration transient of the
-      unpublished MCU speed loop and mecanum roller slip; the derived model reached 95.6-97.3%
+      unpublished MCU speed loop and mecanum roller slip; the derived model reached 96.8-98.3%
       of the commanded 0.4 m at 0.2 m/s in a 2 s drive (import.md).
   - figure: drive rotation reported by /odom yaw after a timed /cmd_vel angular.z
     applies_to: motions[drive], /odom yaw vs commanded angular.z x duration

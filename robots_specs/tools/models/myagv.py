@@ -76,7 +76,7 @@ w('        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3"
 w('        <joint type="hinge" damping="1e-5" armature="1e-6" frictionloss="0"/>')
 w('      </default>')
 w('      <default class="wheel">')
-w('        <joint type="hinge" axis="0 1 0" damping="0.001" armature="1e-4"/>')
+w('        <joint type="hinge" axis="0 1 0" damping="0.001" armature="1e-3"/>')
 w('        <velocity kv="0.3" ctrlrange="%s" forcerange="-1.5 1.5"/>' % f(-WMAX, WMAX))
 w('      </default>')
 w('    </default>')

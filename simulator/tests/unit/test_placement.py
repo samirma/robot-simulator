@@ -15,7 +15,11 @@ import registry
 import robot_model
 import scenes
 import worktop_objects
+import worktop_survey
 from world import Instance, World
+
+#: the worktop robot of the robot specification
+ARM = "rebot_b601_rs"
 
 
 def scene_xml(extra: str = "", floor: str = '<geom name="floor" type="plane" size="4 4 .1"/>'):
@@ -45,6 +49,8 @@ def add(w, rid, pl):
 
 
 WORKTOP = '<body name="table" pos="0 0 0"><geom type="box" size="0.6 0.4 0.375" pos="1.5 0 0.375"/></body>'
+#: a top with room for the arm, not for the six objects around it
+STOOL = '<body name="stool"><geom type="box" size="0.15 0.15 0.375" pos="1.5 0 0.375"/></body>'
 BOXES = "".join(f'<body name="box_{i}_{j}" pos="{1.5 + x:.2f} {y:.2f} 0.80"><freejoint/>'
                 f'<geom type="box" size="0.04 0.04 0.04" mass="0.1"/></body>'
                 for i, x in enumerate(np.arange(-0.55, 0.56, 0.1))
@@ -67,20 +73,24 @@ def test_no_worktop_outside_table_height():
     w, s = make_world(scene_xml(low + high))
     assert s.worktop is None
     with pytest.raises(placement.Refused, match="no worktop"):
-        place(w, s, "so101", "worktop")
+        place(w, s, ARM, "worktop")
     assert w.robots == {}
 
 
 def test_arm_on_the_worktop_at_the_survey_spot_and_repeatable():
+    """The scene as `start` leaves it, its six objects at the survey's first spot: the arm
+    stands there among them, bringing and clearing nothing, the same for identical inputs."""
     w, s = make_world(scene_xml(WORKTOP))
-    a = place(w, s, "so101", "worktop")
-    b = place(w, s, "so101", "worktop")
+    w.stage_scene(placement.stage_objects(w, s))
+    a = place(w, s, ARM, "worktop")
+    b = place(w, s, ARM, "worktop")
     assert np.array_equal(a.xyz, b.xyz) and a.yaw == b.yaw
-    first = s.spots("so101")[0]
+    first = s.spots()[0]
     assert np.array_equal(a.xyz[:2], first.xy) and a.yaw == first.yaw
     assert a.surface_z == 0.75 and abs(a.xyz[2] - 0.75) < 0.003
-    assert a.staging is not None and a.staging.cleared == []
-    assert sorted(a.staging.poses()) == sorted(["apple", "plate", "bowl", "mug", "banana", "lemon"])
+    assert a.at_scene_objects and a.staging is None
+    assert sorted(w.scene_staging.poses()) == sorted(["apple", "plate", "bowl", "mug", "banana",
+                                                      "lemon"])
 
 
 def robot_frame_to_world(spot, shape, p):
@@ -110,16 +120,16 @@ def peg_distance(rm, p):
     return dist, any(np.all(p >= lo) and np.all(p <= hi) for lo, hi in boxes)
 
 
-@pytest.mark.parametrize("peg,taken", [((0.102, 0.021, 0.055), True), (None, False)],
+@pytest.mark.parametrize("peg,taken", [((0.072, 0.073, 0.114), True), (None, False)],
                          ids=["beside-a-part", "inside-a-part"])
 def test_worktop_clearance_is_judged_on_the_collision_geometry(peg, taken):
     """Spec §2.3: a worktop robot's clearance is judged on its own collision geometry, not
     on its bounding box: a fixed 4 mm peg inside the box of one of its parts but clear of
     every collision geom leaves the survey's first spot to it; one inside a part does not."""
-    rm = load("so101")
-    if peg is None:   # a point inside the shoulder: its centre of mass
+    rm = load(ARM)
+    if peg is None:   # a point inside the first link: its centre of mass
         m = rm.spec.copy().compile()
-        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "shoulder_link")
+        b = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, "link1")
         d = mujoco.MjData(m)
         mujoco.mj_forward(m, d)
         peg = d.xipos[b]
@@ -127,18 +137,26 @@ def test_worktop_clearance_is_judged_on_the_collision_geometry(peg, taken):
     assert in_box
     assert (dist > 0) if taken else (dist < -0.001), dist
     _, s0 = make_world(scenes.TEST_SCENE_XML)
-    first = s0.spots("so101")[0]
+    first = s0.spots()[0]
     at = robot_frame_to_world(first, robot_model.shape(rm), peg)
     w, s = make_world(scenes.TEST_SCENE_XML.replace(
         "</worldbody>", f'<geom name="peg" type="sphere" size="0.004" '
                         f'pos="{at[0]} {at[1]} {at[2]}"/></worldbody>'))
     # that spot alone (the survey itself would rank the spots differently with the peg)
     if taken:
-        pl = placement.place(w, s, rm, "worktop", False, "so101/", spots=[first])
+        pl = placement.place(w, s, rm, "worktop", False, ARM + "/", spots=[first])
         assert np.allclose(pl.xyz[:2], first.xy) and pl.yaw == first.yaw
     else:
         with pytest.raises(placement.Refused, match="peg"):
-            placement.place(w, s, rm, "worktop", False, "so101/", spots=[first])
+            placement.place(w, s, rm, "worktop", False, ARM + "/", spots=[first])
+
+
+def with_camera(rm):
+    """The arm with a camera on its base looking forward and down (the reBot Arm B601-RS
+    has none; camera clearance applies to every camera an arm has)."""
+    rm.spec.body(rm.root).add_camera(name="eye", pos=[0.05, 0.0, 0.25], fovy=60.0,
+                                     xyaxes=[0, -1, 0, 0.7071, 0, 0.7071])
+    return rm
 
 
 def test_the_scene_objects_are_no_camera_obstacle_for_an_arm_among_them():
@@ -146,32 +164,38 @@ def test_the_scene_objects_are_no_camera_obstacle_for_an_arm_among_them():
     fits where the scene's objects are stands there, even with one of them (moved by
     physics) right in front of its camera."""
     w, s = make_world(scenes.TEST_SCENE_XML)
-    rm = load("so101")
-    pl = placement.place(w, s, rm, "worktop", False, "so101/")
-    w.stage_scene(pl.staging)
+    rm = with_camera(load(ARM))
+    w.stage_scene(placement.stage_objects(w, s))
+    pl = placement.place(w, s, rm, "worktop", False, ARM + "/")
+    assert pl.at_scene_objects
     shape = robot_model.shape(rm)
     _name, cpos, cmat, _fovy, _res = shape.cameras[0]
     spot = types.SimpleNamespace(xy=pl.xyz[:2], z=pl.surface_z, yaw=pl.yaw)
     target = robot_frame_to_world(spot, shape, cpos + 0.3 * -cmat[:, 2])
-    mug = pl.staging.poses()["mug"][0]
+    mug = w.scene_staging.poses()["mug"][0]
     j = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_JOINT, "task_mug_joint")
     a = w.model.jnt_qposadr[j]
     w.data.qpos[a:a + 3] = [target[0], target[1], mug[2]]       # standing on the top
     mujoco.mj_forward(w.model, w.data)
+    # the camera does see it, within the clearance distance (rays that counted every geom
+    # would hit it), and that is no hit
     ctx = placement.Context(w, s, rm, shape, False)
+    ctx._counted = np.ones(w.model.ngeom, bool)
     hits = placement._camera_rays(ctx, pl.xyz, pl.yaw, pl.surface_z, set(pl.support_geoms))
-    assert any(h[1].startswith("task_mug") for h in hits), hits    # the camera does see it
-    again = placement.place(w, s, rm, "worktop", False, "so101/")
+    assert any(h[1].startswith("task_mug") for h in hits), hits
+    ctx = placement.Context(w, s, rm, shape, False)
+    assert placement._camera_rays(ctx, pl.xyz, pl.yaw, pl.surface_z, set(pl.support_geoms)) == []
+    again = placement.place(w, s, rm, "worktop", False, ARM + "/")
     assert again.at_scene_objects and again.staging is None
     assert np.allclose(again.xyz[:2], w.scene_staging.frame_pos[:2])
 
 
 def test_occupied_worktop_is_refused():
     w, s = make_world(scene_xml(WORKTOP))
-    add(w, "so101", place(w, s, "so101", "worktop"))
-    with pytest.raises(placement.Refused, match="already holds so101"):
+    add(w, ARM, place(w, s, ARM, "worktop"))
+    with pytest.raises(placement.Refused, match=f"already holds {ARM}"):
         place(w, s, "myagv", "worktop")
-    assert list(w.robots) == ["so101"]
+    assert list(w.robots) == [ARM]
 
 
 def test_worktop_with_no_clear_spot_is_refused():
@@ -184,44 +208,199 @@ def test_worktop_with_no_clear_spot_is_refused():
     assert w.robots == {}
 
 
-def test_worktop_robot_clears_the_loose_objects_in_its_working_area():
+def test_staging_clears_the_loose_objects_in_its_working_area():
+    """The scene's six objects are staged with the loose objects in their working area
+    cleared (spec §2.2): on a top covered with boxes, exactly those within the clearing
+    radius; an arm then stands among the objects, clearing nothing more."""
     w, s = make_world(scene_xml(WORKTOP + BOXES))
     for _ in range(300):
         mujoco.mj_step(w.model, w.data)
-    pl = place(w, s, "so101", "worktop")
+    st = placement.stage_objects(w, s)
     near = []
-    inv = np.linalg.inv(worktop_objects.base_frame(pl.staging.frame_pos, pl.staging.yaw))
+    inv = np.linalg.inv(worktop_objects.base_frame(st.frame_pos, st.yaw))
     for b in range(w.model.nbody):
         name = w.model.body(b).name
         if name.startswith("box_"):
             local = inv @ np.array([*w.data.xpos[b], 1.0])
             if np.hypot(local[0], local[1]) <= worktop_objects.CLEAR_RADIUS:
                 near.append(name)
-    assert near and pl.staging.cleared == near
+    assert near and st.cleared == near
+    w.stage_scene(st)
+    pl = place(w, s, ARM, "worktop")
+    assert pl.at_scene_objects and pl.staging is None
 
 
 def test_arm_refused_when_every_spot_intersects_the_scene():
     # a slab 0.15 m over the whole table (a fixed world geom, so not a surface the survey
-    # would stand the arm on): no arm fits under it
+    # would stand the arm on): no arm fits under it. The refusal names the slab, whether as
+    # the arm's interpenetration or as what its wrist camera (which looks forward and down
+    # over the worktop) sees within the camera clearance.
     slab = '<geom name="slab" type="box" size="0.7 0.5 0.01" pos="1.5 0 0.91"/>'
     w, s = make_world(scene_xml(WORKTOP + slab))
-    with pytest.raises(placement.Refused, match="placement refused: .*so101.*interpenetration: .*slab"):
-        place(w, s, "so101", "worktop")
+    with pytest.raises(placement.Refused, match=f"placement refused: .*{ARM}.*(interpenetration: .*slab|sees slab)"):
+        place(w, s, ARM, "worktop")
     assert w.robots == {}
+
+
+def block_the_scene_objects_spot(w):
+    """A fixed post where the arm's base would stand among the scene's objects, put into
+    the live world after `start` staged them: no arm fits there any more."""
+    x, y = map(float, w.scene_staging.frame_pos[:2])
+    with w.lock:
+        w.spec.worldbody.add_body(name="post", pos=[x, y, 0.85]).add_geom(
+            name="post", type=mujoco.mjtGeom.mjGEOM_BOX, size=[0.03, 0.03, 0.09])
+        m, d = w.spec.recompile(w.model, w.data)
+        mujoco.mj_forward(m, d)
+        w._swap(m, d)
 
 
 def test_arm_refused_when_its_objects_would_not_stand_on_the_worktop():
-    # room for the arm, not for the six objects around it
-    small = '<body name="stool"><geom type="box" size="0.15 0.15 0.375" pos="1.5 0 0.375"/></body>'
-    w, s = make_world(scene_xml(small))
-    assert s.worktop is not None
+    """An arm that does not fit where the scene's objects are takes them to a spot where it
+    fits (spec §2.3): a spot with room for the arm but not for the six objects around it --
+    on a stool beside the table -- is refused."""
+    stool = STOOL.replace('pos="1.5 0 0.375"', 'pos="-1.5 0 0.375"')
+    alone = make_world(scene_xml(stool))
+    on_stool = place(*alone, ARM, "worktop")                 # the arm alone fits there
+    assert on_stool.staging is None and on_stool.surface == "worktop"
+    spot = worktop_survey.Spot(xy=on_stool.xyz[:2].copy(), z=on_stool.surface_z,
+                               yaw=on_stool.yaw, surface="stool", why="the arm alone fits")
+    w, s = make_world(scene_xml(WORKTOP + stool))
+    w.stage_scene(placement.stage_objects(w, s))
+    block_the_scene_objects_spot(w)
     with pytest.raises(placement.Refused, match="staged .* unsupported"):
-        place(w, s, "so101", "worktop")
+        placement.place(w, s, load(ARM), "worktop", False, ARM + "/", spots=[spot])
     assert w.robots == {}
 
 
+def free_state(w, body):
+    b = mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_BODY, body)
+    j = w.model.body_jntadr[b]
+    if w.model.body_jntnum[b] == 0:
+        return None
+    a, v = w.model.jnt_qposadr[j], w.model.jnt_dofadr[j]
+    return w.data.qpos[a:a + 7].copy(), w.data.qvel[v:v + 6].copy()
+
+
+#: a ledge beside the stool (a geom of the world body: no surface the survey stands
+#: anything on) holding a loose box within the area a staging on the stool would clear
+LEDGE = ('<geom name="ledge" type="box" size="0.15 0.08 0.01" pos="1.5 -0.45 0.69"/>'
+         '<body name="box" pos="1.5 -0.45 0.74"><freejoint name="box_free"/>'
+         '<geom type="box" size="0.03 0.03 0.04" mass="0.1"/></body>')
+
+
+def test_an_arm_in_a_scene_without_worktop_objects_stands_alone():
+    """Spec §2.3: a robot's spawn never brings the six objects. A scene whose staging was
+    refused at start (§2.2: a stool too small for them) has none, and an arm is placed
+    there alone: no objects added, nothing cleared -- the loose box their staging would
+    clear keeps its free joint and its state -- and the world takes no staging there."""
+    w, s = make_world(scene_xml(STOOL + LEDGE))
+    for _ in range(200):
+        mujoco.mj_step(w.model, w.data)
+    with pytest.raises(placement.Refused, match="six worktop objects"):
+        placement.stage_objects(w, s)
+    assert w.scene_staging is None
+    pl = place(w, s, ARM, "worktop")
+    assert pl.staging is None and not pl.at_scene_objects
+    assert "none staged, nothing cleared" in pl.report[0]
+    frame_pos, frame_yaw = worktop_objects.frame_of(pl.xyz[:2], pl.surface_z, pl.yaw)
+    assert worktop_objects.plan_clear(w.model, w.data, frame_pos, frame_yaw, keep=set()) == ["box"]
+    nbody, box = w.model.nbody, free_state(w, "box")
+    inst = add(w, ARM, pl)
+    assert w.model.nbody == nbody + len(w.robot_body_ids(inst))
+    for body in worktop_objects.BODIES.values():
+        assert mujoco.mj_name2id(w.model, mujoco.mjtObj.mjOBJ_BODY, body) < 0, body
+    now = free_state(w, "box")
+    assert now is not None and np.array_equal(now[0], box[0]) and np.array_equal(now[1], box[1])
+    other = Instance("other", load(ARM), "other/", "worktop", pl.xyz, pl.yaw)
+    model = w.model
+    with pytest.raises(ValueError, match="has none"):
+        w.add(other, staging=worktop_objects.Staging(frame_pos, frame_yaw, ["box"]))
+    assert w.model is model and list(w.robots) == [ARM]
+
+
+def test_scene_objects_are_staged_at_the_first_clear_survey_spot_or_not_at_all():
+    """Spec §2.2: the scene stages its six objects, with no robot, at the first of the
+    reference survey's spots where all six stand on the surface free of interpenetration
+    -- past a spot a fixed post blocks -- and nowhere when no spot leaves every object
+    supported."""
+    w, s = make_world(scene_xml(WORKTOP))
+    first = s.spots()[0]
+    st = placement.stage_objects(w, s)
+    assert np.allclose(st.frame_pos[:2], first.xy) and st.yaw == first.yaw and w.robots == {}
+    plate = st.poses()["plate"][0]
+    post = (f'<geom name="post" type="box" size="0.02 0.02 0.05" '
+            f'pos="{plate[0]} {plate[1]} 0.80"/>')
+    w2, s2 = make_world(scene_xml(WORKTOP + post))
+    st2 = placement.stage_objects(w2, s2)
+    assert not np.allclose(st2.frame_pos[:2], first.xy)
+    k = next(i for i, sp in enumerate(s2.spots()) if np.allclose(sp.xy, st2.frame_pos[:2])
+             and sp.yaw == st2.yaw)
+    for sp in s2.spots()[:k]:
+        staging = worktop_objects.Staging(*worktop_objects.frame_of(sp.xy, sp.z, sp.yaw))
+        assert placement._penetrations(w2, None, "", None, sp.yaw, (), sp.z, staging)
+    small = '<body name="stool"><geom type="box" size="0.15 0.15 0.375" pos="1.5 0 0.375"/></body>'
+    w3, s3 = make_world(scene_xml(small))
+    with pytest.raises(placement.Refused, match="six worktop objects .*unsupported"):
+        placement.stage_objects(w3, s3)
+
+
+def test_the_worktop_searches_are_bounded():
+    """Spec §2.2, §2.3: the scene's objects are staged at the first clear spot among the
+    survey's first 40, or not at all; an arm is tried at the survey's first 600 spots, and
+    its search ends at the 40th supported, camera-clear spot where it or its objects do not
+    fit."""
+    assert placement.STAGING_SPOTS == 40
+    assert placement.MAX_WORKTOP_SPOTS == 600 and placement.MAX_WORKTOP_TRIALS == 40
+    w, s = make_world(scene_xml(WORKTOP))
+    plate = placement.stage_objects(w, s).poses()["plate"][0]
+    post = (f'<geom name="post" type="box" size="0.02 0.02 0.05" '
+            f'pos="{plate[0]} {plate[1]} 0.80"/>')
+    w2, s2 = make_world(scene_xml(WORKTOP + post))
+    staged = placement.stage_objects(w2, s2)
+    good = next(sp for sp in s2.spots() if np.allclose(sp.xy, staged.frame_pos[:2])
+                and sp.yaw == staged.yaw)
+    blocked = s2.spots()[0]                      # the post stands on its plate
+    assert not np.allclose(blocked.xy, good.xy)
+    away = worktop_survey.Spot(xy=np.array([3.5, 3.5]), z=0.75, yaw=0.0, surface="floor",
+                               why="no worktop under it")
+    # staging: the first 40 spots
+    s2._spots = [blocked] * 39 + [good]
+    assert np.allclose(placement.stage_objects(w2, s2).frame_pos[:2], good.xy)
+    s2._spots = [blocked] * 40 + [good]
+    with pytest.raises(placement.Refused, match="six worktop objects"):
+        placement.stage_objects(w2, s2)
+    # an arm that does not fit where the scene's objects are (a post where its base would
+    # stand), so it takes them along: blocked at that spot, it fits at a later one
+    w3, s3 = make_world(scene_xml(WORKTOP))
+    w3.stage_scene(placement.stage_objects(w3, s3))
+    block_the_scene_objects_spot(w3)
+    blocked = s3.spots()[0]
+    assert np.allclose(blocked.xy, w3.scene_staging.frame_pos[:2])
+    rm = load(ARM)
+
+    def arm(spots):
+        pl = placement.place(w3, s3, rm, "worktop", False, ARM + "/", spots=spots)
+        assert pl.staging is not None and not pl.at_scene_objects   # the objects come along
+        return pl
+
+    def fits(spot):
+        try:
+            return arm([spot]) is not None
+        except placement.Refused:
+            return False
+
+    good = next(sp for sp in s3.spots()[1:] if fits(sp))
+    assert np.allclose(arm([blocked] * 39 + [good]).xyz[:2], good.xy)
+    with pytest.raises(placement.Refused, match="no clear spot"):
+        arm([blocked] * 40 + [good])
+    assert np.allclose(arm([away] * 599 + [good]).xyz[:2], good.xy)
+    with pytest.raises(placement.Refused, match="no clear spot"):
+        arm([away] * 600 + [good])
+    assert w3.robots == {}
+
+
 def test_mobile_robot_on_a_worktop_too_small_for_its_travel_is_placed():
-    """No travel requirement on the worktop (spec §2.3, amended): the robot
+    """No travel requirement on the worktop (spec §2.3): the robot
     stands on a top too small to drive on, supported and clear; on the floor it is held to
     its travel."""
     small = '<body name="small"><geom type="box" size="0.25 0.25 0.375" pos="1.5 0 0.375"/></body>'
@@ -324,6 +503,54 @@ def test_camera_clearance_counts_furniture_but_not_the_support_surface():
     ctx2 = placement.Context(w2, s2, rm, robot_model.shape(rm), True)
     hits = placement._camera_rays(ctx2, np.zeros(3), 0.0, 0.0, floor)
     assert hits and all(h[1] == "cupboard" and h[2] <= placement.CAMERA_CLEARANCE for h in hits)
+
+
+def test_camera_clearance_counts_only_furniture_walls_and_earlier_robots():
+    """Spec §2.3: a hit on furniture, walls or earlier robots counts; a loose object small
+    enough to grasp (an apple, a box) does not, nor do the six worktop objects for a robot
+    on the floor; a loose body too big to grasp (a stool) is furniture and counts."""
+    rm = load("myagv")
+    shape = robot_model.shape(rm)
+    floor = frozenset({0})
+
+    def hits(extra, every=False):
+        w, s = make_world(scene_xml(extra))
+        ctx = placement.Context(w, s, rm, shape, True)
+        if every:      # rays that counted every geom
+            ctx._counted = np.ones(w.model.ngeom, bool)
+        return placement._camera_rays(ctx, np.zeros(3), 0.0, 0.0, floor)
+
+    small = ('<body name="apple" pos="0.45 0 0.12"><freejoint/>'
+             '<geom name="apple" type="box" size="0.04 0.14 0.12" mass="0.1"/></body>')
+    stool = ('<body name="stool" pos="0.45 0 0.35"><freejoint/>'
+             '<geom name="stool_seat" type="box" size="0.2 0.2 0.35" mass="3"/></body>')
+    cupboard = '<geom name="cupboard" type="box" size="0.05 0.5 0.5" pos="0.6 0 0.5"/>'
+    assert {h[1] for h in hits(small, every=True)} == {"apple"}
+    assert hits(small) == []
+    assert hits(stool) and {h[1] for h in hits(stool)} == {"stool_seat"}
+    assert {h[1] for h in hits(cupboard)} == {"cupboard"}
+    # the six worktop objects, staged on a low table right in front of the camera
+    table = '<body name="table"><geom type="box" size="0.6 0.4 0.03" pos="1.0 0 0.12"/></body>'
+    w, s = make_world(scene_xml(table))
+    st = worktop_objects.Staging(*worktop_objects.frame_of(np.array([0.55, 0.0]), 0.15, 0.0))
+    w.stage_scene(st)
+    ctx = placement.Context(w, s, rm, shape, True)
+    ctx_all = placement.Context(w, s, rm, shape, True)
+    ctx_all._counted = np.ones(w.model.ngeom, bool)
+    support = frozenset({0}) | {g for g in range(w.model.ngeom)
+                                if w.model.body(w.model.geom_bodyid[g]).name == "table"}
+    seen = {h[1] for h in placement._camera_rays(ctx_all, np.zeros(3), 0.0, 0.0, support)}
+    assert any(n.startswith("task_") for n in seen), seen      # the camera does see them
+    assert placement._camera_rays(ctx, np.zeros(3), 0.0, 0.0, support) == []
+    # an earlier robot (a floating body, as small as a loose object would be) counts
+    w, s = make_world(scene_xml())
+    other = add(w, "myagv", placement.Placement(
+        np.array([0.55, 0.0, -shape.lo[2] + 0.0005]), 0.0, "floor", 0.0, (0,)))
+    ctx = placement.Context(w, s, rm, shape, True)
+    found = placement._camera_rays(ctx, np.zeros(3), 0.0, 0.0, floor)
+    mine = {g for g in range(w.model.ngeom) if w.model.geom_bodyid[g] in w.robot_body_ids(other)}
+    names = {w.model.geom(g).name or f"geom {g}" for g in mine}
+    assert found and all(h[1] in names for h in found), found
 
 
 def test_camera_clearance_refusal():

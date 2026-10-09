@@ -42,13 +42,13 @@ single body with one interface, served on `--port`:
 | id | wire | mobile? | default evidence placement |
 | --- | --- | --- | --- |
 | `myagv` | ROS 1 Noetic | yes | floor |
-| `so101` | ROS 2 Jazzy | arm | worktop |
+| `rebot_b601_rs` | ROS 2 Jazzy | arm | worktop |
 | `ainex` | ROS 1 Noetic | yes (humanoid) | floor |
 | `rosmaster_x3_plus` | ROS 1 Noetic | yes | floor |
 
 `spawn.sh` prints one readiness line when the wire serves its recorded interface -- every
-recorded node, topic, service and action on its graph, its boot's one-shot steps done
-and every recorded periodic output delivering samples -- e.g.
+recorded node, topic, service and action on its graph and every recorded periodic output
+delivering samples -- e.g.
 
 ```
 spawn ready: myagv (myAGV) in molmospaces ithor:1 on the floor; wire(s): myagv ws://127.0.0.1:9090 [ROS 1 noetic]
@@ -117,7 +117,7 @@ own kitchen objects on its counters:
   fetched), each upright on a free spot of a counter top (`Counter.get_reset_regions()`),
   about eight per square metre of counter and at most 24, not touching one another -- the
   same draw for the same layout and style. They are loose objects like any other, and they
-  stay where they are set (spec §2.1, amended):
+  stay where they are set (spec §2.1):
   * RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of the scene
     as one problem. RoboCasa's lightest objects (a 1.2 g straw and sugar cube, 3-7 g shrimp,
     marshmallows, cookie-dough balls) came off their first contacts with the counters at
@@ -152,25 +152,41 @@ RoboCasa the roomiest counter region of `Counter.get_reset_regions`. `ithor:1`: 
 
 ## The worktop objects and the arms
 
-The six worktop objects are part of the scene: `start` stages them on the worktop, around
-the spot the SO-101 is placed at, before any robot is spawned, and they stay there through
-every spawn and removal. A scene with no worktop has none.
+The six worktop objects are part of the scene: `start` stages them on the worktop, at
+their staging spot, with no robot involved, and they stay there through every spawn and
+removal. A scene with no worktop has none.
 
-**Where.** The survey ranks spots, the reference's own choice first; `shared/placement.py`
-tries them in order and takes the first one that is supported, clear (the robot's own
-collision geometry against the scene, after clearing, in a trial compile), camera-clear
-and that leaves every object standing on the surface. The SO-101's spot frames the
-scene's objects. An arm spawned on the worktop is first tried there, among them; the SO-101
-fits there on the default scenes and then leaves the objects untouched:
+**Where.** The survey ranks spots for the reference project's own arm mount (reach
+0.15-0.35 m, radius 0.20 m, height 0.45 m, footprint 0.14 m, forward workspace 0.45 m;
+`worktop_survey.REF_MOUNT`), the reference's own choice first; of them only those on the
+worktop are worktop spots (the reference's search goes on over other table-height tops and
+other counter regions, `worktop_survey.candidates` leaves those out). The objects' staging spot
+is the first of them where all six stand on the surface clear of the scene and of one
+another (`placement.stage_objects`, a trial compile of the staging alone; only the first
+40 spots are tried, and with none clear the scene starts without the objects, saying so)
+-- on the default scenes the reference's choice, where the reference stood its arm. An
+arm (any robot of kind `arm`) spawned on the worktop is first tried there, among the
+objects; if it does not fit, `shared/placement.py` tries the survey's spots in order and
+takes the first one that is supported, clear (the robot's own collision geometry against
+the scene, after clearing, in a trial compile), camera-clear and that leaves every object
+standing on the surface. The search is bounded, as the spec states: the first 600 spots,
+ending at the 40th supported, camera-clear spot whose trial compile fails (a trial
+compile takes about 0.1 s for the staging and 0.5 s with the robot on `ithor:1`, whose
+survey ranks 217 spots on the island (701 over every top), and about 1.3 s and a few
+seconds on `robocasa:1-1`, with 88 on the counter run (203 over every counter region),
+on a loaded host):
 
-| Scene | so101 |
-| --- | --- |
-| `ithor:1` | island (-0.382, 0.218), z 1.100, yaw 0 deg -- the reference's spot, exactly |
-| `robocasa:1-1` | counter (2.231, -0.200), z 0.920, yaw -90 deg -- the reference's spot, exactly |
+| Scene | the objects' staging spot | rebot_b601_rs |
+| --- | --- | --- |
+| `ithor:1` | island (-0.382, 0.218), z 1.100, yaw 0 deg -- the reference's spot, exactly | at the objects |
+| `robocasa:1-1` | counter (2.231, -0.200), z 0.920, yaw -90 deg -- the reference's spot, exactly | (2.202, -0.260), yaw -60 deg: its folded home pose, 0.26 m behind its base, reaches into the wall behind the objects' spot, and the spot before this one (2.252, -0.410) no longer clears its wrist camera |
+| `test:1` | (1.540, 0.140), z 0.750, yaw -60 deg | at the objects |
 
-An arm that does not fit among them is placed at its own survey spot instead, and for as
-long as it is there the six objects stand around it at the same poses in its base frame,
-the loose objects in that area cleared as well.
+An arm that does not fit among them is placed instead at the first of the survey's spots
+where it fits, and for as long as it is there the six objects stand around it at the same poses in its base frame,
+the loose objects in that area cleared as well. In a scene that started without them an
+arm stands alone at the first of the survey's spots where it fits: no objects come with
+it and nothing is cleared.
 
 **What.** `shared/worktop_objects.py` stages, in that spot's base frame (4 mm above the
 top face), the reference's apple (a 20 mm sphere with its tuned contact, under a YCB mesh),
@@ -195,9 +211,9 @@ cleared; every other robot and object keeps its state.
 files) into `shared/objects/ycb/`, verifies them against `shared/objects/ycb.sha256` and
 refuses on a mismatch. `python3 simulator/shared/tools/fetch_objects.py --check` verifies
 only. On a scene with a worktop, `start` refuses (exit 2, before its ready line) when
-these meshes or the SO-101's files are missing, with a message naming `run.sh setup`. If
-no spot on the worktop fits the objects, `start` runs without them and logs `no worktop
-objects staged`.
+these meshes are missing, with a message naming `run.sh setup`. If no spot on the worktop
+fits the objects, `start` runs without them and logs `no worktop objects staged`; an arm
+spawned there stands alone.
 
 ## Control port (`--sim-port`, default 9080) -- simulator-private
 
@@ -221,21 +237,21 @@ Operations (all fields JSON):
 | op | request | reply |
 | --- | --- | --- |
 | `hello` | | `engine`, `scene`, `sim_time`, `floor_z`, `worktop` (`name`, `z`, `area_m2`, `centroid`, `bounds`) or null, `robots`, `starting`, `rtf` |
-| `robots` | | `robots`: `[{id, state (pending/running), placement, xyz, yaw, ports, prefix, staged, cleared}]` -- `staged`: `{object: {body, pos, quat}}`, the worktop objects an arm stands among (empty for others), `cleared`: the scene bodies cleared for them |
-| `scene` | | model counts (`nbody`, `ngeom`, `nmesh`, ...), `scene_nbody`, `free_bodies` (loose objects, staged ones included), `staging` (`{robot: {staged, cleared}}` for each arm on the worktop, and `scene`: the scene's own six objects as staged at start and what was cleared for them), `worktop`, `sim_time`, `rtf` |
+| `robots` | | `robots`: `[{id, state (pending/running), placement, xyz, yaw, ports, prefix, staged, cleared, frame}]` -- `staged`: `{object: {body, pos, quat}}`, the worktop objects an arm stands among (empty for others), `cleared`: the scene bodies cleared for them, `frame`: the spot they are staged at (`{xy, z (the top face), yaw}`, or null) |
+| `scene` | | model counts (`nbody`, `ngeom`, `nmesh`, ...), `scene_nbody`, `free_bodies` (loose objects, staged ones included), `staging` (`{robot: {staged, cleared, frame}}` for each arm on the worktop, and `scene`: the scene's own six objects as staged at start, what was cleared for them and their staging spot), `worktop`, `sim_time`, `rtf` |
 | `readings` | `robot` | `joints`: `{name: {position, velocity, effort}}`; `base`: `{pos, quat (w,x,y,z), linvel_world, angvel_world, linvel_local, angvel_local}` of the robot's top body; `bodies`: `{name: {pos, quat}}` of every body of the robot; `sites`; `ctrl` (actuator targets); `stamp` (wall time), `sim_time` |
 | `bodies` | `names: [..]` | world poses of any named bodies (scene objects included) |
 | `rtf` | `since?` (epoch s) | `rtf` (the last window's), `window_s` (10), `warn_below` (0.9), `windows`: `[[wall start, wall end, rtf], ...]` of every completed window ending at or after `since` (the last hour) |
 | `render` | `view`, `width`, `height`, `format` (`png` default, `rgb`, `depth`) | payload: PNG bytes, raw RGB (`height*width*3`), or float32 metres (`height*width`) |
 | `describe` | `robot` | joints, actuators (`position`/`velocity`), cameras (name, fovy, resolution), sites |
-| `spawn` | `robot`, `placement`, `ports` | `robot`, `token`, `prefix`, `xyz`, `yaw`, `surface_z`, `placement`, `staged`, `cleared` (as in `robots`); the connection holds the robot until `remove` or until it closes |
-| `commit`, `remove`, `precheck`, `wire`, `ctrl`, `subscribe` | | used by `spawn.sh` and the wires |
+| `spawn` | `robot`, `placement`, `ports` | `robot`, `token`, `prefix`, `xyz`, `yaw`, `surface_z`, `placement`, `staged`, `cleared`, `frame` (as in `robots`); the connection holds the robot until `remove` or until it closes |
+| `commit`, `remove`, `precheck`, `wire`, `ctrl`, `subscribe` | | used by `spawn.sh` and the wires; a `state` subscription (`joints`, `base`, `sites`, `imu_sites`) also gives each joint's gravity compensation force with `gravcomp: true` (`gravcomp`: `{joint: N or N m}`, MuJoCo's `qfrc_gravcomp`) |
 
 `view` is one of: `{"frame_robot": id, "elevation": -30}` (in front of the robot, turning
 until the line of sight is clear), `{"camera": "<robot id>/<camera>"}` (a robot camera
 exactly as its wire renders it; cameras are named after their image frame ids:
-`myagv/camera_link`, `so101/default_cam`, `ainex/camera`,
-`rosmaster_x3_plus/camera_color_optical_frame`), `{"lookat": [x,y,z], "distance": d,
+`myagv/camera_link`, `ainex/camera`, `rosmaster_x3_plus/camera_color_optical_frame`,
+`rebot_b601_rs/camera_color_optical_frame`), `{"lookat": [x,y,z], "distance": d,
 "azimuth": deg, "elevation": deg}`, or `{"pos": [x,y,z], "target": [x,y,z], "fovy": deg?}`.
 
 Example (Python, any python3):
@@ -257,17 +273,26 @@ sources (base images by digest; every ROS package from a dated snapshots.ros.org
 of the ROS repository, never the live one: noetic 2025-05-29, jazzy 2026-09-11;
 rosbridge_suite 0.11.17 on Noetic, 2.7.1 on Jazzy; the stock
 packages the boots run also pinned by the releases their interface files cite, and on
-Jazzy ros2_control 4.48.1 and geometry2's tf2/tf2_ros 0.36.23, which no snapshot carries,
-built from their recorded revisions) and started with the
-simulator code mounted read-only. Its ROS graph holds every non-optional node of the robot's interface file with
-the recorded names, types, frames, parameters and rates, plus ROS infrastructure
+Jazzy geometry2's tf2/tf2_ros 0.36.23, rmw 7.3.4 and launch 3.4.12, which no snapshot
+carries, built from their recorded revisions; every Ubuntu package from a dated
+snapshot.ubuntu.com snapshot of the Ubuntu archive, never the live one: focal
+20261002T223000Z, noble 20261008T213000Z, the archive the images were built and checked
+against; a robot's vendor workspace at its recorded revisions in its own layer,
+`docker/<id>/Dockerfile`, which installs from its base image's snapshots) and started with
+the simulator code mounted read-only. An image's tag is a hash of its definition (a layer's
+also of its base's tag), so a changed Dockerfile is rebuilt on the next spawn; superseded
+images stay until removed with `docker image rm`. Ubuntu keeps archive snapshots for at
+least two years; moving a snapshot forward is a change of the image definition.
+
+A wire's ROS graph holds every non-optional node of the robot's interface file with the
+recorded names, types, frames, parameters and rates, plus ROS infrastructure
 (rosbridge_websocket, rosapi, rosout). Where the recorded boot runs vendor or stock code
 that needs no hardware, that code runs unchanged; hardware is simulated underneath it:
 
 | Robot | Real code on the wire | Simulated |
 | --- | --- | --- |
 | myAGV | joint_state_publisher, robot_state_publisher, tf static publishers, the vendor's modified robot_pose_ekf (built from myagv_ros `c71f3cc5`) | `/myagv_odometry_node` (myAGV.cpp's behaviour: 0.01 m/s MCU resolution, 0.1 deg yaw dead band, held command, no watchdog), `/ydlidar_lidar_publisher` (X2L: 400 samples, ignore sector reported 0), `/usb_cam` |
-| SO-101 | robot_state_publisher, ros2_control_node with joint_trajectory_controller, parallel gripper controller, joint_state_broadcaster (spawned by the stock spawner) | the `feetech_ros2_driver/FeetechHardwareInterface` plugin (same name, simulated STS3215 bus: 2400 ticks/s, acceleration register 50, 4096-tick readback), `/usb_cam` (YUYV) |
+| reBot Arm B601-RS | the boot itself, `ros2 launch rebotarm_bringup bringup.launch.py model:=rs channel:=can0` (reBotArmController_ROS2 `7506dc0f`): `/reBotArmController` with Seeed's reBotArm_control_py SDK (`6415d431`, in the workspace's `third_party/`; its 500 Hz MIT loop, Pinocchio kinematics and gravity) and `/robot_state_publisher` with the robot_description the launch generates; beside it the stock `tf2_ros` `static_transform_publisher` of the wrist camera's mount (`/camera_mount_tf`) | the Intel RealSense D405 wrist camera, `/camera/camera` (realsense-ros 4.58.4 with the guide's `align_depth.enable:=true`, 640x360 at 30 Hz: colour rgb8, depth aligned to colour 16UC1 mm, their camera infos, the camera's `/tf_static` frames; `ros2_realsense.py`, rendering the model's `camera_color_optical_frame`); the CAN bus and the seven RobStride motors, as a drop-in `motorbridge` 0.5.6 (`sim_libs/motorbridge.py`, first on the launch's PYTHONPATH): status frames only in reply to commands, MIT fields clamped and quantised as motorbridge encodes them, mode changes that disable, set zero, no canTimeout; each motor's torque applied through the model's position actuator. The boot's `sudo ip link set can0 ...` steps configure a host CAN interface the simulation does not have, and are not run |
 | AiNex | the vendor's `ros_robot_controller_node.py` and `ainex_controller.py` with its gait engine (`walking_module.so`, `kinematics.so`), imu_calib, imu_complementary_filter, the nodelet manager with image_proc/rectify, web_video_server | the controller board (bus servos 0-1000 pulses over their move time, IMU in g and deg/s), `/camera`, `/joystick` (an idle receiver), `/sensor` (the user button, published while enabled), `/color_detection` and `/face_detect` (the undrawn camera frame on `<node>/image_result`; nothing detected), `/app` in its boot state `idle` (set_running true refused; false stops the gait), `/joystick_control` (its endpoints; the gamepad is idle) |
 | ROSMASTER X3 PLUS | the vendor's `Mcnamu_X3plus.py` driver, `base_node`, `yahboom_joy.py` (built from yahboomcar_ws.zip), robot_state_publisher, imu_filter_madgwick, robot_localization EKF, joy_node, tf publishers | the expansion board (`Rosmaster_Lib`: the firmware's motion path -- vx/vy clamped to 0.7 m/s, mecanum mixing, 0.7 m/s wheel clamp, no yaw-hold, which the firmware applies only to commands the driver never sends -- and servo run times), `/ydlidar_lidar_publisher` (4ROS), `/camera/camera` (Astra Pro Plus colour, 16UC1 depth, IR, point clouds, TF; its camera services answer with the intrinsics its streams publish, and `toggle_<stream>` stops or restarts that stream) |
 
@@ -283,16 +308,18 @@ each recorded node's XML-RPC server every 2 s and ends itself, reporting
 Every figure the wires use that no pinned source fixes is the robot specification's,
 labelled there as an estimate: each robot's `robots_specs/<id>/import.md`, section
 "Estimates (not manufacturer data)" -- the myAGV's battery voltages and IMU units, the
-SO-101's servo acceleration unit, the ROSMASTER's battery,
+ROSMASTER's battery,
 firmware version, magnetometer field and `orbbec_camera` definitions (built from
 OrbbecSDK_ROS1 `v1.4.2`, `7ef885a4`, whose `msg/` and `srv/` files are the same git blobs as
-`v1.2.9`, `9569cc31`, the release the vendor's driver sources equal), and the AiNex board's
-IMU report rate -- and the AiNex's playable action groups, `robots_specs/ainex/action_groups.yml`
+`v1.2.9`, `9569cc31`, the release the vendor's driver sources equal), the AiNex board's
+IMU report rate, and the reBot Arm B601-RS's simulated motors (power-off damping, holding
+before enable, PP/CSP/velocity profiles, unstated power-up values, faults, readings and
+bus timing) -- and the AiNex's playable action groups, `robots_specs/ainex/action_groups.yml`
 (the vendor's `.d6a` files are in no pinned source; `shared/wire/robots/ainex_actions.py`
 writes every group of the record where the vendor player reads them: its own `wave`,
-`raise_hands` and `nod`, and its stand-ins under the vendor's names (amended:
-`left_shot`, `greet`, `stand`, `walk_ready`, `twist`, `hand_open`, `hand_back`, ... -- every
-name the pinned code plays), so `/app/set_action` with a vendor name plays a visible
+`raise_hands` and `nod`, and its stand-ins under the vendor's names (`left_shot`,
+`greet`, `stand`, `walk_ready`, `twist`, `hand_open`, `hand_back`, ... -- every name the
+pinned code plays), so `/app/set_action` with a vendor name plays a visible
 estimated motion and leaves the robot standing at the init pose; any other name answers as
 the controller answers an unknown name: 'can not find aciton file', then back to the init
 pose).
@@ -309,6 +336,16 @@ What the simulator itself adapts, in wire behaviour:
   `/object/pixel_coords`.
 * AiNex `/app` stays in its boot state `idle`: `/app/set_running` true is refused; false
   stops the gait (`/walking/command` `stop`) and answers success false.
+* reBot Arm B601-RS motors (`sim_libs/motorbridge.py`, which lists them): what no pinned
+  source gives -- a RobStride's power-off back-drive damping, what a motor does before its
+  first enable and between an enable and its first MIT frame, its internal PP/CSP/velocity
+  loops, its unstated power-up values, faults, readings and the bus timing -- is the robot
+  specification's estimate, figures included, in `robots_specs/rebot_b601_rs/import.md`
+  ("Estimates (not manufacturer data)"), and that file's D5 and D7 give the torque a motor
+  applies within reach of a URDF joint limit, where the actuator's `ctrlrange` clamps the
+  target that carries it, and at its torque limit. canTimeout (0x7028) is stored as written
+  but not enforced (the boot never writes it); active reporting and current mode
+  (run_mode 3, in which a motor applies no torque) are not simulated.
 * AiNex board: it has the SDK methods the vendor node calls, under the SDK's own names; the
   node's `bus_servo/get_state` voltage and torque requests call methods the pinned SDK lacks
   and fail as they do on the robot.
@@ -322,6 +359,21 @@ port's `rtf` answer lists every window, and the checks claim no rate or physical
 for an interval a window below 0.90 overlaps (they fail, saying so). Camera streams
 render on their own GL contexts; lidar rays are cast on a mirror of the world, off the
 physics thread.
+
+**Divergence guard.** If a batch of physics steps leaves a position, velocity or
+acceleration non-finite or beyond MuJoCo's own bound of 1e10 (the solver diverged, e.g.
+on a contact it cannot resolve), the physics thread prints `warning: physics diverged;
+positions kept from before the step, velocities cleared` on stderr, puts every position
+and actuator activation back to where it was before that batch (a few milliseconds),
+zeroes every velocity and the solver's warm start, and steps on, simulation time and
+actuator targets kept (`world.py`, `World._recover`). MuJoCo's own reaction to a bad
+state -- resetting the whole simulation, time, every robot and every scene object, to
+its initial state -- is switched off (`mjDSBL_AUTORESET`). It is a guard, not behaviour
+any robot records: one non-finite value spreads through the whole state within a step,
+and either reaction is better than losing every robot and object of the simulation; this
+one costs only the motion of that instant. No clause of the specification covers it; a
+run that prints the warning has left the recorded behaviour for that instant, so a check
+measuring across it is not evidence.
 
 ## Verification
 

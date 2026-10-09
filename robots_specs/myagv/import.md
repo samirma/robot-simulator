@@ -102,8 +102,18 @@ The MCU firmware that performs this mixing on the real robot is not published; t
 and its constants are estimates. The base moves only through roller–ground contact.
 
 Actuators (estimates): `kv = 0.3 N·m·s/rad`, `forcerange ±1.5 N·m`, `ctrlrange ±22.5 rad/s`
-(= manufacturer max speed 0.9 m/s / r). Wheel joint damping 0.001, armature 1e-4; roller
-damping 1e-5, armature 1e-6 (numerical, for stability).
+(= manufacturer max speed 0.9 m/s / r). Wheel joint damping 0.001 and **armature 0.001 kg·m²**,
+an order-of-magnitude estimate of the planetary gear motor's rotor inertia reflected through
+its gearbox (rotor inertia × gear ratio²; Elephant Robotics publishes neither figure). It also
+keeps the wheel velocity servos stable under explicit Euler integration, MuJoCo's default,
+which the RoboCasa scenes run (the MolmoSpaces and `test` scenes set `implicitfast`): Euler
+applies the servo's velocity feedback explicitly and is stable only while kv·dt/M < 2, M being
+the wheel's inertia about its axle (hub, rollers and armature). With this armature
+M = 1.07e-3 kg·m², so kv·dt/M = 0.56 at the 2 ms timestep and 1.12 at 4 ms. An armature of 1e-4
+would give M = 1.73e-4 kg·m² and 3.47: under Euler the wheel torques then flip sign almost every
+step, often at the ±1.5 N·m limit, and the wheels over-spin to 34 rad/s (22.5 commanded at
+most), so odometry computed from wheel speeds over-reports. Roller damping 1e-5, armature 1e-6
+(numerical, for stability).
 
 ### Mass and inertia (estimates except the total)
 
@@ -148,7 +158,8 @@ scene but never with each other (no roller–roller or roller–chassis contact)
 Manufacturer: total mass 4.16 kg, max speed 0.9 m/s, mecanum wheels, 65° camera, X2L lidar
 figures, overall dimensions. Source (exact): URDF joint/visuals, sensor mount poses. Estimates:
 wheel radius/positions (from the official mesh), mixing, masses split, inertias, collision
-boxes, actuator gains and limits, camera field-of-view axis, roller geometry.
+boxes, actuator gains and limits, wheel armature (geared-motor rotor inertia), camera
+field-of-view axis, roller geometry.
 
 ## Estimates (not manufacturer data)
 
@@ -159,25 +170,52 @@ Interface values the pinned sources leave to the hardware (added):
 * The units of the raw MCU IMU values are those `ros.yml` records as estimates (deg/s,
   m/s²).
 
-## Drive check (scratch scene: this model + a floor plane, friction 1.0, implicitfast)
+Model figures are listed under "Model figures: manufacturer versus estimate"; one of them is
+also chosen for numerical stability:
 
-Settle 1 s, command the recorded mixing for 2 s, then zero wheel speeds. Displacement in the
-start body frame (timestep 0.002 s):
+* **Wheel joint armature 0.001 kg·m²**: the geared motor's reflected rotor inertia, which no
+  vendor source gives. It keeps the wheel velocity servos stable under MuJoCo's default
+  explicit Euler integrator, which the RoboCasa scenes run (kv·dt/M = 0.56 at 2 ms, 1.12 at
+  4 ms, below the limit of 2; "Wheels and mecanum rollers" above).
 
-| command | expected | got | after stop |
-| --- | --- | --- | --- |
-| vx +0.2 m/s | dx +0.400 | dx +0.389, dy 0.000, dyaw 0.000 | coasts 3 mm, 0.0008 m/s after 0.5 s |
-| vx −0.2 m/s | dx −0.400 | dx −0.390 | coasts 3 mm |
-| vy +0.2 m/s | dy +0.400 | dy +0.383, dx −0.003, dyaw +0.008 | coasts 3 mm |
-| vy −0.2 m/s | dy −0.400 | dy −0.383, dx −0.003, dyaw −0.008 | coasts 3 mm |
-| wz +0.5 rad/s | dyaw +1.000 | dyaw +0.977, drift 6 mm | 0.004 rad/s after 0.5 s |
-| wz −0.5 rad/s | dyaw −1.000 | dyaw −0.977 | |
-| vx +0.5 m/s, 1 s | dx +0.500 | dx +0.475 | coasts 20 mm |
-| vx=vy=0.2 m/s | (0.400, 0.400) | (0.387, 0.385) | |
+## Drive check (scratch scene: this model + a floor plane, friction 1.0; Euler and implicitfast)
 
-At rest the chassis stays level (root z −0.4 mm contact penetration); while driving the height
-varies by at most 1.5 mm. Results at timestep 0.001 and 0.004 s agree within 1.5%. All within
-the tolerances recorded in `ros.yml` (10% + 0.02 m / 0.05 rad).
+`model.xml` sets no `<option>`, so loaded as it is (`from_xml_path`, or `MjSpec.from_file` plus
+a floor plane, as here) it runs MuJoCo's default explicit Euler integrator, as the RoboCasa
+scenes do; the check is run under it and again with `implicitfast`, which the MolmoSpaces and
+`test` scenes set. Settle 1 s from `home`, command the recorded mixing for the stated time,
+then zero wheel speeds. Displacement in the start body frame at the zero command (timestep
+0.002 s, MuJoCo 3.5.0):
+
+| command | expected | Euler (default) | implicitfast | after stop (Euler) |
+| --- | --- | --- | --- | --- |
+| vx +0.2 m/s, 2 s | dx +0.400 | dx +0.393, dy 0.000, dyaw 0.000 | dx +0.393, dy 0.000, dyaw 0.000 | coasts 5 mm, 0.0014 m/s after 0.5 s |
+| vx −0.2 m/s, 2 s | dx −0.400 | dx −0.393 | dx −0.393 | coasts 5 mm |
+| vy +0.2 m/s, 2 s | dy +0.400 | dy +0.387, dx 0.000, dyaw 0.000 | dy +0.387, dx 0.000, dyaw +0.001 | coasts 6 mm, 0.0019 m/s after 0.5 s |
+| vy −0.2 m/s, 2 s | dy −0.400 | dy −0.387 | dy −0.387 | coasts 6 mm |
+| wz +0.5 rad/s, 2 s | dyaw +1.000 | dyaw +0.971, drift 6 mm | dyaw +0.973, drift 6 mm | turns 0.008 rad more, 0.009 rad/s after 0.5 s |
+| wz −0.5 rad/s, 2 s | dyaw −1.000 | dyaw −0.971 | dyaw −0.973 | turns 0.008 rad more |
+| vx +0.5 m/s, 1 s | dx +0.500 | dx +0.478 | dx +0.479 | coasts 18 mm |
+| vx = vy = 0.2 m/s, 2 s | (0.400, 0.400) | (0.389, 0.387) | (0.388, 0.387) | coasts 5 mm |
+| vx +0.9 m/s, 0.5 s | dx +0.450 | dx +0.387 | dx +0.386 | coasts 58 mm (0.445 m in all), 0.0016 m/s after 0.5 s |
+| vx −0.9 m/s, 0.5 s | dx −0.450 | dx −0.387 | dx −0.386 | coasts 57 mm |
+
+Under implicitfast the coasting distances agree with Euler's within 1 mm (2 mm from 0.9 m/s).
+Under both integrators the wheel speeds stay inside the commanded range (22.5 rad/s at
+0.9 m/s). At rest the chassis stays level (root z −0.2 mm contact penetration); while driving
+the height varies by at most 1.0 mm. Results at timestep 0.001 and 0.004 s agree with these
+within 1% under both integrators, and MuJoCo 3.3.1 (the version RoboCasa pins) gives the same
+figures within 3 mm and 0.002 rad.
+
+`ros.yml` records the drive tolerances as `{relative: 0.10, absolute: 0.02}` m for the
+displacement and `{relative: 0.10, absolute: 0.05}` rad for the rotation; each bounds
+|measured − commanded| by max(0.10·|commanded|, absolute). Its displacement figure is the
+displacement "reported by /odom after a timed /cmd_vel", against the commanded velocity ×
+duration: the displacement once the drive has ended, coasting after the stop included (the
+last column). Every row above is within it, both at the zero command and at rest after the
+stop, except vx ±0.9 m/s for 0.5 s: at the zero command dx ±0.387 m is 0.063 m short of the
+commanded 0.450 m, outside the bound max(0.045, 0.02) = 0.045 m; only after coasting 57-58 mm,
+at ±0.444-0.445 m (error 0.005-0.006 m), is it within the tolerance the record applies.
 
 ## Generator
 

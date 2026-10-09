@@ -3,7 +3,7 @@
 default scene, and print what it chose as JSON (for `integration/test_reference_parity.py`).
 
     RSIM_REF_DIR=<checkout of github.com/samirma/robot-simulator rev 34547ae> \\
-        <engine venv python> ref_driver.py molmospaces|robocasa [--robot so101] [--views DIR]
+        <engine venv python> ref_driver.py molmospaces|robocasa [--robot ID] [--views DIR]
 
 Run it in the engine's environment (`simulator/<engine>/env.sh`). Only the reference's
 code runs here -- `tools/spawn_robot.py`'s `find_worktop` (MolmoSpaces:
@@ -36,11 +36,13 @@ sys.path.insert(0, str(HERE.parent))
 
 import scene_views  # noqa: E402  (before the reference's modules take the import path)
 
+REF_ARM = "so101"  # the reference project's own arm id, which its code is keyed by
+
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("engine", choices=("molmospaces", "robocasa"))
-    ap.add_argument("--robot", default="so101")
+    ap.add_argument("--robot", default=REF_ARM)
     ap.add_argument("--views", type=Path, default=None)
     args = ap.parse_args()
     ref = Path(os.environ["RSIM_REF_DIR"]).resolve()

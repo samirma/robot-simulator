@@ -16,7 +16,7 @@ import threading
 import time
 
 import rclpy
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import SingleThreadedExecutor
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rosidl_runtime_py.utilities import get_message
 
@@ -61,7 +61,10 @@ for t, typ in pairs:
     fields = list(cls.get_fields_and_field_types().items())
     header = bool(fields) and fields[0][1] == "std_msgs/Header"
     node.create_subscription(cls, t, make_cb(t, header), qos_for(t), raw=True)
-ex = MultiThreadedExecutor(num_threads=4)
+# One executor thread: rclpy's MultiThreadedExecutor hands raw messages to its callbacks
+# in bursts, up to ~0.2 s after they arrive (a 100 Hz rclpy publisher measured with gaps
+# of 100-170 ms and its stamps that late), which would measure the probe, not the robot.
+ex = SingleThreadedExecutor()
 ex.add_node(node)
 threading.Thread(target=ex.spin, daemon=True).start()
 time.sleep(float(os.environ.get("RSIM_PROBE_WARMUP", "1.5")))

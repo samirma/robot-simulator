@@ -10,11 +10,20 @@ casting, so they need nothing an engine knows that the other does not:
 * **The floor** is the most common surface height near the lowest one. **The worktop**
   is the surface the reference project's survey ranks first (`worktop_survey.py`); a
   scene with none has no worktop.
-* **A worktop robot** (`worktop_survey.MOUNT`: the arms) is tried first where the
-  scene's six worktop objects are staged (`World.stage_scene`), which then stay
-  untouched; if it does not fit there, at the survey's spots in their order -- the
-  reference project's own choice first -- with the six objects (`worktop_objects.py`)
-  staged around it instead and the scene's loose objects in its working area cleared.
+* **The scene's worktop objects** (`stage_objects`) are staged at the first of the
+  survey's spots on the worktop (`worktop_survey.candidates`, ranked for the reference
+  project's own mount) where all six (`worktop_objects.py`) stand on the surface free of
+  interpenetration, with the scene's loose objects in their working area cleared; only
+  the first STAGING_SPOTS (40) are tried. No robot takes part.
+* **A worktop robot** (every robot of kind `arm`) is tried first where the scene's six
+  worktop objects are staged (`World.stage_scene`), which then stay untouched; if it does
+  not fit there, at the survey's spots in their order -- the reference project's own
+  choice first -- with the six objects staged around it instead and the scene's loose
+  objects in its working area cleared. In a scene that started without the six objects
+  (none of the first STAGING_SPOTS clear) it is tried at the survey's spots alone: no
+  objects come with it and nothing is cleared. Only the first MAX_WORKTOP_SPOTS (600) are
+  tried, and the search ends at the MAX_WORKTOP_TRIALS-th (40th) supported, camera-clear
+  spot whose trial compile fails.
   Every requirement below but travel still holds at the spot taken, with clearance judged
   on the robot's own collision geometry (not on boxes around it or its parts) and
   non-interpenetration also measured for the parts welded to the world (a fixed base,
@@ -31,8 +40,10 @@ casting, so they need nothing an engine knows that the other does not:
     to each side, and the circle it sweeps turning in place, stay on the surface, clear
     of obstacles and of its unsupported edges;
   - camera clearance: a 7 x 5 grid of rays evenly spanning each camera's image frustum
-    has no hit within 0.8 m of the lens except on the surface the robot stands on, its
-    own body and the objects staged with it;
+    has no hit on furniture, walls or earlier robots within 0.8 m of the lens; the rays
+    look through the surface the robot stands on, its own body, the six worktop objects
+    and the loose objects small enough to grasp (`loose_objects`: a loose stool or shelf
+    is furniture);
   - non-interpenetration: the robot compiled into the world at that pose (with its
     staging) has no contact deeper than 1 mm with anything but its support.
   The result depends only on the scene, the placement, the robot id and the world as it
@@ -66,8 +77,13 @@ TRAVEL = {"forward": 0.5, "back": 0.25, "left": 0.25, "right": 0.25}
 PENETRATION = 0.001
 MAX_SPOTS = 400
 MAX_TRIALS = 6
-MAX_WORKTOP_SPOTS = 600
-MAX_WORKTOP_TRIALS = 40        # trial compiles of a worktop robot with its staging
+# The worktop searches are bounded (spec §2.2, §2.3): a trial compile costs about 0.1 s
+# (0.5 s with a robot) on ithor:1, whose survey ranks 217 spots on the worktop, and about
+# 1.3 s (a few seconds) on robocasa:1-1, with 88.
+STAGING_SPOTS = 40             # the survey's spots tried for the scene's worktop objects
+MAX_WORKTOP_SPOTS = 600        # the survey's spots tried for a worktop robot
+MAX_WORKTOP_TRIALS = 40        # trial compiles on the worktop: a worktop robot's (with its
+                               # staging, if any), and a mobile robot's there as well
 
 
 class Refused(RuntimeError):
@@ -197,7 +213,7 @@ class SceneSurfaces:
         self.model = model
         self.data = copy.copy(data)
         self.facts = facts or worktop_survey.Facts("generic", self.model, self.data)
-        self._spots: dict = {}
+        self._spots: list | None = None
         self._worktop_map = None
         self.bounds = scene_bounds(model, data)
         lo, _ = mjutil.geom_aabbs(model, data)
@@ -235,13 +251,14 @@ class SceneSurfaces:
         with np.errstate(all="ignore"):
             self.worktop = worktop_survey.worktop(self.facts)
 
-    def spots(self, robot_id: str) -> list:
-        """The survey's worktop spots for this robot, best first (cached: they depend on
-        the bare scene and the robot only)."""
-        if robot_id not in self._spots:
+    def spots(self) -> list:
+        """The survey's worktop spots, best first -- those on the worktop only (cached:
+        they depend on the bare scene only)."""
+        if self._spots is None:
             with np.errstate(all="ignore"):
-                self._spots[robot_id] = worktop_survey.candidates(self.facts, robot_id)
-        return self._spots[robot_id]
+                self._spots = worktop_survey.candidates(self.facts, self.worktop) \
+                    if self.worktop is not None else []
+        return self._spots
 
     def worktop_map(self) -> SurfaceMap:
         """The worktop's support map, on the static map's grid: the first fixed collidable
@@ -303,11 +320,44 @@ class Context:
         self.rm = rm
         self.shape = shape
         self.mobile = mobile
+        self._robots = set()
         with world.lock:
             self.model = world.model
             self.data = copy.copy(world.data)
             self.robot_worktop = [r.id for r in world.robots.values() if r.placement == "worktop"]
+            for inst in list(world.robots.values()):
+                self._robots |= world.robot_body_ids(inst)
         self.height = max(float(shape.hi[2] - shape.lo[2]), 0.05)
+        self._camera_model = None
+        self._counted = None
+
+    def camera_counted(self) -> np.ndarray:
+        """Per geom, whether a camera-clearance ray that meets it counts as a hit (spec
+        §2.3: hits on furniture, walls or earlier robots count): every geom but the six
+        worktop objects' and the loose scene objects' small enough to grasp (`loose_objects`).
+        The robot being placed is not in the world yet; the surface it stands on is
+        excluded per ray (`_camera_rays`)."""
+        if self._counted is None:
+            m = self.model
+            counted = np.ones(m.ngeom, bool)
+            bodies = [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
+                      for b in worktop_objects.BODIES.values()]
+            bodies += loose_objects(m, self.data, self._robots)
+            for g in _subtree_geoms(m, [b for b in bodies if b >= 0]):
+                counted[g] = False
+            self._counted = counted
+        return self._counted
+
+    def camera_model(self, skip=frozenset()):
+        """The model the camera-clearance rays see: every geom they do not count (and
+        `skip`) moved to group 5, every other one to group 0 (rays cast with group 0 only)."""
+        if self._camera_model is None:
+            self._camera_model = copy.copy(self.model)
+        look = self.camera_counted().copy()
+        if skip:
+            look[list(skip)] = False
+        self._camera_model.geom_group[:] = np.where(look, 0, 5)
+        return self._camera_model
 
     def full_map(self, surface_z: float) -> SurfaceMap:
         """Everything collidable -- fixed, loose objects and earlier robots -- that
@@ -383,18 +433,44 @@ class RayCaster:
         return (best, best_g) if best_g >= 0 else (-1.0, -1)
 
 
+#: a loose scene object no bigger than this is an object, not furniture, to the camera
+#: clearance: the reference survey's graspable test (worktop_survey `_classify_bodies`:
+#: under `DEFAULT_MAX_GRASP_WIDTH` across and 0.5 m tall)
+GRASPABLE_WIDTH = worktop_survey.DEFAULT_MAX_GRASP_WIDTH
+GRASPABLE_HEIGHT = 0.5
+
+
+def loose_objects(m, d, robots=frozenset()) -> list:
+    """The top-level bodies of the scene's loose objects (spec §2.2: a body with a free
+    joint, not a robot's) small enough to grasp -- an apple, a mug, a book; not a stool or a
+    shelf, which are furniture however they are jointed."""
+    lo, hi = mjutil.geom_aabbs(m, d)
+    out = []
+    for b in range(1, m.nbody):
+        if m.body_parentid[b] != 0 or b in robots:
+            continue
+        inside = mjutil.subtree(m, b)
+        if not any(m.jnt_type[j] == mujoco.mjtJoint.mjJNT_FREE
+                   for k in inside for j in range(m.body_jntadr[k],
+                                                  m.body_jntadr[k] + m.body_jntnum[k])):
+            continue
+        geoms = [g for g in range(m.ngeom) if int(m.geom_bodyid[g]) in inside]
+        if not geoms:
+            continue
+        size = hi[geoms].max(axis=0) - lo[geoms].min(axis=0)
+        if max(size[0], size[1]) < GRASPABLE_WIDTH and size[2] < GRASPABLE_HEIGHT:
+            out.append(b)
+    return out
+
+
 def _camera_rays(ctx: Context, xyz, yaw, surface_z, support_geoms, skip=frozenset()):
-    """Hits within CAMERA_CLEARANCE of each camera lens: [(camera, geom name, dist)].
-    `skip`: geoms the rays look through (objects about to be cleared from the spot)."""
-    m, d = ctx.model, ctx.data
+    """Hits within CAMERA_CLEARANCE of each camera lens: [(camera, geom name, dist)]. Only
+    furniture, walls and earlier robots count (`Context.camera_counted`); `skip`: geoms the
+    rays look through as well (objects about to be cleared from the spot)."""
+    m, d = ctx.camera_model(skip), ctx.data
     R = mjutil.yaw_matrix(yaw)
-    group = np.array([1, 1, 1, 1, 1, 1], np.uint8)
+    group = np.array([1, 0, 0, 0, 0, 0], np.uint8)
     gid = np.zeros(1, np.int32)
-    caster = None
-    if skip:
-        accept = np.ones(m.ngeom, bool)
-        accept[list(skip)] = False
-        caster = RayCaster(m, d, accept)
     hits = []
     for name, cpos, cmat, fovy, res in ctx.shape.cameras:
         eye = np.asarray(xyz) + R @ cpos
@@ -408,11 +484,8 @@ def _camera_rays(ctx: Context, xyz, yaw, surface_z, support_geoms, skip=frozense
                 # MuJoCo camera: looks along -z, x right, y up.
                 v = cm @ np.array([a * tan_x, b * tan_y, -1.0])
                 v /= np.linalg.norm(v)
-                if caster is None:
-                    dist = mujoco.mj_ray(m, d, eye, v, group, 1, -1, gid)
-                    g = int(gid[0])
-                else:
-                    dist, g = caster.cast(eye, v)
+                dist = mujoco.mj_ray(m, d, eye, v, group, 1, -1, gid)
+                g = int(gid[0])
                 if 0 <= dist <= CAMERA_CLEARANCE:
                     p = eye + v * dist
                     if g in support_geoms or abs(p[2] - surface_z) <= 0.015:
@@ -447,20 +520,24 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
                   displace=None):
     """Contacts deeper than 1 mm between the robot, compiled in at the pose, and
     anything but its support; with a staging, also the staged objects' contacts deeper
-    than 1 mm and any staged object not standing on the surface. The world itself is not
-    changed: this is a trial compile of a copy."""
-    spec = world.spec.copy()
-    rspec = rm.spec.copy()
+    than 1 mm and any staged object not standing on the surface. With no robot (`rm`
+    None) only the staging is judged. The world itself is not changed: this is a trial
+    compile of a copy, taken under the world's lock (`World.add`/`remove` edit the spec
+    under it)."""
+    with world.lock:
+        spec = world.spec.copy()
     from types import SimpleNamespace
 
     if displace is not None:
         worktop_objects.Staging(displace.frame_pos, displace.yaw).remove_objects(spec)
     if staging is not None:
         worktop_objects.Staging(staging.frame_pos, staging.yaw, staging.cleared).apply(spec)
-    world._contact_bits(rspec, SimpleNamespace(info={}))
-    frame = spec.worldbody.add_frame(pos=[float(v) for v in xyz],
-                                     quat=mjutil.yaw_quat(yaw))
-    frame.attach_body(rspec.body(rm.root), inst_prefix, "")
+    if rm is not None:
+        rspec = rm.spec.copy()
+        world._contact_bits(rspec, SimpleNamespace(info={}))
+        frame = spec.worldbody.add_frame(pos=[float(v) for v in xyz],
+                                         quat=mjutil.yaw_quat(yaw))
+        frame.attach_body(rspec.body(rm.root), inst_prefix, "")
     m = spec.compile()
     d = mujoco.MjData(m)
     # carry the current state of everything already in the world
@@ -478,18 +555,23 @@ def _penetrations(world, rm, inst_prefix, xyz, yaw, support_geoms, surface_z, st
     if staging is not None:
         # staged anew (moved, when the scene's own objects were displaced): at their poses
         worktop_objects.Staging(staging.frame_pos, staging.yaw).place_objects(m, d)
-    for name, q in rm.home.items():
-        k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, inst_prefix + name)
-        if k >= 0:
-            d.qpos[m.jnt_qposadr[k]] = q
-    if rm.floating:
-        k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, inst_prefix + "root")
-        a = m.jnt_qposadr[k]
-        d.qpos[a:a + 7] = rm.root_qpos(xyz, yaw)
+    own = set()
+    if rm is not None:
+        for name, q in rm.home.items():
+            k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, inst_prefix + name)
+            if k >= 0:
+                d.qpos[m.jnt_qposadr[k]] = q
+        if rm.floating:
+            k = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, inst_prefix + "root")
+            a = m.jnt_qposadr[k]
+            d.qpos[a:a + 7] = rm.root_qpos(xyz, yaw)
     mujoco.mj_forward(m, d)
-    own = mjutil.subtree(m, mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, inst_prefix + rm.root))
-    support_names = {mujoco.mj_id2name(world.model, mujoco.mjtObj.mjOBJ_GEOM, g)
-                     for g in support_geoms}
+    if rm is not None:
+        own = mjutil.subtree(m, mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY,
+                                                   inst_prefix + rm.root))
+    with world.lock:
+        support_names = {mujoco.mj_id2name(world.model, mujoco.mjtObj.mjOBJ_GEOM, g)
+                         for g in support_geoms}
     staged = {}
     if staging is not None:
         for name, body in worktop_objects.BODIES.items():
@@ -604,7 +686,9 @@ def _box_clearance(m, d, aabbs, coll, skip, boxes, xyz, yaw, surface_z):
 
 def _place_on_spots(world, surfaces, ctx, rm, shape, spots, inst_prefix) -> Placement:
     """`_place_on_spots_at`, first where the scene's own worktop objects are staged and,
-    if the arm does not fit there, at its survey spots with the objects moved to it."""
+    if the arm does not fit there, at the first of the survey's spots where it does, with
+    the objects moved to it. In a scene that started without them (spec §2.2) the arm
+    stands at the first spot where it fits, alone: a spawn never brings them (§2.3)."""
     scene = world.scene_staging
     if scene is None:
         return _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix)
@@ -618,10 +702,14 @@ def _place_on_spots(world, surfaces, ctx, rm, shape, spots, inst_prefix) -> Plac
 
 def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixed=None,
                        displace=None) -> Placement:
-    """A worktop robot at the survey's spots, in order, with its objects staged: the first
-    spot where the robot's base is supported by the top face, its cameras are clear, and
-    the trial compile (robot and staging) finds no interpenetration of its own collision
-    geometry and every staged object standing on the surface."""
+    """A worktop robot at the survey's spots, in order: the first spot where the robot's
+    base is supported by the top face, its cameras are clear, and the trial compile (robot
+    and staging) finds no interpenetration of its own collision geometry and every staged
+    object standing on the surface. `fixed` (the scene's staging) tries only the spot
+    where the scene's objects stand, staging and clearing nothing; `displace` (the same)
+    stages the six objects around the robot at each spot instead, clearing the loose
+    objects there; with neither, the scene has no worktop objects and the robot is tried
+    alone, nothing staged or cleared."""
     m, d = ctx.model, ctx.data
     rid = rm.robot.id
     robots = set()
@@ -642,11 +730,9 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
     # With the worktop objects part of the scene (`World.stage_scene`), the arm first
     # stands where they are: the one spot, and nothing to stage or clear. `displace` is the
     # scene's objects when the arm stands elsewhere instead, and they move to it. Either
-    # way they are the arm's own worktop objects, never a camera obstacle (spec §2.3).
-    objects: set = set()
-    if world.scene_staging is not None:
-        objects = _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
-                                     for b in worktop_objects.BODIES.values()])
+    # way they are the arm's own worktop objects, never a camera obstacle (spec §2.3,
+    # `Context.camera_counted`). A scene without them has nothing to move: the arm stands
+    # alone.
     if fixed is not None:
         spots = [worktop_survey.Spot(
             xy=np.array(fixed.frame_pos[:2], float),
@@ -670,20 +756,21 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
             fail("support", f"footprint unsupported at {where}")
             continue
         frame_pos, frame_yaw = worktop_objects.frame_of(xy, z, yaw)
-        cleared = ([] if fixed is not None
+        cleared = ([] if displace is None
                    else worktop_objects.plan_clear(m, d, frame_pos, frame_yaw, keep=robots))
-        # the cameras look past the six objects and what is about to be cleared; clearance
-        # is judged on the robot's own collision geometry, by the trial compile below
-        # (spec §2.3), not on boxes around its parts, which take the room beside a part
-        skip = objects | _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, n)
-                                            for n in cleared])
+        # the cameras look past what is about to be cleared (and, as everywhere, past the
+        # six objects and the loose objects); clearance is judged on the robot's own
+        # collision geometry, by the trial compile below (spec §2.3), not on boxes around
+        # its parts, which take the room beside a part
+        skip = _subtree_geoms(m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, n)
+                                  for n in cleared])
         xyz = np.array([xy[0], xy[1], z - shape.lo[2] + 0.0005])
         hits = _camera_rays(ctx, xyz, yaw, z, support, skip)
         if hits:
             fail("camera clearance", f"camera {hits[0][0]} sees {hits[0][1]} at "
                  f"{hits[0][2]:.2f} m from {where}")
             continue
-        staging = (None if fixed is not None
+        staging = (None if displace is None
                    else worktop_objects.Staging(frame_pos, frame_yaw, cleared))
         trials += 1
         pen = _penetrations(world, rm, inst_prefix, xyz, yaw, support, z, staging, displace)
@@ -697,7 +784,9 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
                   + (f"the scene's {len(worktop_objects.OBJECTS)} worktop objects are there"
                      if fixed is not None else
                      f"staged {len(worktop_objects.OBJECTS)} objects, cleared "
-                     f"{', '.join(cleared) if cleared else 'nothing'}"))
+                     f"{', '.join(cleared) if cleared else 'nothing'}"
+                     if displace is not None else
+                     "the scene has no worktop objects: none staged, nothing cleared"))
         return Placement(xyz, yaw, "worktop", z, tuple(sorted(support)), report=[report],
                          staging=staging, at_scene_objects=fixed is not None)
     detail = "; ".join(f"{k}: {n} candidate(s) failed, e.g. {first_detail[k]}"
@@ -709,11 +798,43 @@ def _place_on_spots_at(world, surfaces, ctx, rm, shape, spots, inst_prefix, fixe
                   f"clearance and camera clearance ({detail or 'no candidate'})")
 
 
+def stage_objects(world, surfaces: SceneSurfaces):
+    """Where the scene's six worktop objects are staged (spec §2.2), whatever robots come:
+    a `worktop_objects.Staging` at the first of the survey's spots where every object
+    stands on the surface free of interpenetration deeper than 1 mm with the scene and
+    the other objects, the loose scene objects in its working area to be cleared; or
+    `Refused` when none of the first STAGING_SPOTS is clear. No robot takes part."""
+    with np.errstate(all="ignore"):
+        return _stage_objects(world, surfaces)
+
+
+def _stage_objects(world, surfaces):
+    wt = surfaces.worktop
+    if wt is None:
+        raise Refused("placement refused: this scene has no worktop (" + NO_WORKTOP + ")")
+    with world.lock:
+        m, d = world.model, copy.copy(world.data)
+    robots = set()
+    for inst in list(world.robots.values()):
+        robots |= world.robot_body_ids(inst)
+    first = None
+    for spot in surfaces.spots()[:STAGING_SPOTS]:
+        frame_pos, frame_yaw = worktop_objects.frame_of(spot.xy, spot.z, spot.yaw)
+        cleared = worktop_objects.plan_clear(m, d, frame_pos, frame_yaw, keep=robots)
+        staging = worktop_objects.Staging(frame_pos, frame_yaw, cleared)
+        pen = _penetrations(world, None, "", None, spot.yaw, (), float(spot.z), staging)
+        if not pen:
+            return staging
+        first = first or (f"at ({spot.xy[0]:.2f}, {spot.xy[1]:.2f}): {pen[0]}")
+    raise Refused("no spot on the worktop where the six worktop objects stand clear ("
+                  + (first or "the survey has no spot") + ")")
+
+
 def place(world, surfaces: SceneSurfaces, rm, placement: str, mobile: bool,
           inst_prefix: str, spots=None) -> Placement:
     """Where and facing which way the robot stands, or `Refused` saying why not. `spots`
-    replaces the survey's worktop spots for a robot that has a mount (scene start-up
-    tries one candidate spot at a time)."""
+    replaces the survey's worktop spots for an arm (a test tries one candidate spot at a
+    time)."""
     # numpy on macOS Accelerate raises spurious floating-point warnings in small matmuls
     with np.errstate(all="ignore"):
         return _place(world, surfaces, rm, placement, mobile, inst_prefix, spots)
@@ -730,12 +851,12 @@ def _place(world, surfaces, rm, placement, mobile, inst_prefix, spots=None) -> P
         if ctx.robot_worktop:
             raise Refused(f"placement refused: the worktop already holds "
                           f"{', '.join(ctx.robot_worktop)}")
-        if spots is None:
-            spots = surfaces.spots(rm.robot.id)
+        if spots is None and rm.robot.kind == "arm":
+            spots = surfaces.spots()
         if spots:
             return _place_on_spots(world, surfaces, ctx, rm, shape, spots, inst_prefix)
-        # a robot the survey has no mount for (a mobile robot): the general search below,
-        # over the worktop's own top face
+        # a robot of any other kind (a mobile robot): the general search below, over the
+        # worktop's own top face
         z = wt.z
         smap = surfaces.worktop_map()
         region = np.isfinite(smap.height) & (np.abs(smap.height - z) <= LEVEL_TOL)
@@ -781,13 +902,6 @@ def _place(world, surfaces, rm, placement, mobile, inst_prefix, spots=None) -> P
     body_coll = _collidable(ctx.model) if placement == "worktop" else None
     # a worktop crowded with the scene's objects needs more trial compiles than the floor
     max_trials = MAX_WORKTOP_TRIALS if placement == "worktop" else MAX_TRIALS
-    # the scene's worktop objects are not a camera obstacle for a robot on the worktop
-    camera_skip = frozenset()
-    if placement == "worktop" and world.scene_staging is not None:
-        m = ctx.model
-        camera_skip = frozenset(_subtree_geoms(
-            m, [mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_BODY, b)
-                for b in worktop_objects.BODIES.values()]))
     # travel is guaranteed on the floor only: on the worktop a mobile robot is placed on
     # a clear, supported spot, whatever room the top leaves it to move in
     check_travel = mobile and placement == "floor"
@@ -844,7 +958,7 @@ def _place(world, surfaces, rm, placement, mobile, inst_prefix, spots=None) -> P
                     fail("interpenetration", f"{blocked} inside the robot at "
                          f"({xy[0]:.2f}, {xy[1]:.2f})")
                     continue
-            hits = _camera_rays(ctx, xyz, yaw, z, support, camera_skip)
+            hits = _camera_rays(ctx, xyz, yaw, z, support)
             if hits:
                 fail("camera clearance", f"camera {hits[0][0]} sees {hits[0][1]} at "
                      f"{hits[0][2]:.2f} m")

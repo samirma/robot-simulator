@@ -36,6 +36,35 @@ FINGER_COLLISION = {
                       "colored_left_finger_carriage_grey", "colored_left_finger_travel_stop_yellow"],
 }
 
+# --- self-collision: the body pairs Seeed's own MuJoCo scene excludes (reBotArmController_ROS2
+# src/rebotarm_mujoco_rs/models/rs_grasp_scene.xml L7-L18), whose body names are the URDF link
+# names; every other pair of robot collision geoms collides (import.md, adaptation A4)
+SELF_COLLISION_EXCLUDE = [
+    ("world", "link1"), ("base_link", "link1"), ("link1", "link2"), ("link2", "link3"),
+    ("link2", "link5"), ("link3", "link4"), ("link3", "link5"), ("link4", "link5"),
+    ("link5", "link6"), ("gripper_left", "gripper_right"),
+]
+
+# --- wrist camera: the Intel RealSense D405 of Seeed's B601-RS grasping guide, as mounted by the
+# community mount Seeed's guide clones (xiehuangbao888/rebot_visual_grasp
+# @ dd28d65598deec767cf95fa45521d69b38155833, config/wrist_extrinsics_d405.yaml and
+# description/urdf/rebotarm_rs_with_d405.urdf.xacro): gripper_end -> camera_mount_link ->
+# camera_bottom_screw_frame -> camera_link (the RealSense xacro's _d405.urdf.xacro adds
+# camera_link at (0.01085, 0.009, 0.021) of the bottom screw frame). The composed
+# gripper_end -> camera_link pose below is rounded to 5 decimals (m) and 6 (rad); the colour optical
+# frame is camera_link turned by the realsense-ros optical rotation rpy(-pi/2, 0, -pi/2)
+# (the colour frame is at camera_link: the D405's depth and colour are one sensor). import.md,
+# "Wrist camera", gives the chain; the pose is the community's hand-eye result for one unit.
+D405_LINK_XYZ = (-0.10873, 0.00908, 0.10761)      # camera_link in gripper_end, m
+D405_LINK_RPY = (0.003575, 0.537753, -0.006233)   # URDF fixed-axis roll, pitch, yaw, rad
+D405_OPTICAL_RPY = (-math.pi / 2, 0.0, -math.pi / 2)
+D405_FRAME = "camera_color_optical_frame"
+# 640x360 colour (Seeed's launch: depth_module.color_profile:=640x360x30); the D405's 87 x 58
+# degree field of view (Intel's product page) as square pixels: fx = fy = (640 / 2) / tan(87 / 2)
+D405_RES = (640, 360)
+D405_HFOV_DEG = 87.0
+D405_FY = round((D405_RES[0] / 2) / math.tan(math.radians(D405_HFOV_DEG / 2)), 1)   # 337.2 px
+
 # --- keyframe home: safe-home pose (every arm joint 0) with the gripper closed (import.md)
 HOME_ARM = {j: 0.0 for j in MIT_KP}
 HOME_GRIPPER_RAD = GRIPPER_CLOSE_RAD
@@ -63,6 +92,13 @@ def quat_rotate(q, v):
          [2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)],
          [2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)]]
     return [sum(r[i][k] * v[k] for k in range(3)) for i in range(3)]
+
+
+def quat_mul(a, b):
+    aw, ax, ay, az = a
+    bw, bx, by, bz = b
+    return (aw * bw - ax * bx - ay * by - az * bz, aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx, aw * bz + ax * by - ay * bx + az * bw)
 
 
 def floats(s, d="0 0 0"):
@@ -116,7 +152,8 @@ root.append(ET.Comment(
     "the URDF's. Adaptations listed in import.md: Seeed's mujoco_collision finger parts as finger "
     "contact, the coupled rack-and-pinion gripper (tendon + equality, one actuator in motor rad), "
     "position actuators with the boot's MIT gains, the boot's gravity feed-forward as gravcomp, "
-    "collision filtering, the gripper_end site and the home keyframe. "))
+    "self-collision with Seeed's excluded body pairs, the gripper_end site, the D405 wrist camera "
+    "and the home keyframe. "))
 ET.SubElement(root, "compiler", angle="radian", meshdir=".", autolimits="true",
               inertiafromgeom="false")
 default = ET.SubElement(root, "default")
@@ -124,10 +161,10 @@ dcls = ET.SubElement(default, "default", {"class": "rebot"})
 ET.SubElement(ET.SubElement(dcls, "default", {"class": "visual"}), "geom",
               type="mesh", group="2", contype="0", conaffinity="0", density="0")
 ET.SubElement(ET.SubElement(dcls, "default", {"class": "collision"}), "geom",
-              type="mesh", group="3", contype="1", conaffinity="0", density="0",
+              type="mesh", group="3", contype="1", conaffinity="1", density="0",
               rgba="0.8 0.2 0.2 0.4")
 ET.SubElement(ET.SubElement(dcls, "default", {"class": "finger"}), "geom",
-              type="mesh", group="3", contype="1", conaffinity="0", density="0", condim="4",
+              type="mesh", group="3", contype="1", conaffinity="1", density="0", condim="4",
               friction="1 0.005 0.0001", rgba="0.2 0.5 0.9 0.4")
 
 asset = ET.SubElement(root, "asset")
@@ -208,10 +245,21 @@ def fill_link(body, lname):
         fill_link(cb, child)
         if child == "gripper_end":
             ET.SubElement(cb, "site", name="gripper_end", size="0.005", group="4")
+            # the D405's colour optical frame (x right, y down, z forward); a MuJoCo camera looks
+            # along its -z with y up, which is the optical frame turned 180 degrees about x
+            q = quat_mul(quat_mul(rpy_quat(*D405_LINK_RPY), rpy_quat(*D405_OPTICAL_RPY)),
+                         (0.0, 1.0, 0.0, 0.0))
+            fovy = math.degrees(2 * math.atan((D405_RES[1] / 2) / D405_FY))
+            ET.SubElement(cb, "camera", name=D405_FRAME, pos=fmt(D405_LINK_XYZ), quat=fmt(q),
+                          fovy=fmt([fovy]), resolution=f"{D405_RES[0]} {D405_RES[1]}")
 
 
 base = ET.SubElement(world, "body", name=root_link, childclass="rebot")
 fill_link(base, root_link)
+
+contact = ET.SubElement(root, "contact")
+for b1, b2 in SELF_COLLISION_EXCLUDE:
+    ET.SubElement(contact, "exclude", body1=b1, body2=b2)
 
 # rack and pinion: both fingers move together; tendon length = motor angle in command units
 tendon = ET.SubElement(ET.SubElement(root, "tendon"), "fixed", name=GRIPPER)

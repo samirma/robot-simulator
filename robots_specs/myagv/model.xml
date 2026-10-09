@@ -21,7 +21,7 @@
         <joint type="hinge" damping="1e-5" armature="1e-6" frictionloss="0"/>
       </default>
       <default class="wheel">
-        <joint type="hinge" axis="0 1 0" damping="0.001" armature="1e-4"/>
+        <joint type="hinge" axis="0 1 0" damping="0.001" armature="1e-3"/>
         <velocity kv="0.3" ctrlrange="-22.5 22.5" forcerange="-1.5 1.5"/>
       </default>
     </default>

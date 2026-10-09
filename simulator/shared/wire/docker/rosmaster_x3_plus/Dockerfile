@@ -9,12 +9,17 @@
 #     same Drive archive) could not be fetched (Drive quota); the definitions come from
 #     Orbbec's public OrbbecSDK_ROS1 v1.4.2 (commit 7ef885a4), the same v1 service set the
 #     interface file records -- an adaptation documented in simulator/README.md.
+# Every package comes from the base image's dated snapshots (ROS: snapshots.ros.org noetic
+# 2025-05-29; Ubuntu: snapshot.ubuntu.com focal 20261002T223000Z), the stock nodes also by
+# the release the interface file records (imu_filter_madgwick 1.2.7, robot_localization
+# 2.7.7; the build suffix is per architecture, hence the `*`).
 ARG BASE
 FROM ${BASE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ros-noetic-imu-filter-madgwick ros-noetic-robot-localization ros-noetic-joy \
-      ros-noetic-dynamic-reconfigure ros-noetic-message-generation \
+      ros-noetic-imu-filter-madgwick=1.2.7-1focal.* \
+      ros-noetic-robot-localization=2.7.7-1focal.* \
+      ros-noetic-joy ros-noetic-dynamic-reconfigure ros-noetic-message-generation \
     && rm -rf /var/lib/apt/lists/*
 COPY vendor/yahboomcar_msgs /opt/rsim_ws/src/yahboomcar_msgs
 COPY vendor/yahboomcar_bringup /opt/rsim_ws/src/yahboomcar_bringup

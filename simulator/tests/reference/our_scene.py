@@ -2,7 +2,8 @@
 """Build one engine's scene the way `kitchen.sh start` does -- `Simulation.load()`, the six
 worktop objects staged with it -- with no physics stepped and no control port, and print
 what the scene-parity check compares with the reference (`scene_views.describe`, the
-objects cleared at start) as JSON; with `--views DIR`, also its renders.
+objects cleared at start, the spot they are staged at) as JSON; with `--views DIR`, also
+its renders.
 
     <engine venv python> our_scene.py molmospaces|robocasa --scene <s> [--views DIR]
 
@@ -36,6 +37,7 @@ def main() -> int:
     with contextlib.redirect_stdout(sys.stderr):
         import simulation
         import world
+        import worktop_objects
 
         world.World.start = lambda self: None        # the scene as loaded: nothing stepped
         sim = simulation.Simulation(argparse.Namespace(engine=args.engine, scene=args.scene,
@@ -45,7 +47,12 @@ def main() -> int:
         sim.load()
         w = sim.world
         out = scene_views.describe(w.model, w.data)
-        out["cleared"] = list(w.scene_staging.cleared) if w.scene_staging is not None else []
+        st = w.scene_staging
+        out["cleared"] = list(st.cleared) if st is not None else []
+        # the staging spot: the frame's xy, the top face under it, the heading
+        out["frame"] = None if st is None else {
+            "xy": st.frame_pos[:2], "yaw": st.yaw,
+            "z": st.frame_pos[2] - worktop_objects.FRAME_ABOVE_SURFACE}
         # RoboCasa: the fixtures its own fixture placement set on others (spec §2.1)
         arena = w.scene.extra.get("arena")
         out["placed_fixtures"] = sorted(getattr(arena, "fixture_placements", None) or [])

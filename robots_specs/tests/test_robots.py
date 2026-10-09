@@ -180,8 +180,8 @@ def test_estimated_action_groups():
 
 def test_vendor_names_have_stand_ins():
     """Every vendor action-group name the pinned AiNex code plays has a stand-in group, an
-    estimate citing the vendor line that names it (amended), and the record's
-    vendor example is one of them, so it plays."""
+    estimate citing the vendor line that names it, and the record's vendor example is one
+    of them, so it plays."""
     doc = yaml.safe_load((SPECS / "ainex" / "action_groups.yml").read_text())
     iface = yaml.safe_load((SPECS / "ainex" / "ros.yml").read_text())
     stand_ins = {n for n, g in doc["groups"].items() if g.get("vendor_source")}
@@ -283,8 +283,8 @@ def _record_texts(rid: str) -> dict[str, str]:
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
 def test_no_composite_leftovers(robot):
-    """Robots are single bodies (robot specification §2, amended): no robot's
-    record names another robot of the registry, as a record of an assembly would."""
+    """Robots are single bodies (robot specification §2): no robot's record names another
+    robot of the registry, as a record of an assembly would."""
     others = {w for o in ROBOTS if o.id != robot.id for w in (o.id, o.name.lower())}
     for name, text in _record_texts(robot.id).items():
         low = text.lower()
@@ -359,14 +359,10 @@ def test_referenced_meshes_are_in_the_manifest(robot):
     assert not missing, f"not in meshes.sha256: {missing}"
 
 
-#: Upstream folders kept whole: so101.md asks to "preserve the upstream model assets under assets/".
-PRESERVED = ("so101/assets/",)
-
-
 def test_manifest_lists_only_needed_files():
     """meshes.sha256 fetches nothing the robots do not need: a URDF or model reference, a
-    texture a referenced COLLADA file loads, the source of a needed derived file, or a
-    preserved upstream folder (robot specification §1)."""
+    texture a referenced COLLADA file loads, or the source of a needed derived file (robot
+    specification §1)."""
     listed = manifest()
     need = set()
     for r in ROBOTS:
@@ -381,7 +377,7 @@ def test_manifest_lists_only_needed_files():
     for rel in sorted(p for p in need if p.endswith(".dae") and (SPECS / p).is_file()):
         need |= {str(Path(rel).parent / img) for img in
                  re.findall(r"<init_from>([^<]+\.(?:png|jpe?g))</init_from>", (SPECS / rel).read_text())}
-    extra = sorted(p for p in listed if p not in need and not p.startswith(PRESERVED))
+    extra = sorted(p for p in listed if p not in need)
     assert not extra, f"meshes.sha256 lists files nothing needs: {extra}"
 
 
@@ -436,6 +432,48 @@ def test_model_conventions(robot):
             assert res == [c["width"], c["height"]], (c["frame_id"], res)
     keys = {model.key(i).name for i in range(model.nkey)}
     assert "home" in keys
+    _check_actuators(mujoco, model, ros_file(robot).read_text())
+
+
+def _check_actuators(mujoco, model, interface: str) -> None:
+    """SCHEMA.md, MuJoCo model conventions: an actuator on a joint is named after the
+    joint; an actuator on a tendon drives a fixed tendon over joints that `<equality><joint>`
+    constraints tie together, and is named as the interface names the drive; no joint is
+    moved by more than one actuator."""
+    moved = []
+    for i in range(model.nu):
+        name = model.actuator(i).name
+        trn, obj = model.actuator_trntype[i], model.actuator_trnid[i, 0]
+        if trn == mujoco.mjtTrn.mjTRN_JOINT:
+            joint = model.joint(obj).name
+            assert name == joint, f"actuator {name!r} on joint {joint!r} is named after it"
+            moved.append(joint)
+            continue
+        assert trn == mujoco.mjtTrn.mjTRN_TENDON, f"actuator {name!r} drives a joint or a tendon"
+        adr, num = model.tendon_adr[obj], model.tendon_num[obj]
+        assert num > 0 and all(model.wrap_type[adr + k] == mujoco.mjtWrap.mjWRAP_JOINT
+                               for k in range(num)), f"actuator {name!r}: a fixed tendon"
+        coupled = {int(model.wrap_objid[adr + k]) for k in range(num)}
+        assert len(coupled) > 1, f"actuator {name!r}: its tendon couples several joints"
+        group = {j: j for j in coupled}
+
+        def root(j):
+            while group[j] != j:
+                j = group[j]
+            return j
+
+        for e in range(model.neq):
+            a, b = int(model.eq_obj1id[e]), int(model.eq_obj2id[e])
+            if model.eq_type[e] == mujoco.mjtEq.mjEQ_JOINT and a in coupled and b in coupled:
+                group[root(a)] = root(b)
+        names = sorted(model.joint(j).name for j in coupled)
+        assert len({root(j) for j in coupled}) == 1, \
+            f"actuator {name!r}: joint equalities tie all of {names}"
+        assert re.search(rf"\b{re.escape(name)}\b", interface), \
+            f"actuator {name!r}: the interface names the drive"
+        moved += names
+    twice = sorted({j for j in moved if moved.count(j) > 1})
+    assert not twice, f"joints moved by more than one actuator: {twice}"
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
@@ -456,7 +494,7 @@ def test_model_settles_on_a_floor(robot):
 
 
 #: Robots whose recorded boot (incl. an approved camera boot) serves a required camera.
-REQUIRED_CAMERA = {"myagv", "ainex", "rosmaster_x3_plus"}
+REQUIRED_CAMERA = {"myagv", "ainex", "rosmaster_x3_plus", "rebot_b601_rs"}
 
 
 @pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
@@ -467,6 +505,33 @@ def test_required_cameras_are_not_optional(robot):
     topics = {t["name"]: t for t in doc["topics"]}
     for c in required:
         assert not topics[c["image_topic"]].get("optional")
+
+
+def test_rebot_wrist_camera_is_the_d405_of_seeeds_guide():
+    """The B601-RS camera rows are the RealSense D405 of Seeed's grasping guide, from an
+    approved community camera boot: global names under /camera/camera, 640x360 at 30 Hz, the
+    colour optical frame, on the gripper_end body (robots_specs/rebot_b601_rs/import.md)."""
+    doc = load(spec_registry.by_id()["rebot_b601_rs"])
+    assert doc["camera_boot_authority"] == "approved_community"
+    cams = {c["id"]: c for c in doc["sensors"]["cameras"] if not c.get("optional")}
+    assert set(cams) == {"d405_color", "d405_depth"}
+    want = {"d405_color": ("/camera/camera/color/image_raw", "rgb8"),
+            "d405_depth": ("/camera/camera/aligned_depth_to_color/image_raw", "16UC1")}
+    for cid, (topic, enc) in want.items():
+        c = cams[cid]
+        assert (c["image_topic"], c["encoding"]) == (topic, enc)
+        assert c["info_topic"] == topic.rsplit("/", 1)[0] + "/camera_info"
+        assert (c["width"], c["height"], c["rate"]) == (640, 360, 30)
+        assert c["frame_id"] == "camera_color_optical_frame"
+        assert c["mount"]["parent"] == "gripper_end"
+        assert c["intrinsics"]["basis"] == "estimate"
+    nodes = {n["name"] for n in doc["nodes"] if not n.get("optional")}
+    assert "/camera/camera" in nodes
+    assert not [t for t in doc["topics"] if t["name"].startswith("/camera/")
+                and not t["name"].startswith("/camera/camera/")]
+    tf = {(r["parent"], r["child"]) for r in doc["tf"]}
+    assert {("gripper_end", "camera_link"), ("camera_link", "camera_color_frame"),
+            ("camera_color_frame", "camera_color_optical_frame")} <= tf
 
 
 # ------------------------------------------------------------------ appearance

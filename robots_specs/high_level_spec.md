@@ -6,8 +6,7 @@ This document describes the robots and the files needed to import them into
 MuJoCo, reproducing the real hardware's geometry, physical properties, motion,
 sensors and control interfaces as documented by their manufacturers. Together with the
 robot files it lists (§2) it is self-contained. Each robot has its own file,
-`robots_specs/<id>.md`, named exactly by its robot id (amended: the robot
-sections moved out of this document into those files).
+`robots_specs/<id>.md`, named exactly by its robot id.
 
 Each robot file defines a stable **robot id**, its identity and kind, its **embodiment**
 (the exact hardware variant, its controller, and its camera and lidar hardware), its
@@ -45,8 +44,8 @@ the pinned revision, that the vendor documentation starts for normal operation, 
 vendor data files they load (such as action groups and gait parameters). The interface
 description records that boot. Endpoints that exist only when an optional plugin is
 installed or through a launch other than the authoritative boot, such as mapping and
-navigation, are recorded as `optional`. Each camera's raw image stream is marked as a
-camera.
+navigation, need not be recorded; any that are recorded are marked `optional`. Each
+camera's raw image stream is marked as a camera.
 
 ### MuJoCo import and real-hardware fidelity
 
@@ -83,8 +82,8 @@ exceed its documented capabilities.
 
 Every robot is one file in this folder, `robots_specs/<id>.md`, listed below; the robot
 files (every `.md` here with a robot id, this document and `SCHEMA.md` aside) are the robot
-registry, and this table must list exactly them. Robots are single bodies: no robot is assembled from other robots
-(amended).
+registry, and this table must list exactly them. Robots are single bodies: no robot is
+assembled from other robots.
 
 | Robot id | Name | Kind | File |
 | --- | --- | --- | --- |

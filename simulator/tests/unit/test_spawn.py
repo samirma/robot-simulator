@@ -21,7 +21,7 @@ class RefusingSimulation:
     def call(self, op, **fields):
         self.calls.append(op)
         if op == "spawn":
-            raise protocol.RemoteError("refused: robot 'so101' is already spawned in this "
+            raise protocol.RemoteError("refused: robot 'rebot_b601_rs' is already spawned in this "
                                        "simulation (running); end that spawn first")
         return {}
 
@@ -42,7 +42,7 @@ def test_a_refused_attempt_leaves_the_running_spawns_container_alone(monkeypatch
     monkeypatch.setattr(spawn, "docker_running", lambda: True)
     monkeypatch.setattr(spawn, "port_taken", lambda port: False)
     monkeypatch.setattr(spawn, "ensure_image", lambda robot: "rsim-wire/test:0")
-    sp = spawn.Spawn(argparse.Namespace(robot="so101", placement="worktop", sim_port=9179,
+    sp = spawn.Spawn(argparse.Namespace(robot="rebot_b601_rs", placement="worktop", sim_port=9179,
                                         port=9178))
     sp.check()
     sp.client = RefusingSimulation()
@@ -50,5 +50,5 @@ def test_a_refused_attempt_leaves_the_running_spawns_container_alone(monkeypatch
         sp.start()
     sp.cleanup()
     assert "spawn" in sp.client.calls
-    name = "rsim-9179-so101-main"
+    name = "rsim-9179-rebot_b601_rs-main"
     assert not [c for c in docker_calls if c[:1] in (["rm"], ["run"]) and name in c], docker_calls

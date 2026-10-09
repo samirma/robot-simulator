@@ -3,6 +3,8 @@
 #   run_wire.sh <spec.json>
 set -e
 source /opt/ros/$ROS_DISTRO/setup.bash
+# Vendor interface packages built into the image (Dockerfile.jazzy: rebotarm_msgs).
+if [ -f /ws/install/setup.bash ]; then source /ws/install/setup.bash; fi
 if [ "$ROS_VERSION" = "1" ]; then
   roscore >/tmp/roscore.log 2>&1 &
   until rostopic list >/dev/null 2>&1; do sleep 0.2; done

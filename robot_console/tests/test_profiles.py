@@ -14,14 +14,14 @@ from robot_console.profiles import (
 
 EXPECTED = {  # console spec §1.1
     "myagv": ("ros1", "base"), "ainex": ("ros1", "walk"), "rosmaster_x3_plus": ("ros1", "base"),
-    "so101": ("ros2", "none"),
+    "rebot_b601_rs": ("ros2", "none"),
 }
 # Pinned revisions identified by the robot specification (robots_specs/<id>.md).
 PINNED = {
     "myagv": {"c71f3cc574e5ed1973a925238eabe88662cfa701", "addab4a65fdf65c460fec2cc3eee8fab94699370"},
     "ainex": {"e8fe2a816797cf83054135160df5a82ec3596a69"},
     "rosmaster_x3_plus": {"9732c62247dfb57a899aea01e4fe72ed434bac6d"},
-    "so101": {"e166df9d51f43b24da9b99047c6c51c306bda74f", "cb2ae6bc0a312de629f84fef933fb3e07dac1ef8"},
+    "rebot_b601_rs": {"7506dc0fc5c2a7787dcb974d89d13f9f49d16d61", "6415d43130d1e143c70dc106096a857ac5556f81"},
 }
 TRACE = re.compile(r"^(?P<key>[A-Za-z0-9_.-]+):(?P<path>[^#\s]+)#L\d+")
 
@@ -51,13 +51,16 @@ def _traced(row, where):
 def test_every_entry_is_traced(pid):
     raw = load(pid).raw
     keys = set(raw["sources"])
-    for sec in ("topics", "services", "actions", "cameras", "stop", "controls", "groups"):
+    for sec in ("topics", "services", "actions", "cameras", "sensors", "stop", "controls", "groups"):
         for row in raw.get(sec) or []:
             src = _traced(row, f"{pid}.{sec}.{row.get('name', row.get('topic', row.get('id')))}")
             m = TRACE.match(src)
             if m:
                 assert m["key"] in keys, f"{pid}: trace key {m['key']} is not a pinned source"
     for c in raw.get("controls") or []:
+        if c.get("busy"):                       # an action server's documented handling of a goal while one runs
+            m = TRACE.match(_traced(c["busy"], f"{pid}.controls.{c['id']}.busy"))
+            assert m and m["key"] in keys
         for f in c.get("fields") or []:
             _traced(f, f"{pid}.controls.{c['id']}.{f['name']}")
             if f.get("to_wire"):
@@ -102,14 +105,207 @@ def test_mobile_speeds_within_documented_limits_and_stop(pid):
 
 
 def test_camera_sets():
-    """Every mobile profile has a required raw camera stream; the arm as its boot defines."""
+    """Every mobile profile has a required raw camera stream; the arm's boot starts no camera, so
+    its D405 wrist camera's colour and depth streams are optional ones (an arm without a D405 validates)."""
     cams = {p.id: [(c.topic, c.optional) for c in p.cameras] for p in load_all()}
     assert cams == {
         "myagv": [("/usb_cam/image_raw", False)],
         "ainex": [("/camera/image_raw", False)],
         "rosmaster_x3_plus": [("/camera/rgb/image_raw", False)],
-        "so101": [("/image_raw", False)],
+        "rebot_b601_rs": [("/camera/camera/color/image_raw", True),
+                          ("/camera/camera/aligned_depth_to_color/image_raw", True)],
     }
+    assert {c.topic: c.kind for p in load_all() for c in p.cameras if c.kind != "color"} == {
+        "/camera/camera/aligned_depth_to_color/image_raw": "depth"}
+
+
+D405_TOPICS = {  # the realsense2_camera topics of the D405 wrist camera, all optional rows
+    "/camera/camera/color/image_raw": "sensor_msgs/msg/Image",
+    "/camera/camera/color/camera_info": "sensor_msgs/msg/CameraInfo",
+    "/camera/camera/aligned_depth_to_color/image_raw": "sensor_msgs/msg/Image",
+    "/camera/camera/aligned_depth_to_color/camera_info": "sensor_msgs/msg/CameraInfo",
+}
+
+
+def test_rebot_d405_is_optional_and_global():
+    """The D405's four topics are optional rows, outside the arm namespace (realsense2_camera is not the
+    controller), and the page's colour camera is rgb8 at the documented 30 Hz."""
+    p = load("rebot_b601_rs")
+    for name, typ in D405_TOPICS.items():
+        e = p.endpoint(name)
+        assert e is not None and (e.kind, e.type, e.direction, e.optional) == ("topic", typ, "out", True), name
+        assert p.resolve(name, "right_arm") == name == p.resolve(name, "rebotarm")
+    assert not {e.name for e in p.required()} & set(D405_TOPICS)
+    color, depth = p.cameras
+    assert (color.kind, color.encodings, color.rate_hz, color.optional) == ("color", ("rgb8",), 30, True)
+    assert color.range_m is None and color.unit_m is None
+    assert (depth.topic, depth.kind, depth.encodings, depth.rate_hz, depth.optional) == (
+        "/camera/camera/aligned_depth_to_color/image_raw", "depth", ("16UC1",), 30, True)
+    assert (depth.unit_m, depth.range_m) == (0.001, (0.07, 0.5))     # millimetres; the D405's recorded range
+    assert p.resolve("/joint_states", "right_arm") == "/right_arm/joint_states"
+
+
+# The sensors of the reBot, written out here from the pinned controller and messages (rebotarm_msgs
+# JointMotorState.msg, ArmStatus.msg; rebotarmcontroller/ros_publishers.py).
+MOTOR_TOPICS = [f"/joints/joint{i}/state" for i in range(1, 7)] + ["/gripper/state"]
+STATUS_BITS = {0: "undervoltage", 1: "overcurrent", 2: "overtemperature", 3: "encoder fault", 4: "stall",
+               5: "uncalibrated"}
+
+
+def test_only_the_rebot_has_sensors_and_they_are_its_manufacturer_topics():
+    assert {p.id: [s.topic for s in p.sensors] for p in load_all()} == {
+        "myagv": [], "ainex": [], "rosmaster_x3_plus": [],
+        "rebot_b601_rs": ["/joint_states"] + MOTOR_TOPICS + ["/arm_status"]}
+
+
+def test_rebot_sensor_fields_are_the_messages_fields():
+    p = load("rebot_b601_rs")
+    by = {s.topic: s for s in p.sensors}
+    assert by["/joint_states"].type == "sensor_msgs/msg/JointState" and by["/joint_states"].stale_after_s == 1.0
+    names = ["joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper_joint1", "gripper_joint2"]
+    js = {f.name: f for f in by["/joint_states"].fields}
+    assert len(js) == 3 * len(names)
+    for i, n in enumerate(names):          # the arrays' index is the joint's index in `name`
+        for k, key in enumerate(("position", "velocity", "effort")):
+            f = js[f"{n}_{key}"]
+            assert (f.path, f.group, f.kind) == (f"{key}.{i}", n, "number")
+    for t in MOTOR_TOPICS:
+        s = by[t]
+        assert s.type == "rebotarm_msgs/msg/JointMotorState" and s.stale_after_s == 1.0
+        assert [(f.name, f.path, f.kind) for f in s.fields] == [
+            ("joint_name", "joint_name", "text"), ("position", "position", "number"),
+            ("velocity", "velocity", "number"), ("torque", "torque", "number"),
+            ("status_code", "status_code", "bits")]
+        assert {b.bit: b.label for b in s.fields[-1].bits} == STATUS_BITS
+    a = by["/arm_status"]
+    assert a.type == "rebotarm_msgs/msg/ArmStatus" and a.stale_after_s is None       # latched, not periodic
+    assert [(f.name, f.kind) for f in a.fields] == [
+        ("mode", "text"), ("enabled", "bool"), ("control_loop_active", "bool"), ("state_machine", "text"),
+        ("joint_names", "list"), ("per_joint_status_code", "list"), ("error_codes", "list")]
+
+
+def test_sensors_reach_the_page_and_are_read_only():
+    from robot_console.profiles import profile_json
+    p = load("rebot_b601_rs")
+    j = profile_json(p)
+    assert [s["topic"] for s in j["sensors"]] == [s.topic for s in p.sensors]
+    assert j["sensors"][1]["fields"][4]["bits"][0] == {"bit": 0, "label": "undervoltage"}
+    assert j["cameras"][0]["optional"] is True
+    assert [(c["kind"], c["range_m"], c["unit_m"]) for c in j["cameras"]] == [("color", None, None),
+                                                                              ("depth", [0.07, 0.5], 0.001)]
+    assert all(profile_json(q)["sensors"] == [] for q in load_all() if q.id != p.id)
+    assert not {c.name for c in p.controls} & {s.topic for s in p.sensors}      # no sensor is commanded
+
+
+def test_profile_loader_refuses_inconsistent_cameras():
+    """A depth camera is 16UC1 with its metres-per-value and its range; a colour camera has neither."""
+    raw = load("rebot_b601_rs").raw
+    for idx, change, error in (
+            (1, lambda c: c.update(kind="thermal"), "is none of"),
+            (1, lambda c: c.pop("range_m"), "range_m is"),
+            (1, lambda c: c.update(range_m=[0.5, 0.07]), "range_m is"),
+            (1, lambda c: c.update(range_m=[0.07]), "range_m is"),
+            (1, lambda c: c.pop("unit_m"), "unit_m is"),
+            (1, lambda c: c.update(unit_m=0), "unit_m is"),
+            (1, lambda c: c.update(encodings=["rgb8"]), "only encoding is 16UC1"),
+            (0, lambda c: c.update(range_m=[0.07, 0.5]), "belong to a depth camera"),
+            (0, lambda c: c.update(unit_m=0.001), "belong to a depth camera")):
+        bad = copy.deepcopy(raw)
+        change(bad["cameras"][idx])
+        with pytest.raises(ValueError, match=error):
+            parse_profile(bad)
+    assert parse_profile(raw).cameras == load("rebot_b601_rs").cameras
+
+
+def test_profile_loader_refuses_inconsistent_sensors():
+    raw = load("rebot_b601_rs").raw
+    for change, error in (
+            (lambda s: s.update(topic="/nope"), "is not an out topic"),
+            (lambda s: s.update(type="std_msgs/msg/String"), "is not an out topic"),
+            (lambda s: s.update(topic="/joints/joint1/cmd/mit", type="rebotarm_msgs/msg/JointMitCmd"), "is not an out topic"),
+            (lambda s: s.update(topic="/camera/camera/color/image_raw", type="sensor_msgs/msg/Image"), "is a camera"),
+            (lambda s: s.update(stale_after_s=0), "stale_after_s is positive"),
+            (lambda s: s.update(fields=[]), "one or more fields"),
+            (lambda s: s["fields"].append(dict(s["fields"][0])), "distinct names"),
+            (lambda s: s["fields"][0].update(kind="blob"), "is none of"),
+            (lambda s: s["fields"][0].update(decimals=-1), "non-negative integer"),
+            (lambda s: s["fields"][0].update(bits=[{"bit": 0, "label": "x"}]), "bits are recorded for"),
+            (lambda s: s["fields"][-1]["bits"].append({"bit": 0, "label": "again"}), "distinct")):
+        bad = copy.deepcopy(raw)
+        change(bad["sensors"][1])              # joint1's motor state
+        with pytest.raises(ValueError, match=error):
+            parse_profile(bad)
+    bad = copy.deepcopy(raw)
+    bad["sensors"].append(copy.deepcopy(bad["sensors"][0]))
+    with pytest.raises(ValueError, match="sensor ids are distinct"):
+        parse_profile(bad)
+    assert parse_profile(raw).sensors == load("rebot_b601_rs").sensors
+
+
+def test_rebot_controls_are_the_controllers_goals():
+    """The arm goal names joint1..joint6 in the controller's order (it aborts any other list,
+    ros_actions.py#L146-L152) with one point reached after whole seconds; the driver does not clamp,
+    so the fields carry the URDF joint limits (ReBot_Arm_RS.urdf), written out here from the file,
+    and default to the safe-home pose (all joints 0). The gripper goal's position is the gripper
+    motor angle within the rs configuration's close 0.0 .. open 5.0 (the driver refuses others),
+    max_effort the vendor's documented 0.0. Both are cancellable actions with joint-state feedback."""
+    p = load("rebot_b601_rs")
+    arm, grip = (next(c for c in p.controls if c.id == i) for i in ("arm_trajectory", "gripper"))
+    assert [c.id for c in p.controls] == ["arm_trajectory", "gripper"]
+    assert (arm.kind, arm.name, arm.type) == ("action", "/follow_joint_trajectory", "control_msgs/action/FollowJointTrajectory")
+    t = arm.template["trajectory"]
+    assert t["joint_names"] == [f"joint{i}" for i in range(1, 7)]
+    (point,) = t["points"]
+    assert point == {"positions": [f"$joint{i}" for i in range(1, 7)], "time_from_start": {"sec": "$duration", "nanosec": 0}}
+    assert {f.name: (f.min, f.max) for f in arm.fields} == {
+        "joint1": (-2.8, 2.8), "joint2": (0.0, 3.14), "joint3": (0.0, 3.14), "joint4": (-1.57, 1.57),
+        "joint5": (-1.57, 1.57), "joint6": (-3.14, 3.14), "duration": (1.0, 10.0)}
+    assert all(f.default == 0.0 and f.unit == "rad" for f in arm.fields if f.name != "duration")
+    duration = arm.fields[-1]
+    assert (duration.name, duration.integer, duration.unit) == ("duration", True, "s")
+    assert (grip.kind, grip.name, grip.type) == ("action", "/gripper/command", "control_msgs/action/GripperCommand")
+    assert grip.template == {"command": {"position": "$position", "max_effort": 0.0}}
+    (f,) = grip.fields
+    assert (f.min, f.max, f.default, f.unit) == (0.0, 5.0, 0.0, "rad")
+    for c in (arm, grip):
+        assert [o.op for o in c.stop] == ["cancel"] and c.prerequisites == (c.name, "/joint_states")
+    assert p.stop == () and [c.topic for c in p.cameras] == [
+        "/camera/camera/color/image_raw", "/camera/camera/aligned_depth_to_color/image_raw"]
+
+
+def test_rebot_action_servers_do_not_preempt():
+    """What the reBot's servers do with a goal that arrives while one runs (console spec §1.1,
+    §2.2): the arm's rejects it (arm_goal_callback returns REJECT in TRAJ_RUNNING, which an
+    accepted trajectory enters as it starts, ros_actions.py#L46-L59, hardware_manager.py#L412-L416);
+    the gripper's accepts it and runs it beside the running one (its goal callback refuses only
+    during gravity compensation or safe home, ros_actions.py#L51-L59). Neither preempts, so the
+    page streams goals to neither."""
+    p = load("rebot_b601_rs")
+    assert {c.id: c.busy for c in p.controls} == {"arm_trajectory": "reject", "gripper": "parallel"}
+    raw = {c["id"]: c["busy"] for c in p.raw["controls"]}
+    assert raw["arm_trajectory"]["source"].endswith("ros_actions.py#L46-L59")
+    assert "hardware_manager.py#L412-L416" in raw["arm_trajectory"]["note"]
+    assert raw["gripper"]["source"].endswith("ros_actions.py#L51-L59")
+    from robot_console.profiles import profile_json
+    assert [c["busy"] for c in profile_json(p)["controls"]] == ["reject", "parallel"]     # handed to the page
+
+
+def test_profile_loader_requires_busy_on_action_controls_only():
+    raw = load("rebot_b601_rs").raw
+    for change, error in ((lambda c: c.pop("busy"), "records busy.new_goal"),
+                          (lambda c: c["busy"].update(new_goal="queue"), "records busy.new_goal"),
+                          (lambda c: c.update(busy="reject"), "records busy.new_goal")):
+        bad = copy.deepcopy(raw)
+        change(bad["controls"][0])
+        with pytest.raises(ValueError, match=error):
+            parse_profile(bad)
+    bad = copy.deepcopy(load("ainex").raw)
+    bad["controls"][0]["busy"] = {"new_goal": "reject", "source": "x"}
+    with pytest.raises(ValueError, match="busy is recorded for action controls only"):
+        parse_profile(bad)
+    for p in load_all():
+        for c in p.controls:
+            assert (c.busy != "") == (c.kind == "action"), (p.id, c.id)
 
 
 def test_ainex_head_limits():
@@ -180,24 +376,28 @@ def placeholders(template):
 
 
 def test_namespace_only_where_documented():
+    """Only the reBot's hardware interface is namespace-configurable: the bringup's arm_namespace
+    launch argument (default "rebotarm") prefixes every name the controller creates, while
+    robot_state_publisher's /robot_description, /tf and /tf_static stay global; joint names are
+    not prefixed."""
     for p in load_all():
-        assert (p.namespace is not None) == (p.id == "so101"), p.id
-    p = load("so101")
-    assert p.resolve("/joint_trajectory_controller/follow_joint_trajectory", "arm1") == \
-        "/arm1/joint_trajectory_controller/follow_joint_trajectory"
-    assert p.resolve("/tf", "arm1") == "/tf"
-    assert p.resolve("/image_raw", "arm1") == "/image_raw"       # the camera boot runs un-namespaced
-    assert p.resolve("/set_capture", "arm1") == "/set_capture"
-    # camera_info_manager's private ~/set_camera_info lives under the camera node, not the root
-    assert p.endpoint("/usb_cam/set_camera_info") is not None and p.endpoint("/set_camera_info") is None
-    assert p.resolve("/usb_cam/set_camera_info", "arm1") == "/usb_cam/set_camera_info"
-    assert p.resolve("/joint_states", "") == "/joint_states"
+        assert (p.namespace is not None) == (p.id == "rebot_b601_rs"), p.id
+    p = load("rebot_b601_rs")
+    assert p.namespace.default == "rebotarm" and p.namespace.joint_prefix == ""
+    assert p.resolve("/follow_joint_trajectory", "rebotarm") == "/rebotarm/follow_joint_trajectory"
+    assert p.resolve("/joints/joint3/state", "right_arm") == "/right_arm/joints/joint3/state"
+    assert p.resolve("/gripper/command", "right_arm") == "/right_arm/gripper/command"
+    for name in ("/tf", "/tf_static", "/robot_description"):
+        assert p.resolve(name, "right_arm") == name
+    assert {e.name for e in p.endpoints if e.name in p.namespace.global_names} == set(p.namespace.global_names)
+    for c in p.controls:                                   # joint names carry no namespace
+        assert "{joint_prefix}" not in str(c.template), c.id
     for other in load_all():
-        if other.id != "so101":
+        if other.id != "rebot_b601_rs":
             with pytest.raises(ProfileError, match="no namespace override"):
                 check_namespace_allowed(other, "robot1")
             check_namespace_allowed(other, None)
-    check_namespace_allowed(p, "arm1")
+    check_namespace_allowed(p, "right_arm")
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -221,7 +421,7 @@ def test_reads_are_documented_measurements_of_control_fields(pid):
             assert float(v.get("scale", 1)) != 0
     ids = {pid: [r["id"] for r in load(pid).raw.get("reads") or []] for pid in SUPPORTED_IDS}
     assert ids == {"myagv": [], "ainex": ["head_position", "joint_positions"], "rosmaster_x3_plus": ["current_angle"],
-                   "so101": []}
+                   "rebot_b601_rs": []}
 
 
 # ------------------------------------------------------------------ AiNex: one control per servo
@@ -354,7 +554,7 @@ def test_ainex_servo_limits_are_the_servo_range_within_the_urdf():
 
 
 def test_ainex_polled_read_measures_every_servo():
-    """The documented read-only joint-position query the page polls (console spec §2.2, amended): all 24 servos through get_position, each mapped back to its control's rad with
+    """The documented read-only joint-position query the page polls (console spec §2.2): all 24 servos through get_position, each mapped back to its control's rad with
     the inverse of that control's wire map. No other profile polls."""
     for p in load_all():
         polled = [r for r in p.reads if r.poll_s]
@@ -401,8 +601,8 @@ def test_profile_loader_refuses_inconsistent_maps_groups_and_polls():
 @pytest.mark.parametrize("unknown", ["turtlebot", "so100"])
 def test_id_refusals(unknown):
     with pytest.raises(ProfileError, match=f"unknown robot id '{unknown}'. Accepted ids: "
-                                           "myagv, ainex, rosmaster_x3_plus, so101$"):
+                                           "myagv, ainex, rosmaster_x3_plus, rebot_b601_rs$"):
         select_id(unknown)
-    with pytest.raises(ProfileError, match="'so101' is an arm.*myagv, ainex, rosmaster_x3_plus$"):
-        select_id("so101", teleop=True)
+    with pytest.raises(ProfileError, match="'rebot_b601_rs' is an arm.*myagv, ainex, rosmaster_x3_plus$"):
+        select_id("rebot_b601_rs", teleop=True)
 

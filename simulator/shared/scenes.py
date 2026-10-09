@@ -320,7 +320,7 @@ FIXTURE_BUILD_ATTEMPTS = 50
 
 def place_fixtures(arena, rng) -> bool:
     """RoboCasa's own fixture placement, as its `Kitchen._load_model` does it after building
-    the `KitchenArena` (its steps 1 and 2; spec §2.1, amended): the fixtures a
+    the `KitchenArena` (its steps 1 and 2; spec §2.1): the fixtures a
     layout places on others -- a toaster oven, knife block, paper towel or plant on a counter,
     a coffee machine with its auxiliary -- are sampled onto their fixture with RoboCasa's
     samplers (`env_utils.get_single_fixture_sampler`), paired auxiliaries first, each tried
@@ -446,7 +446,7 @@ def build_kitchen_arena(layout: int, style: int, seed: int = 0, objects: bool = 
 
 
 def solve_by_island(spec) -> None:
-    """Have MuJoCo solve each island of touching bodies on its own (spec §2.1, amended). RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of
+    """Have MuJoCo solve each island of touching bodies on its own (spec §2.1). RoboCasa v1.0 pins MuJoCo 3.3.1, whose default solver takes every contact of
     the scene as one problem: RoboCasa's lightest objects (a 1.2 g straw and sugar cube, 3-7 g
     shrimp and marshmallows) came off their first contacts with the counters at metres per
     second and knocked the others over. From 3.3.6 on MuJoCo solves by island by default

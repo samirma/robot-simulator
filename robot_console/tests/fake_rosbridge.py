@@ -3,11 +3,18 @@
 It serves ``rosapi`` from a wire description (see ``wirespec.py``), streams camera frames on
 subscribed camera topics, records every client op (publishes, advertises, calls, action
 goals and cancels), and lets tests inject failures: a failing or hanging service, a paused
-camera, a dropped connection, a silent action server. A ROS 2 goal preempts the earlier
-active goals of its action (they end CANCELED, as a ros2_control controller's preempted goal
-does) and, when the client asks for feedback, is acknowledged with one feedback message. Its behaviour follows the stock servers the console was
-checked against (rosbridge_suite on Noetic, Humble and Jazzy): ROS 2 hides ``_action``
-endpoints from rosapi and lists actions through ``/rosapi/action_servers``.
+camera, a dropped connection, a silent action server, another client's running goal. A ROS 2
+action server handles a goal that arrives while another of its goals runs as its spec row's
+``busy`` says (``wirespec.wire_spec`` takes it from the profile): ``preempt`` (the default) ends
+the earlier active goals (CANCELED, as a ros2_control controller's preempted goal does);
+``reject`` refuses the new goal, answered as rosbridge_suite 2.5 and later answer a rejected
+goal (result false, "Action goal was rejected", status 0), except that a "silent" server's
+rejection is never answered, as before rosbridge 2.5; ``parallel`` runs it beside the others.
+An accepted goal is acknowledged with one feedback message when the client asks for feedback;
+a slow server's (``reply_delay``) acknowledgement and result reach the client late.
+Its behaviour follows the stock servers the console was checked against (rosbridge_suite on
+Noetic, Humble and Jazzy): ROS 2 hides ``_action`` endpoints from rosapi and lists actions
+through ``/rosapi/action_servers``.
 """
 
 from __future__ import annotations
@@ -38,11 +45,20 @@ INFRA = {
 }
 
 
+def depth_mm(i: int, n: int) -> int:
+    """The depth sample of pixel ``i`` of ``n`` in a 16UC1 frame (millimetres): pixel 0 has no depth (0),
+    the others rise from 70 mm (pixel 1) to 500 mm (the last), the D405's recorded range."""
+    return 0 if i == 0 else 70 + round((i - 1) * 430 / (n - 2))
+
+
 def image_msg(dialect: str, encoding: str = "rgb8", w: int = 8, h: int = 6, seq: int = 0) -> dict:
-    ch = {"rgb8": 3, "bgr8": 3, "mono8": 1, "rgba8": 4, "bgra8": 4, "mono16": 2, "yuv422": 2,
+    ch = {"rgb8": 3, "bgr8": 3, "mono8": 1, "rgba8": 4, "bgra8": 4, "mono16": 2, "16UC1": 2, "yuv422": 2,
           "yuv422_yuy2": 2}.get(encoding, 3)
     step = w * ch
-    data = bytes(((i + seq * 13) * 7) % 256 for i in range(step * h))
+    if encoding == "16UC1":     # little-endian millimetres, as realsense2_camera publishes the aligned depth
+        data = b"".join(depth_mm(i, w * h).to_bytes(2, "little") for i in range(w * h))
+    else:
+        data = bytes(((i + seq * 13) * 7) % 256 for i in range(step * h))
     stamp = {"sec": seq, "nanosec": 0} if dialect == "ros2" else {"secs": seq, "nsecs": 0}
     return {"header": {"stamp": stamp, "frame_id": "camera"}, "height": h, "width": w,
             "encoding": encoding, "is_bigendian": 0, "step": step,
@@ -75,11 +91,22 @@ class FakeRosbridge:
         self.ops_lock = threading.Lock()
         self.clients: List[Client] = []
         self.service_behaviour: Dict[str, Any] = {}   # name -> "fail" | "hang" | callable
-        # ros2 action -> "silent" (no feedback, no preemption result) | "abort" (goals end ABORTED)
+        # ros2 action -> "silent" (no feedback, no preemption result, no answer to a rejected goal)
+        # | "abort" (goals end ABORTED)
         self.action_behaviour: Dict[str, str] = {}
+        # ros2 action -> seconds by which what the server sends about a goal arriving now (its
+        # acknowledging feedback, its result) reaches the client late: a slow server
+        self.reply_delay: Dict[str, float] = {}
         self.paused: set = set()
+        # topic -> message a sensor topic publishes (a spec row's ``sample``): periodically at the
+        # row's ``rate_hz``, or, for a row marked ``latched``, once to each new subscriber and again
+        # whenever a test changes it with ``set_sample`` (a transient-local publisher)
+        self.samples: Dict[str, dict] = {r["name"]: copy.deepcopy(r["sample"])
+                                         for r in spec["topics"] if r.get("sample") is not None}
         self.frame_encoding: Dict[str, str] = {}
-        self.goals: Dict[str, dict] = {}          # ros2 goal id -> {client, action, t_end, done}
+        # ros2 goal id -> {client, action, t_sent, t_end, done, t_done} (client None: another client's)
+        self.goals: Dict[str, dict] = {}
+        self.rejected: List[dict] = []            # goals a rejecting ros2 server refused: {id, action, t}
         # services a test declares read-only queries (e.g. a profile's polled joint-position read):
         # calls of them are not counted by command_ops()
         self.read_only: set = set()
@@ -110,6 +137,15 @@ class FakeRosbridge:
     def set_service(self, name: str, behaviour: Any) -> None:
         self.service_behaviour[name] = behaviour
 
+    def set_sample(self, topic: str, msg: dict) -> None:
+        """Change the message a sensor topic publishes (a latched topic republishes it at once)."""
+        self.samples[topic] = copy.deepcopy(msg)
+        if self._row(topic).get("latched"):
+            self._broadcast(topic, self.samples[topic])
+
+    def _row(self, topic: str) -> dict:
+        return next(r for r in self.spec["topics"] if r["name"] == topic)
+
     def published(self, topic: Optional[str] = None) -> List[dict]:
         with self.ops_lock:
             return [o for o in self.ops if o.get("op") == "publish" and (topic is None or o["topic"] == topic)]
@@ -123,6 +159,14 @@ class FakeRosbridge:
     def open_clients(self) -> int:
         """Websocket connections currently open."""
         return sum(1 for c in self.clients if not c.closed)
+
+    def occupy(self, action: str, seconds: float) -> str:
+        """Another client's goal of ROS 2 ``action``, running for ``seconds`` (the server is busy)."""
+        gid = f"other-{len(self.goals)}"
+        now = time.monotonic()
+        self.goals[gid] = {"client": None, "action": action, "t_sent": now, "t_end": now + seconds,
+                           "done": False, "t_done": None}
+        return gid
 
     def ops_of(self, op: str) -> List[dict]:
         with self.ops_lock:
@@ -213,6 +257,8 @@ class FakeRosbridge:
         op = msg.get("op")
         if op == "subscribe":
             c.subs[msg.get("id") or msg["topic"]] = msg["topic"]
+            if msg["topic"] in self.samples and self._row(msg["topic"]).get("latched") and msg["topic"] not in self.paused:
+                c.send({"op": "publish", "topic": msg["topic"], "msg": self.samples[msg["topic"]]})
         elif op == "unsubscribe":
             c.subs.pop(msg.get("id") or msg["topic"], None)
         elif op == "call_service":
@@ -224,15 +270,24 @@ class FakeRosbridge:
                         "values": "Action does not exist", "status": 6, "result": False})
                 return
             silent = self.action_behaviour.get(msg["action"]) == "silent"
-            if not silent:
-                for gid, g in list(self.goals.items()):
-                    if g["action"] == msg["action"] and not g["done"]:
-                        self._finish_goal(gid, 5)           # preempted
-            self.goals[msg["id"]] = {"client": c, "action": msg["action"],
-                                     "t_end": time.monotonic() + float(spec.get("exec_s", 3.0)),
-                                     "done": False}
+            busy = spec.get("busy", "preempt")
+            running = [gid for gid, g in list(self.goals.items()) if g["action"] == msg["action"] and not g["done"]]
+            if busy == "reject" and running:
+                self.rejected.append({"id": msg.get("id"), "action": msg["action"], "t": time.monotonic()})
+                if not silent:
+                    c.send({"op": "action_result", "id": msg.get("id"), "action": msg["action"],
+                            "values": "Action goal was rejected", "status": 0, "result": False})
+                return
+            if busy == "preempt" and not silent:
+                for gid in running:
+                    self._finish_goal(gid, 5)               # preempted
+            now = time.monotonic()
+            delay = float(self.reply_delay.get(msg["action"], 0.0))
+            self.goals[msg["id"]] = {"client": c, "action": msg["action"], "t_sent": now,
+                                     "t_end": now + float(spec.get("exec_s", 3.0)),
+                                     "done": False, "t_done": None, "delay": delay}
             if msg.get("feedback") and not silent:
-                c.send({"op": "action_feedback", "id": msg["id"], "action": msg["action"], "values": {}})
+                self._reply(c, {"op": "action_feedback", "id": msg["id"], "action": msg["action"], "values": {}}, delay)
         elif op == "cancel_action_goal" and self.dialect == "ros2":
             g = self.goals.get(msg.get("id"))
             if g and not g["done"]:
@@ -243,8 +298,19 @@ class FakeRosbridge:
         if g["done"]:
             return
         g["done"] = True
-        g["client"].send({"op": "action_result", "id": gid, "action": g["action"], "values": {},
-                          "status": status, "result": True})
+        g["t_done"] = time.monotonic()
+        if g["client"] is not None:
+            self._reply(g["client"], {"op": "action_result", "id": gid, "action": g["action"], "values": {},
+                                      "status": status, "result": True}, g.get("delay", 0.0))
+
+    @staticmethod
+    def _reply(c: Client, msg: dict, delay: float) -> None:
+        if delay > 0:
+            t = threading.Timer(delay, c.send, args=(msg,))
+            t.daemon = True
+            t.start()
+        else:
+            c.send(msg)
 
     def _broadcast(self, topic: str, msg: dict) -> None:
         for c in list(self.clients):
@@ -300,6 +366,7 @@ class FakeRosbridge:
     def _pump_loop(self) -> None:
         seq = 0
         cams = [r for r in self.spec["topics"] if r.get("camera")]
+        sensors = [r for r in self.spec["topics"] if r.get("sample") is not None]
         next_at: Dict[str, float] = {}
         while not self._stop.is_set():
             now = time.monotonic()
@@ -311,6 +378,12 @@ class FakeRosbridge:
                     seq += 1
                     enc = self.frame_encoding.get(r["name"], r.get("encoding", "rgb8"))
                     self._broadcast(r["name"], image_msg(self.dialect, enc, seq=seq))
+            for r in sensors:
+                n = r["name"]
+                if n in self.paused or r.get("latched") or now < next_at.get(n, 0):
+                    continue
+                next_at[n] = now + 1.0 / float(r.get("rate_hz") or 5)
+                self._broadcast(n, self.samples[n])
             for gid, g in list(self.goals.items()):
                 if not g["done"] and now >= g["t_end"]:
                     self._finish_goal(gid, 6 if self.action_behaviour.get(g["action"]) == "abort" else 4)

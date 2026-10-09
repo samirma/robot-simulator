@@ -15,6 +15,8 @@ from conftest import SHARED, running_sim
 import protocol
 
 PORT = 9281
+#: the worktop robot of the robot specification
+ARM = "rebot_b601_rs"
 
 
 @pytest.fixture(scope="module")
@@ -86,14 +88,17 @@ def test_worktop_staging_and_its_removal(sim):
     sunk = c.call("bodies", names=scene["cleared"])["bodies"]
     assert all(b["pos"][2] < -40 for b in sunk.values())     # parked under the scene
     before = c.call("bodies", names=names)["bodies"]
-    res = c.call("spawn", robot="so101", placement="worktop", ports=[])
+    res = c.call("spawn", robot=ARM, placement="worktop", ports=[])
     c.call("commit")
     assert res["staged"] == scene["staged"] and res["cleared"] == scene["cleared"]
-    row = robots(c)["so101"]
+    row = robots(c)[ARM]
     assert row["staged"] == res["staged"] and row["cleared"] == res["cleared"]
-    # `scene` names the objects the arm stands among as well (spec §2.3)
-    assert c.call("scene")["staging"]["so101"] == {"staged": res["staged"],
-                                                   "cleared": res["cleared"]}
+    # `scene` names the objects the arm stands among as well (spec §2.3), and the spot
+    assert c.call("scene")["staging"][ARM] == {"staged": res["staged"],
+                                               "cleared": res["cleared"], "frame": res["frame"]}
+    assert res["frame"] == scene["frame"]
+    assert np.allclose(res["xyz"][:2], scene["frame"]["xy"])
+    assert res["yaw"] == scene["frame"]["yaw"]
     # one body, one wire: no components in any answer
     assert "components" not in res and "components" not in row
     # the arm stands at the scene's objects: they have not moved
@@ -133,22 +138,22 @@ def test_admission_duplicate_busy_and_release(sim):
     ra = a.call("spawn", robot="myagv", placement="floor", ports=[9990])
     assert ra["robot"] == "myagv"
     with pytest.raises(protocol.RemoteError, match="another spawn \\(myagv\\) is starting up"):
-        b.call("spawn", robot="so101", placement="worktop", ports=[9991])
+        b.call("spawn", robot=ARM, placement="worktop", ports=[9991])
     with pytest.raises(protocol.RemoteError, match="another spawn"):
-        b.call("precheck", robot="so101", placement="worktop", ports=[9991])
+        b.call("precheck", robot=ARM, placement="worktop", ports=[9991])
     a.call("commit")
     with pytest.raises(protocol.RemoteError, match="already spawned"):
         b.call("spawn", robot="myagv", placement="floor", ports=[9992])
     with pytest.raises(protocol.RemoteError, match="port 9990 is reserved"):
-        b.call("spawn", robot="so101", placement="worktop", ports=[9990])
-    assert b.call("spawn", robot="so101", placement="worktop", ports=[9991])["robot"] == "so101"
+        b.call("spawn", robot=ARM, placement="worktop", ports=[9990])
+    assert b.call("spawn", robot=ARM, placement="worktop", ports=[9991])["robot"] == ARM
     b.call("commit")
     c = client()
-    assert set(robots(c)) == {"myagv", "so101"}
+    assert set(robots(c)) == {"myagv", ARM}
     # the worktop is taken: another robot is refused there and nothing is left behind
-    with pytest.raises(protocol.RemoteError, match="worktop already holds so101"):
+    with pytest.raises(protocol.RemoteError, match=f"worktop already holds {ARM}"):
         c.call("spawn", robot="ainex", placement="worktop", ports=[9993])
-    assert set(robots(c)) == {"myagv", "so101"} and c.call("robots")["starting"] is None
+    assert set(robots(c)) == {"myagv", ARM} and c.call("robots")["starting"] is None
     # ending a spawn (its connection) removes its robot and releases its id and port
     a.close()
     assert wait(lambda: "myagv" not in robots(c))
@@ -170,18 +175,18 @@ def test_unknown_robot_is_refused_with_the_list(sim):
 
 def test_sigkilled_spawn_releases_robot_id_and_placement(sim):
     code = ("import sys, time; sys.path.insert(0, %r); import protocol; "
-            "c = protocol.Client('127.0.0.1', %d); c.call('spawn', robot='so101', "
+            "c = protocol.Client('127.0.0.1', %d); c.call('spawn', robot='%s', "
             "placement='worktop', ports=[9994]); c.call('commit'); print('up', flush=True); "
-            "time.sleep(600)" % (str(SHARED), PORT))
+            "time.sleep(600)" % (str(SHARED), PORT, ARM))
     p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, text=True)
     assert p.stdout.readline().strip() == "up"
     c = client()
-    assert "so101" in robots(c)
+    assert ARM in robots(c)
     os.kill(p.pid, signal.SIGKILL)
     p.wait()
-    assert wait(lambda: "so101" not in robots(c))
+    assert wait(lambda: ARM not in robots(c))
     # id, port and worktop are free again
-    assert c.call("spawn", robot="so101", placement="worktop", ports=[9994])["robot"] == "so101"
+    assert c.call("spawn", robot=ARM, placement="worktop", ports=[9994])["robot"] == ARM
     c.call("remove")
     c.close()
 
@@ -222,16 +227,24 @@ def test_readings_ctrl_and_state_preserved_across_spawn_and_removal(sim):
 
 def test_robot_camera_render_matches_its_model_camera(sim):
     c = client()
-    c.call("spawn", robot="so101", placement="worktop", ports=[])
+    c.call("spawn", robot="rosmaster_x3_plus", placement="floor", ports=[])
     c.call("commit")
-    r = c.call("render", view={"camera": "so101/default_cam"}, width=640, height=480,
-               format="rgb")
+    r = c.call("render", view={"camera": "rosmaster_x3_plus/camera_color_optical_frame"},
+               width=640, height=480, format="rgb")
     img = np.frombuffer(r["_payload"], np.uint8).reshape(480, 640, 3)
     assert img.std() > 1.0
-    rd = c.call("readings", robot="so101")
-    assert set(rd["joints"]) >= {"shoulder_pan_joint", "gripper_joint"}
+    c.call("remove")
+    c.close()
+
+
+def test_readings_and_a_view_framing_the_arm(sim):
+    c = client()
+    c.call("spawn", robot=ARM, placement="worktop", ports=[])
+    c.call("commit")
+    rd = c.call("readings", robot=ARM)
+    assert set(rd["joints"]) >= {"joint1", "joint6", "gripper_joint1", "gripper_joint2"}
     assert "base_link" in rd["bodies"]
-    fr = c.call("render", view={"frame_robot": "so101"}, width=320, height=240)
+    fr = c.call("render", view={"frame_robot": ARM}, width=320, height=240)
     assert fr["_payload"][:4] == b"\x89PNG"
     c.call("remove")
     c.close()

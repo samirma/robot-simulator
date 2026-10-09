@@ -30,7 +30,7 @@ def test_spawn_help_lists_every_id_with_its_name_and_no_other():
     assert {line.split()[0] for line in listed if line.strip()} == set(registry.ids())
     for flag in ("--placement", "--sim-port", "--port"):
         assert flag in out.stdout
-    # one wire per robot: no assembly, no --arm-port (spec §2.3, amended)
+    # one wire per robot: no assembly, no --arm-port (spec §2.3)
     for word in ("--arm-port", "composite"):
         assert word not in out.stdout, word
 
@@ -48,7 +48,7 @@ def test_spawn_refuses_unknown_and_abbreviated_flags():
 
 
 def test_spawn_refuses_arm_port_as_unknown_flag():
-    out = run(SIM / "spawn.sh", "so101", "--arm-port", "9999")
+    out = run(SIM / "spawn.sh", "rebot_b601_rs", "--arm-port", "9999")
     assert out.returncode != 0 and "unrecognized arguments: --arm-port" in out.stdout
 
 
@@ -89,7 +89,7 @@ def test_spawn_ended_by_a_signal_during_its_checks_exits_zero(tmp_path, sig):
     env, mark = fake_docker(tmp_path, delay=5)
     sim_port, port = 9171, 9170
     assert port_free(sim_port) and port_free(port)
-    p = subprocess.Popen([str(SIM / "spawn.sh"), "so101", "--sim-port", str(sim_port),
+    p = subprocess.Popen([str(SIM / "spawn.sh"), "rebot_b601_rs", "--sim-port", str(sim_port),
                           "--port", str(port)], stdout=subprocess.PIPE,
                          stderr=subprocess.STDOUT, text=True, env=env)
     t0 = time.monotonic()
@@ -127,8 +127,8 @@ def test_spawn_refuses_a_sim_port_that_does_not_answer(tmp_path):
     port = 9169
     assert port_free(port)
     try:
-        out = run(SIM / "spawn.sh", "so101", "--sim-port", srv.getsockname()[1], "--port", port,
-                  env=env)
+        out = run(SIM / "spawn.sh", "rebot_b601_rs", "--sim-port", srv.getsockname()[1],
+                  "--port", port, env=env)
     finally:
         stop.set()
         th.join()
@@ -157,7 +157,7 @@ def test_kitchen_help_and_flag_refusal():
     assert out.returncode == 0
     for word in ("--engine", "--scene", "--mujoco", "--sim-port", "ithor:", "robocasa:", "test:1"):
         assert word in out.stdout
-    out = run(SIM / "kitchen.sh", "start", "--robots", "so101")
+    out = run(SIM / "kitchen.sh", "start", "--robots", "rebot_b601_rs")
     assert out.returncode != 0 and "unknown flag" in out.stdout
     out = run(SIM / "kitchen.sh", "serve")
     assert out.returncode != 0

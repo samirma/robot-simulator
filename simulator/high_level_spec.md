@@ -2,39 +2,44 @@
 
 This document defines only the simulator's requirements. Its sole external specification
 is [`../robots_specs/high_level_spec.md`](../robots_specs/high_level_spec.md) together with
-its robot files `../robots_specs/<id>.md` (amended: the robot sections moved into
-those files), referred to below as the **robot specification**. Robot ids, identities,
-kinds, embodiments, sources, models, sensors and control interfaces are defined there
-rather than repeated here.
+its robot files `../robots_specs/<id>.md`, referred to below as the **robot
+specification**. Robot ids, identities, kinds, embodiments, sources, models, sensors and
+control interfaces are defined there rather than repeated here.
 
-**Terms.** A robot's **vendor interface** is every node, topic, service, action and parameter
-that its authoritative sources, as recorded in the robot specification, define. **ROS
-infrastructure** — the `rosbridge_websocket` and `rosapi` nodes and their stock endpoints and
-parameters (including `/client_count`, `/connected_clients` and `/rosapi_params`), `/rosout`,
-`/rosout_agg`, `/parameter_events`, the ROS master's own parameters (`/rosdistro`,
-`/rosversion`, `/run_id`, `/roslaunch/*`) and each node's client-library services (logger,
-parameter and type-description services) — is not part of it. Infrastructure may appear on a
-wire but never alters or replaces a vendor-owned name or behaviour. The **reference
-project** is the prior version of this workspace, github.com/samirma/robot-simulator at
-revision `34547ae`. A **worktop robot** is a robot of `kind` `arm` (the SO-101); its
-**worktop objects** are the six objects of the reference project's
-apple-on-plate scene — an apple, a plate, a bowl, a mug, a banana and a lemon (YCB scans)
-— that are part of every scene with a worktop, staged on it when the simulation starts and
-independent of any robot (§2.2, §2.3, amended). An **evidence case** is
-one robot spawned with `spawn.sh` into one engine's default scene — an `arm` on the worktop,
-every other kind on the floor — with a picture of the scene (for an arm, showing its
-worktop objects), a picture from each of the
-robot's cameras not marked `optional` and a passing smoke run, through its vendor interface, of each of its motion
-commands — drive or walk, arm, gripper, head and action group, as the robot has them — a
-drive or walk followed by its recorded stop command and every other motion ending on its
-reaching its goal or end state, judged as §5 **Evidence** states.
+**Terms.** A robot's **vendor interface** is every node, topic, service, action and
+parameter that its authoritative sources, as recorded in the robot specification, define.
+**ROS infrastructure** — the `rosbridge_websocket` and `rosapi` nodes and their stock
+endpoints and parameters (including `/client_count`, `/connected_clients` and
+`/rosapi_params`), `/rosout`, `/rosout_agg`, `/parameter_events`, the ROS master's own
+parameters (`/rosdistro`, `/rosversion`, `/run_id`, `/roslaunch/*`), each node's
+client-library services (logger, parameter and type-description services) and the
+parameters the client library declares on every ROS 2 node (`use_sim_time`,
+`start_type_description_service`, and the QoS overrides of the node's own `/rosout` and
+`/parameter_events` publishers) — is not part of it. Infrastructure may appear on a wire
+but never alters or replaces a vendor-owned name or behaviour. The **reference project**
+is the prior version of this workspace, github.com/samirma/robot-simulator at revision
+`34547ae`. A **worktop robot** is a robot of `kind` `arm` (the reBot Arm B601-RS); its
+**worktop objects** are the six objects of the reference project's apple-on-plate scene —
+an apple, a plate, a bowl, a mug, a banana and a lemon (YCB scans) — that are part of
+every scene with a worktop, staged on it when the simulation starts and independent of any
+robot (§2.2, §2.3). The **reference survey's spots** are the worktop spots the reference
+project's worktop survey ranks (§2.3 *Placement*) for the reference's own arm mount,
+whatever robot later stands there: working reach 0.15-0.35 m, radius 0.20 m, height 0.45
+m, base footprint 0.14 m, forward workspace 0.45 m. An **evidence case** is one robot
+spawned with `spawn.sh` into one engine's default scene — an `arm` on the worktop, every
+other kind on the floor — with a picture of the scene (for an arm, showing its worktop
+objects), a picture from each of the robot's cameras not marked `optional` and a passing
+smoke run, through its vendor interface, of each of its motion commands — drive or walk,
+arm, gripper, head and action group, as the robot has them — a drive or walk followed by
+its recorded stop command and every other motion ending on its reaching its goal or end
+state, judged as §5 **Evidence** states.
 
 ## 1. Goal
 
 Run a MuJoCo simulation of a realistic household scene in a choice of physics **engine**,
 and spawn into it, one at a time and by id, every robot defined in the robot specification.
 Every spawned robot shares the one simulation and serves its recorded control interface
-on **its own rosbridge websocket** (amended: robots are single bodies). Each
+on **its own rosbridge websocket**. Each
 simulated robot reproduces the recorded real-hardware behaviour within the acceptance
 bounds in §5 on every engine. Scene content differs between engines by design.
 
@@ -70,13 +75,13 @@ it fetches the worktop objects' meshes the same way (§4).
 * **RoboCasa** — MuJoCo with RoboCasa kitchens, a **scene provider only**: no robosuite
   robot, controller or observation stack enters the model. Scene source `robocasa`, whose
   scene id is `<layout>-<style>`; default scene `robocasa:1-1`. Its fixtures stand where
-  RoboCasa's kitchen environment stands them (amended): the fixtures a layout
+  RoboCasa's kitchen environment stands them: the fixtures a layout
   sets on others -- a toaster, toaster oven, coffee machine, knife block, paper towel or
   plant on a counter -- are placed with RoboCasa's own fixture samplers, as its environment
   does when it loads a kitchen (the reference built the arena without that step and left
   them at the world origin, inside the corner walls, or on the floor). Physics is
   RoboCasa's, solved by constraint island (below). **RoboCasa's own kitchen
-  objects** (amended) stand on the counters of every RoboCasa scene as well: its
+  objects** stand on the counters of every RoboCasa scene as well: its
   bare kitchen holds fixtures only, its objects come from its task environments, so the
   simulator draws graspable objects from RoboCasa's object library with RoboCasa's own
   sampler (the Lightwheel set `setup` installs, plus any registry `assets` fetched) and sets
@@ -84,7 +89,7 @@ it fetches the worktop objects' meshes the same way (§4).
   per square metre of counter and at most 24, not touching one another. The draw is a
   deterministic function of the layout and style. They are loose objects like any other:
   those within the six worktop objects' area are cleared (§2.2). Like MolmoSpaces' objects
-  they stay where they are set (amended): a RoboCasa scene is solved by
+  they stay where they are set: a RoboCasa scene is solved by
   constraint island, as MuJoCo does by default from 3.3.6 on (RoboCasa pins 3.3.1, whose
   whole-scene solve threw its lightest objects off the counters), and an object that does
   not stand still upright on a flat top -- one that tips over or keeps rolling -- is drawn
@@ -119,8 +124,7 @@ kitchen.sh start [--engine molmospaces|robocasa] [--scene <source>:<id>] [--mujo
   The same port also returns, on request, an offscreen render of the current scene from a
   given viewpoint and a spawned robot's joint and pose readings, headless or not. Both are
   simulator-private and never reach a wire.
-* The **worktop** is the surface the reference project's worktop survey ranks first
-  (amended; it was the largest level top 0.6-1.1 m above the floor). On iTHOR
+* The **worktop** is the surface the reference project's worktop survey ranks first. On iTHOR
   and ProcTHOR scenes, and on `test`: the fixed, table-height (0.35-1.30 m) top surfaces
   of the scene's bodies, those holding the task's own categories (plate, apple) and
   reachable loose objects first, as the reference's `find_grasp_targets` ranks them, and
@@ -128,16 +132,19 @@ kitchen.sh start [--engine molmospaces|robocasa] [--scene <source>:<id>] [--mujo
   region RoboCasa's `get_reset_regions` reports. It is a deterministic function of the
   scene; a scene with none has no worktop. On the default scenes it is FloorPlan1's island
   (top 1.100 m) and RoboCasa layout 1's counter run (top 0.920 m).
-* **The worktop objects are part of the scene** (amended): `start`, headless or
+* **The worktop objects are part of the scene**: `start`, headless or
   with `--mujoco`, on either engine, loads the six worktop objects of §2.3 on the worktop
   with the scene — the objects the reference project's `kitchen.sh` showed with its default
-  arm — staged around the spot the SO-101 is placed at, with the loose scene objects in
-  their area cleared. They do not depend on any robot being spawned, and exist before,
-  while and after one. A scene with no worktop has none.
+  arm — staged at their **staging spot**: the first of the reference survey's spots where
+  all six stand on the surface free of interpenetration deeper than 1 mm with the scene and
+  one another, the loose scene objects in their area cleared. Only the survey's first 40
+  spots are tried; when none of them is clear, the scene starts without the six objects
+  and says so. No robot takes part in staging them. They do not depend on any robot being
+  spawned, and exist before, while and after one. A scene with no worktop has none.
 * Headless by default. `--mujoco` opens a MuJoCo window **in the simulation process** —
   only the process holding the physics can draw it. Ending the simulation, by closing the
   window or stopping the process, ends every spawned robot with it, with the cleanup of
-  §2.3. The window opens on the scene overview (amended): a free camera looking
+  §2.3. The window opens on the scene overview: a free camera looking
   at the worktop's centroid on the floor from 14 m, azimuth 90°, elevation −70° — the
   worktop's room from above with its neighbours — or, on a scene with no worktop, the
   whole scene. Where something hides the worktop from there (iTHOR rooms have ceilings,
@@ -191,16 +198,19 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
 * **Placement.** `--placement` (default `worktop`) stands the robot on the worktop or on
   the floor. On the worktop it stands on a spot clear of the objects there; spawning onto
   the worktop of a scene with none, one already holding a robot, or one with no clear
-   spot, is refused. A worktop robot is tried, in order, at the spots the reference
-   project's survey ranks (amended): on iTHOR, ProcTHOR and `test`, the
+   spot, is refused. A worktop robot is tried, in order, at the reference survey's spots
+   (**Terms**): on iTHOR, ProcTHOR and `test`, the
    reference's tabletop search — the robot at the rim of the worktop facing in, with the
    most of its forward workspace over the worktop — first; on RoboCasa, the reference's
    spot against the back edge of the roomiest counter, facing the room, then the
    reference's tabletop search over the counter tops, then spots against a counter's front
    edge facing the wall. The first spot is the reference's own choice, and it is taken
-   whenever it meets every requirement below. With its worktop objects staged and the loose
-   objects in its working area cleared, a worktop robot's clearance is judged on its own
-   collision geometry, not on its bounding box. A robot on the floor faces open floor. The
+   whenever it meets every requirement below. The search is bounded: only the survey's
+   first 600 spots are tried, and it ends at the 40th spot that is supported and
+   camera-clear but where the robot or its worktop objects fail the requirements below;
+   finding no spot within these bounds, the spawn is refused. With its worktop objects
+   staged and the loose objects in its working area cleared, a worktop robot's clearance
+   is judged on its own collision geometry, not on its bounding box. A robot on the floor faces open floor. The
    spot and heading are a
   deterministic function of the scene, the placement, the robot id and the world as it is
   (the robots already present and where the loose objects are). On either placement, camera
@@ -214,7 +224,7 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
     0.5 m, back and to each side at least 0.25 m, and turn in place, without unintended
     contact, with its entire support footprint remaining supported throughout those paths
     and clear of unsupported edges. Intended support contacts are allowed. On the worktop
-    (amended) a mobile robot has no travel requirement: it is placed where its
+    a mobile robot has no travel requirement: it is placed where its
     footprint is supported and clear, even on a top too small to drive or walk on, and its
     motions are then its own to keep on the surface.
   The entire initial robot configuration must be supported and free of unintended
@@ -223,12 +233,12 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
   and be free of interpenetration deeper than 1 mm with the scene, the robot and the other
   objects. If no placement satisfies all applicable requirements, spawning
   refuses with a diagnostic and leaves no robot or wire resources behind.
-* **Worktop objects** (amended: the scene is no longer only what its loader
-  builds; its six worktop objects are the scene's own, staged at `start` and independent of
-  robots — they are never brought, removed or counted by a robot's spawn).
+* **Worktop objects.** The scene is more than what its loader builds: its six worktop
+  objects are the scene's own, staged at `start` and independent of robots — a robot's
+  spawn never brings, removes or counts them.
   They are staged on both engines exactly as the reference project staged them: at the
-  reference's poses in a base frame (that frame 4 mm above the top face), the frame of the
-  spot the SO-101 is placed at on the worktop (§2.2), with the reference's physics (the apple a
+  reference's poses in its arm's base frame, that frame at the staging spot (§2.2) with
+  its heading, 4 mm above the top face, with the reference's physics (the apple a
   20 mm sphere with its contact tuning, the plate a fixed cylinder with a 24-box rim, the
   bowl, mug, banana and lemon colliding on their own meshes) and its visuals (the YCB
   scans). Every loose scene object (a body with a free joint, not a robot's) any part of
@@ -236,17 +246,24 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
   and 0.45 m above it is cleared at start: it is held still 50 m under the scene. No
   camera, reset, solver setting or anything else of the reference's task comes with them,
   and nothing about them reaches a wire: the vendor interface is unchanged.
-  **Arms and the objects.** A worktop robot is placed where the scene's objects are, when
-  it fits there under every requirement above; the objects are then untouched. An arm that
-  does not fit there (the SO-101 does, in its natural ready pose, on the default scenes) is placed at its own
-  survey spot instead, and for as long as it is there the six objects stand staged around it
-  at the same reference poses in its base frame, the loose scene objects in that area
-  cleared too; when it is removed the six objects are back where the scene staged them and
-  the objects cleared for it return with the pose and velocity they had when cleared. A
-  robot on the floor, and a mobile robot on the worktop, moves none of them. The spawn's
-  reply and the control port's `robots` and `scene` answers name the objects an arm stands
-  among and the scene objects cleared for them; `scene` also names the scene's own.
-* **One wire per robot** (amended): every robot is a single body with one
+  **Arms and the objects.** A worktop robot is placed where the scene's objects are — its
+  base at the staging spot, with its heading — when it fits there under every requirement
+  above; the objects are then untouched. An arm that does not fit there is placed at the
+  first of the reference survey's spots where it does (within the bounds of *Placement*),
+  and for as long as it is there the six objects stand staged around it at the same
+  reference poses in its base frame, the loose scene objects in that area cleared too;
+  when it is removed the six objects are back where the scene staged them and
+  the objects cleared for it return with the pose and velocity they had when cleared. In
+  a scene that started without the six objects (§2.2) an arm stands alone at the first of
+  the reference survey's spots where it fits: no objects come with it and nothing is
+  cleared. A robot on the floor, and a mobile robot on the worktop, moves none of them.
+  The spawn's reply and the control port's `robots` and `scene` answers name the objects
+  an arm stands among and the scene objects cleared for them; `scene` also names the
+  scene's own. The reBot Arm B601-RS fits at the staging spot of `ithor:1` and of `test`;
+  on `robocasa:1-1` its home pose, folded back 0.26 m behind its base, would reach 60 mm
+  into the wall behind the counter there, so it stands at the first of the reference
+  survey's spots where it fits, facing the wall, with the six objects around it.
+* **One wire per robot**: every robot is a single body with one
   interface, served on `--port` in its recorded ROS dialect; there is no assembly and no
   `--arm-port`.
 * Every spawned robot presents every camera required by its recorded interface;
@@ -398,22 +415,24 @@ in this document means these.
   its initial pose but not its full travel paths; the support surface is not counted as a camera-clearance hit. Also
   verify the refusals for no worktop, an occupied worktop and no clear worktop spot,
   open-floor facing, repeatable spot and heading for identical inputs, and that every
-  refusal leaves no robot or wire resources. For a worktop robot also verify the staging:
-  the six objects at their poses, standing on the surface, the working area's loose
-  objects cleared, and refusal when no spot leaves every object supported and clear.
-* **Reference parity** — on each engine's default scene the SO-101 stands where the
-  reference project's own code stands it, run from a checkout of it: xy and surface height
-  within 1 µm, heading within 1e-9 rad, base height within 3 mm; its six worktop objects
-  at the reference's poses within 1 µm; the same scene objects cleared, by name. The
+  refusal leaves no robot or wire resources. Verify the staging: the scene's six objects
+  at the first reference survey spot where they stand clear, with no robot involved; for
+  a worktop robot the six objects at their poses, standing on the surface, the working
+  area's loose objects cleared, and refusal when no spot leaves every object supported
+  and clear; an arm in a scene that started without them placed alone, no object added
+  or cleared; and both searches' bounds (§2.2, §2.3).
+* **Reference parity** — on each engine's default scene the staging spot is where the
+  reference project's own code stands its arm, run from a checkout of it: xy and surface
+  height within 1 µm, heading within 1e-9 rad; the six worktop objects at the reference's
+  poses within 1 µm; the same scene objects cleared, by name. The
   MolmoSpaces scene as `start` loads it, with no robot, equals the reference's default
   scene with its robot left out (its apple-on-plate staging included): the same bodies,
   geoms and meshes, the same six objects at the same poses, and pixel-identical renders.
   A RoboCasa scene is the reference's kitchen (the same fixtures, every one where the
-  reference has it but those RoboCasa's own fixture placement sets on a counter (§2.1,
-  amended), the same six objects at the same poses) plus RoboCasa's own kitchen
+  reference has it but those RoboCasa's own fixture placement sets on a counter (§2.1),
+  the same six objects at the same poses) plus RoboCasa's own kitchen
   objects (§2.1), which the reference did not load; verify they stand on the counters, are the same on every start, and that every
-  RoboCasa object lies on a counter top and, from the first second on, stays where it is
-  (amended).
+  RoboCasa object lies on a counter top and, from the first second on, stays where it is.
 * **Evidence** — every robot id has a passing evidence case (see **Terms**) on each engine.
   A motion passes when the recorded feedback shows the commanded displacement within the
   acceptance bounds and the robot comes to rest after its stop command (a drive or walk) or,
