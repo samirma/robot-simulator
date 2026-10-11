@@ -207,7 +207,7 @@ input::placeholder { color: var(--faint); }
     overflow-y: auto; overscroll-behavior: contain; padding: 2px 6px 12px 2px; scrollbar-gutter: stable;
   }
 }
-.panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.panel-head { display: flex; align-items: baseline; justify-content: space-between; gap: 4px 12px; flex-wrap: wrap; margin-bottom: 10px; }
 .panel-meta { color: var(--muted); font-size: 13px; }
 .empty {
   padding: 28px 16px; text-align: center; color: var(--muted); border: 1px dashed var(--border-strong);
@@ -250,6 +250,63 @@ input::placeholder { color: var(--faint); }
 }
 .sf-bit[data-set="true"] { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); font-weight: 700; }
 .sensor-meta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+/* in-page jumps to each section (the sensors are far down on a phone) */
+.jump { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
+.jump a { font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none; border: 1px solid var(--border);
+  border-radius: 999px; padding: 3px 12px; background: var(--surface); }
+.jump a:hover, .jump a:focus-visible { border-color: var(--border-strong); }
+#cameras-panel, #sensors-panel, #model-card, #control-panel { scroll-margin-top: calc(var(--topbar-h, 0px) + 16px); }
+.sensors-panel .sensor-caption { margin: 0; font-size: 12px; color: var(--muted); }
+.sensor-sample { align-self: flex-start; }
+.sensor[data-state="sampled"] .sensor-state { color: var(--info); background: var(--info-bg); border-color: var(--info-line); }
+.sensor[data-state="off"] .sensor-state, .sensor[data-state="sampling"] .sensor-state,
+.sensor[data-state="event"] .sensor-state { color: var(--muted); }
+.sensor[data-state="lastevent"] .sensor-state { color: var(--info); background: var(--info-bg); border-color: var(--info-line); }
+.sensor[data-state="lastevent"] .sf-value { opacity: 1; }
+.scan-side { flex: 1 1 180px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.scan-zooms { display: flex; flex-wrap: wrap; gap: 6px; }
+.scan-zoom { padding: 2px 10px; font-size: 12px; }
+.sensor[data-state="sampled"] .sf-value { opacity: 1; }
+/* vectors and orientations: the label on its own, the components whole, breaking only between them */
+.sensor-field[data-kind="vector3"], .sensor-field[data-kind="rpy"] { display: flex; flex-wrap: wrap; width: 100%; column-gap: 6px; }
+.sensor-field[data-kind="vector3"] .sf-value, .sensor-field[data-kind="rpy"] .sf-value { flex: 1 1 auto; min-width: 0; }
+.vc { white-space: nowrap; }
+.vsep { color: var(--faint); }
+.sf-value[data-noreading="true"], .hl-value { overflow-wrap: anywhere; }
+.sf-value[data-noreading="true"] { color: var(--muted); font-style: italic; font-family: inherit; }
+.headline[data-noreading="true"] .hl-value { font-size: 18px; color: var(--muted); font-family: inherit; }
+/* a number below its documented level (e.g. a battery to charge) */
+.sf-warn { display: none; font-size: 11px; font-weight: 700; color: var(--bad); }
+.sensor-field[data-warn="low"] .sf-warn { display: inline; }
+.sensor-field[data-warn="low"] .sf-value { color: var(--bad); font-weight: 700; }
+/* key readings (profile fields marked headline), large above the cameras */
+.headlines { display: flex; flex-wrap: wrap; gap: 10px; min-width: 0; }
+.headlines[hidden] { display: none; }
+.headline {
+  flex: 1 1 220px; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--border-strong);
+  border-radius: var(--r-lg); box-shadow: var(--shadow); padding: 10px 14px; display: flex; flex-direction: column; gap: 2px;
+}
+.headline[data-state="live"] { border-left-color: var(--ok); }
+.headline[data-warn="low"] { border-left-color: var(--bad); background: var(--bad-bg); }
+.hl-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.hl-label { font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.hl-state { font-size: 10.5px; font-weight: 800; letter-spacing: .08em; color: var(--muted); }
+.headline[data-state="live"] .hl-state { color: var(--ok); }
+.headline[data-state="stale"] .hl-state, .headline[data-state="waiting"] .hl-state { color: var(--warn); }
+.headline[data-state="missing"] .hl-state, .headline[data-state="lost"] .hl-state { color: var(--bad); }
+.hl-reading { display: flex; align-items: baseline; gap: 6px; }
+.hl-value { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 30px; font-weight: 700; line-height: 1.15; }
+.headline:not([data-state="live"]):not([data-state="latched"]) .hl-value { opacity: .5; }
+.headline[data-warn="low"] .hl-value { color: var(--bad); }
+.hl-unit { font-size: 15px; color: var(--muted); }
+.hl-warn { display: none; font-size: 12px; font-weight: 700; color: var(--bad); }
+.headline[data-warn="low"] .hl-warn { display: block; }
+.hl-topic { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+/* a LaserScan drawn top-down: forward up */
+.scan-plot { width: 100%; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: flex-start; }
+.scan-canvas { width: min(100%, 360px); aspect-ratio: 1; border: 1px solid var(--border); border-radius: var(--r); background: var(--surface); }
+.scan-text { flex: 0 0 auto; font-size: 12px; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.sensor:not([data-state="live"]):not([data-state="latched"]) .scan-canvas { opacity: .45; }
 
 /* ------------------------------------------------------------------ cameras */
 .cameras-panel { padding: 14px 16px 16px; min-width: 0; }
@@ -277,6 +334,11 @@ input::placeholder { color: var(--faint); }
 .depth-bar { flex: 1 1 120px; min-width: 80px; height: 12px; border-radius: 3px; border: 1px solid var(--border); image-rendering: pixelated; }
 .depth-swatch { width: 12px; height: 12px; border-radius: 3px; background: #000; border: 1px solid var(--border); flex: none; }
 .depth-note { flex-basis: 100%; font-family: inherit; color: var(--faint); }
+.ir-bar { flex: 1 1 120px; min-width: 80px; height: 12px; border-radius: 3px; border: 1px solid var(--border); background: linear-gradient(90deg, #000, #fff); }
+.cam-info, .cam-rate { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+.cam-toggle { padding: 2px 10px; font-size: 12px; }
+.cam-caption-note { margin: 0; font-size: 12px; color: var(--muted); }
+.cam[data-state="off"] .cam-view canvas, .cam[data-state="silent"] .cam-view canvas { filter: grayscale(1) brightness(.5); }
 .cam-kind { font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
 .cam-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; text-align: center; gap: 4px;
@@ -293,11 +355,21 @@ input::placeholder { color: var(--faint); }
 .cam-badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #9aa3ae; }
 .cam[data-state="live"] .cam-badge::before { background: #4ac26b; box-shadow: 0 0 0 3px rgb(74 194 107 / .3); }
 .cam[data-state="stale"] .cam-badge::before, .cam[data-state="waiting"] .cam-badge::before { background: #f0b429; }
+.cam[data-state="unknown"] .cam-badge::before, .cam[data-state="paused"] .cam-badge::before { background: #f0b429; }
+.cam-badge.warn { color: #ffd27a; }
+.congestion { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; padding: 10px 12px;
+  border: 1px solid var(--warn-line); background: var(--warn-bg); color: var(--warn); border-radius: var(--r); font-weight: 650; }
+.congestion[hidden] { display: none; }
+.congestion-drive { position: sticky; top: calc(var(--topbar-h, 0px) + 6px); z-index: 6; margin-bottom: 0; box-shadow: var(--shadow); }
+.link-rate[data-level="near"] { color: var(--warn); font-weight: 650; }
+.link-rate[data-level="over"] { color: var(--bad); font-weight: 700; }
 .cam[data-state="failed"] .cam-badge::before, .cam[data-state="unsupported"] .cam-badge::before,
 .cam[data-state="missing"] .cam-badge::before { background: #ff6b63; }
 .cam-caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; min-width: 0; }
 .cam-caption code { font-weight: 600; overflow-wrap: anywhere; min-width: 0; }
-.cam-meta { color: var(--muted); font-size: 12px; font-family: var(--mono); white-space: nowrap; }
+.cam-meta { color: var(--muted); font-size: 12px; font-family: var(--mono); min-width: 0; overflow-wrap: anywhere; }
+.cam-caption > * { min-width: 0; }
+.link-rate { color: var(--muted); font-size: 12px; font-family: var(--mono); }
 .untied {
   display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
   color: var(--warn); background: var(--warn-bg); border: 1px solid var(--warn-line); padding: 1px 8px; border-radius: 999px;
@@ -692,20 +764,43 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
     </div>
   </section>
 
+  <nav class="jump" data-testid="jump" aria-label="Jump to a section">
+    <a href="#cameras-panel">Cameras</a><a href="#sensors-panel" data-testid="jump-sensors">Sensors</a><a href="#model-card">Model</a><a href="#control-panel">Controls</a>
+  </nav>
+
   <div class="workspace" id="workspace">
     <div class="view-col">
-    <section class="cameras-panel" aria-labelledby="cams-h">
+    <section class="headlines" id="sensor-headlines" data-testid="headlines" aria-label="Key readings" hidden></section>
+
+    <section class="cameras-panel" id="cameras-panel" aria-labelledby="cams-h">
       <div class="panel-head">
         <h2 id="cams-h" class="section-title">Cameras</h2>
         <span id="cam-summary" class="panel-meta"></span>
+        <span id="link-rate" class="link-rate" data-testid="link-rate"></span>
+      </div>
+      <div id="congestion" class="congestion" data-testid="congestion" role="alert" hidden>
+        <span class="congestion-text" data-testid="congestion-text"></span>
+        <button type="button" class="btn" data-testid="resume-cameras" id="resume-cameras">Resume cameras</button>
       </div>
       <div id="no-cameras" data-testid="no-cameras" class="empty" style="display:none"></div>
       <div id="cameras" data-testid="cameras" data-count="0"></div>
     </section>
 
+    <div id="congestion-drive" class="congestion congestion-drive" data-testid="congestion-drive" role="alert" hidden>
+      <span class="congestion-text"></span>
+      <button type="button" class="btn" data-testid="resume-cameras-drive" id="resume-cameras-drive">Resume cameras</button>
+    </div>
     <section class="motion-card" id="motion-card" data-testid="motion" aria-labelledby="motion-h" hidden></section>
 
-    <section class="model-card" data-testid="model" aria-labelledby="model-h">
+    <section class="sensors-panel" id="sensors-panel" data-testid="sensors" aria-labelledby="sensors-h" hidden>
+      <div class="panel-head">
+        <h2 id="sensors-h" class="section-title">Sensors</h2>
+        <span id="sensor-summary" class="panel-meta" data-testid="sensor-summary"></span>
+      </div>
+      <div id="sensor-list" data-testid="sensor-list"></div>
+    </section>
+
+    <section class="model-card" id="model-card" data-testid="model" aria-labelledby="model-h">
       <div class="panel-head">
         <h2 id="model-h" class="section-title">Model</h2>
         <span class="panel-meta">drag a joint to move it · drag empty space to turn the view</span>
@@ -725,13 +820,6 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 3px 
       </div>
     </section>
 
-    <section class="sensors-panel" id="sensors-panel" data-testid="sensors" aria-labelledby="sensors-h" hidden>
-      <div class="panel-head">
-        <h2 id="sensors-h" class="section-title">Sensors</h2>
-        <span id="sensor-summary" class="panel-meta" data-testid="sensor-summary"></span>
-      </div>
-      <div id="sensor-list" data-testid="sensor-list"></div>
-    </section>
     </div>
 
     <section class="control-panel" id="control-panel" aria-labelledby="ctl-h" tabindex="-1">

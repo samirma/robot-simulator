@@ -42,6 +42,12 @@ boot:
 
 namespace: null
 
+link_budget_mbps: 40
+link_budget_policy: >-
+  Console policy, as for the wheeled bases: the camera may take at most 40 Mbit/s of the link. The gait runs until a
+  /walking/command stop call arrives on the same rosbridge link as the images, with no watchdog (see `watchdog`,
+  `teleop_walk.stop`). No vendor source states the link's capacity.
+
 owned_prefixes:
   - "/walking/"
   - "/ros_robot_controller/"
@@ -406,6 +412,11 @@ cameras:
     type: sensor_msgs/Image
     encodings: [rgb8]
     rate_hz: 30
+    max_rate_hz: 2
+    max_rate_policy: >-
+      Console policy: at most 2 frames/s (about 20 Mbit/s at 640x480), below the console default because the gait runs
+      until a /walking/command stop call on this same link and nothing stops it on its own
+      (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242).
     stale_after_s: 1.0
     optional: false
     source: "ainex:src/ainex_peripherals/launch/usb_cam.launch#L8-L15"

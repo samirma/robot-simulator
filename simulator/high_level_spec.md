@@ -293,6 +293,9 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
 * `spawn.sh` builds the images on first use, from pinned sources, and refuses, with a
   message, to run when Docker is not running. Nothing else needs Docker.
 * Simulator code reaches a container through a read-only mount, never a copy.
+* Only rosbridge is published on the host. A non-ROS port that a recorded node opens (an
+  HTTP stream server, say) stays inside the wire's container: it is not part of the ROS
+  interface, and publishing it would make robots collide on the same host port.
 
 ## 3. Wire interfaces
 

@@ -143,8 +143,8 @@ scene but never with each other (no roller–roller or roller–chassis contact)
   (`_camera_frame_id:=camera_link`). The camera looks along +x of `camera_link` (MuJoCo
   `xyaxes="0 -1 0 0 0 1"`). The vendor launch starts no camera driver; the camera streams come
   from the approved community camera boot, the pinned usb_cam 0.3.7 (commit `addab4a6…`) run
-  beside it — approved, not manufacturer-provided, and required (the ROS camera rows in
-  `ros.yml` are not optional). `resolution="640 480"` follows that boot's driver defaults
+  beside it — approved, not manufacturer-provided, and served (`camera_boot` in `ros.yml`,
+  its rows marked `camera_boot: true`). `resolution="640 480"` follows that boot's driver defaults
   (640x480, 30 Hz, rgb8); `fovy = 41.83°` is an **estimate**: the manufacturer states a 65° viewing angle
   without an axis; taken as the image diagonal it gives f = 627.9 px (hfov 53.98°), consistent
   with the vendor's own approximation f = image width in `aruco_detector.py`. The CSI module's

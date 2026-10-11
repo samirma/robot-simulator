@@ -11,6 +11,7 @@ it). Tests mutate the result to produce wrong types, missing endpoints, extra en
 from __future__ import annotations
 
 import copy
+import math
 from typing import Optional
 
 from robot_console.dialect import ros2_action_endpoints
@@ -41,7 +42,57 @@ def sensor_sample(topic: str, type_: str) -> dict:
         return {"header": {"stamp": {"sec": 1, "nanosec": 0}, "frame_id": ""}, "mode": "mit", "enabled": True,
                 "control_loop_active": True, "state_machine": "IDLE", "joint_names": JOINT_NAMES[:6],
                 "per_joint_status_code": [0, 0, 0, 0, 0, 0], "error_codes": []}
+    hdr = {"stamp": {"secs": 1, "nsecs": 0}, "frame_id": "imu_link"}
+    if type_.endswith("Float32"):
+        return {"data": SAMPLE_FLOAT32.get(topic, 1.5)}
+    if type_.endswith("Bool"):
+        return {"data": True}
+    if type_.endswith("/Imu"):
+        return {"header": hdr, "orientation": dict(SAMPLE_QUAT_YAW90 if topic == "/imu/data" else ZERO_QUAT),
+                "angular_velocity": {"x": 0.01, "y": -0.02, "z": 0.03},
+                "linear_acceleration": dict(SAMPLE_ACCEL)}
+    if type_.endswith("MagneticField"):
+        return {"header": hdr, "magnetic_field": {"x": 12.5, "y": -3.25, "z": 40.0}}
+    if type_.endswith("Twist"):
+        return {"linear": {"x": 0.2, "y": -0.1, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.5}}
+    if type_.endswith("Odometry"):
+        return {"header": dict(hdr, frame_id="odom"), "child_frame_id": "base_footprint",
+                "pose": {"pose": {"position": {"x": 1.5, "y": -0.25, "z": 0.0}, "orientation": dict(SAMPLE_QUAT_YAW30)}},
+                "twist": {"twist": {"linear": {"x": 0.2, "y": -0.1, "z": 0.0}, "angular": {"x": 0.0, "y": 0.0, "z": 0.5}}}}
+    if type_.endswith("ArmJoint"):
+        return {"id": 6, "run_time": 0, "angle": 30.0, "joints": []}
+    if type_.endswith("LaserScan"):
+        return dict(SAMPLE_SCAN, header=dict(hdr, frame_id="laser"))
+    if type_.endswith("PointCloud2"):          # as orbbec_camera publishes it: unorganised, valid points only
+        reg = topic != "/camera/depth/points"
+        step, n = (20, 251_000) if reg else (16, 263_412)
+        f = lambda name, off: {"name": name, "offset": off, "datatype": 7, "count": 1}      # noqa: E731
+        return {"header": dict(hdr, frame_id="camera_color_optical_frame" if reg else "camera_depth_optical_frame"),
+                "height": 1, "width": n, "fields": [f("x", 0), f("y", 4), f("z", 8)] + ([f("rgb", 16)] if reg else []),
+                "is_bigendian": False, "point_step": step, "row_step": n * step, "data": "", "is_dense": True}
+    if type_.endswith("/PointCloud"):          # sensor_msgs/PointCloud (v1): three lidar points
+        return {"header": dict(hdr, frame_id="laser"), "channels": [],
+                "points": [{"x": 0.5, "y": 0.0, "z": 0.0}, {"x": 2.0, "y": 1.0, "z": 0.0}, {"x": 1.0, "y": -1.0, "z": 0.0}]}
     raise KeyError(type_)
+
+
+#: Float32 samples by topic (a battery voltage, a firmware version).
+SAMPLE_FLOAT32 = {"/voltage": 12.3, "/edition": 1.100000023841858}
+ZERO_QUAT = {"x": 0.0, "y": 0.0, "z": 0.0, "w": 0.0}
+SAMPLE_QUAT_YAW90 = {"x": 0.0, "y": 0.0, "z": math.sin(math.pi / 4), "w": math.cos(math.pi / 4)}
+SAMPLE_QUAT_YAW30 = {"x": 0.0, "y": 0.0, "z": math.sin(math.pi / 12), "w": math.cos(math.pi / 12)}
+#: An acceleration that assumes no unit (the ICM20948 board's unit is not established).
+SAMPLE_ACCEL = {"x": 0.125, "y": -0.25, "z": 0.5}
+#: A scan as TG.launch configures the 4ROS: -85..85 deg, range 0.01-50 m, invalid ranges +inf (sent by Python's
+#: json as bare Infinity), 945 slots: 2 m everywhere, 0.5 m straight ahead (index 472), +inf at indices 0..99 and
+#: one return beyond range_max (60 m) at index 200.
+SCAN_N = 945
+SAMPLE_SCAN = {"angle_min": -math.radians(85), "angle_max": math.radians(85),
+               "angle_increment": math.radians(170) / (SCAN_N - 1), "time_increment": 0.0, "scan_time": 0.1,
+               "range_min": 0.01, "range_max": 50.0,
+               "ranges": [math.inf] * 100 + [2.0] * 100 + [60.0] + [2.0] * 271 + [0.5] + [2.0] * 472,
+               "intensities": [0.0] * SCAN_N}
+assert len(SAMPLE_SCAN["ranges"]) == SCAN_N
 
 
 def wire_spec(p: Profile, *, namespace: Optional[str] = None, include_optional: bool = False,
@@ -66,12 +117,18 @@ def wire_spec(p: Profile, *, namespace: Optional[str] = None, include_optional: 
                 row.update(camera=True, direction="out",
                            encoding=(c.encodings or ("rgb8",))[0],
                            rate_hz=camera_rate or c.rate_hz or 10)
+                if c.kind == "depth":       # depth values across the camera's whole range
+                    row["depth_mm"] = (round(c.range_m[0] / c.unit_m), round(c.range_m[1] / c.unit_m))
             elif e.rate_hz and row["direction"] == "out":
                 row["rate_hz"] = min(float(e.rate_hz), 5.0)
             if e.name in sensors:
                 s = sensors[e.name]
                 row.update(sample=sensor_sample(e.name, e.type), rate_hz=row.get("rate_hz") or 5.0)
-                if s.stale_after_s is None:
+                if s.event_only:              # an ordinary publisher of events: nothing until the test emits one
+                    row["event"] = True
+                elif s.on_demand:             # published continuously while subscribed (as the clouds are)
+                    row["rate_hz"] = 10.0
+                elif s.stale_after_s is None:
                     row["latched"] = True
                 else:
                     row["qos"] = "best_effort"

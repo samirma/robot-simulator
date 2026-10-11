@@ -231,6 +231,14 @@ cam_body = find_body(base, "camera_link")
 # A MuJoCo camera looks along its -Z with +Y up: image right = -y_link, image up = +z_link.
 ET.SubElement(cam_body, "camera", name="camera_color_optical_frame", pos="0 0 0",
               xyaxes="0 -1 0 0 0 1", fovy="40.2", resolution="640 480")
+# the arm's USB camera (usb_cam, frame `usb_cam`) on mono_link (import.md A6): the lens looks
+# along +z of mono_link from its front face (z 0.019 m in mono_link.STL), image up -x of
+# mono_link; MuJoCo's x (image right) = -y and y (image up) = -x of mono_link. fovy is the
+# vertical field of a 60 deg horizontal one (the vendor's Gazebo sensor) at 640x480.
+USB_CAM_HFOV = 60.0
+USB_CAM_FOVY = 2 * math.degrees(math.atan(math.tan(math.radians(USB_CAM_HFOV / 2)) * 480 / 640))
+ET.SubElement(find_body(base, "mono_link"), "camera", name="usb_cam", pos="0 0 0.019",
+              xyaxes="0 -1 0 -1 0 0", fovy=f"{USB_CAM_FOVY:.4f}", resolution="640 480")
 
 # mecanum wheels with passive rollers
 c45 = math.cos(math.pi / 4)

@@ -164,6 +164,11 @@ class RenderThread(threading.Thread):
         # The world's configuration now (acquisition time), rebuilt on this thread's own
         # MjData: the physics thread only copies a few arrays.
         snap = self.world.snapshot()
+        if snap["version"] != self.version:
+            # building the GL context takes long: the frame is acquired once it exists, so
+            # a stream's first frame is not stamped with a stale instant
+            self._ensure(snap["model"], snap["version"])
+            snap = self.world.snapshot()
         model = self._ensure(snap["model"], snap["version"])
         self.ctx.make_current()
         if not hasattr(self, "mirror"):

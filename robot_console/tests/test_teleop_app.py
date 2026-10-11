@@ -174,6 +174,29 @@ def test_cameras_show_live_then_stale_in_the_window(fake):
     assert seen[89][0] == "stale" and seen[89][1].startswith("stale: last frame"), seen
 
 
+def test_x3_teleop_streams_only_its_live_camera_at_its_rate_cap(fake):
+    """teleop.sh on the ROSMASTER: once the target is validated only the colour camera is subscribed, at its profile
+    cap (2 frames/s) with queue_length 1; the on-demand depth, infrared and USB streams are shown off (only the view
+    page's user starts them)."""
+    p = load("rosmaster_x3_plus")
+    srv = fake(wire_spec(p, include_optional=True))
+    seen, subs = {}, {}
+    script = Script([(40, [down(pg.K_ESCAPE)])])
+    app = TeleopApp(srv.url, p, None, events=script, max_seconds=30)
+
+    def look():
+        seen.update({t: (s.state(), s.status_text()) for t, s in app.cams.streams.items()})
+        subs.update({sid: t for c in srv.clients if not c.closed for sid, t in c.subs.items()})
+    script.hooks = {35: look}
+    assert app.run() == 0
+    assert seen["/camera/rgb/image_raw"][0] == "live"
+    for t in ("/camera/depth/image_raw", "/camera/ir/image_raw", "/usb_cam/image_raw"):
+        assert seen[t][0] == "off" and "on request" in seen[t][1], seen
+    assert set(subs.values()) & {c.topic for c in p.cameras} == {"/camera/rgb/image_raw"}
+    tied = [o for o in srv.ops_of("subscribe") if o["id"] in subs]
+    assert [(o["topic"], o["throttle_rate"], o["queue_length"]) for o in tied] == [("/camera/rgb/image_raw", 500, 1)]
+
+
 def test_input_loss_stops_and_exits_nonzero(fake):
     p = load("myagv")
     srv = fake(wire_spec(p))
@@ -267,8 +290,12 @@ def test_no_target_refuses_commands_and_shows_untied_cameras(fake):
     assert code == 1
     assert "myagv" in app.reason and "rosmaster_x3_plus" in app.reason
     streams = list(app.cams.streams.values())
-    assert [s.spec.topic for s in streams] == ["/camera/rgb/image_raw", "/usb_cam/image_raw"]
+    assert [s.spec.topic for s in streams] == ["/camera/depth/image_raw", "/camera/ir/image_raw",
+                                               "/camera/rgb/image_raw", "/usb_cam/image_raw"]
     assert not any(s.spec.tied for s in streams)
+    # untied streams are previews started only on request (no profile says what they cost): none is subscribed
+    assert not {o["topic"] for o in srv.ops_of("subscribe")} & {s.spec.topic for s in streams}
+    assert {s.state() for s in streams} == {"off"} and all(s.spec.throttle_ms == 500 for s in streams)
     assert srv.command_ops() == []
 
 

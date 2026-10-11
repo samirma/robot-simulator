@@ -9,8 +9,9 @@
   servo). Controller: Yahboom's ROS expansion board V3 (STM32F103, firmware Rosmaster V3.5.1,
   `/dev/myserial` at 115200 baud, ICM20948 or MPU9250 IMU), driven from the main computer
   (Jetson Nano 4GB, Jetson Orin NX/Nano SUPER or Raspberry Pi 5, ROS Noetic). Lidar: YDLIDAR
-  4ROS (ToF), `/dev/ydlidar`. Camera: Orbbec Astra Pro Plus RGB-D camera (colour, depth and IR
-  streams). The arm's `mono_link` USB camera is not started by the authoritative boot.
+  4ROS (ToF), `/dev/ydlidar`. Cameras: Orbbec Astra Pro Plus RGB-D camera (colour, depth and IR
+  streams), and a USB UVC camera on the arm wrist (URDF `mono_link`; Yahboom's udev rule names
+  it `/dev/camera_usb`), which the authoritative boot does not start (camera boot below).
 * **Official product:** <https://category.yahboom.net/products/rosmaster-x3-plus>
 * **Official URDF:** `robots_specs/rosmaster_x3_plus/yahboomcar_X3plus.urdf`
 * **MuJoCo model:** `robots_specs/rosmaster_x3_plus/model.xml`, derived (Yahboom publishes no
@@ -34,6 +35,14 @@
   and `robot_description` from `yahboomcar_description/urdf/yahboomcar_X3plus.urdf`; from the
   same download's `software.zip`: `ydlidar_ros_driver/launch/TG.launch` and
   `orbbec-ros-sdk/launch/astraproplus.launch` with `astra_frames.launch`.
+* **Camera boot** (manufacturer): the arm's USB camera, `roslaunch usb_cam usb_cam-test.launch`
+  run beside the authoritative boot, as Yahboom's
+  `yahboomcar_voice_ctrl/launch/voice_ctrl_colorTracker.launch` runs it with the Astra (L5, L7
+  with `VideoSwitch:=false`), in the version Yahboom's tutorial writes over usb_cam 0.3.7's file
+  on the robot (`19.For Jetson Orin-ROS1/06.Linux operating system/7. Web page real-time
+  monitoring.pdf`, §7.2): `/usb_cam` on `/dev/video0`, 640×480 `yuyv`, frame `usb_cam`, and
+  `web_video_server`; `image_view` only with `open_view:=true`. Which device is `/dev/video0`
+  while the Astra, itself a UVC device, is attached is not established.
 * **Documentation:** <http://www.yahboom.net/study/ROSMASTER-X3-PLUS>
 
 The tutorial repository is not the robot's complete ROS source; use the pinned

@@ -297,7 +297,10 @@ def fields_of_view(robot, iface, row=None) -> list:
         fovy = {x["name"]: x["fovy"] for x in c.call("describe", robot=robot.robot)["cameras"]}
     finally:
         c.close()
-    infos = wirecheck.sample(robot.port, [x["info_topic"] for x in cams if x.get("info_topic")])
+    # the images with their CameraInfo: a lazy driver (the Astra's) publishes the CameraInfo
+    # only while an image or point cloud of it has a subscriber
+    infos = wirecheck.sample(robot.port, [x["info_topic"] for x in cams if x.get("info_topic")]
+                             + [x["image_topic"] for x in cams])
     out = []
     for cam in cams:
         w, h = cam["width"], cam["height"]
@@ -438,11 +441,25 @@ def test_rates(robot):
     iface = wirecheck.interface(robot.robot)
     problems = wirecheck.rate_record_problems(iface)
     rates = wirecheck.periodic_topics(robot.robot)
-    if rates:
-        window = max(6.0, 5.5 / min(rates.values()))
+    # point clouds (megabytes a message at camera rates) in a window of their own: every
+    # topic is still measured whole, at its rate and against every bound. Where the tail
+    # gaps come from (ROSMASTER, both windows together, measured): two probes of one topic
+    # see each late message equally late, so the delay is never a probe's own; the late
+    # frames' stamps are on time while they reach the wire late (up to 1.66 s, every topic of
+    # that frame alike), and those intervals are the ones whose real-time factor falls
+    # (0.80-0.91): the simulation, sharing the host's CPUs with the Docker VM that carries
+    # some 400 MB/s of probed messages with every cloud probed too, renders and sends late.
+    # The cloud window takes 290 MB/s of that load off the other topics' window; the gaps
+    # are not loosened, and the same flakiness shows on the reBot at HEAD.
+    types = {t["name"]: t["type"] for t in iface["topics"]}
+    clouds = {t: r for t, r in rates.items() if types[t].endswith("PointCloud2")}
+    for group in ({t: r for t, r in rates.items() if t not in clouds}, clouds):
+        if not group:
+            continue
+        window = max(6.0, 5.5 / min(group.values()))
         t0 = time.time()
-        m = wirecheck.measure_on_graph(container(robot), robot.robot, list(rates), window)
-        problems += wirecheck.rate_problems(m, rates, wirecheck.multi_publisher(iface))
+        m = wirecheck.measure_on_graph(container(robot), robot.robot, list(group), window)
+        problems += wirecheck.rate_problems(m, group, wirecheck.multi_publisher(iface))
         problems += real_time_problems(robot.sim_port, t0)
     # each transform the record gives a rate of its own, on its own (spec §5 Acceptance
     # bounds), not only /tf as a whole
@@ -961,15 +978,16 @@ CALIBRATION_FIELDS = ("width", "height", "distortion_model", "D", "K", "R", "P",
                       "binning_y", "roi")
 
 
-def usb_cam_calibration(rid):
+def usb_cam_calibration(rid, image_topic=None):
     """usb_cam's set_camera_info (camera_info_manager): it answers success, and the
     calibration it was sent is the CameraInfo the node publishes from then on, field for
-    field, its header the frame's; sending the recorded calibration back restores it."""
+    field, its header the frame's; sending the recorded calibration back restores it.
+    `image_topic`: the usb_cam camera's, where the robot has other cameras."""
 
     def check(port, sim_port) -> list:
         iface = wirecheck.interface(rid)
         cam = next(c for c in wirecheck.served(iface["sensors"]["cameras"])
-                   if c.get("info_topic"))
+                   if c.get("info_topic") and image_topic in (None, c["image_topic"]))
         node = next(t for t in iface["topics"] if t["name"] == cam["image_topic"])["nodes"][0]
         service = f"{node}/set_camera_info"
         out = []
@@ -1001,6 +1019,108 @@ def usb_cam_calibration(rid):
     return check
 
 
+def usb_cam_compressed(port, sim_port) -> list:
+    """The ROSMASTER arm camera's image_transport compressed plugin: each frame as
+    compressed_image_transport encodes it ("rgb8; jpeg compressed bgr8", a JPEG) and, after
+    set_parameters format png, as PNG; restored to its recorded jpeg afterwards."""
+    out = []
+    topic = "/usb_cam/image_raw/compressed"
+    rb = Rosbridge("127.0.0.1", port)
+    try:
+        for fmt, magic in (("jpeg", b"\xff\xd8"), ("png", b"\x89PNG"), ("jpeg", b"\xff\xd8")):
+            reply = rb.call(f"{topic}/set_parameters",
+                            {"config": {"strs": [{"name": "format", "value": fmt}]}}, timeout=20)
+            out += typed(rb, "rosmaster_x3_plus", "service_response", f"{topic}/set_parameters",
+                         reply)
+            # the frames of the next second, judged by the last: rosbridge may hand a new
+            # subscription the message its own subscriber last held, encoded before the change
+            box = []
+            rb.subscribe(topic, lambda m: box.append(m["msg"]), queue_length=1)
+            time.sleep(1.0)
+            rb.unsubscribe(topic)
+            msg = box[-1] if box else None
+            if msg is None:
+                out.append(f"{topic}: no message")
+                continue
+            data = base64.b64decode(msg["data"])
+            want = f"rgb8; {fmt} compressed bgr8"
+            if msg.get("format") != want or not data.startswith(magic):
+                out.append(f"{topic} with format {fmt}: {msg.get('format')!r} {data[:4]!r}, "
+                           f"want {want!r}")
+            if (msg.get("header") or {}).get("frame_id") != "usb_cam":
+                out.append(f"{topic}: frame {(msg.get('header') or {}).get('frame_id')!r}")
+    finally:
+        rb.close()
+    return out
+
+
+def usb_cam_theora_and_depth(port, sim_port) -> list:
+    """The arm camera's theora plugin: a new subscriber's first packets are the stream's three
+    header packets (b_o_s on the first, "\\x80theora", "\\x81theora", "\\x82theora"), then
+    video packets, all with the frame's header; its compressedDepth plugin, subscribed,
+    publishes nothing for the rgb8 frames and logs the plugin's error on /rosout."""
+    out = []
+    rb = Rosbridge("127.0.0.1", port)
+    got, logs, depth = [], [], []
+    try:
+        rb.subscribe("/usb_cam/image_raw/theora", lambda m: got.append(m["msg"]), queue_length=50)
+        t0 = time.monotonic()
+        while len(got) < 5 and time.monotonic() - t0 < 10:
+            time.sleep(0.1)
+        rb.unsubscribe("/usb_cam/image_raw/theora")
+        heads = [base64.b64decode(m["data"])[:7] for m in got[:3]]
+        if heads != [b"\x80theora", b"\x81theora", b"\x82theora"] or got[0].get("b_o_s") != 1:
+            out.append(f"/usb_cam/image_raw/theora: first packets {heads}, b_o_s "
+                       f"{got[0].get('b_o_s') if got else None}")
+        if len(got) < 4 or got[3].get("packetno") != 3:
+            out.append(f"/usb_cam/image_raw/theora: {len(got)} packets, no video packet after "
+                       "the headers")
+        if any((m.get("header") or {}).get("frame_id") != "usb_cam" for m in got):
+            out.append("/usb_cam/image_raw/theora: a packet not in frame usb_cam")
+        rb.subscribe("/rosout", lambda m: logs.append(m["msg"]), queue_length=100)
+        rb.subscribe("/usb_cam/image_raw/compressedDepth", lambda m: depth.append(m["msg"]))
+        time.sleep(1.5)
+        rb.unsubscribe("/usb_cam/image_raw/compressedDepth")
+        rb.unsubscribe("/rosout")
+        if depth:
+            out.append(f"/usb_cam/image_raw/compressedDepth: {len(depth)} messages for rgb8")
+        if not any(m.get("name") == "/usb_cam" and m.get("level") == 8 and
+                   "(input format is: rgb8)" in (m.get("msg") or "") for m in logs):
+            out.append("/usb_cam: no compressedDepth error on /rosout")
+    finally:
+        rb.close()
+    return out
+
+
+def usb_cam_first_frame(port, sim_port) -> list:
+    """A new subscriber's first /usb_cam/image_raw, on the wire's own graph
+    (simulator/tests/first_frame_probe_ros1.py), five subscribers in turn, none left out:
+    within five recorded periods (167 ms). The real usb_cam, capturing continuously, sends
+    the next captured frame (at most one period); the simulation renders the camera only
+    while it is listened to, which costs a new subscriber more (measured 36-48 ms when
+    subscribing again within seconds, up to about 150 ms after a long idle) -- the gap the
+    wire's docstring and README state."""
+    import json
+    import subprocess
+
+    iface = wirecheck.interface("rosmaster_x3_plus")
+    period = 1.0 / float(next(t for t in iface["topics"] if t["name"] == "/usb_cam/image_raw")["rate"])
+    names = set(docker_containers("label=rsim.robot=rosmaster_x3_plus")) & \
+        set(docker_containers(f"label=rsim.sim_port={sim_port}"))
+    [name] = names
+    cmd = ("source /opt/ros/noetic/setup.bash; "
+           "python3 /opt/rsim/simulator/tests/first_frame_probe_ros1.py /usb_cam/image_raw 5")
+    res = subprocess.run(["docker", "exec", name, "bash", "-c", cmd], stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE, text=True, timeout=120)
+    lines = [l for l in res.stdout.splitlines() if l.startswith("{")]
+    if not lines:
+        return [f"first-frame probe failed: {res.stderr[-1000:]}"]
+    lat = json.loads(lines[-1])["latency"]
+    bad = [x for x in lat if x is None or x > 5 * period]
+    return [f"/usb_cam/image_raw: first frames after {lat} s, over 5 periods "
+            f"({5 * period:.3f} s)"] if bad else []
+
+
 def checks(*fns):
     """Several behaviour checks run as one."""
     return lambda port, sim_port: [p for fn in fns for p in fn(port, sim_port)]
@@ -1008,7 +1128,11 @@ def checks(*fns):
 
 BEHAVIOUR_CHECKS = {"ainex": checks(ainex_app_nodes, usb_cam_calibration("ainex")),
                     "myagv": usb_cam_calibration("myagv"),
-                    "rosmaster_x3_plus": rosmaster_camera_services}
+                    "rosmaster_x3_plus": checks(rosmaster_camera_services,
+                                                  usb_cam_calibration("rosmaster_x3_plus",
+                                                                      "/usb_cam/image_raw"),
+                                                  usb_cam_compressed, usb_cam_theora_and_depth,
+                                                  usb_cam_first_frame)}
 
 
 def test_recorded_behaviours(robot):
@@ -1177,6 +1301,15 @@ def lidar_problems(rb, sim_port, rid, iface, lid) -> list:
                    f"(index, wire, world): {bad[:5]}")
     if have.sum() < 0.3 * n:
         out.append(f"{topic}: only {int(have.sum())} valid ranges")
+    # the recorded intensities: the valid value at each reported range, the invalid one
+    # where there is none (sensors.lidars[].intensity)
+    if lid.get("intensity") is not None:
+        it = lid["intensity"]
+        inten = np.array([float(v) for v in s.get("intensities") or []])
+        want = np.where(have, float(it["valid"]), float(it["invalid"]))
+        if inten.shape != want.shape or not np.array_equal(inten, want):
+            out.append(f"{topic}: intensities {inten[:5].tolist()}... ({inten.size}), recorded "
+                       f"{it['valid']} at a return and {it['invalid']} elsewhere")
     return out
 
 

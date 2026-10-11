@@ -1,14 +1,15 @@
 # ROSMASTER X3 PLUS wire image: the Noetic wire base plus what its recorded boot runs that
-# needs no hardware (imu_filter_madgwick, robot_localization's EKF, joy) and:
+# needs no hardware (imu_filter_madgwick, robot_localization's EKF, joy, and the
+# web_video_server of the arm camera's usb_cam-test.launch and the image_transport plugins compressed,
+# compressedDepth and theora its camera publisher carries) and:
 #   * the vendor's yahboomcar_msgs, yahboomcar_bringup (the real driver_node script,
 #     base_node and dynamic_reconfigure configs) and yahboomcar_ctrl (yahboom_joy), from
 #     the pinned workspace archive yahboomcar_ws.zip (sha256 13d752e0..., put into the build
 #     context by spawn.sh from the verified cache). The driver runs unchanged against the
 #     simulator's board library (wire/robots/sim_libs/Rosmaster_Lib.py);
-#   * orbbec_camera's messages and services. The vendor's own copy (software.zip in the
-#     same Drive archive) could not be fetched (Drive quota); the definitions come from
-#     Orbbec's public OrbbecSDK_ROS1 v1.4.2 (commit 7ef885a4), the same v1 service set the
-#     interface file records -- an adaptation documented in simulator/README.md.
+#   * orbbec_camera's messages and services, from Orbbec's public OrbbecSDK_ROS1 v1.4.2
+#     (commit 7ef885a4), whose msg/ and srv/ files are byte-identical to the vendor's own
+#     copy in software.zip (orbbec_camera 1.2.9; robots_specs/rosmaster_x3_plus/import.md).
 # Every package comes from the base image's dated snapshots (ROS: snapshots.ros.org noetic
 # 2025-05-29; Ubuntu: snapshot.ubuntu.com focal 20261002T223000Z), the stock nodes also by
 # the release the interface file records (imu_filter_madgwick 1.2.7, robot_localization
@@ -32,4 +33,9 @@ RUN mkdir -p /opt/rsim_src && cd /opt/rsim_src && git init -q ob && cd ob \
  && cp -r msg srv /opt/rsim_ws/src/orbbec_camera/ \
  && source /opt/ros/noetic/setup.bash && cd /opt/rsim_ws \
  && catkin_make -DCMAKE_BUILD_TYPE=Release > /tmp/build.log 2>&1 || (tail -40 /tmp/build.log; exit 1)
+RUN apt-get update && apt-get install -y --no-install-recommends ros-noetic-web-video-server \
+      ros-noetic-compressed-image-transport=1.15.0-1focal.* \
+      ros-noetic-compressed-depth-image-transport=1.15.0-1focal.* \
+      ros-noetic-theora-image-transport=1.15.0-1focal.* \
+    && rm -rf /var/lib/apt/lists/*
 LABEL org.rsim.wire=rosmaster_x3_plus

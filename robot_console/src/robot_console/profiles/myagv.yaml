@@ -42,6 +42,12 @@ namespace_note: >-
   (myagv_ros:myagv_odometry/src/myAGV.cpp#L11, #L55-L58, #L264, #L297-L298) and
   no launch arg / doc offers a namespace.
 
+link_budget_mbps: 40
+link_budget_policy: >-
+  Console policy, as for the ROSMASTER X3 PLUS: the camera may take at most 40 Mbit/s of the link. The base has no
+  watchdog and its only stop is one zero Twist on the same rosbridge link as the images (see `watchdog`, `stop`); a
+  640x480 rgb8 frame is about 1.2 MB of base64 JSON. No vendor source states the link's capacity.
+
 owned_prefixes:
   - "/robot_pose_ekf/"
   - "/usb_cam/"       # the camera node's private namespace (usb_cam:nodes/usb_cam_node.cpp#L84-L85, #L282)
@@ -370,10 +376,15 @@ cameras:
     type: sensor_msgs/Image
     encodings: [rgb8]
     rate_hz: 30
+    max_rate_hz: 2
     stale_after_s: 1.0
     optional: false
     source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
-    policy: "stale_after_s = max(1.0 s, 5 frame periods at the 30 Hz default framerate, #L101)."
+    policy: >-
+      stale_after_s = max(1.0 s, 5 frame periods at the 30 Hz default framerate, #L101). Console policy: max_rate_hz 2
+      (about 20 Mbit/s at 640x480), below the console default because the base keeps its last /cmd_vel with no
+      watchdog (myagv_ros:myagv_odometry/src/myAGVSub.cpp#L4-L14 stores it, the 100 Hz loop at #L29-L33 sends it to
+      the base again every iteration) and its only stop shares this link.
     note: "encoding rgb8 for the boot's default pixel_format mjpeg (usb_cam:src/usb_cam.cpp#L1252-L1255); frame_id camera_link from the boot's _camera_frame_id (#L118)."
 cameras_note: >-
   myagv_active.launch starts no camera driver (it only publishes the static tf

@@ -1,5 +1,6 @@
 """``python -m robot_console.fleet`` (console spec §2.4, §4)."""
 
+import re
 import socket
 import subprocess
 import sys
@@ -25,10 +26,10 @@ def test_passes_on_matching_wire(fake, pid):
     label = pid + (f" (namespace /{p.namespace.default})" if p.namespace else "")    # the hardware default
     assert f"robot {label}: typed validation PASS" in out and out.rstrip().endswith("PASS")
     for c in p.cameras:
-        if c.optional:        # not on this wire (its optional rows are absent): reported, not failed
+        if c.optional and p.endpoint(c.topic).optional:   # not on this wire (its optional rows are absent): reported, not failed
             assert f"camera {c.topic} (optional): MISSING" in out
         else:
-            assert f"camera {c.topic}: LIVE" in out
+            assert f"camera {c.topic}{' (optional)' if c.optional else ''}: LIVE" in out
     if not p.cameras:
         assert f"cameras: none in profile '{pid}'" in out
     code, out = fleet("--url", srv.url, "--expect", pid)
@@ -49,6 +50,48 @@ def test_optional_wrist_camera_is_live_when_present(fake):
     assert srv.command_ops() == []
     subscribed = {o["topic"] for o in srv.ops_of("subscribe")}
     assert subscribed == {"/camera/camera/color/image_raw", "/camera/camera/aligned_depth_to_color/image_raw"}, subscribed
+
+
+def test_x3_cameras_are_sampled_briefly_at_their_rate_cap(fake):
+    """The ROSMASTER's Astra colour and depth (required), infrared (its frames optional) and the arm's USB camera
+    (optional): on a wire with them all four are live. The check subscribes to the cameras only (never to the
+    sensor topics, so never to the point clouds), each at its profile rate cap, samples the two frames that show a
+    stream live and unsubscribes it at once, and sends nothing. Without the USB camera it is reported missing with
+    the launch that starts it; a silent infrared stream is explained, not failed."""
+    p = load("rosmaster_x3_plus")
+    srv = fake(wire_spec(p, include_optional=True))
+    code, out = fleet("--url", srv.url, "--expect", "rosmaster_x3_plus")
+    assert code == 0 and out.rstrip().endswith("PASS"), out
+    for line in ("camera /camera/rgb/image_raw: LIVE", "camera /camera/depth/image_raw: LIVE",
+                 "camera /camera/ir/image_raw (optional): LIVE", "camera /usb_cam/image_raw (optional): LIVE"):
+        assert line in out, out
+    assert srv.command_ops() == []
+    subs = srv.ops_of("subscribe")
+    assert {o["topic"] for o in subs} == {c.topic for c in p.cameras}
+    assert {o["topic"]: o["throttle_rate"] for o in subs} == {c.topic: c.throttle_ms() for c in p.cameras}
+    unsub = {o["id"] for o in srv.ops_of("unsubscribe")}
+    assert all(o["id"] in unsub for o in subs)
+    # one stream at a time: each is unsubscribed before the next is subscribed, so the check never takes more of the
+    # link than one stream (the profile's link budget holds)
+    spans = []
+    for o in subs:
+        off = next(u for u in srv.ops_of("unsubscribe") if u["id"] == o["id"])
+        spans.append((o["_t"], off["_t"]))
+    spans.sort()
+    assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans
+    assert max(c.nominal_mbps() for c in p.cameras) <= p.link_budget_mbps
+    for c in p.cameras:          # held only for its two frames: unsubscribed well within the window
+        sub = next(o for o in subs if o["topic"] == c.topic)
+        off = next(o for o in srv.ops_of("unsubscribe") if o["id"] == sub["id"])
+        assert off["_t"] - sub["_t"] < 2 * c.throttle_ms() / 1000 + 1.5, c.topic
+    srv.frame_encoding["/camera/ir/image_raw"] = "rgb8"            # not a single-channel infrared frame
+    code, out = fleet("--url", srv.url, "--expect", "rosmaster_x3_plus")
+    assert "camera /camera/ir/image_raw (optional): UNSUPPORTED" in out, out
+    srv2 = fake(wire_spec(p))
+    srv2.paused.add("/camera/ir/image_raw")                       # the driver ran without IR: advertised, silent
+    code, out = fleet("--url", srv2.url, "--expect", "rosmaster_x3_plus")
+    assert code == 0 and "camera /usb_cam/image_raw (optional): MISSING" in out and "laser_usb_bringup.launch" in out, out
+    assert "camera /camera/ir/image_raw (optional): SILENT" in out and "restarted without it" in out, out
 
 
 def test_depth_camera_frame_of_another_encoding_fails(fake):
@@ -96,8 +139,9 @@ def test_ambiguous_candidates_are_named(fake):
     srv = fake(merge(wire_spec(load("myagv")), wire_spec(load("rosmaster_x3_plus"))))
     code, out = fleet("--url", srv.url)
     assert code != 0 and "ambiguous" in out and "myagv" in out and "rosmaster_x3_plus" in out, out
-    for c in load("myagv").cameras + load("rosmaster_x3_plus").cameras:
-        assert out.count(f"camera {c.topic}:") == 1, out     # each candidate's cameras, once
+    # each candidate's cameras, once (both list /usb_cam/image_raw: the myAGV's camera, the X3's arm camera)
+    for topic in {c.topic for c in load("myagv").cameras + load("rosmaster_x3_plus").cameras}:
+        assert len(re.findall(rf"camera {re.escape(topic)}( \(optional\))?:", out)) == 1, out
     code, out = fleet("--url", srv.url, "--expect", "myagv")
     assert code != 0 and "rosmaster_x3_plus" in out, out
 

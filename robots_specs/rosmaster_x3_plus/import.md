@@ -122,8 +122,28 @@ kept for the 640×480 mode as an **estimate**; the robot's CameraInfo carries th
 calibration instead. Depth and IR are published in the same optical frame (the boot
 registers depth to colour), so the same camera renders them. Sites: `imu_link` (in body
 `imu_link`, URDF `base_imu`) and `laser` (in `laser_link`, rotated by the boot's
-`/laser_link → /laser` yaw 6.28 rad, `laser_astrapro_bringup.launch` L10–L11). The arm's
-`mono_link` USB camera is not started by the boot and has no MuJoCo camera.
+`/laser_link → /laser` yaw 6.28 rad, `laser_astrapro_bringup.launch` L10–L11).
+
+The arm's USB camera is the MuJoCo `<camera name="usb_cam">` (named after its image frame
+id) in body `mono_link` (URDF `mono_joint`: (−0.0481, −0.05145, −0.0022), rpy (1.5708, 0, 0)
+from `arm_link4`), at (0, 0, 0.019) with `xyaxes="0 -1 0 -1 0 0"`, `resolution="640 480"`,
+`fovy="46.8264"`. Yahboom's camera launch for it, `usb_cam-test.launch` as its tutorials
+write it, runs beside the authoritative boot as its camera boot (`ros.yml` `camera_boot`). Its basis:
+
+| Figure | Value | Basis |
+| --- | --- | --- |
+| lens axis | +z of `mono_link` | **estimate** from the official mesh `meshes/sensor/visual/mono_link.STL`: the lens is its cylinder about the z axis at x = y = 0 (a holder of radius 6.8–10.5 mm from z = 0 to 0.004 m, a barrel of radius 5.9–7.0 mm on to its rim at z = 0.019 m, the glass at 0.018 m), the board and bracket lie at z < 0. At the boot pose +z points forward along the gripper, 10° up. |
+| position | (0, 0, 0.019) m in `mono_link` | **estimate**: the rim of the lens barrel in the same mesh |
+| image orientation | image up = −x, image right = −y of `mono_link` | **estimate**: in no source; upright at the boot pose. The pose of the frame `usb_cam` is recorded as a link frame (x along the view, z up; rpy (0, −π/2, 0) from `mono_link`), the convention of Yahboom's own transforms to `usb_cam` (identity rotation from `base_link` and `camera_link`, `laser_usb_bringup.launch` L8–L11) |
+| field of view | 60° horizontal, 46.8264° vertical at 640×480 | **estimate**: the vendor's own Gazebo sensor on `mono_link` (`yahboomcar_X3plus.gazebo.xacro` L72–L90, `horizontal_fov` 1.047198), a simulation figure, not a hardware specification. The camera's model, lens and field of view are in no source. |
+| intrinsics on the wire | uncalibrated (K, R, P zero, D empty) | **source**: the launch gives no `camera_info_url` (`usb_cam_node.cpp` L127–L136) |
+| resolution, rate, encoding | 640×480, 30 Hz loop, rgb8 | **source**: the launch's `image_width`/`image_height`, usb_cam's default `framerate` 30, `yuyv` decoded to RGB24 |
+
+The vendor's Gazebo sensor looks along +x of `mono_link` (its `<pose>` rolls about x
+only), across the wrist rather than out of the lens the mesh shows; the model follows the
+mesh. No vendor launch publishes a transform from `mono_link` (or any frame of
+`robot_description`) to `usb_cam`: the image's frame is outside the robot's transform tree,
+as the vendor ships it, and the wrist pose of the camera is `mono_link`.
 
 **A7 — Gripper range.** The driver publishes `grip_joint` = −π/2 for the open gripper
 (servo 30°, `Mcnamu_X3plus.py` L205–L210) while the URDF limits `grip_joint` to
@@ -148,11 +168,12 @@ above the floor (settled height, wheels touching).
 ## Model figures: manufacturer versus estimate
 
 * Manufacturer / source: URDF geometry, masses and inertias; wheel radius and lx+ly;
-  per-wheel speed clamp; servo ranges; camera resolution and rate; lidar angle and range
+  per-wheel speed clamp; servo ranges; camera resolutions and rates; lidar angle and range
   limits (`TG.launch`).
 * Estimates: wheel centre split lx/ly, wheel width, wheel and roller masses, motor torque and
-  gains, servo gains/armature, chassis collision boxes, camera intrinsics (fovy) and the
-  colour-sensor offset, lidar sample count (derived from launch settings).
+  gains, servo gains/armature, chassis collision boxes, the Astra's intrinsics (fovy) and
+  colour-sensor offset, the arm camera's field of view, lens position and image orientation
+  (A6), lidar sample count (derived from launch settings).
 * Mass: the URDF links total 1.544 kg; with the estimated wheels and rollers (4 × 0.128 kg)
   the model weighs 2.056 kg. No total robot mass appears in the pinned sources, so the URDF
   masses are kept as they are (a real X3 PLUS with battery is likely heavier; unverified).
@@ -166,19 +187,20 @@ Interface values read from the expansion board at run time, which no pinned sour
 * **Firmware version** (`/edition`): **3.5**, the major.minor of the pinned firmware V3.5.1.
 * **Magnetometer** (`/mag/mag_raw`): a fixed local field of **0.22 gauss horizontal (north)
   and 0.42 gauss down**, rotated into `imu_link`.
-* **`orbbec_camera` message and service definitions**: the vendor's copy (`software.zip`)
-  could not be re-read (Google Drive quota), so its `msg/`/`srv/` files are taken from
-  Orbbec's public OrbbecSDK_ROS1. Basis: the vendor's cited `ob_camera_node.cpp`,
-  `ros_setup.cpp` and `ros_service.cpp` equal OrbbecSDK_ROS1 `v1.2.9`
-  (`9569cc31c14989d8008c7f1e99ec1ced12f3c138`) byte for byte (the sha256 prefixes in `ros.yml`
-  `sources[software_zip]`), and every `msg/` and `srv/` file of `v1.2.9` is the same git blob at
-  `v1.4.2` (`7ef885a4a168df02948ca97da216751a83d40471`), the revision the definitions are built
-  from (checked 2026-10-03). The vendor's own msg/srv files are still unverified.
+* **`orbbec_camera` message and service definitions** are built from Orbbec's public
+  OrbbecSDK_ROS1 `v1.4.2` (`7ef885a4a168df02948ca97da216751a83d40471`). They are the
+  vendor's: the `msg/` (3 files) and `srv/` (9 files) of `orbbec-ros-sdk` in `software.zip`
+  are byte-identical to them (compared against the wire image's copy), and the
+  vendor's cited `ob_camera_node.cpp`, `ros_setup.cpp` and `ros_service.cpp` equal
+  OrbbecSDK_ROS1 `v1.2.9` (`9569cc31c14989d8008c7f1e99ec1ced12f3c138`) byte for byte (the
+  sha256 prefixes in `ros.yml` `sources[software_zip]`).
+* **Arm camera** (`/usb_cam`): its field of view, lens position and image orientation (A6);
+  its real frame rate (the driver loops at 30 Hz).
 
 ## Verification (2026-09-30, MuJoCo 3.14.0, scratch wrapper adding a floor)
 
 * Loads with `mujoco.MjModel.from_xml_path` once `robots_specs/tools/fetch_meshes.py` has
-  fetched `meshes/`: nq 70, nv 69, nu 10, 1 camera, 2 sites.
+  fetched `meshes/`: nq 70, nv 69, nu 10, 2 cameras, 2 sites.
 * At rest from `home` for 3 s (implicitfast, dt 0.002): base drift < 0.2 mm, |v| 6e-8.
 * Wheel speeds from the firmware mixing, 2 s runs, dt 0.002 (dt 0.001 gives the same to
   ±1 mm): forward 0.2 m/s → +0.401 m (expected 0.400); back → −0.401 m; left 0.2 m/s →

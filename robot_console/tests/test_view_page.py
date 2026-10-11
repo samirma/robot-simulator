@@ -14,7 +14,9 @@ a page sends its start-up stop and nothing else.
 """
 
 import dataclasses
+import json
 import math
+import re
 import threading
 import time
 
@@ -242,6 +244,9 @@ def test_every_profile_camera_is_shown_live_then_stale(view, pid):
     srv, page = view(wire_spec(p, include_optional=True))     # an optional camera is on the wire only with this
     cams = page.locator('[data-testid="camera"]')
     assert sorted(cams.evaluate_all("els => els.map(e => e.dataset.topic)")) == sorted(c.topic for c in p.cameras)
+    for c in p.cameras:                                       # an on-demand stream is live once its user starts it
+        if c.on_demand:
+            page.locator(f'[data-testid="camera"][data-topic="{c.topic}"] [data-testid="camera-toggle"]').click()
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')",
                            timeout=8000)
     srv.paused.add(p.cameras[0].topic)
@@ -366,6 +371,514 @@ def test_depth_camera_frames_in_another_encoding_are_unsupported(view):
     srv.frame_encoding["/camera/camera/aligned_depth_to_color/image_raw"] = "mono8"
     page.wait_for_function("document.querySelector('[data-kind=depth]').dataset.state === 'unsupported'", timeout=8000)
     assert "UNSUPPORTED" in depth_card(page).locator('[data-testid="camera-state"]').inner_text()
+
+
+X3 = "rosmaster_x3_plus"
+X3_CAMS = ["/camera/rgb/image_raw", "/camera/depth/image_raw", "/camera/ir/image_raw", "/usb_cam/image_raw",
+           "/usb_cam/image_raw/compressed"]
+X3_ON_DEMAND = X3_CAMS[1:]
+
+
+def cam_card(page, topic):
+    return page.locator(f'[data-testid="camera"][data-topic="{topic}"]')
+
+
+def cam_states(page):
+    return page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.state)")
+
+
+def start_streams(page, topics):
+    for t in topics:
+        cam_card(page, t).locator('[data-testid="camera-toggle"]').click()
+
+
+def camera_subs(srv, topic):
+    return [o for o in srv.ops_of("subscribe") if o["topic"] == topic]
+
+
+def test_x3_shows_astra_colour_depth_infrared_and_arm_camera(view):
+    """ROSMASTER X3 PLUS: the Astra Pro Plus' colour, depth and infrared streams and the arm's USB camera (raw and as
+    JPEG) are five cards. The colour camera is live at once, capped at 2 frames/s; the others are off (a neutral
+    state, no subscription) until the user starts them, then live at their caps, and off again when stopped.
+    Every subscription asks rosbridge for queue_length 1, so no backlog of frames builds up on the server.
+    The depth card is a false-colour map over 0.6-8 m, the infrared one grey with its note; each card names its
+    CameraInfo topic. Showing them sends nothing but the start-up stop."""
+    srv, page = view(wire_spec(load(X3), include_optional=True))
+    assert page.locator('[data-testid="target"]').inner_text() == X3
+    cams = page.locator('[data-testid="camera"]')
+    assert cams.evaluate_all("els => els.map(e => [e.dataset.topic, e.dataset.kind])") == [
+        [X3_CAMS[0], "color"], [X3_CAMS[1], "depth"], [X3_CAMS[2], "ir"], [X3_CAMS[3], "color"], [X3_CAMS[4], "color"]]
+    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[0]}\"]').dataset.state === 'live'", timeout=8000)
+    page.wait_for_timeout(500)
+    assert cam_states(page) == ["live", "off", "off", "off", "off"]
+    assert [camera_subs(srv, t) for t in X3_ON_DEMAND] == [[], [], [], []]       # nothing is sent for an off stream
+    assert [(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, X3_CAMS[0])] == [(500, 1)]
+    off = cam_card(page, X3_CAMS[1])
+    assert "OFF" in off.locator('[data-testid="camera-state"]').inner_text()
+    assert "only while you have it started" in off.locator(".ov-detail").inner_text()
+    assert "dim" in off.locator('[data-testid="camera-state"]').get_attribute("class")      # not an alarm
+    assert [cam_card(page, t).locator('[data-testid="camera-rate"]').inner_text() for t in X3_CAMS] == [
+        "≤ 2 fps", "≤ 2 fps", "≤ 2 fps", "≤ 2 fps", "≤ 5 fps"]
+    start_streams(page, X3_ON_DEMAND)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=8000)
+    assert [[(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, t)] for t in X3_ON_DEMAND] == [[(500, 1)]] * 3 + [[(200, 1)]]
+    assert {o["queue_length"] for o in srv.ops_of("subscribe")} == {1}                 # sensors too
+    depth = cam_card(page, X3_CAMS[1]).locator('[data-testid="depth-legend"]')
+    assert (depth.locator('[data-testid="depth-near"]').inner_text(), depth.locator('[data-testid="depth-far"]').inner_text()) == ("0.60 m", "8.00 m")
+    ir = cam_card(page, X3_CAMS[2])
+    assert "darkest" in ir.locator('[data-testid="ir-legend"]').inner_text() and "INFRARED" in ir.locator(".cam-kind").inner_text().upper()
+    assert [cam_card(page, t).locator('[data-testid="camera-info"]').inner_text() for t in X3_CAMS[:4]] == [
+        "info /camera/rgb/camera_info", "info /camera/depth/camera_info", "info /camera/ir/camera_info", "info /usb_cam/camera_info"]
+    assert "mono16" in ir.locator(".cam-meta").inner_text()
+    # the fake honours throttle_rate as rosbridge does: an on-demand stream arrives at most twice a second
+    n0 = page.evaluate(f"RC.state.streams.find(s => s.topic === '{X3_CAMS[1]}').frames")
+    page.wait_for_timeout(2000)
+    assert page.evaluate(f"RC.state.streams.find(s => s.topic === '{X3_CAMS[1]}').frames") - n0 <= 5
+    cam_card(page, X3_CAMS[1]).locator('[data-testid="camera-toggle"]').click()
+    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[1]}\"]').dataset.state === 'off'", timeout=3000)
+    sid = camera_subs(srv, X3_CAMS[1])[0]["id"]
+    assert sid in {o["id"] for o in srv.ops_of("unsubscribe")}
+    assert cam_card(page, X3_CAMS[0]).get_attribute("data-state") == "live"
+    only_startup(srv, page, X3)
+
+
+def test_x3_full_size_colour_and_infrared_frames(view):
+    """640x480 frames, the size the Astra and the USB camera send, are decoded at full size; an infrared frame is
+    drawn as camera.py does (the vendor IR viewer's min-max normalisation)."""
+    import base64
+    from robot_console.camera import decode_image
+    from fake_rosbridge import image_msg
+    srv, page = view(wire_spec(load(X3), include_optional=True, camera_rate=4))
+    srv.frame_size[X3_CAMS[0]] = (640, 480)
+    page.wait_for_function(f"(() => {{ const s = RC.state.streams.find(s => s.topic === '{X3_CAMS[0]}'); return s && s.w === 640 && s.h === 480; }})()", timeout=10000)
+    assert cam_card(page, X3_CAMS[0]).locator("canvas").evaluate("c => [c.width, c.height]") == [640, 480]
+    want = decode_image(image_msg("ros1", "rgb8", w=640, h=480, seq=0), ["rgb8"])
+    px = cam_card(page, X3_CAMS[0]).locator("canvas").evaluate("c => Array.from(c.getContext('2d').getImageData(0, 0, 1, 1).data).slice(0, 3)")
+    assert len(px) == 3 and want.shape == (480, 640, 3)
+    start_streams(page, [X3_CAMS[2]])
+    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[2]}\"]').dataset.state === 'live'", timeout=8000)
+    srv.paused.add(X3_CAMS[2])
+    w, h = 640, 480
+    vals = [(1000 + 37 * i) % 65536 for i in range(w * h)]
+    msg = {"header": {"stamp": {"secs": 1, "nsecs": 0}, "frame_id": "camera_color_optical_frame"}, "height": h, "width": w,
+           "encoding": "mono16", "is_bigendian": 0, "step": 2 * w,
+           "data": base64.b64encode(b"".join(v.to_bytes(2, "little") for v in vals)).decode()}
+    page.wait_for_timeout(400)
+    srv._broadcast(X3_CAMS[2], msg)
+    want = decode_image(msg, ["mono16"], ir=True)
+    pts = [[0, 0], [1, 0], [320, 240], [639, 479]]
+    page.wait_for_function(
+        "([t, v]) => { const c = document.querySelector(`[data-topic=\"${t}\"] canvas`); "
+        "return c.width === 640 && c.getContext('2d').getImageData(320, 240, 1, 1).data[0] === v; }",
+        arg=[X3_CAMS[2], int(want[240, 320, 0])], timeout=8000)
+    got = cam_card(page, X3_CAMS[2]).locator("canvas").first.evaluate(
+        "(c, pts) => pts.map(([x, y]) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data).slice(0, 3))", pts)
+    assert got == [want[y, x].tolist() for x, y in pts]
+
+
+def test_x3_silent_infrared_is_explained_and_absent_arm_camera_names_its_launch(view, fake):
+    """On the authoritative boot's wire (no USB camera) the target validates. An infrared stream started but
+    never delivering (the Astra driver restarted without IR, keeping the topic advertised) is shown as NO FRAMES
+    with that explanation, a neutral state, not a red STALE; the USB camera is MISSING and names the launch that
+    starts it."""
+    srv = fake(wire_spec(load(X3)))
+    srv.paused.add(X3_CAMS[2])
+    srv, page = view(srv=srv)
+    assert page.locator('[data-testid="target"]').inner_text() == X3
+    assert cam_card(page, X3_CAMS[3]).get_attribute("data-state") == "missing"
+    assert cam_card(page, X3_CAMS[3]).locator('[data-testid="camera-toggle"]').count() == 0
+    detail = cam_card(page, X3_CAMS[3]).locator(".ov-detail").inner_text()
+    assert "optional camera is not on the wire" in detail and "laser_usb_bringup.launch" in detail
+    start_streams(page, [X3_CAMS[2]])
+    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[2]}\"]').dataset.state === 'silent'", timeout=6000)
+    ir = cam_card(page, X3_CAMS[2])
+    assert "NO FRAMES" in ir.locator('[data-testid="camera-state"]').inner_text()
+    assert "restarted without it" in ir.locator(".ov-detail").inner_text()
+    assert "dim" in ir.locator('[data-testid="camera-state"]').get_attribute("class")
+    only_startup(srv, page, X3)
+
+
+def test_x3_depth_colours_follow_the_cameras_range(view):
+    """The X3 depth stream (16UC1 mm, here 0 then 600 to 8000 mm across the frame) is drawn over the profile's
+    0.6-8 m: no depth black, 0.6 m the near end of the map, the middle of the range its middle, 8 m its far end."""
+    from fake_rosbridge import depth_mm
+    from robot_console.camera import depth_lut
+    srv, page = view(wire_spec(load(X3)))
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[1]}\"]').dataset.state === 'live'", timeout=8000)
+    w, h = 8, 6
+    vals = [depth_mm(i, w * h, 600, 8000) for i in range(w * h)]
+    assert vals[1] == 600 and vals[-1] == 8000
+    mid = min(range(1, w * h), key=lambda i: abs(vals[i] - 4300))      # nearest pixel to the middle, 4.3 m
+    lut = depth_lut()
+    want_mid = lut[int((vals[mid] / 1000 - 0.6) / 7.4 * 255 + 0.5)].tolist()
+    got = cam_card(page, X3_CAMS[1]).locator("canvas").first.evaluate(
+        "(c, pts) => pts.map(([x, y]) => Array.from(c.getContext('2d').getImageData(x, y, 1, 1).data).slice(0, 3))",
+        [[0, 0], [1, 0], [mid % w, mid // w], [w - 1, h - 1]])
+    assert got == [[0, 0, 0], lut[0].tolist(), want_mid, lut[255].tolist()], got
+    assert "registered to the colour image" in cam_card(page, X3_CAMS[1]).locator('[data-testid="camera-caption"]').inner_text().lower()
+
+
+def cam_state_is(topic, state):
+    return f"document.querySelector('[data-topic=\"{topic}\"]').dataset.state === '{state}'"
+
+
+def watch_states(page, topic, seconds):
+    """The camera's states, sampled every 50 ms for `seconds`."""
+    return page.evaluate("""([t, ms]) => new Promise((done) => { const seen = []; const end = performance.now() + ms;
+        const f = () => { seen.push(document.querySelector(`[data-topic="${t}"]`).dataset.state);
+          if (performance.now() < end) setTimeout(f, 50); else done(seen); }; f(); })""", [topic, int(seconds * 1000)])
+
+
+def test_lag_comes_from_the_robot_clock_through_rosapi(view):
+    """Link health (console spec §2.3): the page asks /rosapi/get_time (read-only, never a command) and judges the shown
+    image's age in robot time. A robot clock far off the console's is no lag; frames stamped 2.5 s before they arrive
+    are LAGGING, not live (the link answering quickly, so no pause); kept at that steady offset they stay LAGGING,
+    noted as a real delay or stamps on another clock; current again, live again."""
+    srv, page = view(wire_spec(load(X3)))
+    srv.clock_skew = 500.0                                  # the robot's clock runs 500 s ahead of the console's
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    assert re.search(r"age 0\.\d\d ± 0\.\d\d s · live to 1\.75 s", cam_card(page, X3_CAMS[0]).locator(".cam-meta").inner_text())
+    assert any(o.get("service") == "/rosapi/get_time" for o in srv.ops_of("call_service"))
+    srv.stamp_lag[X3_CAMS[0]] = 2.5                         # frames now arrive 2.5 s after they were taken
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "lagging"), timeout=8000)
+    card = cam_card(page, X3_CAMS[0])
+    assert "LAGGING" in card.locator('[data-testid="camera-state"]').inner_text() and "not current" in card.locator(".ov-detail").inner_text()
+    assert page.locator('[data-testid="congestion"]').is_hidden()
+    page.wait_for_function("document.querySelector('[data-topic=\"/camera/rgb/image_raw\"] .ov-detail').textContent.includes('steady offset')", timeout=8000)
+    assert card.get_attribute("data-state") == "lagging" and "+2.5 s" in card.locator(".ov-detail").inner_text()
+    assert "another clock" in card.locator(".ov-detail").inner_text() and page.locator('[data-testid="congestion"]').is_hidden()
+    srv.stamp_lag[X3_CAMS[0]] = 0.0
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    only_startup(srv, page, X3)
+
+
+def watch_ages(page, topic, seconds):
+    """[state, age_lo, age_hi] of the camera every 50 ms for `seconds` (ages null when not judged)."""
+    return page.evaluate("""([t, ms]) => new Promise((done) => { const out = []; const end = performance.now() + ms;
+        const f = () => { const s = RC.state.streams.find((x) => x.topic === t), l = s.lagNow;
+          out.push([s.state, l && l[0] === "known" ? l[3] : null, l && l[0] === "known" ? l[4] : null]);
+          if (performance.now() < end) setTimeout(f, 50); else done(out); }; f(); })""", [topic, int(seconds * 1000)])
+
+
+def test_an_image_stops_being_live_past_its_bound(view):
+    """The critic's case: frames arrive 0.9 s after they were taken (live), then the stream stops. The image on screen
+    is live only while its age is within its bound (1 s + 1.5 frame periods = 1.75 s at 2 frames/s), judged on every
+    refresh, then stale."""
+    srv, page = view(wire_spec(load(X3)))
+    srv.stamp_lag[X3_CAMS[0]] = 0.9
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv.paused.add(X3_CAMS[0])
+    seen = watch_ages(page, X3_CAMS[0], 2.0)
+    live = [hi for st, lo, hi in seen if st == "live"]
+    assert live and max(live) <= 1.75 + 0.06, max(live)
+    assert seen[-1][0] == "stale", seen[-5:]
+
+
+@pytest.mark.parametrize("lag", [0.3, 0.45, 0.6, 0.9])
+def test_a_steady_lag_below_the_limit_never_flickers_on_the_page(view, lag):
+    """At the X3's 2 frames/s, a steady transport lag of 0.3, 0.45, 0.6 or 0.9 s reads LIVE throughout: never STALE
+    between frames."""
+    srv, page = view(wire_spec(load(X3)))
+    srv.stamp_lag[X3_CAMS[0]] = lag
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    seen = watch_states(page, X3_CAMS[0], 3.0)
+    assert set(seen) == {"live"}, seen
+
+
+def test_a_stopped_stream_shows_no_current_age(view):
+    srv, page = view(wire_spec(load(X3)))
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    assert "age " in cam_card(page, X3_CAMS[1]).locator(".cam-meta").inner_text()
+    start_streams(page, [X3_CAMS[1]])                       # stop it
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
+    page.wait_for_timeout(300)
+    meta = cam_card(page, X3_CAMS[1]).locator(".cam-meta").inner_text()
+    assert "age" not in meta and "last frame" in meta
+
+
+def congested(page):
+    page.wait_for_function("!document.querySelector('[data-testid=congestion]').hidden", timeout=10000)
+    return page.locator('[data-testid="congestion-text"]').inner_text()
+
+
+def test_a_congested_link_pauses_the_cameras_until_resumed(view):
+    """Late frames while the robot's time answers take over 1 s (the link backing up): every camera stream is
+    unsubscribed, the page says so prominently, as a warning; the operator resumes them."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    sub = camera_subs(srv, X3_CAMS[0])[0]
+    srv.time_reply_delay = 1.3
+    srv.stamp_lag[X3_CAMS[0]] = 2.5
+    text = congested(page)
+    assert "Cameras paused" in text and "congested" in text
+    drive = page.locator('[data-testid="congestion-drive"]')        # repeated where the operator drives
+    assert drive.is_visible() and "Cameras paused" in drive.inner_text()
+    assert srv.wait_for(lambda: sub["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+    card = cam_card(page, X3_CAMS[0])
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "paused"), timeout=3000)
+    assert "warn" in card.locator('[data-testid="camera-state"]').get_attribute("class")
+    srv.time_reply_delay = 0.0
+    srv.stamp_lag[X3_CAMS[0]] = 0.0
+    page.wait_for_timeout(1500)
+    page.locator('[data-testid="resume-cameras"]').click()
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    assert len(camera_subs(srv, X3_CAMS[0])) == 2 and page.locator('[data-testid="congestion"]').is_hidden()
+    only_startup(srv, page, X3)
+
+
+def test_an_operator_sample_does_not_pause_the_cameras(view):
+    """A point-cloud sample's own burst delays the time answers: questions sent while the sample is expected on the
+    link (a bounded grace window) are not counted, so the operator's click does not pause the cameras; a slow link
+    after that window still does."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv.time_reply_delay = 1.4                              # the sample's burst holds the time answers back
+    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
+    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'sampled'", timeout=8000)
+    grace = page.evaluate("RC.clock().grace")
+    assert 1.0 <= grace[1] - grace[0] <= 5.0
+    page.wait_for_function(f"(performance.timeOrigin + performance.now()) / 1000 > {grace[1]}", timeout=8000)
+    srv.time_reply_delay = 0.0
+    page.wait_for_timeout(2500)
+    assert page.locator('[data-testid="congestion"]').is_hidden()
+    srv.time_reply_delay = 1.4                              # a slow link after the window: congestion
+    assert "took 1.4 s" in congested(page)
+
+
+def test_time_unanswered_while_frames_arrive_is_congestion(view):
+    """The worst backlog: the time answer never comes within 3 s while frames keep arriving. That is congestion (a
+    warning and a pause), never a neutral LAG UNKNOWN."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv.time_reply_delay = 6.0
+    assert "late while frames keep arriving" in congested(page)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "paused"), timeout=3000)
+    assert "warn" in cam_card(page, X3_CAMS[0]).locator('[data-testid="camera-state"]').get_attribute("class")
+
+
+def test_a_backlog_present_before_a_stream_starts_is_never_live(view):
+    """No baseline is learnt from the frames: an on-demand stream started while its frames are already 2.5 s late
+    (with the link backed up) is never live; the cameras are paused."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv.stamp_lag[X3_CAMS[1]] = 2.5
+    srv.time_reply_delay = 1.3
+    start_streams(page, [X3_CAMS[1]])
+    seen = watch_states(page, X3_CAMS[1], 5.0)
+    assert "live" not in seen and seen[-1] == "paused", seen
+
+
+@pytest.mark.parametrize("step", [-5.0, 5.0])
+def test_a_robot_clock_step_is_never_read_as_lag(view, step):
+    """The robot's clock steps back or forward 5 s (stamps and its time alike): the page re-asks its time and sees the
+    step; the stream is never LAGGING. Forward, the age bounds only widen downwards: it stays LIVE. Back, the readings
+    of the last 10 s disagree by 5 s, so a new image may be up to 5 s old as far as the page can tell: LAG UNKNOWN,
+    saying so, until the readings before the step leave the window, then LIVE again."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    page.wait_for_timeout(500)
+    srv.clock_skew += step
+    seen = watch_states(page, X3_CAMS[0], 4.0)
+    assert "lagging" not in seen, seen
+    assert page.evaluate("RC.clock().steps") >= 1
+    if step > 0:
+        assert seen[-1] == "live", seen
+        return
+    assert seen[-1] == "unknown" and "disagree by 5.0 s" in cam_card(page, X3_CAMS[0]).inner_text(), seen
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=10000)
+
+
+@pytest.mark.parametrize("why", ["no_time_service", "sim_time"])
+def test_without_a_clock_reference_lag_is_unknown_never_zero(view, fake, why):
+    """With no /rosapi/get_time, or a ROS 1 robot on simulated time, frames that arrive are LAG UNKNOWN (a neutral
+    state) with the reason, never LIVE with a lag of zero."""
+    srv = fake(wire_spec(load(X3)))
+    if why == "no_time_service":
+        srv.time_service = False
+    else:
+        srv.params["/use_sim_time"] = True
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "unknown"), timeout=8000)
+    seen = watch_states(page, X3_CAMS[0], 2.0)
+    assert set(seen) == {"unknown"}, seen
+    card = cam_card(page, X3_CAMS[0])
+    assert "LAG UNKNOWN" in card.locator('[data-testid="camera-state"]').inner_text()
+    assert "age unknown" in card.locator(".cam-meta").inner_text() and "age 0" not in card.locator(".cam-meta").inner_text()
+    reason = "/rosapi/get_time" if why == "no_time_service" else "simulated time"
+    assert reason in card.locator(".ov-detail").inner_text()
+    assert "warn" in card.locator('[data-testid="camera-state"]').get_attribute("class")      # a caution, not neutral
+    assert page.locator('[data-testid="congestion"]').is_hidden()
+
+
+def test_the_stop_never_waits_behind_full_size_frames(view, monkeypatch):
+    """With every X3 stream sending full-size 640x480 frames (the link budget lifted for this stress), releasing the
+    motion key delivers the stop at once: frames are only stored when they arrive and decoded later, so input is
+    handled between them."""
+    serve_variants(monkeypatch, dataclasses.replace(load(X3), link_budget_mbps=None))
+    srv, page = view(wire_spec(load(X3), include_optional=True, camera_rate=30))
+    for t in X3_CAMS:
+        srv.frame_size[t] = (640, 480)
+    start_streams(page, X3_ON_DEMAND)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=15000)
+    started(page)
+    p = load(X3)
+    worst = 0.0
+    for _ in range(3):
+        m = len(motion_cmds(p, srv.command_ops()))
+        page.keyboard.down("w")
+        assert srv.wait_for(lambda: len(motion_cmds(p, srv.command_ops())) > m, 3.0)
+        n = len(stops(srv, p))
+        t0 = time.monotonic()
+        page.keyboard.up("w")
+        assert srv.wait_for(lambda: len(stops(srv, p)) > n, 3.0)
+        worst = max(worst, stops(srv, p)[-1]["_t"] - t0)
+        page.wait_for_timeout(300)
+    assert worst < 0.25, worst
+
+
+def test_x3_link_budget_refuses_a_stream_beyond_it(view, fake):
+    """The X3's camera streams may take 40 Mbit/s together: with colour (about 20 Mbit/s at 640x480, 2 frames/s) and
+    depth (about 13) running, starting infrared (about 13) is refused with the numbers and nothing is subscribed;
+    after depth is stopped, infrared starts. The page shows the link's measured load and the cameras' share."""
+    srv = fake(wire_spec(load(X3), include_optional=True))
+    for t in X3_CAMS:
+        srv.frame_size[t] = (640, 480)
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[2]])
+    page.wait_for_timeout(400)
+    ir = cam_card(page, X3_CAMS[2])
+    assert ir.get_attribute("data-state") == "off" and camera_subs(srv, X3_CAMS[2]) == []
+    detail = ir.locator(".ov-detail").inner_text()
+    assert "link budget of 40 Mbit/s" in detail and "Stop another stream first" in detail, detail
+    rate = page.locator('[data-testid="link-rate"]')
+    page.wait_for_function("parseFloat(document.querySelector('[data-testid=link-rate]').dataset.mbps) > 10", timeout=6000)
+    assert "of 40 Mbit/s budget" in rate.inner_text()
+    start_streams(page, [X3_CAMS[1]])                     # stop depth
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
+    start_streams(page, [X3_CAMS[2]])
+    page.wait_for_function(cam_state_is(X3_CAMS[2], "live"), timeout=8000)
+    assert len(camera_subs(srv, X3_CAMS[2])) == 1
+
+
+def test_camera_cards_do_not_overflow_or_overlap(view, fake):
+    """At 1500 px with all X3 streams started (budget lifted), no text of a camera card overflows the card, and the
+    meta line overlaps neither the caption nor the legend."""
+    srv = fake(wire_spec(load(X3), include_optional=True))
+    for t in X3_CAMS:
+        srv.frame_size[t] = (640, 480)
+    srv, page = view(srv=srv, viewport=(1500, 1000))
+    page.evaluate("RC.state.target.profile.link_budget_mbps = null")
+    start_streams(page, X3_ON_DEMAND)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => ['live','lagging','unknown'].includes(e.dataset.state))", timeout=15000)
+    page.wait_for_timeout(600)
+    bad = page.evaluate("""() => { const out = [];
+      for (const card of document.querySelectorAll('[data-testid=camera]')) {
+        const cb = card.getBoundingClientRect();
+        const parts = [...card.querySelectorAll('.cam-caption > *, .cam-caption-note, .depth-legend, .ir-legend')];
+        for (const e of parts) { const r = e.getBoundingClientRect();
+          if (r.width && (r.right > cb.right + 1 || r.left < cb.left - 1)) out.push(['overflow', card.dataset.topic, e.className]); }
+        const meta = card.querySelector('.cam-meta').getBoundingClientRect();
+        for (const e of card.querySelectorAll('.cam-caption-note, .depth-legend, .cam-caption code')) { const r = e.getBoundingClientRect();
+          const hit = !(r.right <= meta.left || r.left >= meta.right || r.bottom <= meta.top || r.top >= meta.bottom);
+          if (hit && r.width && meta.width) out.push(['overlap', card.dataset.topic, e.className || e.tagName]); }
+      } return out; }""")
+    assert bad == [], bad
+
+
+def test_x3_usb_camera_as_jpeg_is_decoded_and_cheap_on_the_budget(view, fake):
+    """The arm's USB camera through image_transport's compressed plugin (sensor_msgs/CompressedImage, JPEG): the
+    browser decodes it, and it counts for a tenth of the raw stream against the link budget, so it starts beside
+    colour and depth where the raw USB stream would not; a frame in another format is unsupported."""
+    srv = fake(wire_spec(load(X3), include_optional=True))
+    for t in X3_CAMS[:4]:
+        srv.frame_size[t] = (640, 480)
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[3]])                       # raw USB: over the budget
+    page.wait_for_timeout(300)
+    assert cam_card(page, X3_CAMS[3]).get_attribute("data-state") == "off" and camera_subs(srv, X3_CAMS[3]) == []
+    jpeg = cam_card(page, X3_CAMS[4])
+    assert jpeg.get_attribute("data-compressed") == "true" and "COMPRESSED" in jpeg.inner_text().upper()
+    start_streams(page, [X3_CAMS[4]])
+    page.wait_for_function(cam_state_is(X3_CAMS[4], "live"), timeout=8000)
+    sub = camera_subs(srv, X3_CAMS[4])[0]
+    assert (sub["type"], sub["throttle_rate"], sub["queue_length"]) == ("sensor_msgs/CompressedImage", 200, 1)
+    px = jpeg.locator("canvas").first.evaluate("c => [c.width, c.height, ...Array.from(c.getContext('2d').getImageData(c.width - 1, 0, 1, 1).data).slice(0, 3)]")
+    assert px[:2] == [8, 6] and px[2] > 180 and px[3] < 60      # the fake's red ramp, decoded
+    assert "jpeg" in jpeg.locator(".cam-meta").inner_text()
+    srv.frame_encoding[X3_CAMS[4]] = "rgb8; theora"
+    page.wait_for_function(cam_state_is(X3_CAMS[4], "unsupported"), timeout=8000)
+
+
+def test_a_point_cloud_sample_counts_against_the_link_budget(view, fake):
+    """A cloud is megabytes in one burst: with colour and depth taking about 33 of the X3's 40 Mbit/s it is refused,
+    saying why; with only colour (about 20, half the budget) it is sampled. The budget line warns near the budget."""
+    srv = fake(wire_spec(load(X3)))
+    for t in X3_CAMS[:2]:
+        srv.frame_size[t] = (640, 480)
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    page.wait_for_function("document.querySelector('[data-testid=link-rate]').dataset.level === 'near'", timeout=6000)
+    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
+    page.wait_for_timeout(300)
+    assert [o for o in srv.ops_of("subscribe") if o["topic"] == "/camera/depth/points"] == []
+    meta = sensor(page, "depth_points").locator('[data-testid="sensor-meta"]').inner_text()
+    assert "Not sampled" in meta and "MB in one burst" in meta and "Stop the depth" in meta
+    start_streams(page, [X3_CAMS[1]])                       # stop depth
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
+    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
+    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'sampled'", timeout=8000)
+
+
+def test_use_sim_time_unknown_until_rosapi_answers(view, fake):
+    """On ROS 1 the page reads /use_sim_time before trusting the robot's time; while rosapi does not answer that, the
+    age is unknown (never live) and it asks again until it knows."""
+    srv = fake(wire_spec(load(X3)))
+    srv.param_failures = 2
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "unknown"), timeout=8000)
+    assert "use_sim_time" in cam_card(page, X3_CAMS[0]).locator(".ov-detail").inner_text()
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=12000)
+    assert len([o for o in srv.ops_of("call_service") if o.get("service") == "/rosapi/get_param"]) >= 3
+
+
+def test_non_finite_numbers_are_read_as_null_outside_strings_only(view):
+    """Python's json writes NaN/Infinity bare: the page reads those tokens as null, and leaves strings untouched."""
+    srv, page = view(wire_spec(load(X3)))
+    text = '{"r":[1,NaN,-Infinity,Infinity,2.5e3],"s":"NaN \\"Infinity\\" -Infinity","t":"x"}'
+    got = page.evaluate("t => RC.nonFiniteToNull(t)", text)
+    assert json.loads(got) == {"r": [1, None, None, None, 2500.0], "s": 'NaN "Infinity" -Infinity', "t": "x"}
+
+
+def test_untied_streams_are_previewed_on_request_one_at_a_time(view):
+    """Before a target is validated (two candidates on the wire) every raw image stream is listed, untied, but none is
+    streamed by itself (no profile says what it costs the link): a preview starts on request, at most 2 frames/s, and
+    starting another stops the first."""
+    srv, page = view(merge(wire_spec(load("myagv")), wire_spec(load(X3))))
+    page.wait_for_function("document.querySelectorAll('[data-testid=untied]').length > 0", timeout=8000)
+    page.wait_for_timeout(500)
+    raw = [t for t in X3_CAMS if not t.endswith("/compressed")]
+    assert set(raw) <= set(page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.topic)"))
+    assert not {o["topic"] for o in srv.ops_of("subscribe")} & set(X3_CAMS)
+    assert set(cam_states(page)) == {"off"} and "one at a time" in cam_card(page, raw[0]).locator(".ov-detail").inner_text()
+    start_streams(page, [raw[0]])
+    page.wait_for_function(cam_state_is(raw[0], "unknown") + " || " + cam_state_is(raw[0], "live"), timeout=8000)
+    first = camera_subs(srv, raw[0])
+    assert [(o["throttle_rate"], o["queue_length"]) for o in first] == [(500, 1)]
+    start_streams(page, [raw[1]])
+    assert srv.wait_for(lambda: first[0]["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+    page.wait_for_function(cam_state_is(raw[0], "off"), timeout=3000)
+    assert len(camera_subs(srv, raw[1])) == 1
+    assert srv.command_ops() == []
 
 
 def test_no_cameras_is_a_visible_state(view, monkeypatch):
@@ -534,6 +1047,233 @@ def test_profiles_without_sensors_show_no_sensor_panel(view):
     assert page.locator('[data-testid="sensor"]').count() == 0
 
 
+def x3_sensors(view, **kw):
+    srv, page = view(wire_spec(load(X3), **kw))
+    assert page.locator('[data-testid="target"]').inner_text() == X3
+    return srv, page
+
+
+X3_CLOUDS = ("/camera/depth/points", "/camera/depth_registered/points")
+
+
+def test_x3_sensor_panel_shows_every_vendor_sensor_read_only(view):
+    """ROSMASTER X3 PLUS: every vendor sensor topic of the profile in profile order, each periodic one reporting, the
+    battery voltage also as the headline above the cameras. The arm echo and gamepad state are ordinary event
+    publishers (no latching): they wait in a neutral EVENT-ONLY state, counted apart, and show their last event
+    once one comes. The point clouds, which the Astra driver computes only while they have a subscriber, are never
+    subscribed on load. The page only subscribes, and sends nothing but base motion's start-up stop."""
+    srv, page = x3_sensors(view)
+    ids = [s.id for s in load(X3).sensors]
+    assert page.locator('[data-testid="sensor"]').evaluate_all("els => els.map(e => e.dataset.sensor)") == ids
+    clouds = ("depth_points", "registered_points")
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every((e) => "
+                           "['live','event','off'].includes(e.dataset.state))", timeout=15000)
+    assert sensor_state(page, "arm_angle_update") == "event" and sensor_state(page, "joy_state") == "event"
+    assert "EVENT-ONLY" in sensor(page, "joy_state").locator('[data-testid="sensor-state"]').inner_text()
+    assert "(normal)" in sensor(page, "joy_state").locator('[data-testid="sensor-meta"]').inner_text()
+    assert [sensor_state(page, c) for c in clouds] == ["off", "off"]
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "11 of 11 reporting · 2 event-only (0 seen) · 2 on demand"
+    srv.emit("/JoyState")
+    page.wait_for_function("document.querySelector('[data-sensor=joy_state]').dataset.state === 'lastevent'", timeout=5000)
+    assert "LAST EVENT" in sensor(page, "joy_state").locator('[data-testid="sensor-state"]').inner_text()
+    assert sval(page, "joy_state", "active") == "true"
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "11 of 11 reporting · 2 event-only (1 seen) · 2 on demand"
+    assert "NOT SAMPLED" in sensor(page, clouds[0]).locator('[data-testid="sensor-state"]').inner_text()
+    head = page.locator('[data-testid="headline"]')
+    assert head.count() == 1 and head.get_attribute("data-sensor") == "battery"
+    assert head.locator('[data-testid="headline-value"]').inner_text() == "12.3" and "V" in head.inner_text()
+    assert head.get_attribute("data-state") == "live" and head.get_attribute("data-warn") == ""
+    assert page.evaluate("document.querySelector('[data-testid=headlines]').compareDocumentPosition("
+                         "document.querySelector('[data-testid=cameras]')) & Node.DOCUMENT_POSITION_FOLLOWING")
+    page.wait_for_timeout(500)
+    subs = {o["topic"]: o for o in srv.ops_of("subscribe")}
+    assert {s.topic for s in load(X3).sensors if not s.on_demand} <= set(subs)
+    assert not set(X3_CLOUDS) & set(subs)                                   # never on load
+    assert subs["/point_cloud"]["throttle_rate"] == 1000 and subs["/voltage"]["throttle_rate"] == 100
+    only_startup(srv, page, X3)
+
+
+def test_x3_point_clouds_are_sampled_once_on_request(view):
+    """'Sample once' subscribes to a cloud, keeps its first message and unsubscribes at once, so the robot computes
+    it only for that moment; the card then shows a snapshot (SAMPLED, never live or stale) of the cloud's size as
+    the driver publishes it (height 1, width = the valid points, dense)."""
+    srv, page = x3_sensors(view)
+    for sid, topic, frame, step in (("depth_points", X3_CLOUDS[0], "camera_depth_optical_frame", "16"),
+                                    ("registered_points", X3_CLOUDS[1], "camera_color_optical_frame", "20")):
+        sensor(page, sid).locator('[data-testid="sensor-sample"]').click()
+        page.wait_for_function(f"document.querySelector('[data-sensor={sid}]').dataset.state === 'sampled'", timeout=8000)
+        subs = [o for o in srv.ops_of("subscribe") if o["topic"] == topic]
+        # one message only: rosbridge may send no second one before the unsubscribe (a cloud is megabytes)
+        assert len(subs) == 1 and (subs[0]["throttle_rate"], subs[0]["queue_length"]) == (3_600_000, 1)
+        assert srv.wait_for(lambda: subs[0]["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+        assert [sval(page, sid, f) for f in ("height", "is_dense", "point_step", "frame_id")] == ["1", "true", step, frame]
+        assert int(sval(page, sid, "width")) > 200_000
+        assert "SAMPLED" in sensor(page, sid).locator('[data-testid="sensor-state"]').inner_text()
+        assert "not live" in sensor(page, sid).locator('[data-testid="sensor-meta"]').inner_text()
+    page.wait_for_timeout(1500)
+    assert [len([o for o in srv.ops_of("subscribe") if o["topic"] == t]) for t in X3_CLOUDS] == [1, 1]   # nothing re-subscribed
+    # the clouds publish continuously (10 Hz on this wire, 30 on the robot) while subscribed: exactly one reached the page
+    assert [srv.delivered.get(t, 0) for t in X3_CLOUDS] == [1, 1]
+    assert page.evaluate("RC.state.sensors.filter(s => s.def.on_demand).map(s => s.count)") == [1, 1]
+    assert sensor_state(page, "depth_points") == "sampled"
+    only_startup(srv, page, X3)
+
+
+def test_x3_cloud_sample_without_a_message_unsubscribes_and_says_so(view, fake, monkeypatch):
+    srv = fake(wire_spec(load(X3)))
+    srv.paused.add(X3_CLOUDS[0])
+    srv, page = view(srv=srv)
+    page.evaluate("RC.sampleTimeoutMs = 1500")
+    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
+    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'nomessage'", timeout=8000)
+    sub = next(o for o in srv.ops_of("subscribe") if o["topic"] == X3_CLOUDS[0])
+    assert srv.wait_for(lambda: sub["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+    assert "unsubscribed" in sensor(page, "depth_points").locator('[data-testid="sensor-meta"]').inner_text()
+
+
+def test_x3_sensor_values_are_formatted_honestly(view):
+    """Vectors as x, y, z components kept whole, with no unit where no source establishes one (the IMU on an
+    ICM20948 board, the magnetometer), said in a caption; quaternions as roll, pitch, yaw in degrees; arrays by
+    count; the firmware version to one decimal; a missing orientation (the raw IMU's zero quaternion) is not shown."""
+    srv, page = x3_sensors(view)
+    wait_sensors(page, "live", sid="imu")
+    wait_sensors(page, "live", sid="odom")
+    field = lambda sid, f: sensor(page, sid).locator(f'[data-field="{f}"] .sf-value').text_content()      # noqa: E731
+    assert field("imu", "orientation") == "roll 0.0° · pitch 0.0° · yaw 90.0°"
+    assert abs(float(sval(page, "imu", "orientation").split(",")[2]) - 90) < 1e-9
+    # the same orientation re-expressed for base_link through the URDF's imu mount (rpy 0, 3.1415, 1.5707)
+    def qmul(a, b):
+        return (a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1], a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+                a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3], a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2])
+    ax = lambda v, ang: tuple(c * math.sin(ang / 2) for c in v) + (math.cos(ang / 2),)          # noqa: E731
+    mount = qmul(qmul(ax((0, 0, 1), 1.5707), ax((0, 1, 0), 3.1415)), ax((1, 0, 0), 0.0))
+    q = (0.0, 0.0, math.sin(math.pi / 4), math.cos(math.pi / 4))
+    x, y, z, w = qmul(q, (-mount[0], -mount[1], -mount[2], mount[3]))
+    want = [math.degrees(math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y))),
+            math.degrees(math.asin(max(-1, min(1, 2 * (w * y - z * x))))),
+            math.degrees(math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))]
+    got = [float(v) for v in sval(page, "imu", "orientation_base").split(",")]
+    assert all(abs(g - e) < 1e-6 for g, e in zip(got, want)), (got, want)
+    assert abs(abs(got[0]) - 180) < 0.1                    # the mount flips the frame: a level imu_link is a flipped base_link
+    assert "base_link" in sensor(page, "imu").locator('[data-field="orientation_base"]').inner_text()
+    assert field("imu_raw", "linear_acceleration") == "x 0.125 · y −0.250 · z 0.500"
+    assert sensor(page, "imu_raw").locator('[data-field="linear_acceleration"] .sf-unit').count() == 0
+    assert sensor(page, "imu").locator('.sf-unit').count() == 0
+    assert "ICM20948" in sensor(page, "imu_raw").locator('[data-testid="sensor-caption"]').inner_text()
+    assert sensor(page, "imu_raw").locator('[data-field="linear_acceleration"] .vc').all_text_contents() == ["x 0.125", "y −0.250", "z 0.500"]
+    assert sval(page, "mag", "magnetic_field") == "12.5,-3.25,40"
+    assert field("odom", "orientation").endswith("yaw 30.0°") and sval(page, "odom", "x") == "1.5"
+    assert field("vel_raw", "wz") == "0.500"
+    assert field("battery", "voltage") == "12.3" and field("edition", "version") == "1.1"
+    wait_sensors(page, "live", sid="scan")
+    assert sval(page, "scan", "returns") == "945" and sval(page, "scan", "frame_id") == "laser"
+    wait_sensors(page, "live", sid="lidar_points")
+    assert sval(page, "lidar_points", "points") == "3"
+    srv.emit("/ArmAngleUpdate")
+    page.wait_for_function("document.querySelector('[data-sensor=arm_angle_update]').dataset.state === 'lastevent'", timeout=5000)
+    assert sval(page, "arm_angle_update", "angle") == "30"
+    assert field("arm_angle_update", "joints") == "(none)"
+    from wirespec import sensor_sample
+    srv.set_sample("/imu/data", dict(sensor_sample("/imu/data", "sensor_msgs/Imu"), orientation={"x": 0, "y": 0, "z": 0, "w": 0}))
+    page.wait_for_function("document.querySelector('[data-sensor=imu] [data-field=orientation] .sf-value').textContent === '(no orientation)'", timeout=5000)
+    assert re.search(r"\d+(\.\d)?/s", sensor(page, "battery").locator('[data-testid="sensor-meta"]').inner_text())
+
+
+def test_x3_values_that_mean_no_reading_are_not_shown_as_readings(view):
+    """0.0 V is the library's value before the board reports a voltage, and -1 the firmware version when the board
+    does not answer: shown as 'no reading', never as a reading, and an unread battery is never marked low."""
+    srv, page = x3_sensors(view)
+    wait_sensors(page, "live", sid="battery")
+    srv.set_sample("/voltage", {"data": 0.0})
+    srv.set_sample("/edition", {"data": -1.0})
+    page.wait_for_function("document.querySelector('[data-testid=headline]').dataset.noreading === 'true'", timeout=5000)
+    head = page.locator('[data-testid="headline"]')
+    assert "no reading" in head.locator('[data-testid="headline-value"]').inner_text()
+    assert head.get_attribute("data-warn") == "" and not head.locator(".hl-warn").is_visible()
+    assert sval(page, "battery", "voltage") == "" and "no reading" in sensor(page, "battery").locator(".sf-value").inner_text()
+    page.wait_for_function("document.querySelector('[data-sensor=edition] .sf-value').dataset.noreading === 'true'", timeout=5000)
+    assert "did not answer" in sensor(page, "edition").locator(".sf-value").inner_text()
+    srv.set_sample("/voltage", {"data": 11.9})
+    page.wait_for_function("document.querySelector('[data-testid=headline-value]').textContent === '11.9'", timeout=5000)
+    assert head.get_attribute("data-noreading") == ""
+
+
+def test_x3_battery_below_the_documented_alarm_level_is_marked_low(view):
+    """Below 9.6 V (the board's low-battery alarm, vendor battery precautions) the battery reading is marked
+    low in its card and in the headline; above it, not."""
+    srv, page = x3_sensors(view)
+    wait_sensors(page, "live", sid="battery")
+    srv.set_sample("/voltage", {"data": 9.4})
+    page.wait_for_function("document.querySelector('[data-testid=headline]').dataset.warn === 'low'", timeout=5000)
+    assert sensor(page, "battery").locator('[data-field="voltage"]').get_attribute("data-warn") == "low"
+    assert sensor(page, "battery").locator('[data-testid="sensor-warn"]').is_visible()
+    assert "below 9.6 V" in page.locator('[data-testid="headline"]').inner_text()
+    assert page.locator('[data-testid="headline-value"]').inner_text() == "9.4"
+    srv.set_sample("/voltage", {"data": 11.6})
+    page.wait_for_function("document.querySelector('[data-testid=headline]').dataset.warn === ''", timeout=5000)
+    assert not sensor(page, "battery").locator('[data-testid="sensor-warn"]').is_visible()
+    srv.paused.add("/voltage")
+    page.wait_for_function("document.querySelector('[data-testid=headline]').dataset.state === 'stale'", timeout=5000)
+    assert "STALE" in page.locator('[data-testid="headline-state"]').inner_text()
+
+
+def scan_plot(page):
+    return sensor(page, "scan").locator('[data-testid="scan-plot"]')
+
+
+def test_x3_lidar_scan_is_drawn_top_down_with_its_nearest_return(view):
+    """The /scan sensor, as TG.launch configures the 4ROS (-85..85 deg, 945 slots, range 0.01-50 m, +inf where there
+    is no return, sent by Python's json as bare Infinity), is drawn as a top-down plot (forward up): only returns
+    within range_min..range_max, the nearest named with its bearing."""
+    srv, page = x3_sensors(view)
+    wait_sensors(page, "live", sid="scan")
+    page.wait_for_function("document.querySelector('[data-testid=scan-plot]').dataset.points === '844'", timeout=5000)
+    plot = scan_plot(page)
+    assert plot.get_attribute("data-nearest") == "0.5" and plot.get_attribute("data-radius") == "2"
+    text = plot.locator('[data-testid="scan-text"]').inner_text()
+    assert "nearest 0.50 m at 0°" in text and "forward is up" in text and "844 of 945" in text
+    c = plot.locator("canvas")
+    px = c.evaluate("c => { const g = c.getContext('2d'), k = (c.width / 2 - 14) / 2, x = c.width / 2, y = c.height / 2 - 0.5 * k;"
+                    " return Array.from(g.getImageData(Math.round(x), Math.round(y), 1, 1).data); }")
+    assert px[3] == 255 and px[:3] != [0, 0, 0]
+    from wirespec import SCAN_N, sensor_sample
+    scan = sensor_sample("/scan", "sensor_msgs/LaserScan")
+    scan["ranges"] = [float("inf")] * 472 + [1.25] + [float("nan")] * (SCAN_N - 473)
+    srv.set_sample("/scan", scan)
+    page.wait_for_function("document.querySelector('[data-testid=scan-plot]').dataset.points === '1'", timeout=5000)
+    assert scan_plot(page).get_attribute("data-nearest") == "1.25" and scan_plot(page).get_attribute("data-radius") == "2"
+    assert "at 0°" in scan_plot(page).locator('[data-testid="scan-text"]').inner_text()
+    # a few far returns (a doorway, a window) do not shrink the plot: the radius follows the bulk of the returns
+    scan["ranges"] = [2.0] * 900 + [40.0] * 45
+    srv.set_sample("/scan", scan)
+    page.wait_for_function("document.querySelector('[data-testid=scan-plot]').dataset.beyond === '45'", timeout=5000)
+    assert scan_plot(page).get_attribute("data-radius") == "2"
+    assert "45 beyond 2 m shown on the rim" in scan_plot(page).locator('[data-testid="scan-text"]').inner_text()
+    page.locator('[data-testid="scan-zoom-out"]').click()
+    assert scan_plot(page).get_attribute("data-radius") == "4"
+    page.locator('[data-testid="scan-zoom-in"]').click()
+    page.locator('[data-testid="scan-zoom-in"]').click()
+    assert scan_plot(page).get_attribute("data-radius") == "1"
+    page.locator('[data-testid="scan-zoom-auto"]').click()
+    assert scan_plot(page).get_attribute("data-radius") == "2"
+    only_startup(srv, page, X3)
+
+
+def test_x3_page_on_a_phone(view):
+    """At 400 px: an in-page jump reaches the sensors; vector components never break inside themselves."""
+    srv, page = view(wire_spec(load(X3)), viewport=(400, 800))
+    wait_sensors(page, "live", sid="imu_raw")
+    assert page.locator('[data-testid="jump"]').is_visible()
+    page.locator('[data-testid="jump-sensors"]').click()
+    page.wait_for_timeout(400)
+    top = page.evaluate("document.querySelector('[data-testid=sensors]').getBoundingClientRect().top")
+    assert 0 <= top < 200, top
+    page.evaluate("document.querySelector('[data-sensor=imu_raw]').scrollIntoView()")
+    heights = sensor(page, "imu_raw").locator(".vc").evaluate_all("els => els.map(e => e.getClientRects().length)")
+    assert heights and all(h == 1 for h in heights), heights
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1")
+
+
 def test_mobile_base_page_has_camera_base_motion_and_no_bounded_controls(view):
     """The myAGV's profile lists no bounded control: the page shows its camera and its base motion."""
     srv, page = view(wire_spec(load("myagv")))
@@ -553,7 +1293,8 @@ def test_nothing_is_sent_before_validation(view):
     reason = page.locator('[data-testid="reason"]').inner_text()
     assert "myagv" in reason and "rosmaster_x3_plus" in reason
     assert page.locator('[data-testid="control"]').count() == 0
-    assert page.locator('[data-testid="untied"]').count() == 2      # both robots' streams, untied
+    # both robots' streams, untied: the myAGV's /usb_cam and the X3's colour, depth and infrared
+    assert page.locator('[data-testid="untied"]').count() == 4
     assert page.locator('[data-testid="live-card"]').get_attribute("data-state") == "unavailable"
     n = len(srv.clients)
     page.select_option('[data-testid="robot"]', "rosmaster_x3_plus")
@@ -2391,3 +3132,112 @@ def test_page_motion_pad_layout_has_legend_and_state(view):
     legend = page2.locator('[data-testid="motion"]').inner_text()
     assert "forward / back: 0.2 m/s (documented limit 0.9 m/s)" in legend and "rotate" in legend
     assert page2.locator('[data-testid="hold-left"]').count() == 0          # no head
+
+
+def watch_stamps(page, topic, seconds):
+    """[state, shown frame's stamp, wall time] of the camera every 20 ms for `seconds`."""
+    return page.evaluate("""([t, ms]) => new Promise((done) => { const seen = []; const end = performance.now() + ms;
+        const s = RC.state.streams.find((x) => x.topic === t);
+        const f = () => { seen.push([document.querySelector(`[data-topic="${t}"]`).dataset.state, s.lastStamp, Date.now() / 1000]);
+          if (performance.now() < end) setTimeout(f, 20); else done(seen); }; f(); })""", [topic, int(seconds * 1000)])
+
+
+def test_a_clock_step_with_a_real_delay_never_shows_an_old_image_as_live(view):
+    """The critic's case on the page: frames 0.9 s late (live), a forward robot clock step of 1.1 s just after a time
+    answer lands, one more frame, then the camera stalls. The page holds each frame until a time answer has read the
+    robot's clock after it was taken, so no image older than its bound (1.75 s at 2 frames/s) ever reads LIVE."""
+    srv, page = view(wire_spec(load(X3)))
+    srv.stamp_lag[X3_CAMS[0]] = 0.9
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    page.wait_for_timeout(1500)
+    k = page.evaluate("RC.clock().lastOk")
+    page.wait_for_function(f"RC.clock().lastOk !== {k}", timeout=5000, polling=5)
+    t_step = time.time()
+    srv.clock_skew += 1.1
+    time.sleep(0.6)                                          # one more frame, taken after the step
+    srv.paused.add(X3_CAMS[0])                               # the camera stalls
+    rows = watch_stamps(page, X3_CAMS[0], 4.0)
+    ages = [now - (stamp - (1.1 if stamp > t_step - 0.35 else 0.0)) for st, stamp, now in rows if st == "live"]
+    assert rows[-1][0] == "stale", rows[-1]
+    assert max(ages, default=0.0) <= 1.75 + 0.05, max(ages)
+
+
+def test_sim_time_keeps_timing_the_robots_answers(view, fake):
+    """A ROS 1 robot on simulated time has no clock reference, but the page keeps asking its time and timing the answers
+    (as teleop.sh does), so a backed-up link still pauses the cameras (R2)."""
+    srv = fake(wire_spec(load(X3)))
+    srv.params["/use_sim_time"] = True
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "unknown"), timeout=8000)
+    asks = lambda: len([o for o in srv.ops_of("call_service") if o.get("service") == "/rosapi/get_time"])  # noqa: E731
+    n0 = asks()
+    page.wait_for_timeout(2500)
+    assert asks() > n0 and page.evaluate("RC.clock().lastRtt") is not None
+    srv.time_reply_delay = 1.4
+    assert "took 1.4 s" in congested(page)
+
+
+def test_an_unanswered_use_sim_time_question_counts_as_congestion(view, fake):
+    """While the page cannot yet tell whether the robot runs on simulated time (the lag stays unknown), a
+    /use_sim_time question unanswered for 3 s while frames keep arriving is congestion (R3), as in teleop.sh."""
+    srv = fake(wire_spec(load(X3)))
+    srv.param_reply_delay = 6.0
+    srv, page = view(srv=srv)
+    assert "late while frames keep arriving" in congested(page)
+
+
+def test_a_steady_offset_never_thrashes_the_pause(view):
+    """The critic's thrash: frames stamped a steady 3 s behind (another clock) on a healthy link, then time answers of
+    0.35 s (one big frame ahead of them). The stream stays LAGGING with its note, and the cameras are never paused."""
+    srv, page = view(wire_spec(load(X3)))
+    srv.stamp_lag[X3_CAMS[0]] = 3.0
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "lagging"), timeout=8000)
+    page.wait_for_timeout(4000)
+    assert "steady offset" in cam_card(page, X3_CAMS[0]).locator(".ov-detail").inner_text()
+    srv.time_reply_delay = 0.35
+    seen = watch_states(page, X3_CAMS[0], 6.0)
+    assert set(seen) == {"lagging"}, sorted(set(seen))
+    assert page.locator('[data-testid="congestion"]').is_hidden()
+
+
+def test_a_growing_backlog_pauses_naming_the_round_trip(view):
+    """R1 names its trigger: frames falling further behind while the time answers take 0.4 s."""
+    srv, page = view(wire_spec(load(X3)))
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv.time_reply_delay = 0.4
+    stop = threading.Event()
+
+    def grow():
+        lag = 1.5
+        while not stop.is_set():
+            srv.stamp_lag[X3_CAMS[0]] = lag
+            lag += 0.05
+            time.sleep(0.1)
+    th = threading.Thread(target=grow, daemon=True)
+    th.start()
+    try:
+        text = congested(page)
+    finally:
+        stop.set()
+    assert re.search(r"arrive late while the robot's time answer took 0\.\d\d s \(at least 0\.3 s\)", text), text
+
+
+def test_a_refusal_is_cleared_when_the_cameras_pause(view, fake):
+    """A budget refusal describes the link when it was given: when the cameras pause (and again on resume) it is
+    cleared, so a paused page never shows an old refusal on an OFF card."""
+    srv = fake(wire_spec(load(X3), include_optional=True))
+    for t in X3_CAMS:
+        srv.frame_size[t] = (640, 480)
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    start_streams(page, [X3_CAMS[2]])
+    page.wait_for_timeout(400)
+    ir = cam_card(page, X3_CAMS[2])
+    assert "link budget" in ir.locator(".ov-detail").inner_text()
+    srv.time_reply_delay = 1.3
+    congested(page)
+    page.wait_for_timeout(400)
+    detail = ir.locator(".ov-detail").inner_text()
+    assert "link budget" not in detail and ir.get_attribute("data-state") == "off", detail

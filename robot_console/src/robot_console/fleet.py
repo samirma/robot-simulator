@@ -25,6 +25,7 @@ from robot_console.rosbridge import DEFAULT_URL, Rosbridge, TransportError, chec
 
 EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_UNREACHABLE = 0, 1, 2, 3
 ROSAPI_TIMEOUT_S = 5.0
+LIVE_FRAMES = 2       # frames that show a stream is live (one frame alone is not evidence)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -49,23 +50,35 @@ def check_cameras(rb: Rosbridge, targets: List[Target], graph, out) -> bool:
         for t in targets:
             print(f"  cameras: none in profile '{t.profile.id}'", file=out)
         return True
-    cams = cam.CameraSet(rb, specs, present=graph.topics)
+    # One stream at a time (an on-demand one too), so the check never takes more of the link than one stream: each is
+    # sampled at its own rate cap until it has shown the two frames that make it live, then unsubscribed.
+    cams = cam.CameraSet(rb, specs, present=graph.topics, start=False)
     window = max(s.stale_after_s for s in specs) * 2 + 0.5
-    end = time.monotonic() + window
-    while time.monotonic() < end:
-        cams.poll()
-        if all(s.missing or s.frames >= 3 for s in cams.streams.values()):
-            break
-        time.sleep(0.05)
-    cams.poll()
+    for topic, s in cams.streams.items():
+        if s.missing:
+            continue
+        cams.start(topic)
+        end = time.monotonic() + window
+        while time.monotonic() < end and s.frames < LIVE_FRAMES:
+            s.poll()
+            time.sleep(0.05)
+        s.poll()
+        cams.stop(topic)
     ok = True
     now = time.monotonic()
     for s in cams.streams.values():
         st = s.state(now)
-        if st == cam.LIVE and s.frames < 2:
+        if st == cam.OFF:                # sampled, unsubscribed, and never delivered a frame
+            st = cam.SILENT if s.spec.silent_note else cam.STALE
+        if s.frame_at is not None and s.frames >= LIVE_FRAMES and s.error is None:
+            st = cam.LIVE           # sampled live, then unsubscribed by the check itself
+        elif st == cam.LIVE and s.frames < LIVE_FRAMES:
             st = cam.STALE          # a single frame is not evidence of a live stream
         label = {cam.LIVE: "live", cam.MISSING: "missing"}.get(st, "stale" if st in (cam.STALE, cam.WAITING) else st)
-        detail = s.status_text(now) if st != cam.LIVE else f"live ({s.frames} frames in {window:.1f} s window)"
+        detail = (f"live ({s.frames} frames, sampled alone)" if st == cam.LIVE
+                  else f"no frames: {s.spec.silent_note}" if st == cam.SILENT
+                  else f"stale: no frame within {window:.1f} s" if s.frame_at is None and st == cam.STALE
+                  else s.status_text(now))
         flag = " (optional)" if s.spec.optional else ""
         print(f"  camera {s.spec.topic}{flag}: {label.upper()} - {detail}", file=out)
         if st != cam.LIVE and not s.spec.optional:

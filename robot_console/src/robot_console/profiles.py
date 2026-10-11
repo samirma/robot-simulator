@@ -43,7 +43,16 @@ class Endpoint:
 class Camera:
     """A raw image stream the page shows. ``kind`` ``color`` is shown as the image it carries; ``depth``
     is a single-channel 16-bit range image: each value times ``unit_m`` is a distance in metres (0 = no
-    depth) and is shown as a false-colour map scaled to ``range_m`` (near, far), the camera's range."""
+    depth) and is shown as a false-colour map scaled to ``range_m`` (near, far), the camera's range;
+    ``ir`` is a single-channel intensity image (an infrared stream) shown in greyscale, each frame
+    stretched from its own darkest to its own brightest value. ``camera_info`` is the stream's
+    documented ``sensor_msgs/CameraInfo`` topic, where there is one.
+
+    Bandwidth (console spec §2.3): ``max_rate_hz`` caps the frames rosbridge sends for the stream
+    (``throttle_rate``; None: the console default, ``DEFAULT_CAMERA_MAX_HZ``); an ``on_demand`` camera is
+    subscribed only while the page's user has it started (teleop shows it off; the wire check samples it
+    briefly). ``silent_note`` explains a stream that is advertised but may never deliver a frame: shown,
+    instead of an alarm, while no frame has arrived."""
     topic: str
     type: str
     encodings: Tuple[str, ...]
@@ -53,15 +62,64 @@ class Camera:
     kind: str = "color"
     range_m: Optional[Tuple[float, float]] = None
     unit_m: Optional[float] = None
+    camera_info: Optional[str] = None
+    missing_note: str = ""    # shown when an optional camera is not on the wire (e.g. which launch starts it)
+    max_rate_hz: Optional[float] = None
+    on_demand: bool = False
+    silent_note: str = ""
+    caption: str = ""         # a short note shown on the card (e.g. how the stream is registered)
+
+    @property
+    def compressed(self) -> bool:
+        """A sensor_msgs/CompressedImage stream (its ``encodings`` are the codecs it documents: jpeg, png)."""
+        return d.normalize_type(self.type) == "sensor_msgs/CompressedImage"
+
+    def nominal_mbps(self) -> float:
+        """The link load the console assumes before a frame is measured (console spec §2.3): a 640x480 frame of the
+        first encoding (a compressed one taken as a tenth of rgb8) as base64 JSON, at the rate cap."""
+        enc = (self.encodings or ("rgb8",))[0].lower()
+        bpp = {"mono8": 1, "8uc1": 1, "mono16": 2, "16uc1": 2, "rgba8": 4, "bgra8": 4}.get(enc, 3)
+        raw = 640 * 480 * (0.3 if self.compressed else bpp)
+        return (raw * 4 / 3 + 300) * 8 * (1000.0 / self.throttle_ms()) / 1e6
+
+    def live_bound_s(self) -> float:
+        """The age (robot time) up to which a shown image of this stream reads live (console spec §2.3)."""
+        return LAG_LIMIT_S + LIVE_PERIODS * self.throttle_ms() / 1000.0
+
+    def throttle_ms(self) -> int:
+        """rosbridge ``throttle_rate`` of a subscription to this stream."""
+        return int(round(1000.0 / (self.max_rate_hz or DEFAULT_CAMERA_MAX_HZ)))
 
 
-CAMERA_KINDS = ("color", "depth")
+#: Console policy: frames per second rosbridge sends for a camera whose profile records no ``max_rate_hz``. The
+#: real protection against a backlog is queue_length 1 (rosbridge keeps only the newest frame between sends); a
+#: profile that needs a lower cap (a base whose single stop shares the link, say) records its own, with its reason.
+DEFAULT_CAMERA_MAX_HZ = 10.0
+#: Image age (console spec §2.3; camera.py): a frame arriving more than LAG_LIMIT_S after its stamp is LAGGING, and a
+#: shown image is live while at most LAG_LIMIT_S + LIVE_PERIODS frame periods old, so a steady transport lag below
+#: LAG_LIMIT_S never flickers between frames. MAX_PERIOD_S bounds the frame period, so that bound stays short.
+LAG_LIMIT_S = 1.0
+LIVE_PERIODS = 1.5
+MAX_PERIOD_S = 1.0
+#: Console policy: frames per second for a stream not tied to a target (a preview before validation).
+UNTIED_CAMERA_MAX_HZ = 2.0
+
+CAMERA_KINDS = ("color", "depth", "ir")
+#: The codecs a sensor_msgs/CompressedImage camera may document (the browser decodes them).
+COMPRESSED_FORMATS = ("jpeg", "png")
+#: The single-channel encodings an ``ir`` camera may document.
+IR_ENCODINGS = ("mono8", "8uc1", "mono16", "16uc1")
 
 
 #: How a sensor field is shown (console spec §2.5): ``number`` a finite number (``unit``, ``decimals``),
 #: ``text`` a string, ``bool`` true/false, ``list`` the elements of an array joined by ", ", ``bits`` an
-#: unsigned integer whose documented bits (``bits``) are each shown set or clear.
-SENSOR_KINDS = ("number", "text", "bool", "list", "bits")
+#: unsigned integer whose documented bits (``bits``) are each shown set or clear, ``vector3`` the x, y
+#: and z of a vector (``unit``, ``decimals``), ``rpy`` a quaternion (x, y, z, w) shown as roll, pitch and
+#: yaw in degrees, ``count`` the number of elements of an array.
+SENSOR_KINDS = ("number", "text", "bool", "list", "bits", "vector3", "rpy", "count")
+#: How a sensor's whole message may be drawn besides its fields: ``scan`` a ``sensor_msgs/LaserScan`` as a
+#: top-down plot of its returns.
+SENSOR_PLOTS = ("scan",)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -83,13 +141,25 @@ class SensorField:
     decimals: Optional[int] = None
     bits: Tuple[SensorBit, ...] = ()
     group: str = ""           # fields of one group are shown together under the group's label
+    headline: bool = False    # a number also shown large at the top of the panel (e.g. battery voltage)
+    warn_below: Optional[float] = None   # a number below this documented level is marked low
+    no_reading: Tuple[float, ...] = ()   # documented values that mean "nothing read yet / no answer"
+    no_reading_label: str = ""           # what such a value means, shown instead of it
+    # an rpy field: the rpy (URDF convention) of the message's frame in the frame to show it in; the orientation is
+    # shown re-expressed in that frame (q * conj(q_mount)), e.g. an IMU's orientation as the robot base's
+    mount_rpy: Optional[Tuple[float, float, float]] = None
 
 
 @dataclasses.dataclass(frozen=True)
 class Sensor:
     """A manufacturer sensor topic the view page subscribes to and shows read-only (console spec §2.5):
     an ``out`` topic of the profile. ``stale_after_s`` None: a latched or non-periodic topic, shown
-    with its last message's age but never as stale."""
+    with its last message's age but never as stale. ``throttle_s``: the page asks rosbridge for at
+    most one message per this period (None: the page's default, 0.1 s); rosbridge still receives every
+    message from ROS, so this bounds only the websocket. ``on_demand``: the page never subscribes on its
+    own; the user samples one message, after which the page unsubscribes (for a topic whose publisher
+    does work only while it has a subscriber, such as a point cloud). ``plot``: how the whole message is
+    also drawn (``SENSOR_PLOTS``). ``caption``: a short note shown on the card (e.g. a unit caveat)."""
 
     id: str
     label: str
@@ -97,6 +167,11 @@ class Sensor:
     type: str
     stale_after_s: Optional[float]
     fields: Tuple[SensorField, ...]
+    throttle_s: Optional[float] = None
+    plot: str = ""
+    on_demand: bool = False
+    caption: str = ""
+    event_only: bool = False   # published only on an event (no latching, no period): waiting is normal
 
 
 @dataclasses.dataclass(frozen=True)
@@ -308,6 +383,8 @@ class Profile:
     reads: Tuple[Read, ...]
     groups: Tuple[Group, ...] = ()
     sensors: Tuple[Sensor, ...] = ()
+    # the most the page's camera streams may take of the link together (Mbit/s; console policy); None: no budget
+    link_budget_mbps: Optional[float] = None
     raw: Mapping[str, Any] = dataclasses.field(repr=False, compare=False, default_factory=dict)
 
     # ---- names
@@ -443,16 +520,45 @@ def _sensor(pid: str, r: Mapping[str, Any]) -> Sensor:
             raise ValueError(f"{where}.{f['name']}: decimals is a non-negative integer")
         if not str(f.get("path", "")):
             raise ValueError(f"{where}.{f['name']}: no path")
+        headline, warn = bool(f.get("headline", False)), _opt_float(f.get("warn_below"))
+        nr = tuple(float(x) for x in f.get("no_reading") or ())
+        if (headline or warn is not None or nr) and kind != "number":
+            raise ValueError(f"{where}.{f['name']}: headline, warn_below and no_reading belong to a number")
+        mount = f.get("mount_rpy")
+        if mount is not None:
+            if kind != "rpy" or not (isinstance(mount, (list, tuple)) and len(mount) == 3
+                                     and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in mount)):
+                raise ValueError(f"{where}.{f['name']}: mount_rpy is [roll, pitch, yaw] of an rpy field")
+            mount = tuple(float(x) for x in mount)
+        if bool(nr) != bool(str(f.get("no_reading_label") or "")):
+            raise ValueError(f"{where}.{f['name']}: no_reading values come with their no_reading_label")
         fields.append(SensorField(name=f["name"], label=str(f.get("label", f["name"])), path=str(f["path"]),
                                   kind=kind, unit=str(f.get("unit", "")), decimals=dec, bits=bits,
-                                  group=str(f.get("group") or "")))
+                                  group=str(f.get("group") or ""), headline=headline, warn_below=warn,
+                                  no_reading=nr, no_reading_label=str(f.get("no_reading_label") or ""),
+                                  mount_rpy=mount))
     if not fields or len({f.name for f in fields}) != len(fields):
         raise ValueError(f"{where}: one or more fields with distinct names")
     stale = _opt_float(r.get("stale_after_s"))
     if stale is not None and stale <= 0:
         raise ValueError(f"{where}: stale_after_s is positive (or null for a latched topic)")
+    throttle = _opt_float(r.get("throttle_s"))
+    if throttle is not None and (throttle <= 0 or (stale is not None and stale <= throttle)):
+        raise ValueError(f"{where}: throttle_s is positive and shorter than stale_after_s")
+    plot = str(r.get("plot") or "")
+    if plot and plot not in SENSOR_PLOTS:
+        raise ValueError(f"{where}: plot {plot!r} is none of {', '.join(SENSOR_PLOTS)}")
+    if plot == "scan" and d.normalize_type(r["type"]) != "sensor_msgs/LaserScan":
+        raise ValueError(f"{where}: a scan plot draws a sensor_msgs/LaserScan")
+    on_demand = bool(r.get("on_demand", False))
+    if on_demand and (stale is not None or throttle is not None):
+        raise ValueError(f"{where}: an on_demand sensor is a one-message sample: no stale_after_s or throttle_s")
+    event_only = bool(r.get("event_only", False))
+    if event_only and (stale is not None or on_demand):
+        raise ValueError(f"{where}: an event_only sensor has no stale_after_s and is not on_demand")
     return Sensor(id=r["id"], label=str(r.get("label", r["id"])), topic=r["topic"], type=r["type"],
-                  stale_after_s=stale, fields=tuple(fields))
+                  stale_after_s=stale, fields=tuple(fields), throttle_s=throttle, plot=plot,
+                  on_demand=on_demand, caption=" ".join(str(r.get("caption") or "").split()), event_only=event_only)
 
 
 def _check_sensors(raw: Mapping[str, Any], sensors: Sequence[Sensor], eps: Sequence[Endpoint]) -> None:
@@ -488,9 +594,52 @@ def _camera(raw: Mapping[str, Any], c: Mapping[str, Any]) -> Camera:
         rng, unit = (float(r[0]), float(r[1])), float(u)
     elif "range_m" in c or "unit_m" in c:
         raise ValueError(f"{where}: range_m and unit_m belong to a depth camera")
+    if d.normalize_type(c["type"]) == "sensor_msgs/CompressedImage":
+        enc = [str(e).lower() for e in c.get("encodings") or ()]
+        if kind != "color" or not enc or any(e not in COMPRESSED_FORMATS for e in enc):
+            raise ValueError(f"{where}: a compressed camera is a colour camera whose encodings are its codecs "
+                             f"({', '.join(COMPRESSED_FORMATS)})")
+    if kind == "ir":
+        enc = [str(e).lower() for e in c.get("encodings") or ()]
+        if not enc or any(e not in IR_ENCODINGS for e in enc):
+            raise ValueError(f"{where}: an ir camera's encodings are single-channel ({', '.join(IR_ENCODINGS)})")
+    mx = _opt_float(c.get("max_rate_hz"))
+    stale = float(c["stale_after_s"])
+    if mx is not None and mx <= 0:
+        raise ValueError(f"{where}: max_rate_hz is positive")
+    period = 1.0 / (mx or DEFAULT_CAMERA_MAX_HZ)          # every camera, at its cap or the default
+    if period > min(stale / 2, MAX_PERIOD_S):
+        raise ValueError(f"{where}: the frame period at max_rate_hz (or the default {DEFAULT_CAMERA_MAX_HZ:g} Hz) "
+                         f"must be at most half of stale_after_s (one missing frame is not 'no frame') and at most "
+                         f"{MAX_PERIOD_S:g} s (the live bound {LAG_LIMIT_S:g} s + {LIVE_PERIODS:g} periods stays short)")
+    text = lambda k: " ".join(str(c.get(k) or "").split())      # noqa: E731
     return Camera(topic=c["topic"], type=c["type"], encodings=tuple(c.get("encodings") or ()),
-                  stale_after_s=float(c["stale_after_s"]), rate_hz=c.get("rate_hz"),
-                  optional=bool(c.get("optional", False)), kind=kind, range_m=rng, unit_m=unit)
+                  stale_after_s=stale, rate_hz=c.get("rate_hz"),
+                  optional=bool(c.get("optional", False)), kind=kind, range_m=rng, unit_m=unit,
+                  camera_info=c.get("camera_info") or None, missing_note=text("missing_note"),
+                  max_rate_hz=mx, on_demand=bool(c.get("on_demand", False)), silent_note=text("silent_note"),
+                  caption=text("caption"))
+
+
+def _camera_endpoints(raw: Mapping[str, Any], cams: Sequence[Camera], eps: List[Endpoint]) -> None:
+    """A camera row whose topic, or ``camera_info`` topic, has no ``topics`` row declares that topic
+    itself (an ``out`` topic of the camera's type, or of the dialect's CameraInfo type, optional as the
+    camera is), so one more camera is one more ``cameras`` row. A ``topics`` row a camera names keeps
+    its own type, which must fit."""
+    info_type = "sensor_msgs/msg/CameraInfo" if raw["dialect"] == d.ROS2 else "sensor_msgs/CameraInfo"
+    for c in cams:
+        e = next((x for x in eps if x.kind == "topic" and x.name == c.topic), None)
+        if e is None:
+            eps.append(Endpoint(kind="topic", name=c.topic, type=c.type, optional=c.optional,
+                                direction="out", rate_hz=c.rate_hz))
+        if c.camera_info is not None:
+            i = next((x for x in eps if x.kind == "topic" and x.name == c.camera_info), None)
+            if i is None:
+                eps.append(Endpoint(kind="topic", name=c.camera_info, type=info_type, optional=c.optional,
+                                    direction="out", rate_hz=c.rate_hz))
+            elif i.direction != "out" or d.normalize_type(i.type) != "sensor_msgs/CameraInfo":
+                raise ValueError(f"{raw['id']}.cameras.{c.topic}: camera_info {c.camera_info} is not a "
+                                 f"sensor_msgs/CameraInfo out topic of the profile")
 
 
 def parse_profile(raw: Mapping[str, Any]) -> Profile:
@@ -504,6 +653,7 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
                                 optional=bool(r.get("optional", False)),
                                 direction=r.get("direction"), rate_hz=r.get("rate_hz")))
     cams = tuple(_camera(raw, c) for c in raw.get("cameras") or [])
+    _camera_endpoints(raw, cams, eps)
     ns = raw.get("namespace")
     nsr = None
     if ns:
@@ -556,7 +706,27 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
         namespace=nsr, owned_prefixes=tuple(raw.get("owned_prefixes") or ()),
         endpoints=tuple(eps), cameras=cams, stop=_ops(raw.get("stop")),
         watchdog=str(raw.get("watchdog", "")), teleop_base=base, teleop_walk=walk, head=head,
-        controls=tuple(controls), reads=reads, groups=groups, sensors=sensors, raw=raw)
+        controls=tuple(controls), reads=reads, groups=groups, sensors=sensors, raw=raw,
+        link_budget_mbps=_budget(raw, cams))
+
+
+def _budget(raw: Mapping[str, Any], cams: Sequence[Camera] = ()) -> Optional[float]:
+    """The profile's camera link budget; the streams that start by themselves must fit it together, and every
+    stream alone (at its nominal load), or the page could never show it."""
+    b = raw.get("link_budget_mbps")
+    if b is None:
+        return None
+    if isinstance(b, bool) or not isinstance(b, (int, float)) or b <= 0:
+        raise ValueError(f"{raw['id']}: link_budget_mbps is a positive Mbit/s")
+    auto = sum(c.nominal_mbps() for c in cams if not c.on_demand)
+    if auto > b:
+        raise ValueError(f"{raw['id']}: the cameras that start by themselves take about {auto:.0f} Mbit/s, over "
+                         f"link_budget_mbps {b:g}")
+    for c in cams:
+        if c.nominal_mbps() > b:
+            raise ValueError(f"{raw['id']}.cameras.{c.topic}: about {c.nominal_mbps():.0f} Mbit/s alone, over "
+                             f"link_budget_mbps {b:g}")
+    return float(b)
 
 
 @functools.lru_cache(maxsize=None)
@@ -639,9 +809,13 @@ def profile_json(p: Profile) -> dict:
                       for e in p.endpoints],
         "cameras": [dict(topic=c.topic, type=c.type, encodings=list(c.encodings), stale_after_s=c.stale_after_s,
                          optional=c.optional, kind=c.kind, range_m=list(c.range_m) if c.range_m else None,
-                         unit_m=c.unit_m)
+                         unit_m=c.unit_m, camera_info=c.camera_info, missing_note=c.missing_note,
+                         live_bound_s=c.live_bound_s(),
+                         throttle_ms=c.throttle_ms(), on_demand=c.on_demand, silent_note=c.silent_note,
+                         caption=c.caption)
                     for c in p.cameras],
         "sensors": [dataclasses.asdict(x) for x in p.sensors],
+        "link_budget_mbps": p.link_budget_mbps,
         "controls": [{k: v for k, v in dataclasses.asdict(c).items() if k != "stop"} for c in p.controls],
         "groups": [dataclasses.asdict(g) for g in p.groups],
         "reads": [dataclasses.asdict(r) for r in p.reads],

@@ -149,6 +149,7 @@
                   <inertial pos="5.8458e-05 0.0095015 -0.0014824" mass="0.0097589" fullinertia="3.3488e-06 1.8662e-06 2.5696e-06 1.3667e-08 6.4235e-09 -1.0265e-07" />
                   <geom class="visual" type="mesh" mesh="mono_link_vis" rgba="0.7 0.7 0.7 1" />
                   <geom class="collision" type="mesh" mesh="mono_link_col" />
+                  <camera name="usb_cam" pos="0 0 0.019" xyaxes="0 -1 0 -1 0 0" fovy="46.8264" resolution="640 480" />
                 </body>
               </body>
             </body>

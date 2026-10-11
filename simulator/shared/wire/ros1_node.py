@@ -95,7 +95,12 @@ class Node:
             rospy.Subscriber(t["name"], cls, self._on_msg, callback_args=t["name"],
                              queue_size=10)
         self.srv = {}
+        # services the behaviour registers itself (e.g. a stock dynamic_reconfigure server's
+        # set_parameters) are left to it
+        own = set(getattr(self.behaviour, "serves", ()))
         for s in common.services_of(self.iface, name):
+            if s["name"] in own:
+                continue
             cls = srv_class(s["type"])
             self.srv[s["name"]] = rospy.Service(s["name"], cls, self._handler(s["name"], cls))
         self.timers = []

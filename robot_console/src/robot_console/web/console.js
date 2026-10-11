@@ -71,6 +71,8 @@
       });
     }
     get open() { return this.ws && this.ws.readyState === WebSocket.OPEN && !this.closed; }
+    get bytesIn() { return this._bytesIn || 0; }
+    set bytesIn(v) { this._bytesIn = v; }
     _closed() {
       if (this.closed) return;
       this.closed = true;
@@ -79,8 +81,13 @@
       if (!this.userClosed && this.onlost) this.onlost();
     }
     _message(data) {
-      let m; try { m = JSON.parse(data); } catch (e) { return; }
-      if (m.op === "publish") { const cbs = this.subs.get(m.topic); if (cbs) for (const [, cb] of cbs) { try { cb(m.msg || {}); } catch (e) { console.error(e); } } }
+      // A message with a NaN or infinite float (a LaserScan's out-of-range returns, say) arrives from
+      // Python's json as bare NaN/Infinity, which JSON does not allow: read those as null (no value).
+      let m; try { m = JSON.parse(data); } catch (e) {
+        try { m = JSON.parse(nonFiniteToNull(String(data))); } catch (e2) { return; }
+      }
+      this.bytesIn += data.length;                       // the link's incoming load (shown on the page)
+      if (m.op === "publish") { const cbs = this.subs.get(m.topic); if (cbs) for (const [, cb] of cbs) { try { cb(m.msg || {}, data.length); } catch (e) { console.error(e); } } }
       else if (m.op === "service_response") {
         const p = this.pending.get(String(m.id)); if (!p) return; this.pending.delete(String(m.id));
         if (m.result === false) p.reject(new Error(typeof m.values === "string" ? m.values : JSON.stringify(m.values)));
@@ -91,10 +98,15 @@
       if (!this.open) throw new Error("not connected");
       this.ws.send(JSON.stringify(msg));
     }
-    call(service, args = {}, timeoutMs = 5000) {
+    // `onLate(values)`: an answer that comes after the timeout is still handed there (not to the promise).
+    call(service, args = {}, timeoutMs = 5000, onLate = null) {
       const id = "call:" + (++this.ids);
       return new Promise((resolve, reject) => {
-        const t = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`${service} did not answer within ${timeoutMs / 1000} s`)); }, timeoutMs);
+        const t = setTimeout(() => {
+          if (!this.pending.delete(id)) return;
+          if (onLate) this.pending.set(id, { resolve: onLate, reject: () => {} });
+          reject(new Error(`${service} did not answer within ${timeoutMs / 1000} s`));
+        }, timeoutMs);
         this.pending.set(id, { resolve: (v) => { clearTimeout(t); resolve(v); }, reject: (e) => { clearTimeout(t); reject(e); } });
         try { this.send({ op: "call_service", id, service, args }); } catch (e) { this.pending.delete(id); clearTimeout(t); reject(e); }
       });
@@ -125,6 +137,26 @@
       this.closed = true;
     }
   }
+
+  // Python's json writes a non-finite float as the bare token NaN, Infinity or -Infinity, which JSON does not
+  // allow: replace those tokens with null, outside strings only (string contents are copied untouched).
+  function nonFiniteToNull(text) {
+    let out = "", i = 0;
+    const n = text.length;
+    while (i < n) {
+      const c = text[i];
+      if (c === '"') {                                   // copy a string literal, escapes included
+        let j = i + 1;
+        while (j < n && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+        out += text.slice(i, j + 1); i = j + 1; continue;
+      }
+      const m = /^-?(?:NaN|Infinity)/.exec(text.slice(i, i + 9));
+      if (m && !/[\w.]/.test(text[i - 1] || "")) { out += "null"; i += m[0].length; continue; }
+      out += c; i++;
+    }
+    return out;
+  }
+  RC.nonFiniteToNull = nonFiniteToNull;
 
   // ------------------------------------------------------------------ graph
   async function fetchGraph(conn) {
@@ -365,8 +397,11 @@
     const t = Math.min(1, Math.max(0, (v * unit - range[0]) / (range[1] - range[0])));
     return DEPTH_LUT[Math.floor(t * 255 + 0.5)];
   };
-  // `depth` = { unit, range } of a depth camera: its 16-bit frames are drawn as that map.
-  function decodeImage(msg, allowed, depth) {
+  // `depth` = { unit, range } of a depth camera: its 16-bit frames are drawn as that map. `ir`: an
+  // infrared camera's single-channel frame is drawn in grey stretched from its own minimum to its own
+  // maximum (rounded; all black for a flat frame); another 16-bit frame is stretched from 0 to its
+  // maximum, as camera.py draws them.
+  function decodeImage(msg, allowed, depth, ir) {
     const enc = String(msg.encoding || "").toLowerCase();
     if (allowed && allowed.length && !allowed.map((x) => x.toLowerCase()).includes(enc)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
     if (!(enc in BPP)) throw Object.assign(new Error(`unsupported encoding '${enc}'`), { unsupported: true });
@@ -380,6 +415,19 @@
     if (len < step * h) throw new Error(`truncated image (${len} of ${step * h} bytes)`);
     const out = new Uint8ClampedArray(w * h * 4);
     const put = (o, r, g, b) => { out[o] = r; out[o + 1] = g; out[o + 2] = b; out[o + 3] = 255; };
+    const wide = enc === "mono16" || enc === "16uc1", mono = wide || enc === "mono8" || enc === "8uc1";
+    const sample = (row, x) => {
+      if (!wide) return at(row + x);
+      const a = at(row + 2 * x), b = at(row + 2 * x + 1);
+      return msg.is_bigendian ? (a << 8) | b : (b << 8) | a;
+    };
+    let grey = null;                                  // value -> grey level, for a stretched frame
+    if (mono && !depth && (ir || wide)) {
+      let lo = Infinity, hi = -Infinity;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const v = sample(y * step, x); if (v < lo) lo = v; if (v > hi) hi = v; }
+      grey = ir ? (v) => (hi > lo ? Math.round((v - lo) * 255 / (hi - lo)) : 0)
+        : (v) => Math.min(255, Math.floor(v * (255 / (hi || 1))));
+    }
     for (let y = 0; y < h; y++) {
       const row = y * step;
       for (let x = 0; x < w; x++) {
@@ -389,11 +437,10 @@
           case "bgr8": put(o, at(row + 3 * x + 2), at(row + 3 * x + 1), at(row + 3 * x)); break;
           case "rgba8": put(o, at(row + 4 * x), at(row + 4 * x + 1), at(row + 4 * x + 2)); break;
           case "bgra8": put(o, at(row + 4 * x + 2), at(row + 4 * x + 1), at(row + 4 * x)); break;
-          case "mono8": case "8uc1": { const v = at(row + x); put(o, v, v, v); break; }
-          case "mono16": case "16uc1": {
-            const a = at(row + 2 * x), b = at(row + 2 * x + 1);
-            if (depth) { const c = depthColor(msg.is_bigendian ? (a << 8) | b : (b << 8) | a, depth.unit, depth.range); put(o, c[0], c[1], c[2]); break; }
-            const v = msg.is_bigendian ? a : b; put(o, v, v, v); break;
+          case "mono8": case "8uc1": case "mono16": case "16uc1": {
+            const v = sample(row, x);
+            if (depth && wide) { const c = depthColor(v, depth.unit, depth.range); put(o, c[0], c[1], c[2]); break; }
+            const g = grey ? grey(v) : v; put(o, g, g, g); break;
           }
           case "yuv422": case "uyvy": case "yuv422_yuy2": case "yuyv": {
             const b0 = row + 4 * (x >> 1); const yuy = enc === "yuv422_yuy2" || enc === "yuyv";
@@ -410,7 +457,7 @@
 
   const S = (RC.state = { config: null, profiles: [], conn: null, graph: null, target: null,
     lost: false, streams: [], sensors: [], controls: new Map(), feedback: new Map(), reads: new Map(),
-    padGroup: null, model: null, groups: [], poll: null, mo: null, changing: false });
+    padGroup: null, model: null, groups: [], poll: null, mo: null, changing: false, clock: null, camPause: null });
 
   // ------------------------------------------------------------------ DOM helpers
   function h(tag, props, ...kids) {
@@ -456,6 +503,7 @@
   function clearCameras() {
     for (const s of S.streams) { try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} }
     S.streams = []; $("cameras").innerHTML = ""; $("cameras").dataset.count = "0";
+    S.camPause = null; $("congestion").hidden = true; $("congestion-drive").hidden = true;
     clearSensors();
   }
   // The colour legend of a depth camera: the map near to far over the camera's range, 0 black.
@@ -471,65 +519,407 @@
       h("span", { class: "depth-end", "data-testid": "depth-far", text: m(depth.range[1]) }),
       h("span", { class: "depth-note", text: "near to far · black = no depth" }));
   }
-  function addCamera(topic, type, staleS, encodings, tied, missing, optional, depth) {
+  // An infrared camera's note: how its grey levels are drawn.
+  function irLegend() {
+    return h("div", { class: "depth-legend ir-legend", "data-testid": "ir-legend" },
+      h("span", { class: "ir-bar", "aria-hidden": "true" }),
+      h("span", { class: "depth-note", text: "infrared · each frame stretched from its darkest (black) to its brightest (white) value" }));
+  }
+  // Console policy (camera.py): rosbridge throttle_rate of a stream not tied to a target, and of a
+  // profile camera that records no max_rate_hz.
+  const UNTIED_THROTTLE_MS = 500, DEFAULT_THROTTLE_MS = 100;
+  // Link health (console spec §2.3; camera.py): a camera is live only while the image it shows is at most LAG_LIMIT_S
+  // old in robot time, judged again on every tick; a frame that arrived already older is LAGGING. A frame stamped
+  // more than STEP_TOLERANCE_S after its own arrival means the robot's clock stepped.
+  const LAG_LIMIT_S = 1.0, STEP_TOLERANCE_S = 0.25;
+  // A shown image is live while its age is at most LAG_LIMIT_S + LIVE_PERIODS frame periods at the stream's cap
+  // (camera.live_bound_s): a steady lag below LAG_LIMIT_S never flickers between frames. A decoded frame is held until
+  // a time answer has read the robot's clock after it was taken (clockConfirms), and its age is bounded with every
+  // answer from CLOCK_STALE_S before it arrived until now (clockSpan), so a robot clock step never makes an image
+  // older than the bound read live (console spec §2.3 names the one case left).
+  const LIVE_PERIODS = 1.5;
+  // The cards are judged every TICK_MS: an image reads LIVE only if it will still be within its bound at the next tick.
+  const TICK_MS = 200;
+  const liveBound = (s) => LAG_LIMIT_S + LIVE_PERIODS * s.throttle / 1000;
+  // The clock reference, as camera.ClockRef: /rosapi/get_time every CLOCK_SYNC_MS (or at once when a frame's lag
+  // must be checked); a call sent at console time t0 and answered at t1 with robot time T bounds the offset
+  // (robot - console) to [T - t1, T - t0]; the estimate is the intersection of the recent samples' bounds, and a
+  // sample whose bounds exclude the estimate's midpoint is a clock step (the older samples are dropped). Console
+  // time is monotonic, so a step of the console's wall clock changes nothing. On ROS 1, /use_sim_time is read
+  // first (again each period until known). No usable reference: the lag is unknown, never zero.
+  const CLOCK_SYNC_MS = 2000, CLOCK_STALE_S = 10, CLOCK_WINDOW_S = 300, CLOCK_ANSWER_MS = 3000;
+  // Congestion: the rules R1-R3 of camera.py, applied the same way (see congestion() below).
+  const CONGESTED_RTT_S = 1.0, CONGESTED_WINDOW_S = 5;
+  // A steady lag (spread <= DOMAIN_SPREAD_S over DOMAIN_SPAN_S, >= 5 frames, beyond DOMAIN_MIN_S, while the newest time
+  // answer took at most CONGESTED_RTT_S and less than half that lag) is either a real delay or stamps on another
+  // clock: it stays LAGGING, with that note, and R1 skips it. DOMAIN_RTT_S is R1's round trip.
+  const DOMAIN_SPREAD_S = 0.25, DOMAIN_SPAN_S = 3, DOMAIN_MIN_S = 2, DOMAIN_RTT_S = 0.3;
+  const monoS = () => (performance.timeOrigin + performance.now()) / 1000;
+  function timeS(st) {
+    if (!st) return null;
+    const sec = st.secs != null ? st.secs : st.sec, ns = st.nsecs != null ? st.nsecs : (st.nanosec || 0);
+    return typeof sec === "number" && (sec || ns) ? sec + ns * 1e-9 : null;
+  }
+  function makeClock(conn, dialect) {
+    const c = { conn, dialect, samples: [], answers: [], lo: null, hi: null, lastOk: null, lastT0: -Infinity, steps: 0, resets: 0, lastRtt: null,
+      lastRttAt: null, lastRttT0: null, lastTimeout: null, lastTimeoutT0: null, grace: [-Infinity, -Infinity],
+      sentAt: null, inflight: false, sim: dialect === "ros1" ? null : false,
+      reason: "measuring the robot's clock", timer: null };
+    c.timer = setInterval(() => clockSample(c), CLOCK_SYNC_MS);
+    clockSample(c);
+    return c;
+  }
+  function stopClock(c) { if (c) clearInterval(c.timer); }
+  async function clockSample(c) {
+    if (c.inflight || !c.conn.open) return;
+    c.inflight = true; c.sentAt = monoS();
+    try {
+      if (c.sim == null) {                                 // a ROS 1 robot on simulated time has no wall reference
+        try {
+          const v = await c.conn.call("/rosapi/get_param", { name: "/use_sim_time", default: "false" }, CLOCK_ANSWER_MS);
+          c.sim = String(v.value).trim().toLowerCase() === "true";
+        } catch (e) {
+          // a question given up on counts for congestion (R3) as camera.ClockRef counts it, while the lag stays unknown
+          if (/did not answer within/.test(e.message)) { c.lastTimeout = monoS(); c.lastTimeoutT0 = c.sentAt; }
+          c.reason = `checking whether the robot runs on simulated time (/use_sim_time: ${e.message})`; return;
+        }
+        c.sentAt = monoS();                                // the time question below is a new one
+      }
+      if (c.sim) { c.reason = "the robot runs on simulated time (/use_sim_time)"; c.lastOk = null; }
+      const t0 = monoS();
+      // a late answer (after CLOCK_ANSWER_MS) still gives its round trip (R2), as camera.ClockRef keeps it
+      const late = () => { const t1 = monoS(); c.lastRtt = t1 - t0; c.lastRttAt = t1; c.lastRttT0 = t0; };
+      const v = await c.conn.call("/rosapi/get_time", {}, CLOCK_ANSWER_MS, late);
+      const t1 = monoS(), T = timeS(v.time);
+      c.lastRtt = t1 - t0; c.lastRttAt = t1; c.lastRttT0 = t0;
+      if (c.sim) return;                                   // simulated time: only the round trip counts (R1-R3)
+      if (T == null) { c.reason = "the robot's clock reads 0 (simulated time not started)"; return; }
+      const lo = T - t1, hi = T - t0, mid = c.lo == null ? null : (c.lo + c.hi) / 2;
+      let keep = c.samples.filter((x) => t1 - x.t <= CLOCK_WINDOW_S);
+      let ilo = Math.max(lo, ...keep.map((x) => x.lo)), ihi = Math.min(hi, ...keep.map((x) => x.hi));
+      // bounds excluding every recent sample prove a step (counted); excluding only the midpoint may hide one: reset
+      if (ilo > ihi || (mid != null && !(lo <= mid && mid <= hi))) { if (ilo > ihi) c.steps++; c.resets++; keep = []; ilo = lo; ihi = hi; }
+      keep.push({ t: t1, lo, hi });
+      c.answers = c.answers.filter((x) => t1 - x.t <= CLOCK_WINDOW_S).concat([{ t: t1, lo, hi, T }]);
+      Object.assign(c, { samples: keep, lo: ilo, hi: ihi, lastOk: t1, lastT0: t0 });
+      for (const x of S.streams) promote(x);              // frames waiting for this answer are shown now
+    } catch (e) {
+      if (/did not answer within/.test(e.message)) { c.lastTimeout = monoS(); c.lastTimeoutT0 = c.sentAt; }
+      c.reason = "no clock reference: /rosapi/get_time did not answer (" + e.message + ")";
+    } finally { c.inflight = false; c.sentAt = null; }
+  }
+  // Offset bounds [lo, hi] of robot - console, or a reason there are none.
+  function clockOffset(c) {
+    if (!c) return [null, "no clock reference"];
+    if (c.sim == null) return [null, c.reason.startsWith("checking") ? c.reason : "checking whether the robot runs on simulated time (/use_sim_time)"];
+    if (c.sim) return [null, "the robot runs on simulated time (/use_sim_time)"];
+    if (c.lastOk == null) return [null, c.reason];
+    if (monoS() - c.lastOk > CLOCK_STALE_S) return [null, `the clock reference is older than ${CLOCK_STALE_S} s (${c.reason})`];
+    return [[c.lo, c.hi], ""];
+  }
+  // camera.ClockRef.confirms: an answer read the robot's clock after the frame was taken (its question sent after the
+  // frame arrived, or the time it read not before the frame's stamp).
+  function clockConfirms(c, arrival, stamp) {
+    return c.lastT0 >= arrival || c.answers.some((x) => x.t >= arrival - CLOCK_STALE_S && x.T >= stamp);
+  }
+  // camera.ClockRef.span: the lowest and highest offset of every answer from CLOCK_STALE_S before `arrival` until now.
+  function clockSpan(c, arrival) {
+    let got = c.answers.filter((x) => x.t >= arrival - CLOCK_STALE_S);
+    if (!got.length) got = c.answers.slice(-1);
+    return [Math.min(...got.map((x) => x.lo)), Math.max(...got.map((x) => x.hi))];
+  }
+  // ["known", arrivalLo, arrivalHi, ageLo, ageHi]: bounds of a shown frame's lag when it arrived and of its age now,
+  // both in robot time (camera.frame_lag); or ["unknown", reason].
+  function frameLag(c, arrival, stamp, nowS) {
+    if (stamp == null) return ["unknown", "the frames carry no header stamp"];
+    const [off, why] = clockOffset(c);
+    if (!off) return ["unknown", why];
+    if (!clockConfirms(c, arrival, stamp)) return ["unknown", "this frame arrived before the robot's clock could be checked"];
+    const [olo, ohi] = clockSpan(c, arrival);
+    const lo = arrival + olo - stamp, hi = arrival + ohi - stamp;
+    if (hi < -STEP_TOLERANCE_S) return ["unknown", "the frame is stamped after its arrival: the robot's clock is inconsistent"];
+    return ["known", lo, hi, nowS + olo - stamp, nowS + ohi - stamp];
+  }
+  // The steady lag of a stream's frames (a real delay or stamps on another clock), when they have sat at one offset
+  // beyond DOMAIN_MIN_S (or before their arrival) while the newest time answer took at most CONGESTED_RTT_S and less
+  // than half that lag (an unknown round trip does not count); else null (camera.CameraStream.steady_offset).
+  function domainOffset(s) {
+    const c = S.clock;
+    if (!c || c.lastRtt == null || c.lastRtt > CONGESTED_RTT_S || s.lags.length < 5) return null;
+    const last = s.lags[s.lags.length - 1][0], recent = s.lags.filter(([a]) => last - a <= DOMAIN_SPAN_S);
+    if (recent.length < 5 || last - recent[0][0] < DOMAIN_SPAN_S * 0.8) return null;
+    const v = recent.map(([, x]) => x), mean = v.reduce((a, x) => a + x, 0) / v.length;
+    if (Math.max(...v) - Math.min(...v) > DOMAIN_SPREAD_S || !(mean > DOMAIN_MIN_S || mean < -STEP_TOLERANCE_S)) return null;
+    if (c.lastRtt >= Math.abs(mean) / 2) return null;     // the answers wait about as long: a queue they share
+    return mean;
+  }
+  const lagSpan = (s) => s.lags.length >= 5 ? s.lags[s.lags.length - 1][0] - s.lags[0][0] : 0;
+  RC.clock = () => S.clock;
+  function stampS(m) { return timeS(m && m.header && m.header.stamp); }
+  // `o.kind`: color | depth | ir; `o.depth` = { unit, range } of a depth camera; `o.info`: its CameraInfo
+  // topic; `o.note`: shown when the (optional) camera is not on the wire, e.g. which launch starts it;
+  // `o.throttle`: the most frames rosbridge sends (ms between frames); `o.onDemand`: subscribed only
+  // while the user has started it; `o.silent`: why an advertised stream may never deliver a frame.
+  // A sensor_msgs/CompressedImage camera (`encodings`: its formats, jpeg or png) is decoded by the browser.
+  function addCamera(topic, type, staleS, encodings, tied, missing, optional, o = {}) {
+    const depth = o.depth || null, kind = depth ? "depth" : o.kind || "color", info = o.info, note = o.note;
+    const throttle = o.throttle || DEFAULT_THROTTLE_MS, compressed = normType(type) === "sensor_msgs/CompressedImage";
+    const toggle = o.onDemand && !missing ? h("button", { type: "button", class: "btn cam-toggle", "data-testid": "camera-toggle",
+      text: tied ? "Start stream" : "Preview" }) : null;
     const canvas = h("canvas", { width: 640, height: 480 });
     const fig = h("figure", { class: "cam notlive", "data-testid": "camera", "data-topic": topic, "data-state": "waiting",
-        "data-kind": depth ? "depth" : "color" },
+        "data-kind": kind, "data-compressed": compressed ? "true" : null },
       h("div", { class: "cam-view" }, canvas,
         h("div", { class: "cam-overlay" }, h("div", { class: "ov-title" }), h("div", { class: "ov-detail" })),
         h("span", { class: "cam-badge state", "data-testid": "camera-state", role: "status" })),
-      depth ? depthLegend(depth) : null,
+      depth ? depthLegend(depth) : kind === "ir" ? irLegend() : null,
+      o.caption ? h("p", { class: "cam-caption-note", "data-testid": "camera-caption", text: o.caption }) : null,
       h("figcaption", { class: "cam-caption" },
         h("code", { text: topic }),
-        depth ? h("span", { class: "cam-kind", text: "depth" }) : null,
+        kind !== "color" ? h("span", { class: "cam-kind", text: kind === "ir" ? "infrared" : kind }) : null,
+        compressed ? h("span", { class: "cam-kind", text: "compressed" }) : null,
         tied ? null : h("span", { class: "untied", "data-testid": "untied", text: "not tied to a target" }),
+        info ? h("span", { class: "cam-info", "data-testid": "camera-info", title: "the stream's sensor_msgs/CameraInfo topic", text: "info " + info }) : null,
+        h("span", { class: "cam-rate", "data-testid": "camera-rate", text: `≤ ${+(1000 / throttle).toFixed(1)} fps` }),
+        toggle,
         h("span", { class: "cam-meta" })));
     $("cameras").appendChild(fig);
     const n = $("cameras").children.length;
     $("cameras").dataset.count = n > 3 ? "many" : String(n);
-    const s = { topic, type, staleS, encodings, tied, depth: depth || null, div: fig, canvas, last: null, frames: 0, error: null,
+    const s = { topic, type, staleS, encodings, tied, depth, ir: kind === "ir", compressed, note: note || "", silent: o.silent || "",
+      onDemand: !!o.onDemand, throttle, lastStamp: null, lastArrival: null, lags: [], pending: null, decodeQueued: false,
+      div: fig, canvas, last: null, frames: 0, error: null,
       unsupported: false, missing, optional: !!optional, started: performance.now(), times: [], w: 0, h: 0, enc: "" };
-    if (!missing) s.sid = S.conn.subscribe(topic, type, (m) => onFrame(s, m), 50);
+    if (!missing && !s.onDemand) streamOn(s);
+    if (toggle) toggle.addEventListener("click", () => {
+      if (s.sid) { streamOff(s); return; }
+      if (S.camPause) { s.refused = "Not started: the cameras are paused (the link is congested); resume them first."; return; }
+      // a preview not tied to a target: one at a time (no profile says what it costs the link)
+      if (!s.tied) for (const x of S.streams) if (x !== s && !x.tied && x.sid) streamOff(x);
+      s.refused = budgetRefusal(s);
+      if (!s.refused) streamOn(s);
+    });
     S.streams.push(s);
     return s;
   }
-  function onFrame(s, m) {
-    try {
-      const img = decodeImage(m, s.encodings, s.depth);
-      if (s.canvas.width !== img.width || s.canvas.height !== img.height) {
-        s.canvas.width = img.width; s.canvas.height = img.height;
-        s.div.querySelector(".cam-view").style.setProperty("--ar", `${img.width} / ${img.height}`);
-      }
-      s.canvas.getContext("2d").putImageData(img, 0, 0);
-      const now = performance.now();
-      s.last = now; s.frames++; s.error = null; s.unsupported = false;
-      s.w = img.width; s.h = img.height; s.enc = String(m.encoding || "");
-      s.times.push(now); while (s.times.length > 2 && now - s.times[0] > 2000) s.times.shift();
-    } catch (e) { s.error = e.message; s.unsupported = !!e.unsupported; s.last = null; }
+  // The link budget (console spec §2.3): a stream's load is its message size (measured, or before its first frame
+  // a 640x480 frame of its first encoding as base64 JSON; a compressed frame taken as a tenth of rgb8) times its rate
+  // cap. Starting an on-demand stream that would take the cameras over the profile's link_budget_mbps is refused,
+  // with the numbers; so is one while a point-cloud sample is in flight.
+  const NOMINAL_PX = 640 * 480;
+  function streamMbps(s) {
+    const enc = String((s.encodings && s.encodings[0]) || "rgb8").toLowerCase();
+    const raw = s.compressed ? NOMINAL_PX * 3 / 10 : NOMINAL_PX * (BPP[enc] || 3);
+    const bytes = s.lastBytes || Math.ceil(raw * 4 / 3) + 300;
+    return bytes * 8 * (1000 / s.throttle) / 1e6;
   }
-  // [state, badge, detail]. Never "live" unless a frame arrived within the stale threshold.
+  const camsMbps = (except) => S.streams.filter((x) => x !== except && x.sid).reduce((a, x) => a + streamMbps(x), 0);
+  function budgetRefusal(s) {
+    const budget = S.target && S.target.profile.link_budget_mbps;
+    if (!budget) return "";
+    if (S.sensors.some((x) => x.sampling)) return "Not started: a point-cloud sample is being received; start the stream after it.";
+    const used = camsMbps(s), add = streamMbps(s);
+    if (used + add <= budget) return "";
+    return `Not started: with it the cameras would take about ${(used + add).toFixed(0)} Mbit/s, over this robot's link budget of `
+      + `${budget} Mbit/s (${used.toFixed(0)} in use, this stream about ${add.toFixed(0)}). Stop another stream first.`;
+  }
+  // Subscribe a stream at its rate cap; an on-demand one only while its user keeps it started.
+  function streamOn(s) {
+    if (!S.conn || !S.conn.open || S.lost) return;
+    s.sid = S.conn.subscribe(s.topic, s.type, (m, size) => onFrame(s, m, size), s.throttle);
+    s.started = performance.now(); s.error = null; s.unsupported = false; s.refused = ""; s.lags = []; s.held = null; s.arrivedAt = null; s.recheck = null;
+    s.last = null; s.lastArrival = null; s.lastStamp = null; s.times = [];      // a fresh start: no earlier frame is current
+    const b = s.div.querySelector(".cam-toggle"); if (b) b.textContent = s.tied ? "Stop stream" : "Stop preview";
+  }
+  function streamOff(s) {
+    try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {}
+    s.sid = null;
+    const b = s.div.querySelector(".cam-toggle"); if (b) b.textContent = s.tied ? "Start stream" : "Preview";
+  }
+  // Congestion (console spec §2.3): every camera stream is unsubscribed, the page says why, prominently, and the
+  // operator resumes them. rosbridge's throttle and queue_length bound what waits in rosbridge itself, and its
+  // Autobahn server holds the next message until Twisted has written the previous one, but what is written still
+  // waits in Twisted's, the kernel's and the Wi-Fi's buffers: on a link slower than the streams the delay can grow,
+  // and only the client can stop sending it more.
+  function pauseCameras(reason) {
+    if (S.camPause) return;
+    S.camPause = { reason, resume: S.streams.filter((x) => x.sid) };
+    for (const x of S.camPause.resume) streamOff(x);
+    for (const x of S.streams) { x.held = null; x.refused = ""; }     // an earlier refusal no longer applies
+    const text = `Cameras paused: the link is congested (${reason}). Driving commands and the stop share this link, so no `
+      + "images are received until you resume them.";
+    for (const id of ["congestion", "congestion-drive"]) {      // also where the operator drives
+      const b = $(id); b.hidden = false; b.querySelector(".congestion-text").textContent = text;
+    }
+  }
+  function resumeCameras() {
+    const p = S.camPause;
+    if (!p) return;
+    S.camPause = null; $("congestion").hidden = true; $("congestion-drive").hidden = true;
+    if (S.clock) { S.clock.lastRtt = null; S.clock.lastTimeout = null; }
+    for (const x of S.streams) x.refused = "";             // "paused" refusals are void now
+    for (const x of p.resume) if (!x.missing) streamOn(x);
+  }
+  RC.resumeCameras = resumeCameras;
+  // R1-R3 (camera.CameraSet.congestion): R1 a stream LAGGING while the newest time answer took >= DOMAIN_RTT_S, once
+  // its lags span 0.8 DOMAIN_SPAN_S and show no steady offset (a steady offset is not a backlog); R2 a
+  // time answer took > CONGESTED_RTT_S (within the last CONGESTED_WINDOW_S); R3 a time question unanswered for
+  // CLOCK_ANSWER_MS, now or given up within the last CLOCK_ANSWER_MS, while frames arrived within the last second.
+  // A question sent, or a frame that arrived, inside the grace window of a sample the operator asked for is not
+  // counted (the sample's own burst delays them).
+  function congestion(nowS) {
+    const c = S.clock;
+    if (!c || S.camPause || S.lost) return "";
+    const graced = (t) => t != null && c.grace[0] <= t && t <= c.grace[1];
+    const rtt = graced(c.lastRttT0) ? null : c.lastRtt;
+    for (const x of S.streams) {
+      if (x.sid && x.state === "lagging" && rtt != null && rtt >= DOMAIN_RTT_S && !graced(x.lastArrival)
+          && lagSpan(x) >= DOMAIN_SPAN_S * 0.8 && domainOffset(x) == null)
+        return `frames on ${x.topic} arrive late while the robot's time answer took ${rtt.toFixed(2)} s (at least ${DOMAIN_RTT_S} s): ${x.detail || "lagging"}`;
+    }
+    if (rtt != null && rtt > CONGESTED_RTT_S && nowS - c.lastRttAt <= CONGESTED_WINDOW_S) return `the robot's time answer took ${rtt.toFixed(1)} s`;
+    const arriving = S.streams.some((x) => x.sid && x.arrivedAt != null && nowS - x.arrivedAt < 1);   // shown yet or not
+    const unanswered = c.sentAt != null && nowS - c.sentAt > CLOCK_ANSWER_MS / 1000 && !graced(c.sentAt);
+    const gaveUp = c.lastTimeout != null && nowS - c.lastTimeout <= CLOCK_ANSWER_MS / 1000 && !graced(c.lastTimeoutT0);
+    if (arriving && (unanswered || gaveUp)) return `the robot's time answer is over ${CLOCK_ANSWER_MS / 1000} s late while frames keep arriving`;
+    return "";
+  }
+
+  // A frame is only stored when it arrives; it is decoded in a later task, the latest one only, so input
+  // events (a released key, Space, the Stop button) are handled between frames and never wait behind a backlog.
+  function onFrame(s, m, size) {
+    s.pending = m; s.pendingArrival = s.arrivedAt = monoS(); if (size) s.lastBytes = size;
+    if (!s.decodeQueued) { s.decodeQueued = true; setTimeout(() => { s.decodeQueued = false; decodePending(s); }, 0); }
+  }
+  function shown(s, w, hgt, enc) {
+    const now = performance.now();
+    s.last = now; s.frames++; s.error = null; s.unsupported = false;
+    s.w = w; s.h = hgt; s.enc = enc;
+    s.times.push(now); while (s.times.length > 2 && now - s.times[0] > 2000) s.times.shift();
+  }
+  // The frame's offset from the robot's clock (for the steady-lag note), while there is a reference.
+  function noteLag(s) {
+    const [off] = clockOffset(S.clock);
+    if (off && s.lastStamp != null) {
+      s.lags = s.lags.filter(([a]) => s.lastArrival - a <= 2 * DOMAIN_SPAN_S);
+      s.lags.push([s.lastArrival, s.lastArrival + (off[0] + off[1]) / 2 - s.lastStamp]);
+    } else s.lags = [];
+  }
+  function decodePending(s) {
+    const m = s.pending; s.pending = null;
+    if (!m || (s.onDemand && !s.sid) || !s.sid) return;
+    const stamp = stampS(m), arrival = s.pendingArrival;
+    if (s.compressed) { decodeCompressed(s, m, stamp, arrival); return; }
+    try {
+      const img = decodeImage(m, s.encodings, s.depth, s.ir);
+      s.held = { img, stamp, arrival, enc: String(m.encoding || "") };
+      s.error = null; s.unsupported = false;
+      promote(s);
+    } catch (e) { s.error = e.message; s.unsupported = !!e.unsupported; s.last = null; s.held = null; }
+  }
+  // A decoded frame is drawn once confirmed (clockConfirms), or at once with no usable reference (its age is then
+  // unknown); until then the clock is asked and the image on screen keeps ageing (camera.CameraStream._promote).
+  function promote(s) {
+    const f = s.held;
+    if (!f || !s.sid) { s.held = null; return; }
+    const usable = S.clock && f.stamp != null && clockOffset(S.clock)[0];
+    if (usable && !clockConfirms(S.clock, f.arrival, f.stamp)) { if (!S.clock.inflight) clockSample(S.clock); return; }
+    s.held = null;
+    const w = f.img.width, hgt = f.img.height;
+    if (s.canvas.width !== w || s.canvas.height !== hgt) {
+      s.canvas.width = w; s.canvas.height = hgt;
+      s.div.querySelector(".cam-view").style.setProperty("--ar", `${w} / ${hgt}`);
+    }
+    if (f.bmp) s.canvas.getContext("2d").drawImage(f.img, 0, 0); else s.canvas.getContext("2d").putImageData(f.img, 0, 0);
+    s.lastStamp = f.stamp; s.lastArrival = f.arrival;       // the frame now on screen
+    noteLag(s);
+    shown(s, w, hgt, f.enc);
+  }
+  // sensor_msgs/CompressedImage: `format` names the codec (image_transport writes e.g. "rgb8; jpeg compressed bgr8");
+  // the camera's encodings list the codecs it documents. The browser decodes it.
+  function decodeCompressed(s, m, stamp, arrival) {
+    const fmt = String(m.format || "").toLowerCase(), codec = ["jpeg", "png"].find((k) => fmt.includes(k));
+    const allowed = (s.encodings || []).map((x) => String(x).toLowerCase());
+    if (!codec || (allowed.length && !allowed.includes(codec))) {
+      s.error = `unsupported format '${m.format || ""}'`; s.unsupported = true; s.last = null; return;
+    }
+    let bytes;
+    try { bytes = Uint8Array.from(atob(String(m.data || "")), (ch) => ch.charCodeAt(0)); }
+    catch (e) { s.error = "undecodable image data"; s.last = null; return; }
+    // decodes may finish out of order: one that resolves for an older frame than the one shown is dropped
+    const seq = s.decodeSeq = (s.decodeSeq || 0) + 1;
+    createImageBitmap(new Blob([bytes], { type: `image/${codec}` })).then((bmp) => {
+      if (!s.sid || seq < (s.shownSeq || 0)) return;
+      s.shownSeq = seq;
+      s.held = { img: bmp, bmp: true, stamp, arrival, enc: codec };
+      s.error = null; s.unsupported = false;
+      promote(s);
+    }).catch(() => { if (seq >= (s.shownSeq || 0)) { s.error = `undecodable ${codec} image`; s.last = null; } });
+  }
+
+  // [state, badge, detail]: judged on every tick from the shown image's age now, never only when it arrived.
   function cameraState(s, now) {
-    if (s.missing) return ["missing", "MISSING", s.optional ? "unavailable: this optional camera is not on the wire" : "unavailable: the topic is not on the wire"];
+    s.lagNow = null;                       // shown only while it describes the image on screen now
+    if (s.missing) return ["missing", "MISSING", (s.optional ? "unavailable: this optional camera is not on the wire" : "unavailable: the topic is not on the wire") + (s.note ? ". " + s.note : "")];
     if (S.lost) return ["failed", "DISCONNECTED", "Connection lost: this image is frozen, not live. Reload the page to connect again."];
+    if (S.camPause && S.camPause.resume.includes(s)) return ["paused", "PAUSED", `Paused: the link is congested (${S.camPause.reason}). Resume the cameras above.`];
+    promote(s);                            // a held frame confirmed since the last tick is drawn now
     if (s.unsupported) return ["unsupported", "UNSUPPORTED", s.error];
     if (s.error) return ["failed", "FAILED", "failed: " + s.error];
-    if (s.last == null) {
-      return (now - s.started) / 1000 > s.staleS
-        ? ["stale", "STALE", `stale: no frame within ${s.staleS} s`] : ["waiting", "WAITING", "waiting for frames"];
+    if (s.onDemand && !s.sid) {
+      if (s.refused) return ["off", "OFF", s.refused];
+      if (!s.tied) return ["off", "OFF", "Not tied to a target: previewed only on request, one at a time (at most 2 frames/s)."];
+      return ["off", "OFF", `Off: this stream is sent only while you have it started (Start stream; at most ${+(1000 / s.throttle).toFixed(1)} frames/s), `
+        + "to spare the robot's link for driving." + (s.last != null ? " The last image shown is not live." : "")];
     }
-    const age = (now - s.last) / 1000;
-    return age <= s.staleS ? ["live", "LIVE", "live"]
-      : ["stale", "STALE", `stale: last frame ${age.toFixed(1)} s ago (threshold ${s.staleS} s); the image is frozen`];
+    if (s.last == null) {
+      if ((now - s.started) / 1000 <= s.staleS) return ["waiting", "WAITING", "waiting for frames"];
+      return s.silent ? ["silent", "NO FRAMES", `No frames yet. ${s.silent}`] : ["stale", "STALE", `stale: no frame within ${s.staleS} s`];
+    }
+    const since = (now - s.last) / 1000, bound = liveBound(s);
+    if (since > s.staleS) return ["stale", "STALE", `stale: last frame ${since.toFixed(1)} s ago (threshold ${s.staleS} s); the image is frozen`];
+    const steady = domainOffset(s);
+    const note = steady != null ? ` A steady offset of ${steady >= 0 ? "+" : ""}${steady.toFixed(1)} s: either a real delay or stamps on another clock `
+      + "than the robot's ROS clock (the Astra SDK stamps frames on its host clock)." : "";
+    const lag = s.lagNow = frameLag(S.clock, s.lastArrival, s.lastStamp, monoS());
+    if (lag[0] !== "known") {
+      if (steady != null && steady > 0) return ["lagging", "LAGGING", `lagging: frames arrive about ${steady.toFixed(1)} s after their stamps; not current.${note}`];
+      if (since > bound) return ["stale", "STALE", `stale: last frame ${since.toFixed(1)} s ago; its age is unknown (${lag[1]})`];
+      return ["unknown", "LAG UNKNOWN", `Frames arrive, but whether they are current cannot be checked: ${lag[1]}.${note}`];
+    }
+    const [, alo, ahi, glo, ghi] = lag;
+    if (alo <= LAG_LIMIT_S) s.recheck = null;
+    else if (S.clock.lastT0 < s.lastArrival) {
+      // confirmed by a reading that may predate a backward clock step: the clock is asked again, and the stream is first
+      // called late once an answer asked after its first late-looking frame arrived has come (a stream already
+      // LAGGING stays so meanwhile, rather than flicker)
+      clockSample(S.clock);
+      if (s.recheck == null) s.recheck = s.lastArrival;
+      if (s.state !== "lagging" && S.clock.lastT0 < s.recheck)
+        return ["unknown", "LAG UNKNOWN", `This image looks ${alo.toFixed(1)}-${ahi.toFixed(1)} s old when it arrived; re-checking the robot's clock.`];
+    }
+    if (alo > LAG_LIMIT_S) return ["lagging", "LAGGING", `lagging: this image was ${alo.toFixed(1)}-${ahi.toFixed(1)} s old when it arrived; not current.`
+      + (note || " The link or the camera is behind.")];
+    if (ghi + TICK_MS / 1000 <= bound) return ["live", "LIVE", `live: this image is at most ${ghi.toFixed(2)} s old (live while at most ${bound.toFixed(2)} s)`];
+    if (glo > bound) return ["stale", "STALE", `stale: no newer frame; this image is ${glo.toFixed(1)}-${ghi.toFixed(1)} s old (live only to ${bound.toFixed(2)} s)`];
+    const why = ghi - glo > 2 * STEP_TOLERANCE_S ? ` The robot's time answers since ${CLOCK_STALE_S} s before it arrived disagree by ${(ghi - glo).toFixed(1)} s: a clock step or slow answers.` : "";
+    return ["unknown", "LAG UNKNOWN", `This image is ${glo.toFixed(2)}-${ghi.toFixed(2)} s old (live only to ${bound.toFixed(2)} s): whether it is current cannot be decided.${why}`];
   }
+  // The meta line: size, encoding, rate, the last frame's arrival and, only while the image on screen is judged
+  // against the clock (live, lagging, stale with a known age), its age now and the bound up to which it is live.
   function camMeta(s, now) {
     const parts = [];
     if (s.w) parts.push(`${s.w}×${s.h}`);
     if (s.enc) parts.push(s.enc);
-    if (s.times.length > 1 && s.last != null && now - s.last < 2000) {
+    if (s.sid && s.times.length > 1 && s.last != null && now - s.last < 2000) {
       const fps = (s.times.length - 1) / ((s.times[s.times.length - 1] - s.times[0]) / 1000);
       parts.push(`${fps.toFixed(fps < 10 ? 1 : 0)} fps`);
     }
-    if (s.last != null) { const a = (now - s.last) / 1000; parts.push(a < 1 ? `${Math.round(a * 1000)} ms` : `${a.toFixed(1)} s ago`); }
+    if (s.last != null) { const a = (now - s.last) / 1000; parts.push(`last frame ${a < 1 ? Math.round(a * 1000) + " ms" : a.toFixed(1) + " s"} ago`); }
+    if (s.lagNow && s.lagNow[0] === "known") {
+      const l = s.lagNow;
+      parts.push(`age ${Math.max(0, (l[3] + l[4]) / 2).toFixed(2)} ± ${((l[4] - l[3]) / 2).toFixed(2)} s · live to ${liveBound(s).toFixed(2)} s`);
+    } else if (s.lagNow) parts.push("age unknown");
     return parts.join(" · ");
   }
   function tick() {
@@ -537,32 +927,55 @@
     let live = 0;
     for (const s of S.streams) {
       const [st, badge, detail] = cameraState(s, now);
+      s.state = st; s.detail = detail;
       if (st === "live") live++;
       const b = s.div.querySelector(".cam-badge");
       if (b.textContent !== badge) b.textContent = badge;
-      b.className = "cam-badge state " + (st === "live" ? "ok" : st === "waiting" ? "dim" : "bad");
+      b.className = "cam-badge state " + (st === "live" ? "ok" : ["waiting", "off", "silent"].includes(st) ? "dim"
+        : ["unknown", "paused"].includes(st) ? "warn" : "bad");
       s.div.querySelector(".ov-title").textContent = badge;
       s.div.querySelector(".ov-detail").textContent = detail;
       s.div.querySelector(".cam-meta").textContent = camMeta(s, now);
       s.div.dataset.state = st; s.div.classList.toggle("notlive", st !== "live");
     }
+    const why = congestion(monoS());
+    if (why) pauseCameras(why);
     const none = !S.streams.length;
     $("no-cameras").style.display = none ? "" : "none";
     $("no-cameras").textContent = none ? (S.target ? "No cameras for this robot's profile." : "No cameras discovered on the wire.") : "";
     $("cam-summary").textContent = none ? "" : `${live} of ${S.streams.length} live`;
+    linkRate(now);
     tickSensors(now);
     tickFeedback(now);
     drawModel();
   }
-  setInterval(tick, 200);
+  setInterval(tick, TICK_MS);
+  // The link's measured incoming load over the last 2 s (all messages), and the cameras' share of the budget:
+  // ok below 80 % of it, near from 80 %, over above it (warning colours).
+  const linkSamples = [];
+  function linkRate(now) {
+    const el = $("link-rate");
+    if (!S.conn) { el.textContent = ""; return; }
+    linkSamples.push([now, S.conn.bytesIn]);
+    while (linkSamples.length > 2 && now - linkSamples[0][0] > 2000) linkSamples.shift();
+    const [t0, b0] = linkSamples[0], [t1, b1] = linkSamples[linkSamples.length - 1];
+    const mbps = t1 > t0 ? (b1 - b0) * 8 / ((t1 - t0) / 1000) / 1e6 : 0;
+    const budget = S.target && S.target.profile.link_budget_mbps;
+    const cams = camsMbps(null), sampling = S.sensors.filter((x) => x.sampling);
+    el.dataset.mbps = mbps.toFixed(3);
+    el.dataset.level = !budget ? "" : Math.max(cams, mbps) > budget ? "over" : Math.max(cams, mbps) >= 0.8 * budget ? "near" : "ok";
+    el.textContent = `link in ${mbps.toFixed(1)} Mbit/s` + (budget ? ` · cameras ≤ ${cams.toFixed(0)} of ${budget} Mbit/s budget` : "")
+      + (sampling.length ? ` · receiving a point-cloud sample (about ${(sampling.reduce((a, x) => a + sampleBytes(x), 0) / 1e6).toFixed(0)} MB)` : "");
+  }
 
   // ------------------------------------------------------------------ sensors (read-only)
   // The profile's `sensors` (console spec §2.5): manufacturer topics the page only subscribes to
   // and shows. Nothing here sends: a sensor has no control and no stop.
   function clearSensors() {
-    for (const s of S.sensors) { try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} }
+    for (const s of S.sensors) { clearTimeout(s.sampleTimer); try { if (s.sid && S.conn && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} }
     S.sensors = [];
-    $("sensor-list").innerHTML = ""; $("sensors-panel").hidden = true; $("sensor-summary").textContent = "";
+    $("sensor-list").innerHTML = ""; $("sensor-headlines").innerHTML = ""; $("sensor-headlines").hidden = true;
+    $("sensors-panel").hidden = true; $("sensor-summary").textContent = "";
   }
   const SENSOR_THROTTLE_MS = 100;
   // An array field: a JSON array, or the base64 string rosbridge may use for a byte array.
@@ -570,6 +983,27 @@
     if (Array.isArray(v)) return v;
     if (typeof v === "string") { try { return Array.from(atob(v), (c) => c.charCodeAt(0)); } catch (e) { return null; } }
     return null;
+  }
+  const fin = (v) => typeof v === "number" && Number.isFinite(v);
+  const fixed = (v, d) => v.toFixed(d).replace("-", "−");
+  // Roll, pitch and yaw (rad) of a quaternion {x, y, z, w} (ZYX: yaw about z, then pitch, then roll);
+  // null for a missing or zero quaternion (a message that carries no orientation).
+  function quatRpy(q) {
+    if (!q || ![q.x, q.y, q.z, q.w].every(fin)) return null;
+    const n = Math.hypot(q.x, q.y, q.z, q.w);
+    if (n < 1e-9) return null;
+    const [x, y, z, w] = [q.x / n, q.y / n, q.z / n, q.w / n];
+    return [Math.atan2(2 * (w * x + y * z), 1 - 2 * (x * x + y * y)),
+      Math.asin(Math.max(-1, Math.min(1, 2 * (w * y - z * x)))),
+      Math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))];
+  }
+  // Quaternions {x, y, z, w}: product, conjugate, and the URDF rpy rotation Rz(yaw) Ry(pitch) Rx(roll).
+  const quatMul = (a, b) => ({ w: a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+    y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w });
+  const quatConj = (q) => ({ x: -q.x, y: -q.y, z: -q.z, w: q.w });
+  function quatFromRpy([r, p, y]) {
+    const ax = (x, y2, z, a) => ({ x: x * Math.sin(a / 2), y: y2 * Math.sin(a / 2), z: z * Math.sin(a / 2), w: Math.cos(a / 2) });
+    return quatMul(quatMul(ax(0, 0, 1, y), ax(0, 1, 0, p)), ax(1, 0, 0, r));
   }
   function addSensor(t, def) {
     const topic = t.wire(def.topic), missing = !(topic in S.graph.topics);
@@ -579,16 +1013,17 @@
       if (!g) groups.push(g = { id: f.group, fields: [] });
       g.fields.push(f);
     }
-    const cells = new Map();                 // field name -> { f, value, unit, bits: Map(bit -> element) }
+    const cells = new Map();                 // field name -> { f, value, row, bits: Map(bit -> element), tile }
     const body = h("div", { class: "sensor-body" });
     for (const g of groups) {
       const row = h("div", { class: g.id ? "sensor-group" : "sensor-fields sensor-group", "data-group": g.id || null },
         g.id ? h("span", { class: "sensor-group-label", text: g.id }) : null);
       for (const f of g.fields) {
         const value = h("span", { class: "sf-value", "data-testid": "sensor-value", "data-value": "", text: "—" });
-        const cell = { f, value, bits: new Map() };
         const kids = [h("span", { class: "sf-label", text: f.label }), value];
-        if (f.kind === "number" && f.unit) kids.push(h("span", { class: "sf-unit", text: f.unit }));
+        if ((f.kind === "number" || f.kind === "vector3") && f.unit) kids.push(h("span", { class: "sf-unit", text: f.unit }));
+        if (f.warn_below != null) kids.push(h("span", { class: "sf-warn", "data-testid": "sensor-warn", text: `low: below ${f.warn_below} ${f.unit}`.trim() }));
+        const cell = { f, value, bits: new Map(), tile: null };
         if (f.kind === "bits") {
           const wrap = h("span", { class: "sf-bits" });
           for (const b of f.bits) {
@@ -597,32 +1032,108 @@
           }
           kids.push(wrap);
         }
-        row.append(h("div", { class: "sensor-field", "data-testid": "sensor-field", "data-field": f.name }, kids));
+        cell.row = h("div", { class: "sensor-field", "data-testid": "sensor-field", "data-field": f.name, "data-kind": f.kind }, kids);
+        row.append(cell.row);
+        if (f.headline) {                    // also shown large at the top of the panel
+          const tv = h("span", { class: "hl-value", "data-testid": "headline-value", text: "—" });
+          const ts = h("span", { class: "hl-state", "data-testid": "headline-state" });
+          const tile = h("div", { class: "headline", "data-testid": "headline", "data-sensor": def.id, "data-field": f.name, "data-state": "waiting" },
+            h("div", { class: "hl-head" }, h("span", { class: "hl-label", text: f.label }), ts),
+            h("div", { class: "hl-reading" }, tv, f.unit ? h("span", { class: "hl-unit", text: f.unit }) : null),
+            f.warn_below != null ? h("div", { class: "hl-warn", text: `below ${f.warn_below} ${f.unit}: charge or replace the battery`.replace(/ +:/, ":") }) : null,
+            h("code", { class: "hl-topic", text: topic }));
+          $("sensor-headlines").append(tile); $("sensor-headlines").hidden = false;
+          cell.tile = { el: tile, value: tv, state: ts };
+        }
         cells.set(f.name, cell);
       }
       body.append(row);
     }
+    let plot = null;
+    if (def.plot === "scan") {
+      const canvas = h("canvas", { class: "scan-canvas", width: 360, height: 360, "data-testid": "scan-canvas",
+        role: "img", "aria-label": `top-down plot of ${topic}` });
+      const text = h("div", { class: "scan-text", "data-testid": "scan-text", text: "no scan yet" });
+      const zoom = (k) => h("button", { type: "button", class: "btn scan-zoom", "data-testid": `scan-zoom-${k}`,
+        text: { in: "Zoom in", out: "Zoom out", auto: "Auto" }[k] });
+      const zin = zoom("in"), zout = zoom("out"), zauto = zoom("auto");
+      plot = { el: h("div", { class: "scan-plot", "data-testid": "scan-plot" }, canvas,
+        h("div", { class: "scan-side" }, text, h("div", { class: "scan-zooms" }, zin, zout, zauto))), canvas, text, zoom: 1, msg: null };
+      const rezoom = (z) => { plot.zoom = z; if (plot.msg) drawScan(plot, plot.msg); };
+      zin.addEventListener("click", () => rezoom(Math.max(1 / 64, plot.zoom / 2)));
+      zout.addEventListener("click", () => rezoom(Math.min(64, plot.zoom * 2)));
+      zauto.addEventListener("click", () => rezoom(1));
+      body.append(plot.el);
+    }
     const state = h("span", { class: "sensor-state", "data-testid": "sensor-state", role: "status" });
     const meta = h("span", { class: "sensor-meta", "data-testid": "sensor-meta" });
+    const sample = def.on_demand && !missing ? h("button", { type: "button", class: "btn sensor-sample", "data-testid": "sensor-sample",
+      text: "Sample once" }) : null;
     const el = h("article", { class: "sensor", "data-testid": "sensor", "data-sensor": def.id, "data-topic": topic,
-        "data-state": "waiting", "data-wide": def.fields.length > 8 ? "true" : null },
+        "data-state": "waiting", "data-wide": def.fields.length > 8 || plot ? "true" : null },
       h("div", { class: "sensor-head" },
         h("div", {}, h("div", { class: "sensor-title", text: def.label }), h("code", { class: "sensor-topic", text: topic })),
         state),
-      body, meta);
+      def.caption ? h("p", { class: "sensor-caption", "data-testid": "sensor-caption", text: def.caption }) : null,
+      def.on_demand ? h("p", { class: "sensor-caption", text: "On demand: subscribing makes the robot compute this topic, "
+        + "so the page subscribes only when you sample it and unsubscribes after the first message." }) : null,
+      body, sample, meta);
     $("sensor-list").appendChild(el);
     $("sensors-panel").hidden = false;
-    const s = { def, topic, el, state, meta, cells, msg: null, last: null, count: 0, dirty: false, missing, started: performance.now() };
-    if (!missing) s.sid = S.conn.subscribe(topic, def.type, (m) => { s.msg = m; s.last = performance.now(); s.count++; s.dirty = true; }, SENSOR_THROTTLE_MS);
+    const s = { def, topic, el, state, meta, cells, plot, msg: null, last: null, count: 0, times: [], dirty: false, missing,
+      started: performance.now() };
+    const throttle = def.throttle_s != null ? Math.round(def.throttle_s * 1000) : SENSOR_THROTTLE_MS;
+    const got = (m) => {
+      const now = performance.now();
+      s.msg = m; s.last = now; s.count++; s.dirty = true;
+      s.times.push(now); while (s.times.length > 20) s.times.shift();
+    };
+    if (!missing && !def.on_demand) s.sid = S.conn.subscribe(topic, def.type, got, throttle);
+    if (sample) sample.addEventListener("click", () => sampleOnce(s, got));
     S.sensors.push(s);
     return s;
+  }
+  // An on-demand sensor: subscribe, keep the first message, unsubscribe at once (or after
+  // SAMPLE_TIMEOUT_MS without one). Nothing is published or called.
+  const SAMPLE_TIMEOUT_MS = 10000, SAMPLE_THROTTLE_MS = 3600000, SAMPLE_GRACE_MAX_S = 5;
+  // A sample counts against the link budget (console spec §2.3): a cloud of up to 640x480 points is megabytes in one
+  // burst, so it is refused while the cameras take more than half the budget, and no stream starts while it is in
+  // flight. Its size is the last sample's, or before one a 640x480 cloud of 20-byte points as base64 JSON.
+  function sampleBytes(s) { return s.lastSampleBytes || Math.ceil(NOMINAL_PX * 20 * 4 / 3); }
+  function sampleRefusal(s) {
+    const budget = S.target && S.target.profile.link_budget_mbps;
+    if (!budget) return "";
+    if (S.camPause) return "Not sampled: the cameras are paused because the link is congested.";
+    const cams = camsMbps(null);
+    if (cams <= budget / 2) return "";
+    return `Not sampled: a cloud is about ${(sampleBytes(s) / 1e6).toFixed(0)} MB in one burst, and the cameras already take about `
+      + `${cams.toFixed(0)} of the ${budget} Mbit/s link budget. Stop the depth, infrared or USB stream first.`;
+  }
+  function sampleOnce(s, got) {
+    if (s.sid || !S.conn || !S.conn.open || S.lost) return;
+    s.refused = sampleRefusal(s);
+    if (s.refused) return;
+    // the sample's own burst delays what shares the link: its expected time at the budget (or 20 Mbit/s), plus 1 s,
+    // at most SAMPLE_GRACE_MAX_S, is a grace window for the congestion rules (never longer)
+    if (S.clock) {
+      const mbps = (S.target && S.target.profile.link_budget_mbps) || 20, t = monoS();
+      S.clock.grace = [t, t + Math.min(SAMPLE_GRACE_MAX_S, sampleBytes(s) * 8 / (mbps * 1e6) + 1)];
+    }
+    const done = () => { clearTimeout(s.sampleTimer); try { if (s.sid && S.conn.open) S.conn.unsubscribe(s.sid); } catch (e) {} s.sid = null; s.sampling = false; };
+    s.sampling = true; s.timedOut = false; s.sampleStarted = performance.now();
+    // throttle_rate SAMPLE_THROTTLE_MS with queue_length 1: rosbridge sends the first message and no other
+    // before the unsubscribe arrives (a cloud is megabytes).
+    s.sid = S.conn.subscribe(s.topic, s.def.type, (m, size) => { if (!s.sampling) return; done(); if (size) s.lastSampleBytes = size; got(m); }, SAMPLE_THROTTLE_MS);
+    s.sampleTimer = setTimeout(() => { if (s.sampling) { done(); s.timedOut = true; } }, RC.sampleTimeoutMs || SAMPLE_TIMEOUT_MS);
   }
   function sensorValue(cell, msg) {
     const { f, value } = cell;
     const v = readPath(msg, f.path);
-    let text = "—", raw = "";
+    const d = f.decimals == null ? 3 : f.decimals;
+    let text = "—", raw = "", low = false, parts = null, none = false;
     if (f.kind === "number") {
-      if (typeof v === "number" && Number.isFinite(v)) { raw = String(v); text = v.toFixed(f.decimals == null ? 3 : f.decimals).replace("-", "−"); }
+      if (fin(v) && (f.no_reading || []).some((x) => Math.abs(v - x) < 1e-6)) { text = f.no_reading_label; none = true; }
+      else if (fin(v)) { raw = String(v); text = fixed(v, d); low = f.warn_below != null && v < f.warn_below; }
     } else if (f.kind === "text") {
       if (typeof v === "string") { raw = v; text = v === "" ? "(empty)" : v; }
     } else if (f.kind === "bool") {
@@ -630,39 +1141,144 @@
     } else if (f.kind === "list") {
       const a = asList(v);
       if (a) { raw = a.join(","); text = a.length ? a.join(", ") : "(none)"; }
+    } else if (f.kind === "count") {
+      const a = asList(v);
+      if (a) { raw = text = String(a.length); }
+    } else if (f.kind === "vector3") {
+      if (v && [v.x, v.y, v.z].every(fin)) { raw = [v.x, v.y, v.z].join(","); parts = [`x ${fixed(v.x, d)}`, `y ${fixed(v.y, d)}`, `z ${fixed(v.z, d)}`]; }
+    } else if (f.kind === "rpy") {
+      const r = quatRpy(f.mount_rpy && v ? quatMul(v, quatConj(quatFromRpy(f.mount_rpy))) : v);
+      if (r) {
+        const deg = r.map((a) => a * 180 / Math.PI), dd = f.decimals == null ? 1 : f.decimals;
+        raw = deg.join(","); parts = [`roll ${fixed(deg[0], dd)}°`, `pitch ${fixed(deg[1], dd)}°`, `yaw ${fixed(deg[2], dd)}°`];
+      } else if (v) text = "(no orientation)";
     } else if (f.kind === "bits") {
       const n = typeof v === "number" ? v : Array.isArray(v) || v == null ? NaN : Number(v);
       const ok = Number.isInteger(n) && n >= 0;
       if (ok) { raw = text = String(n); }
       for (const [bit, el] of cell.bits) el.dataset.set = ok ? String(((n >>> bit) & 1) === 1) : "unknown";
     }
-    if (value.textContent !== text) value.textContent = text;
+    if (parts) {                       // each component kept whole; lines break only between components
+      text = parts.join(" · ");
+      if (value.textContent !== text) value.replaceChildren(...parts.flatMap((p, i) => [i ? h("span", { class: "vsep", text: " · " }) : null,
+        h("span", { class: "vc", text: p })]).filter(Boolean));
+    } else if (value.textContent !== text) value.textContent = text;
     value.dataset.value = raw;
+    value.dataset.noreading = none ? "true" : "";
+    cell.row.dataset.warn = low ? "low" : "";
+    if (cell.tile) {
+      cell.tile.value.textContent = text; cell.tile.value.dataset.value = raw;
+      cell.tile.el.dataset.warn = low ? "low" : ""; cell.tile.el.dataset.noreading = none ? "true" : "";
+    }
   }
+  // A "nice" plot radius (1, 2 or 5 times a power of ten) at or above r.
+  function niceRadius(r) {
+    const p = Math.pow(10, Math.floor(Math.log10(r)));
+    return [1, 2, 5, 10].map((k) => k * p).find((x) => x >= r - 1e-9);
+  }
+  // The returns of a LaserScan within its range_min..range_max: [x forward, y left, range, angle].
+  function scanPoints(m) {
+    const out = [], rs = Array.isArray(m.ranges) ? m.ranges : [];
+    const lo = fin(m.range_min) ? m.range_min : 0, hi = fin(m.range_max) ? m.range_max : Infinity;
+    if (!fin(m.angle_min) || !fin(m.angle_increment)) return out;
+    rs.forEach((r, i) => {
+      if (!fin(r) || r < lo || r > hi) return;
+      const a = m.angle_min + i * m.angle_increment;
+      out.push([r * Math.cos(a), r * Math.sin(a), r, a]);
+    });
+    return out;
+  }
+  // Top-down: the scan frame's x (forward) up, y (left) to the left, rings at quarters of the radius. The radius
+  // is robust to a few far returns: the 90th percentile of the in-range returns, made "nice", times the user's
+  // zoom (Zoom in/out halves/doubles it, Auto resets); returns beyond it are drawn on the rim, hollow.
+  function drawScan(plot, m) {
+    plot.msg = m;
+    const pts = scanPoints(m), c = plot.canvas, g = c.getContext("2d"), W = c.width, H = c.height;
+    const css = getComputedStyle(document.documentElement), col = (n) => css.getPropertyValue(n).trim();
+    const cx = W / 2, cy = H / 2;
+    const sorted = pts.map((p) => p[2]).sort((a, b) => a - b);
+    const p90 = sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(0.9 * (sorted.length - 1)))] : 0;
+    const auto = niceRadius(Math.max(p90, 0.5)), R = auto * plot.zoom, k = (Math.min(W, H) / 2 - 14) / R;
+    g.clearRect(0, 0, W, H);
+    g.strokeStyle = col("--border"); g.fillStyle = col("--faint"); g.lineWidth = 1; g.font = "11px system-ui, sans-serif";
+    for (let q = 1; q <= 4; q++) {
+      g.beginPath(); g.arc(cx, cy, (R * q / 4) * k, 0, 2 * Math.PI); g.stroke();
+      g.fillText(`${+(R * q / 4).toFixed(2)} m`, cx + 3, cy - (R * q / 4) * k + 12);
+    }
+    g.beginPath(); g.moveTo(cx, 6); g.lineTo(cx, H - 6); g.moveTo(6, cy); g.lineTo(W - 6, cy); g.stroke();
+    let beyond = 0;
+    for (const [x, y, r] of pts) {
+      if (r <= R) { g.fillStyle = col("--info"); g.fillRect(cx - y * k - 1.5, cy - x * k - 1.5, 3, 3); continue; }
+      beyond++;
+      const f = R / r; g.strokeStyle = col("--muted"); g.strokeRect(cx - y * f * k - 1.5, cy - x * f * k - 1.5, 3, 3);
+    }
+    g.fillStyle = col("--text"); g.beginPath();                // the sensor, pointing forward (up)
+    g.moveTo(cx, cy - 9); g.lineTo(cx - 6, cy + 6); g.lineTo(cx + 6, cy + 6); g.closePath(); g.fill();
+    let near = null;
+    for (const p of pts) if (!near || p[2] < near[2]) near = p;
+    plot.el.dataset.points = String(pts.length);
+    plot.el.dataset.radius = String(+R.toPrecision(6));
+    plot.el.dataset.beyond = String(beyond);
+    plot.el.dataset.nearest = near ? String(near[2]) : "";
+    plot.text.textContent = `${pts.length} of ${(m.ranges || []).length} returns in range · rings every ${+(R / 4).toFixed(2)} m`
+      + (beyond ? ` · ${beyond} beyond ${+R.toFixed(2)} m shown on the rim` : "") + " · forward is up"
+      + (near ? ` · nearest ${near[2].toFixed(2)} m at ${fixed(near[3] * 180 / Math.PI, 0)}°` : "");
+  }
+
   // [state, badge]: never "live" unless a message arrived within the sensor's stale threshold; a
   // latched or non-periodic topic (stale_after_s null) is "latched" with its last message's age.
   function sensorState(s, now) {
     if (s.missing) return ["missing", "MISSING"];
     if (S.lost) return ["lost", "DISCONNECTED"];
+    if (s.def.event_only) return s.last == null ? ["event", "EVENT-ONLY · NONE YET"] : ["lastevent", "LAST EVENT"];
+    if (s.def.on_demand) {
+      if (s.sampling) return ["sampling", "SAMPLING"];
+      if (s.timedOut) return ["nomessage", "NO MESSAGE"];
+      return s.last == null ? ["off", "NOT SAMPLED"] : ["sampled", "SAMPLED"];
+    }
     if (s.last == null) return ["waiting", "NO MESSAGE YET"];
     if (s.def.stale_after_s == null) return ["latched", "LAST VALUE"];
     return (now - s.last) / 1000 <= s.def.stale_after_s ? ["live", "LIVE"] : ["stale", "STALE"];
   }
+  // Messages per second over the recent arrivals (as delivered: at most one per the sensor's throttle).
+  function sensorRate(s, now) {
+    const ts = s.times.filter((x) => now - x < Math.max(3000, 3000 * (s.def.throttle_s || 0)));
+    if (ts.length < 2 || s.last == null || now - s.last > 2000 * Math.max(1, s.def.throttle_s || 0)) return "";
+    const r = (ts.length - 1) / ((ts[ts.length - 1] - ts[0]) / 1000);
+    return ` · ${r.toFixed(r < 10 ? 1 : 0)}/s`;
+  }
   function tickSensors(now) {
     let live = 0;
     for (const s of S.sensors) {
-      if (s.dirty) { s.dirty = false; for (const c of s.cells.values()) sensorValue(c, s.msg); }
+      if (s.dirty) {
+        s.dirty = false;
+        for (const c of s.cells.values()) sensorValue(c, s.msg);
+        if (s.plot) drawScan(s.plot, s.msg);
+      }
       const [st, badge] = sensorState(s, now);
-      if (st === "live" || st === "latched") live++;
+      if (!s.def.event_only && !s.def.on_demand && (st === "live" || st === "latched")) live++;
       if (s.state.textContent !== badge) s.state.textContent = badge;
       s.el.dataset.state = st;
+      for (const c of s.cells.values()) if (c.tile) { c.tile.el.dataset.state = st; c.tile.state.textContent = badge; }
       const age = s.last == null ? "" : (now - s.last) / 1000;
+      if (s.def.on_demand && s.el.querySelector(".sensor-sample")) s.el.querySelector(".sensor-sample").disabled = !!s.sampling || S.lost;
       s.meta.textContent = st === "missing" ? "the topic is not on the wire"
-        : s.last == null ? "no message received yet"
-        : `${s.count} message${s.count === 1 ? "" : "s"} · last ${age < 1 ? Math.round(age * 1000) + " ms" : age.toFixed(1) + " s"} ago`
-          + (st === "stale" ? ` (threshold ${s.def.stale_after_s} s; the values are frozen)` : st === "lost" ? " (connection lost; the values are frozen)" : "");
+        : s.def.on_demand && s.refused && !s.sampling ? s.refused
+        : st === "nomessage" ? `no message within ${(RC.sampleTimeoutMs || SAMPLE_TIMEOUT_MS) / 1000} s; unsubscribed`
+        : st === "sampling" ? "subscribed until the first message arrives"
+        : s.last == null ? (s.def.on_demand ? "not subscribed: press Sample once"
+          : s.def.event_only ? "published only on an event: none since the page subscribed (normal)" : "no message received yet")
+        : s.def.on_demand ? `sampled ${(now - s.last) / 1000 < 1 ? "just now" : ((now - s.last) / 1000).toFixed(0) + " s ago"}; not subscribed (a snapshot, not live)`
+        : `${s.count} message${s.count === 1 ? "" : "s"}${sensorRate(s, now)} · last ${age < 1 ? Math.round(age * 1000) + " ms" : age.toFixed(1) + " s"} ago`
+          + (st === "stale" ? ` (threshold ${s.def.stale_after_s} s; the values are frozen)` : st === "lost" ? " (connection lost; the values are frozen)" : "")
+          + (s.def.throttle_s != null ? ` · at most one per ${s.def.throttle_s} s` : "");
     }
-    $("sensor-summary").textContent = S.sensors.length ? `${live} of ${S.sensors.length} reporting` : "";
+    // periodic and latched sensors report; event-only and on-demand ones are counted apart (waiting is normal)
+    const main = S.sensors.filter((s) => !s.def.event_only && !s.def.on_demand).length;
+    const ev = S.sensors.filter((s) => s.def.event_only), od = S.sensors.filter((s) => s.def.on_demand);
+    $("sensor-summary").textContent = !S.sensors.length ? "" : `${live} of ${main} reporting`
+      + (ev.length ? ` · ${ev.length} event-only (${ev.filter((s) => s.last != null).length} seen)` : "")
+      + (od.length ? ` · ${od.length} on demand` : "");
   }
 
   // ------------------------------------------------------------------ reported joint positions
@@ -2373,10 +2989,12 @@
     }
     S.conn = conn;
     conn.onlost = () => onLost(conn);
+    stopClock(S.clock); S.clock = null;
     setConn("ok", "connected");
     setValidation("pending", "Reading the wire…", "Discovering and type-checking the interface through rosapi", "");
     try { S.graph = await fetchGraph(conn); }
     catch (e) { setValidation("bad", "Cannot read the wire", "", "cannot read the wire through rosapi: " + e.message); renderControls(); return; }
+    S.clock = makeClock(conn, S.graph.dialect);           // read-only rosapi time calls, for each frame's lag
     clearCameras(); clearFeedback();
     try {
       S.target = selectTarget(S.graph, S.profiles, robotId || null, ns == null || ns === "" ? null : ns);
@@ -2386,7 +3004,7 @@
         "Select a robot (and namespace, where supported) and press ‘Select target’.",
         (e.reason || e.message) + ".");
       $("target-pill").dataset.state = "warn";
-      for (const [n, ty] of Object.entries(S.graph.topics).filter(([, ty]) => normType(ty) === "sensor_msgs/Image").sort()) addCamera(n, ty, UNTIED_STALE_S, null, false, false);
+      for (const [n, ty] of Object.entries(S.graph.topics).filter(([, ty]) => normType(ty) === "sensor_msgs/Image").sort()) addCamera(n, ty, UNTIED_STALE_S, null, false, false, false, { throttle: UNTIED_THROTTLE_MS, onDemand: true });
       renderControls(); updateLock();
       return;
     }
@@ -2395,8 +3013,9 @@
     $("robot").value = t.profile.id; $("namespace").value = t.namespace; syncNsField(); $("namespace").value = t.namespace;
     setValidation("ok", `${t.label} validated`,
       `${t.profile.name} · ${t.profile.dialect === "ros2" ? "ROS 2" : "ROS 1"} · typed interface matches the packaged profile`, "");
-    for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics), c.optional,
-      c.kind === "depth" ? { unit: c.unit_m, range: c.range_m } : null);
+    for (const c of t.profile.cameras) addCamera(t.wire(c.topic), c.type, c.stale_after_s, c.encodings, true, !(t.wire(c.topic) in S.graph.topics), c.optional, {
+      depth: c.kind === "depth" ? { unit: c.unit_m, range: c.range_m } : null, kind: c.kind, info: c.camera_info ? t.wire(c.camera_info) : null,
+      note: c.missing_note, throttle: c.throttle_ms, onDemand: c.on_demand, silent: c.silent_note, caption: c.caption });
     for (const sd of t.profile.sensors || []) addSensor(t, sd);
     if (t.profile.teleop) S.mo = makeMotion(t, conn);             // base motion: shown at once, enabled by the start-up stop
     renderControls(); updateLock();
@@ -2409,7 +3028,7 @@
   // no stop could be delivered.
   function onLost(conn) {
     if (conn !== S.conn) return;
-    S.lost = true; stopPoll();
+    S.lost = true; stopPoll(); stopClock(S.clock);
     const mo = S.mo && S.mo.conn === conn && !S.mo.dead ? S.mo : null;
     if (mo) moConnectionLost(mo, "the websocket closed");
     setConn("bad", "DISCONNECTED - reload the page to connect again");
@@ -2457,6 +3076,8 @@
   // No arm switch, Esc or stop/cancel of a bounded control: apart from base motion (above), the
   // page sends only what the user changes.
   $("select").addEventListener("click", changeTarget);
+  $("resume-cameras").addEventListener("click", resumeCameras);
+  $("resume-cameras-drive").addEventListener("click", resumeCameras);
   $("robot").addEventListener("change", () => { $("namespace").disabled = !nsAllowed() || S.lost; syncNsField(); });
 
   async function boot() {

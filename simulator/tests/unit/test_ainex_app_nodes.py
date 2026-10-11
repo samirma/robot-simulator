@@ -37,7 +37,12 @@ class FakeRospy(types.ModuleType):
         class Publisher:
             def __init__(self, topic, cls, queue_size=10, latch=False):
                 self.topic, self.sent = topic, []
+                self.connections, self.listeners = 0, []
+                self.impl = types.SimpleNamespace(add_subscriber_listener=self.listeners.append)
                 test.pubs.setdefault(topic, []).append(self)
+
+            def get_num_connections(self):
+                return self.connections
 
             def publish(self, msg):
                 self.sent.append(msg)
@@ -79,6 +84,13 @@ class FakeRospy(types.ModuleType):
 
     def get_name(self):
         return self.node_name
+
+    def logerr(self, msg, *args):
+        self.errors = getattr(self, "errors", []) + [msg % args if args else msg]
+
+    @staticmethod
+    def is_shutdown():
+        return True      # behaviours' own loops end at once; tests drive them by hand
 
     def get_param(self, name, default=None):
         return self.params.get(name, default)

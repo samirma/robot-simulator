@@ -2,7 +2,7 @@
 """Intel RealSense D405 wrist camera (ROS 2): the node `/camera/camera` of realsense-ros'
 `ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 depth_module.depth_profile:=640x360x30 depth_module.color_profile:=640x360x30`
-(robots_specs/rebot_b601_rs/ros2.yml, `camera_boot_authority`).
+(robots_specs/rebot_b601_rs/ros2.yml, `camera_boot`).
 
 Serves exactly the recorded, non-optional endpoints of that node: the colour image (rgb8) and
 its CameraInfo, the depth aligned to colour (16UC1, millimetres, 0 where the sensor reports no

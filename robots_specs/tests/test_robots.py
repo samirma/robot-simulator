@@ -7,6 +7,7 @@ Meshes must have been fetched first (python3 robots_specs/tools/fetch_meshes.py)
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import shutil
@@ -156,16 +157,54 @@ def _broken_copy(tmp_path, robot, change) -> Path:
 @pytest.mark.parametrize("change, error", [
     (lambda d: d["model"]["robot_description"].pop("content"), "robot_description.content"),
     (lambda d: d["sensors"]["imus"][0].update(topic="/not_recorded"), "sensors.imus[0] topic"),
-    (lambda d: d.update(camera_boot_authority="manufacturer"), "camera_boot_authority"),
+    (lambda d: _old_camera_boot(d), "camera_boot_authority is not part of the schema"),
+    (lambda d: d.update(camera_boot_authority="approved_community"), "(and not both)"),
+    (lambda d: d["boot"]["commands"].append(d["camera_boot"]["commands"][0]),
+     "boot.commands holds the camera boot's launch"),
+    (lambda d: d["boot"]["commands"].append("rosrun usb_cam usb_cam_node"),
+     "boot.commands holds the camera boot's launch"),
+    (lambda d: d["boot"]["launch_files"].append(dict(d["camera_boot"]["files"][0])),
+     "boot.launch_files lists the camera boot's"),
+    (lambda d: [c.pop("camera_boot") for c in d["sensors"]["cameras"]],
+     "no sensors.cameras row is marked camera_boot"),
     (lambda d: d["boot"]["launch_files"][0].update({"GPIO20)": None}), "beyond {source, path, role}"),
     (lambda d: next(t for t in d["topics"] if t["name"] == "/scan").pop("frame_id"), "records no frame_id"),
     (lambda d: d["motions"][0]["feedback"].append({"name": "/odom", "field": "pose.pose (x", "y": None}),
      "feedback[2] must be"),
+    (lambda d: d.pop("camera_boot"), "no camera_boot is declared"),
+    (lambda d: d.update(camera_boot={"authority": "vendor", "summary": "x", "commands": ["x"],
+                                     "files": [{"source": "myagv_ros", "path": "x"}]}),
+     "camera_boot.authority"),
+    (lambda d: d["sensors"]["lidars"][0].update(intensity={"valid": 10.0}), "intensity needs"),
+    (lambda d: d["sensors"]["lidars"][0].pop("intensity"),
+     "a ydlidar_ros_driver lidar records its intensity"),
 ], ids=["no-robot-description-content", "imu-topic-not-recorded", "camera-boot-authority",
-        "split-boot-row", "no-frame-id", "split-feedback-row"])
+        "camera-boot-authority-and-camera-boot", "camera-launch-in-boot",
+        "camera-package-in-boot", "camera-launch-file-in-boot", "no-camera-marked",
+        "split-boot-row", "no-frame-id", "split-feedback-row", "undeclared-camera-boot",
+        "camera-boot-authority-value", "lidar-intensity-incomplete", "ydlidar-without-intensity"])
 def test_schema_rejects(tmp_path, change, error):
     errors = schema.validate(_broken_copy(tmp_path, spec_registry.by_id()["myagv"], change))
     assert any(error in msg for msg in errors), errors
+
+
+def _old_camera_boot(d):
+    """The former form alone: camera_boot_authority instead of a camera_boot map (the rows
+    unmarked, as the old records had them)."""
+    d.pop("camera_boot")
+    d["camera_boot_authority"] = "approved_community"
+    for k in ("nodes", "topics", "services", "parameters", "tf"):
+        for r in d.get(k) or []:
+            r.pop("camera_boot", None)
+    for c in d["sensors"]["cameras"]:
+        c.pop("camera_boot", None)
+
+
+def test_schema_rejects_the_old_camera_boot_key_alone(tmp_path):
+    errors = schema.validate(_broken_copy(tmp_path, spec_registry.by_id()["myagv"],
+                                          _old_camera_boot))
+    assert [m for m in errors if "camera_boot_authority is not part of the schema" in m
+            and "(and not both)" not in m], errors
 
 
 def test_estimated_action_groups():
@@ -512,9 +551,12 @@ def test_rebot_wrist_camera_is_the_d405_of_seeeds_guide():
     approved community camera boot: global names under /camera/camera, 640x360 at 30 Hz, the
     colour optical frame, on the gripper_end body (robots_specs/rebot_b601_rs/import.md)."""
     doc = load(spec_registry.by_id()["rebot_b601_rs"])
-    assert doc["camera_boot_authority"] == "approved_community"
+    assert doc["camera_boot"]["authority"] == "approved_community"
+    assert any("realsense2_camera rs_launch.py" in c for c in doc["camera_boot"]["commands"])
+    assert not any("realsense2_camera" in c for c in doc["boot"]["commands"])
     cams = {c["id"]: c for c in doc["sensors"]["cameras"] if not c.get("optional")}
     assert set(cams) == {"d405_color", "d405_depth"}
+    assert all(c["camera_boot"] is True for c in cams.values())
     want = {"d405_color": ("/camera/camera/color/image_raw", "rgb8"),
             "d405_depth": ("/camera/camera/aligned_depth_to_color/image_raw", "16UC1")}
     for cid, (topic, enc) in want.items():
@@ -532,6 +574,102 @@ def test_rebot_wrist_camera_is_the_d405_of_seeeds_guide():
     tf = {(r["parent"], r["child"]) for r in doc["tf"]}
     assert {("gripper_end", "camera_link"), ("camera_link", "camera_color_frame"),
             ("camera_color_frame", "camera_color_optical_frame")} <= tf
+
+
+def test_rosmaster_arm_camera_is_the_usb_cam_of_yahboom_s_camera_launch():
+    """The ROSMASTER X3 PLUS's wrist USB camera (URDF mono_link) is served as Yahboom's
+    usb_cam-test.launch, run beside the bringup, starts it (robots_specs/rosmaster_x3_plus/
+    import.md A6): /usb_cam with the launch's parameters, rgb8 640x480 at 30 Hz in frame
+    usb_cam, an uncalibrated CameraInfo, its capture and calibration services and
+    web_video_server; image_view only as an optional row; no transform to usb_cam (none of
+    the vendor's launches attaches it to mono_link); a model camera on mono_link with the
+    recorded field of view, looking along the lens axis (+z of mono_link)."""
+    mujoco = pytest.importorskip("mujoco")
+    robot = spec_registry.by_id()["rosmaster_x3_plus"]
+    doc = load(robot)
+    assert doc["interface_authority"] == "manufacturer" and "camera_boot_authority" not in doc
+    # the boot is the vendor's bringup alone; the camera is served by the declared camera
+    # boot beside it, whose rows are served (marked camera_boot, not optional)
+    assert not any("usb_cam" in c for c in doc["boot"]["commands"])
+    cb = doc["camera_boot"]
+    assert cb["authority"] == "manufacturer"
+    assert any("usb_cam usb_cam-test.launch" in c for c in cb["commands"])
+    assert {r["path"].rsplit("/", 1)[-1] for r in cb["files"]} >= {
+        "voice_ctrl_colorTracker.launch", "7. Web page real-time monitoring.pdf"}
+    cams = {c["id"]: c for c in doc["sensors"]["cameras"] if not c.get("optional")}
+    c = cams["arm_usb_camera"]
+    assert c["camera_boot"] is True
+    assert (c["image_topic"], c["info_topic"], c["frame_id"], c["encoding"]) == \
+        ("/usb_cam/image_raw", "/usb_cam/camera_info", "usb_cam", "rgb8")
+    assert (c["width"], c["height"], c["rate"]) == (640, 480, 30)
+    intr = c["intrinsics"]
+    assert intr["basis"] == "uncalibrated" and intr["d"] == [] and intr["distortion_model"] == ""
+    assert [intr[k] for k in ("fx", "fy", "cx", "cy")] == [0.0] * 4
+    assert c["mount"]["parent"] == "mono_link" and c["hfov_basis"] == "estimate"
+    nodes = {n["name"]: n for n in doc["nodes"]}
+    assert not nodes["/usb_cam"].get("optional") and not nodes["/web_video_server"].get("optional")
+    assert nodes["/usb_cam"]["camera_boot"] is True and nodes["/web_video_server"]["camera_boot"] is True
+    assert nodes["/image_view"]["optional"] is True
+    topics = {t["name"]: t for t in doc["topics"]}
+    for name in ("/usb_cam/image_raw", "/usb_cam/camera_info"):
+        assert topics[name]["nodes"] == ["/usb_cam"] and not topics[name].get("optional")
+        assert topics[name]["frame_id"] == "usb_cam" and topics[name]["rate"] == 30
+    assert not topics["/usb_cam/camera_info"].get("latched")
+    services = {s["name"]: s["type"] for s in doc["services"] if not s.get("optional")}
+    assert services["/usb_cam/start_capture"] == services["/usb_cam/stop_capture"] == "std_srvs/Empty"
+    assert services["/usb_cam/set_camera_info"] == "sensor_msgs/SetCameraInfo"
+    params = {p["name"]: p["value"] for p in doc["parameters"] if not p.get("optional")}
+    # image_transport's compressed, compressedDepth and theora plugins (installed on the robot image:
+    # Yahboom's colorHSV.py L45 subscribes to the compressed topic) are served alike
+    for plugin in ("compressed", "compressedDepth", "theora"):
+        t = topics[f"/usb_cam/image_raw/{plugin}"]
+        assert not t.get("optional") and t["camera_boot"] is True and t["frame_id"] == "usb_cam"
+        assert f"/usb_cam/image_raw/{plugin}/set_parameters" in services
+        assert any(k.startswith(f"/usb_cam/image_raw/{plugin}/") for k in params)
+    assert topics["/usb_cam/image_raw/compressed"]["rate"] == 30
+    assert "colorHSV.py#L45" in " ".join(topics["/usb_cam/image_raw/compressed"]["source"])
+    t = topics["/usb_cam/image_raw/theora"]
+    assert not t.get("optional") and t["type"] == "theora_image_transport/Packet"
+    assert "/usb_cam/image_raw/theora/set_parameters" in services
+    assert params["/usb_cam/image_raw/theora/quality"] == 31
+    assert {k: v for k, v in params.items() if k.startswith("/usb_cam/")
+            and not k.startswith("/usb_cam/image_raw/")} == {
+        "/usb_cam/video_device": "/dev/video0", "/usb_cam/image_width": 640,
+        "/usb_cam/image_height": 480, "/usb_cam/pixel_format": "yuyv",
+        "/usb_cam/camera_frame_id": "usb_cam", "/usb_cam/io_method": "mmap"}
+    # only laser_usb_bringup.launch (the USB camera instead of the Astra) has transforms to
+    # usb_cam, optional rows; none of them is at the wrist
+    to_cam = [r for r in doc["tf"] if r["child"].lstrip("/") == "usb_cam"]
+    assert {r["parent"] for r in to_cam} == {"/base_link", "/camera_link"}
+    assert all(r["optional"] for r in to_cam)
+    model = mujoco.MjModel.from_xml_path(str(SPECS / robot.id / doc["model"]["mjcf"]))
+    cam = model.camera("usb_cam")
+    assert model.body(int(model.cam_bodyid[cam.id])).name == "mono_link"
+    hfov = math.degrees(2 * math.atan(math.tan(math.radians(float(model.cam_fovy[cam.id])) / 2)
+                                      * 640 / 480))
+    assert abs(hfov - c["hfov_deg"]) < 1e-3
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    look = -data.cam_xmat[cam.id].reshape(3, 3)[:, 2]
+    lens = data.xmat[model.body("mono_link").id].reshape(3, 3)[:, 2]
+    assert float(look @ lens) > 1 - 1e-9
+
+
+def test_rosmaster_lidar_intensity_is_the_sdk_default_quality():
+    """The YDLIDAR 4ROS (lidar_type 0, TOF, intensity false) reports the SDK's
+    Node_Default_Quality, 10, at each return and 0 where there is none; the record cites
+    the SDK and driver lines that establish it."""
+    doc = load(spec_registry.by_id()["rosmaster_x3_plus"])
+    params = {p["name"]: p["value"] for p in doc["parameters"]}
+    assert params["/ydlidar_lidar_publisher/lidar_type"] == 0
+    assert params["/ydlidar_lidar_publisher/intensity"] is False
+    [lid] = doc["sensors"]["lidars"]
+    it = lid["intensity"]
+    assert (it["valid"], it["invalid"], it["basis"]) == (10.0, 0.0, "estimate")
+    cited = " ".join(it["source"])
+    for ref in ("ydlidar_driver.cpp#L1207", "ydlidar_protocol.h#L137", "CYdLidar.cpp#L681",
+                "ydlidar_ros_driver.cpp#L213-L218"):
+        assert ref in cited, ref
 
 
 # ------------------------------------------------------------------ appearance
@@ -659,3 +797,21 @@ def test_derived_model_is_reproducible(robot, tmp_path):
     produced = run.stdout if robot.id in TO_STDOUT else (root / robot.id / "model.xml").read_text()
     assert produced == (SPECS / robot.id / "model.xml").read_text(), \
         f"tools/models/{robot.id}.py does not reproduce {robot.id}/model.xml"
+
+
+@pytest.mark.parametrize("robot", ROBOTS, ids=lambda r: r.id)
+def test_one_camera_boot_concept(robot):
+    """Every camera boot is the `camera_boot` map, with its rows marked: myAGV (usb_cam,
+    approved community), reBot B601-RS (the D405, approved community), ROSMASTER X3 PLUS
+    (the arm camera, manufacturer); no record keeps camera_boot_authority or the camera
+    launch in its boot."""
+    doc = load(robot)
+    assert "camera_boot_authority" not in doc
+    want = {"myagv": "approved_community", "rebot_b601_rs": "approved_community",
+            "rosmaster_x3_plus": "manufacturer"}
+    if robot.id not in want:
+        assert "camera_boot" not in doc
+        return
+    assert doc["camera_boot"]["authority"] == want[robot.id]
+    nodes = [n for n in doc["nodes"] if n.get("camera_boot")]
+    assert nodes and not any(n.get("package") in " ".join(doc["boot"]["commands"]) for n in nodes)

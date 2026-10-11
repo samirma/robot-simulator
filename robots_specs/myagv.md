@@ -28,8 +28,8 @@
   the driver's defaults).
 * **Documentation:** <https://docs.elephantrobotics.com/docs/myagv_pi23_en/>
 
-The camera boot is an approved community camera boot, not manufacturer-provided, and the
-camera streams it publishes are required. Preserve the official base geometry, wheel joints and sensor mounting. The interface
+The camera boot is an approved community camera boot, not manufacturer-provided, recorded as
+`camera_boot` in `ros.yml`; its rows are marked `camera_boot: true` and are served. Preserve the official base geometry, wheel joints and sensor mounting. The interface
 description must cover driving and its stop, odometry, transforms, lidar and camera
 streams. Mapping and navigation endpoints come from separate launches and are recorded
 as `optional`.

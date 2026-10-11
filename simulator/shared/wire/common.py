@@ -177,6 +177,12 @@ class SimLink:
         self._subs[res["sub"]] = callback
         return res["sub"]
 
+    def unsubscribe(self, sub: int) -> None:
+        """Ends a stream `subscribe` started; samples still in flight are dropped."""
+        self._subs.pop(sub, None)
+        if not self.lost.is_set():
+            self.client.call("unsubscribe", sub=sub)
+
     def ctrl(self, values: dict) -> None:
         if values and not self.lost.is_set():
             try:

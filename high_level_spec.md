@@ -81,9 +81,10 @@ ROS graph, so the simulator offers no namespacing. The console supports namespac
 only where the robot's hardware interface documents it.
 
 A robot's **vendor interface** is every node, topic, service, action and parameter its
-authoritative sources define. The myAGV's approved camera boot is the pinned `usb_cam` boot
-recorded in `robots_specs/myagv/ros.yml` for the simulator and independently in the
-console's `myagv` profile; it is an approved community interface, not manufacturer-provided.
+authoritative sources define, with its camera boot where it declares one. The myAGV's
+approved camera boot is the pinned `usb_cam` boot recorded in `robots_specs/myagv/ros.yml`
+for the simulator and independently in the console's `myagv` profile; it is an approved
+community interface, not manufacturer-provided.
 **ROS infrastructure** — the `rosbridge_websocket` and `rosapi` nodes and their stock
 endpoints and parameters (including `/client_count`, `/connected_clients` and
 `/rosapi_params`), `/rosout`, `/rosout_agg`, `/parameter_events`, the ROS master's own
@@ -139,7 +140,10 @@ Simulator robot embodiments are recorded under `robots_specs/`:
   node, topic, service, action and parameter the authoritative sources define, with types,
   frames, rates and the robot's stop command. Rows that exist only when an optional plugin
   is installed or a launch other than the robot's authoritative boot runs are marked
-  `optional`; each camera's raw image stream is marked as a camera.
+  `optional`, except those of the camera boot a record may declare (a camera the boot does
+  not start, served beside it), which follow the robot specification's camera-boot rule
+  (`robots_specs/high_level_spec.md` §1). Each camera's raw image stream is marked as a
+  camera.
 * Every robot is a single body: no robot is assembled from other robots.
 * Robot meshes are not committed. Each engine's `simulator/<engine>/run.sh setup` fetches
   them into `robots_specs/<id>/` from each robot's pinned sources, verifies them against

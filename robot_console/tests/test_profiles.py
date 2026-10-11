@@ -77,7 +77,8 @@ def test_types_use_the_profile_dialect(pid):
     for e in p.endpoints:
         assert d.type_dialect(e.type) == p.dialect, (e.name, e.type)
     for c in p.cameras:
-        assert d.normalize_type(c.type) == "sensor_msgs/Image"
+        assert d.normalize_type(c.type) in ("sensor_msgs/Image", "sensor_msgs/CompressedImage")
+        assert d.type_dialect(c.type) == p.dialect
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)
@@ -106,17 +107,87 @@ def test_mobile_speeds_within_documented_limits_and_stop(pid):
 
 def test_camera_sets():
     """Every mobile profile has a required raw camera stream; the arm's boot starts no camera, so
-    its D405 wrist camera's colour and depth streams are optional ones (an arm without a D405 validates)."""
+    its D405 wrist camera's colour and depth streams are optional ones (an arm without a D405 validates).
+    The ROSMASTER's Astra Pro Plus adds its depth and infrared streams, optional (their driver is not pinned), and its
+    arm's USB camera is optional (the authoritative boot does not start it)."""
     cams = {p.id: [(c.topic, c.optional) for c in p.cameras] for p in load_all()}
     assert cams == {
         "myagv": [("/usb_cam/image_raw", False)],
         "ainex": [("/camera/image_raw", False)],
-        "rosmaster_x3_plus": [("/camera/rgb/image_raw", False)],
+        "rosmaster_x3_plus": [("/camera/rgb/image_raw", False), ("/camera/depth/image_raw", False),
+                              ("/camera/ir/image_raw", True), ("/usb_cam/image_raw", True),
+                              ("/usb_cam/image_raw/compressed", True)],
         "rebot_b601_rs": [("/camera/camera/color/image_raw", True),
                           ("/camera/camera/aligned_depth_to_color/image_raw", True)],
     }
     assert {c.topic: c.kind for p in load_all() for c in p.cameras if c.kind != "color"} == {
-        "/camera/camera/aligned_depth_to_color/image_raw": "depth"}
+        "/camera/camera/aligned_depth_to_color/image_raw": "depth", "/camera/depth/image_raw": "depth",
+        "/camera/ir/image_raw": "ir"}
+
+
+# The ROSMASTER's driver topics of its authoritative boot: required, because the boot's lidar and Astra drivers
+# advertise them whatever their subscribers (the profile's optional_rule).
+X3_DRIVER_TOPICS = {
+    "/scan": "sensor_msgs/LaserScan", "/point_cloud": "sensor_msgs/PointCloud",
+    "/camera/rgb/image_raw": "sensor_msgs/Image", "/camera/rgb/camera_info": "sensor_msgs/CameraInfo",
+    "/camera/depth/image_raw": "sensor_msgs/Image", "/camera/depth/camera_info": "sensor_msgs/CameraInfo",
+    "/camera/ir/image_raw": "sensor_msgs/Image", "/camera/ir/camera_info": "sensor_msgs/CameraInfo",
+    "/camera/depth/points": "sensor_msgs/PointCloud2", "/camera/depth_registered/points": "sensor_msgs/PointCloud2",
+}
+
+
+def test_x3_driver_topics_follow_one_rule():
+    """Every topic the boot's drivers advertise unconditionally is required; the arm's USB camera (another launch) is
+    optional; the robot image's orbbec_camera publishes no image_transport subtopics and no /camera/depth/image."""
+    p = load("rosmaster_x3_plus")
+    assert "advertises it unconditionally" in p.raw["optional_rule"]
+    for n, typ in X3_DRIVER_TOPICS.items():
+        e = p.endpoint(n)
+        assert e is not None and (e.kind, e.type, e.direction, e.optional) == ("topic", typ, "out", False), n
+    for n in ("/usb_cam/image_raw", "/usb_cam/camera_info"):
+        assert p.endpoint(n).optional
+    assert not {"/camera/rgb/image_raw/compressed", "/camera/depth/image"} & {e.name for e in p.endpoints}
+
+
+def test_x3_camera_streams():
+    """The Astra's colour (live, at most 10 frames/s), depth (16UC1 millimetres over the maker's 0.6-8 m) and infrared
+    (mono16) and the arm's USB colour camera, each with its CameraInfo topic; depth, infrared and USB are on demand at
+    most 5 frames/s; the infrared camera explains a silent stream; the USB row declares its own optional topics (one
+    more camera is one more row) and says which launch starts it when it is absent."""
+    p = load("rosmaster_x3_plus")
+    rgb, depth, ir, usb, usb_jpeg = p.cameras
+    assert (rgb.kind, rgb.camera_info, rgb.optional, rgb.on_demand, rgb.max_rate_hz, rgb.encodings) == (
+        "color", "/camera/rgb/camera_info", False, False, 2, ("rgb8",))
+    # registered to colour in hardware; its camera_info is the SDK's camera parameters after D2C (Pipeline.hpp#L129)
+    assert "registered to the colour image" in depth.caption.lower() and "after that registration (D2C)" in depth.caption
+    assert "Pipeline.hpp#L129" in next(c for c in p.raw["cameras"] if c.get("kind") == "depth")["policy"]
+    assert p.link_budget_mbps == 40 and "web_video_server" in p.raw["link_budget_policy"]
+    assert (depth.kind, depth.encodings, depth.unit_m, depth.range_m, depth.camera_info, depth.optional) == (
+        "depth", ("16UC1",), 0.001, (0.6, 8.0), "/camera/depth/camera_info", False)
+    assert (ir.kind, ir.encodings, ir.camera_info, ir.range_m, ir.unit_m, ir.optional) == (
+        "ir", ("mono16",), "/camera/ir/camera_info", None, None, True)
+    assert "restarted without it" in ir.silent_note and all(not c.silent_note for c in (rgb, depth, usb))
+    assert (usb.kind, usb.encodings, usb.rate_hz, usb.optional, usb.camera_info) == (
+        "color", ("rgb8",), 30, True, "/usb_cam/camera_info")
+    assert [(c.on_demand, c.throttle_ms()) for c in p.cameras] == [(False, 500), (True, 500), (True, 500), (True, 500), (True, 200)]
+    # the USB camera's JPEG through image_transport: optional, on demand, a tenth of the raw stream's load
+    assert (usb_jpeg.type, usb_jpeg.encodings, usb_jpeg.compressed, usb_jpeg.optional) == (
+        "sensor_msgs/CompressedImage", ("jpeg",), True, True)
+    assert usb_jpeg.nominal_mbps() < usb.nominal_mbps() / 3
+    assert (p.endpoint("/usb_cam/image_raw/compressed").type, p.endpoint("/usb_cam/image_raw/compressed").optional) == (
+        "sensor_msgs/CompressedImage", True)
+    # the streams that start by themselves fit the link budget, and every stream alone does
+    assert sum(c.nominal_mbps() for c in p.cameras if not c.on_demand) <= p.link_budget_mbps
+    assert all(c.nominal_mbps() <= p.link_budget_mbps for c in p.cameras)
+    assert "not established" in p.raw["stamps_note"] and "Frame.hpp#L105" in p.raw["stamps_note"]
+    assert "not aligned" in ir.caption.lower() and "after D2C" in ir.caption
+    assert "laser_usb_bringup.launch" in usb.missing_note and all(not c.missing_note for c in (rgb, depth, ir))
+    assert "laser_usb_bringup.launch" in usb_jpeg.missing_note
+    declared = {r["name"] for r in p.raw["topics"]}
+    assert not {"/usb_cam/image_raw", "/usb_cam/camera_info"} & declared            # declared by the camera row
+    assert (p.endpoint("/usb_cam/camera_info").type, p.endpoint("/usb_cam/camera_info").optional) == ("sensor_msgs/CameraInfo", True)
+    assert "NOT a Yahboom source" in p.sources["orbbec_astra_series"]["note"]
+    assert "orbbec_astra_series" in next(c for c in p.raw["cameras"] if c.get("kind") == "depth")["policy"]
 
 
 D405_TOPICS = {  # the realsense2_camera topics of the D405 wrist camera, all optional rows
@@ -152,10 +223,66 @@ STATUS_BITS = {0: "undervoltage", 1: "overcurrent", 2: "overtemperature", 3: "en
                5: "uncalibrated"}
 
 
-def test_only_the_rebot_has_sensors_and_they_are_its_manufacturer_topics():
+X3_SENSORS = {   # the ROSMASTER's vendor state topics, written out from the pinned driver, launches and tutorials
+    "battery": ("/voltage", "std_msgs/Float32", 1.0), "imu_raw": ("/imu/data_raw", "sensor_msgs/Imu", 1.0),
+    "imu": ("/imu/data", "sensor_msgs/Imu", 1.0), "mag": ("/mag/mag_raw", "sensor_msgs/MagneticField", 1.0),
+    "vel_raw": ("/vel_raw", "geometry_msgs/Twist", 1.0), "odom_raw": ("/odom_raw", "nav_msgs/Odometry", 1.0),
+    "odom": ("/odom", "nav_msgs/Odometry", 1.0), "scan": ("/scan", "sensor_msgs/LaserScan", 1.0),
+    "lidar_points": ("/point_cloud", "sensor_msgs/PointCloud", 3.0),
+    "joint_states": ("/joint_states", "sensor_msgs/JointState", 1.0),
+    "arm_angle_update": ("/ArmAngleUpdate", "yahboomcar_msgs/ArmJoint", None),
+    "edition": ("/edition", "std_msgs/Float32", 1.0), "joy_state": ("/JoyState", "std_msgs/Bool", None),
+    "depth_points": ("/camera/depth/points", "sensor_msgs/PointCloud2", None),
+    "registered_points": ("/camera/depth_registered/points", "sensor_msgs/PointCloud2", None),
+}
+
+
+def test_sensor_sets_are_the_manufacturer_topics():
     assert {p.id: [s.topic for s in p.sensors] for p in load_all()} == {
-        "myagv": [], "ainex": [], "rosmaster_x3_plus": [],
+        "myagv": [], "ainex": [], "rosmaster_x3_plus": [t for t, _, _ in X3_SENSORS.values()],
         "rebot_b601_rs": ["/joint_states"] + MOTOR_TOPICS + ["/arm_status"]}
+
+
+def test_x3_sensors_show_their_messages_with_units():
+    """Battery voltage first and as the headline, marked low below the vendor's 9.6 V alarm; vectors and
+    orientations as such; the lidar drawn as a scan; the point clouds by size, throttled."""
+    p = load("rosmaster_x3_plus")
+    assert {s.id: (s.topic, s.type, s.stale_after_s) for s in p.sensors} == X3_SENSORS
+    by = {s.id: s for s in p.sensors}
+    bat = by["battery"].fields[0]
+    assert p.sensors[0].id == "battery" and (bat.path, bat.unit, bat.headline, bat.warn_below) == ("data", "V", True, 9.6)
+    assert bat.decimals == 1                                        # the board reports 0.1 V steps
+    assert [f for s in p.sensors for f in s.fields if f.headline] == [bat]
+    kinds = lambda sid: [(f.path, f.kind, f.unit) for f in by[sid].fields]          # noqa: E731
+    # no source establishes the ICM20948 board's IMU unit: no unit, and a caption that says why
+    assert kinds("imu_raw") == [("linear_acceleration", "vector3", ""), ("angular_velocity", "vector3", "")]
+    assert [f.unit for f in by["imu"].fields] == ["", "", "", ""]
+    # the filter's orientation is imu_link's; it is also shown for base_link through the URDF mount
+    assert [(f.name, f.mount_rpy) for f in by["imu"].fields if f.kind == "rpy"] == [
+        ("orientation", None), ("orientation_base", (0.0, 3.1415, 1.5707))]
+    assert "roll near 180" in by["imu"].caption
+    assert "ICM20948" in by["imu_raw"].caption and "unit" in by["mag"].caption
+    # values that mean "nothing read": 0.0 V before the board reports, -1 when it does not answer
+    assert (bat.no_reading, by["edition"].fields[0].no_reading) == ((0.0,), (-1.0,))
+    assert "no reading" in bat.no_reading_label and "no reading" in by["edition"].fields[0].no_reading_label
+    assert ("orientation", "rpy", "") in kinds("imu")
+    assert kinds("mag") == [("magnetic_field", "vector3", "")]            # Rosmaster_Lib documents no unit
+    assert ("pose.pose.orientation", "rpy", "") in kinds("odom") and ("pose.pose.orientation", "rpy", "") in kinds("odom_raw")
+    assert kinds("vel_raw") == [("linear.x", "number", "m/s"), ("linear.y", "number", "m/s"), ("angular.z", "number", "rad/s")]
+    assert [f.path for f in by["joint_states"].fields] == [f"position.{i}" for i in range(6)]
+    assert by["scan"].plot == "scan" and ("ranges", "count", "") in kinds("scan")
+    assert {s.id for s in p.sensors if s.plot} == {"scan"}
+    # ordinary publishers of events (not latched): waiting for them is normal
+    assert {s.id for s in p.sensors if s.event_only} == {"arm_angle_update", "joy_state"}
+    # /odom_raw's velocities are /vel_raw's scaled by base_node (1.1 and 0.95): labelled so
+    assert [f.label for f in by["odom_raw"].fields if f.group == "twist"] == ["vx (×1.1)", "vy (×0.95)", "wz"]
+    assert "1.1" in by["odom_raw"].caption and "0.95" in by["odom_raw"].caption
+    # the clouds are computed only while subscribed: sampled on demand, never subscribed on their own
+    assert {s.id for s in p.sensors if s.on_demand} == {"depth_points", "registered_points"}
+    for sid in ("depth_points", "registered_points"):
+        assert by[sid].throttle_s is None and [f.path for f in by[sid].fields][:2] == ["width", "height"]
+    assert by["lidar_points"].throttle_s == 1.0 and ("points", "count", "") in kinds("lidar_points")
+    assert all(s.throttle_s is None for s in p.sensors if s.id != "lidar_points")
 
 
 def test_rebot_sensor_fields_are_the_messages_fields():
@@ -193,7 +320,14 @@ def test_sensors_reach_the_page_and_are_read_only():
     assert j["cameras"][0]["optional"] is True
     assert [(c["kind"], c["range_m"], c["unit_m"]) for c in j["cameras"]] == [("color", None, None),
                                                                               ("depth", [0.07, 0.5], 0.001)]
-    assert all(profile_json(q)["sensors"] == [] for q in load_all() if q.id != p.id)
+    assert all(profile_json(q)["sensors"] == [] for q in load_all() if q.id not in (p.id, "rosmaster_x3_plus"))
+    x3 = profile_json(load("rosmaster_x3_plus"))
+    assert x3["sensors"][0]["fields"][0]["headline"] is True and x3["sensors"][0]["fields"][0]["warn_below"] == 9.6
+    assert [(c["kind"], c["camera_info"]) for c in x3["cameras"]] == [
+        ("color", "/camera/rgb/camera_info"), ("depth", "/camera/depth/camera_info"), ("ir", "/camera/ir/camera_info"),
+        ("color", "/usb_cam/camera_info"), ("color", None)]
+    assert x3["cameras"][3]["missing_note"] and not x3["cameras"][0]["missing_note"]
+    assert "/camera/ir/image_raw" in {e["name"] for e in x3["endpoints"]}       # the page validates it too
     assert not {c.name for c in p.controls} & {s.topic for s in p.sensors}      # no sensor is commanded
 
 
@@ -215,6 +349,58 @@ def test_profile_loader_refuses_inconsistent_cameras():
         with pytest.raises(ValueError, match=error):
             parse_profile(bad)
     assert parse_profile(raw).cameras == load("rebot_b601_rs").cameras
+
+
+def test_profile_loader_refuses_inconsistent_ir_cameras_and_camera_info():
+    """An infrared camera documents single-channel encodings and no depth scale; a camera_info names a
+    CameraInfo out topic of the profile."""
+    raw = load("rosmaster_x3_plus").raw
+    for idx, change, error in (
+            (2, lambda c: c.update(encodings=["rgb8"]), "single-channel"),
+            (2, lambda c: c.update(encodings=[]), "single-channel"),
+            (2, lambda c: c.update(unit_m=0.001), "belong to a depth camera"),
+            (2, lambda c: c.update(camera_info="/scan"), "is not a sensor_msgs/CameraInfo"),
+            (0, lambda c: c.update(camera_info="/camera/depth/image_raw"), "is not a sensor_msgs/CameraInfo"),
+            (0, lambda c: c.update(max_rate_hz=0), "max_rate_hz is positive"),
+            (0, lambda c: c.update(max_rate_hz=0.8), "at most half of stale_after_s"),
+            (0, lambda c: c.update(max_rate_hz=0.9), "the live bound"),
+            (4, lambda c: c.update(encodings=["theora"]), "a compressed camera"),
+            (4, lambda c: c.update(kind="depth", unit_m=0.001, range_m=[0.1, 1.0], encodings=["16UC1"]), "a compressed camera"),
+            (0, lambda c: c.update(max_rate_hz=10), "start by themselves take about"),
+            (1, lambda c: c.update(max_rate_hz=10), "alone, over link_budget_mbps"),
+            (0, lambda c: (c.pop("max_rate_hz"), c.update(stale_after_s=0.15)), "or the default 10 Hz")):
+        bad = copy.deepcopy(raw)
+        change(bad["cameras"][idx])
+        with pytest.raises(ValueError, match=error):
+            parse_profile(bad)
+    assert parse_profile(raw).cameras == load("rosmaster_x3_plus").cameras
+
+
+def test_profile_loader_refuses_inconsistent_x3_sensor_keys():
+    raw = load("rosmaster_x3_plus").raw
+    idx = {s["id"]: i for i, s in enumerate(raw["sensors"])}
+    for sid, change, error in (
+            ("scan", lambda s: s.update(plot="polar"), "is none of"),
+            ("battery", lambda s: s.update(plot="scan"), "draws a sensor_msgs/LaserScan"),
+            ("lidar_points", lambda s: s.update(throttle_s=0), "throttle_s is positive"),
+            ("lidar_points", lambda s: s.update(throttle_s=20.0), "shorter than stale_after_s"),
+            ("depth_points", lambda s: s.update(stale_after_s=5.0), "one-message sample"),
+            ("joy_state", lambda s: s.update(stale_after_s=5.0), "event_only sensor has no stale_after_s"),
+            ("imu", lambda s: s["fields"][2].update(mount_rpy=[0, 0, 0]), "mount_rpy is"),
+            ("imu", lambda s: s["fields"][1].update(mount_rpy=[0, 0]), "mount_rpy is"),
+            ("depth_points", lambda s: s.update(event_only=True), "event_only sensor has no stale_after_s"),
+            ("battery", lambda s: s["fields"][0].pop("no_reading_label"), "come with their no_reading_label"),
+            ("joy_state", lambda s: s["fields"][0].update(no_reading=[0], no_reading_label="x"), "belong to a number"),
+            ("scan", lambda s: s["fields"][0].update(headline=True), "belong to a number"),
+            ("joy_state", lambda s: s["fields"][0].update(warn_below=1), "belong to a number")):
+        bad = copy.deepcopy(raw)
+        change(bad["sensors"][idx[sid]])
+        with pytest.raises(ValueError, match=error):
+            parse_profile(bad)
+    assert parse_profile(raw).sensors == load("rosmaster_x3_plus").sensors
+    for bad_budget in (0, -5, "40", True):
+        with pytest.raises(ValueError, match="link_budget_mbps"):
+            parse_profile(dict(copy.deepcopy(raw), link_budget_mbps=bad_budget))
 
 
 def test_profile_loader_refuses_inconsistent_sensors():

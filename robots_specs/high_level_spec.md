@@ -42,10 +42,15 @@ from transport or discovery services added by a simulation application.
 Each robot file names its **authoritative boot**: the launch and parameter files, at
 the pinned revision, that the vendor documentation starts for normal operation, and the
 vendor data files they load (such as action groups and gait parameters). The interface
-description records that boot. Endpoints that exist only when an optional plugin is
-installed or through a launch other than the authoritative boot, such as mapping and
-navigation, need not be recorded; any that are recorded are marked `optional`. Each
-camera's raw image stream is marked as a camera.
+description records that boot. A robot with a camera that its authoritative boot does
+not start may also declare one **camera boot**: the launch that serves that camera beside
+the authoritative boot, from the manufacturer or an explicitly approved community source,
+with its authority stated. The camera boot's rows are marked as its own and are served like
+the authoritative boot's; a row that exists only when an option of the camera boot's own
+launch is set is, as for the authoritative boot, marked `optional` and not served. Other
+endpoints that exist only when an optional plugin is installed (one the sources do not show
+on the robot's own image) or through a launch other than the authoritative boot, such as mapping and navigation, need not be recorded; any that
+are recorded are marked `optional`. Each camera's raw image stream is marked as a camera.
 
 ### MuJoCo import and real-hardware fidelity
 

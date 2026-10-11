@@ -364,6 +364,10 @@ cameras:
     stale_after_s: 2.0
     optional: true
     policy: "Console policy: the same D405's depth stream aligned to colour (align_depth.enable), 640x360, 30 Hz, 16UC1 in millimetres (the driver rescales the sensor's depth units to mm, ROS_DEPTH_SCALE 0.001, so unit_m = 0.001), 0 where there is no depth, frame camera_color_optical_frame; stale_after_s = 2.0 s. range_m is Intel's published ideal range for the D405 depth, 7 to 50 cm; the page maps it to colours and shows 0 black."
+link_policy: >-
+  No camera cap or link budget beyond the console defaults (10 frames/s, queue_length 1, pause on congestion): this
+  arm has no base motion, and the page never stops or cancels a bounded control (console spec §2.2), so no stop of
+  this robot waits on the link behind images. Its D405 streams are optional and start only with the page.
 cameras_note: >-
   The authoritative boot starts no camera driver (bringup.launch.py#L95-L133); the D405 is an optional add-on that
   Seeed's grasping guide runs beside the bringup (realsense2_camera, global names under /camera/camera, not the arm

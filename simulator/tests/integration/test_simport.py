@@ -237,6 +237,47 @@ def test_robot_camera_render_matches_its_model_camera(sim):
     c.close()
 
 
+def test_a_wire_ends_a_camera_stream_with_unsubscribe(sim):
+    """`unsubscribe` ends a stream (the Astra's lazy pipeline stops rendering with it):
+    the ROSMASTER's arm camera `usb_cam` streams its frames, and none come once the stream
+    has ended and the frames already in flight are in."""
+    owner = client()
+    res = owner.call("spawn", robot="rosmaster_x3_plus", placement="floor", ports=[])
+    owner.call("commit")
+    frames = []
+    wire = protocol.Client("127.0.0.1", PORT,
+                           on_event=lambda h, p: frames.append(h) if h.get("event") == "sample"
+                           else None)
+    try:
+        wire.call("wire", token=res["token"])
+        sid = wire.call("subscribe", stream="camera", rate=10.0, camera="usb_cam", width=640,
+                        height=480, rgb=True)["sub"]
+        assert wait(lambda: len(frames) >= 3)
+        assert all(f["sub"] == sid and (f["width"], f["height"]) == (640, 480) for f in frames)
+        wire.call("unsubscribe", sub=sid)
+        time.sleep(0.5)                      # the frames in flight
+        n = len(frames)
+        time.sleep(1.0)
+        assert len(frames) == n
+        with pytest.raises(protocol.RemoteError, match="no stream"):
+            wire.call("unsubscribe", sub=sid)
+        # a new stream of the same size renders on the ended one's pool (no new GL contexts
+        # to build, which would stall the simulation): its frames come at once
+        t0 = time.monotonic()
+        sid2 = wire.call("subscribe", stream="camera", rate=10.0, camera="usb_cam", width=640,
+                         height=480, rgb=True)["sub"]
+        assert wait(lambda: any(f["sub"] == sid2 for f in frames), timeout=2.0)
+        assert time.monotonic() - t0 < 2.0
+        wire.call("unsubscribe", sub=sid2)
+        r = owner.call("render", view={"camera": "rosmaster_x3_plus/usb_cam"}, width=640,
+                       height=480, format="rgb")
+        assert np.frombuffer(r["_payload"], np.uint8).std() > 1.0
+    finally:
+        wire.close()
+        owner.call("remove")
+        owner.close()
+
+
 def test_readings_and_a_view_framing_the_arm(sim):
     c = client()
     c.call("spawn", robot=ARM, placement="worktop", ports=[])

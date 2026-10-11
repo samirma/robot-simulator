@@ -1,7 +1,8 @@
 """The ROSMASTER's simulated Astra Pro Plus (wire/robots/rosmaster_x3_plus.AstraProPlus),
-without ROS: its depth range is the record's (range_m, a manufacturer figure), and its
-camera services answer with the intrinsics its streams publish (simulator spec §3 Robot
-authority, Sensor calibration, Real-robot fidelity)."""
+without ROS: its depth range is the record's (range_m, a manufacturer figure), its camera
+services answer with the intrinsics its streams publish, and its pipeline is lazy as the
+driver's is -- rendered only while an image or point-cloud topic has a subscriber
+(simulator spec §3 Robot authority, Sensor calibration, Real-robot fidelity)."""
 
 from __future__ import annotations
 
@@ -64,12 +65,26 @@ def astra(monkeypatch):
     import common
     from robots.rosmaster_x3_plus import AstraProPlus
 
+    class Link:
+        def __init__(self):
+            self.subs, self.ended, self.next = {}, [], 1
+
+        def subscribe(self, stream, rate, callback, **params):
+            sid, self.next = self.next, self.next + 1
+            self.subs[sid] = (stream, rate, params)
+            return sid
+
+        def unsubscribe(self, sid):
+            self.ended.append(sid)
+            self.subs.pop(sid)
+
     class Node:
         name = "/camera/camera"
         iface = common.interface()
 
         def __init__(self):
             self.sent = {}
+            self.link = Link()
 
         def new(self, topic, stamp=None):
             m = CameraInfo() if topic.endswith("camera_info") else Msg()
@@ -83,7 +98,9 @@ def astra(monkeypatch):
             self.sent.setdefault(topic, []).append(msg)
 
     node = Node()
-    return node, AstraProPlus(node)
+    cam = AstraProPlus(node)
+    cam._pipeline(True)       # a subscriber listens (test_lazy_pipeline)
+    return node, cam
 
 
 def frame(cam, depth_m):
@@ -171,3 +188,86 @@ def test_toggle_stops_and_restarts_a_stream(astra):
     for topic in ("/camera/rgb/image_raw", "/camera/depth_registered/points"):
         assert len(node.sent[topic]) == 1, topic
     assert len(node.sent["/camera/depth/image_raw"]) == 2
+
+
+def test_lazy_pipeline_follows_the_drivers_subscriber_callbacks():
+    """ob_camera_node.cpp L535-L617 with enable_pipeline, one connect/disconnect event at a
+    time: any image or point-cloud subscriber starts the pipeline; an image topic losing one
+    stops it once no image topic has any; a point cloud losing its last one stops it too,
+    even while the other cloud is subscribed (the driver checks only the image publishers)."""
+    from robots.rosmaster_x3_plus import lazy_pipeline
+
+    images = ["rgb", "depth", "ir"]
+    clouds = ["pts", "reg"]
+    zero = dict.fromkeys(images + clouds, 0)
+
+    def go(running, event, topic, **counts):
+        return lazy_pipeline(running, event, topic, dict(zero, **counts), images, clouds)
+
+    assert go(False, "subscribe", "rgb", rgb=1) is True
+    assert go(False, "subscribe", "pts", pts=1) is True
+    assert go(True, "subscribe", "depth", rgb=1, depth=1) is True
+    assert go(True, "unsubscribe", "rgb", ir=1) is True
+    assert go(True, "unsubscribe", "rgb") is False
+    assert go(True, "unsubscribe", "pts") is False
+    assert go(True, "unsubscribe", "pts", pts=1) is True
+    # the driver's quirk: the last image subscriber leaving stops it under a cloud subscriber,
+    # and so does one cloud's last subscriber while the other cloud keeps one
+    assert go(True, "unsubscribe", "rgb", reg=1) is False
+    assert go(True, "unsubscribe", "pts", reg=1) is False
+    # a leave and a join in quick succession: the join (re)starts it, as on the driver
+    assert go(go(True, "unsubscribe", "rgb"), "subscribe", "rgb", rgb=1) is True
+    assert go(False, "unsubscribe", "rgb") is False
+
+
+def test_subscriber_events_start_and_stop_the_render_stream(astra):
+    node, cam = astra
+    link = node.link
+    cam.on_subscriber_event("unsubscribe", "/camera/rgb/image_raw", dict.fromkeys(
+        cam.images + cam.clouds, 0))
+    assert not cam.running and not link.subs
+    cam.on_subscriber_event("subscribe", "/camera/depth/points", dict(
+        dict.fromkeys(cam.images + cam.clouds, 0), **{"/camera/depth/points": 1}))
+    assert cam.running and len(link.subs) == 1
+
+
+def test_lazy_pipeline_renders_only_while_running(astra):
+    node, cam = astra
+    link = node.link
+    [(sid, (stream, rate, params))] = link.subs.items()
+    assert stream == "camera" and params["camera"] == "camera_color_optical_frame"
+    assert params["rgb"] and params["depth"] and rate == 30.0
+    cam._pipeline(False)
+    assert link.ended == [sid] and not link.subs
+    hd, payload = frame(cam, 1.0)
+    cam._frame(hd, payload)            # rendered before the stop: dropped
+    assert node.sent == {}
+    cam._pipeline(True)
+    assert len(link.subs) == 1
+    cam._frame(hd, payload)
+    assert len(node.sent["/camera/rgb/image_raw"]) == 1
+    assert len(node.sent["/camera/rgb/camera_info"]) == 1
+
+
+def test_a_point_cloud_is_built_only_while_subscribed(astra):
+    """A cloud nobody subscribes to is never seen: the wire builds each cloud only while it
+    has a subscriber (the images are published regardless, as the running pipeline does)."""
+    node, cam = astra
+
+    class Pub:
+        def __init__(self, n):
+            self.n = n
+
+        def get_num_connections(self):
+            return self.n
+
+    node.pub = {"/camera/depth/points": Pub(0), "/camera/depth_registered/points": Pub(1)}
+    hd, payload = frame(cam, 1.0)
+    cam._frame(hd, payload)
+    assert "/camera/depth/points" not in node.sent
+    assert len(node.sent["/camera/depth_registered/points"]) == 1
+    assert len(node.sent["/camera/depth/image_raw"]) == 1
+    node.pub["/camera/depth_registered/points"].n = 0
+    cam._frame(hd, payload)
+    assert len(node.sent["/camera/depth_registered/points"]) == 1
+    assert len(node.sent["/camera/rgb/image_raw"]) == 2

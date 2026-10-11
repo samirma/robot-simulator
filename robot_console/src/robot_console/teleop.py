@@ -41,7 +41,7 @@ EXIT_OK, EXIT_NO_TARGET, EXIT_REFUSED, EXIT_UNREACHABLE, EXIT_CONN_LOST, EXIT_IN
 #: exit, clearing motion intent and attempting the documented stop.
 HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
 
-HELP = ("W/S forward/back  A/D strafe  Q/E rotate  Space stop  Enter re-enable  Esc quit")
+HELP = ("W/S forward/back  A/D strafe  Q/E rotate  Space stop  Enter re-enable  C resume cameras  Esc quit")
 HEAD_HELP = "Arrows: head (Left/Right pan, Up/Down tilt)"
 
 
@@ -148,7 +148,8 @@ class TeleopApp:
         except DiscoveryError as exc:
             self.say(f"cannot read the wire: {exc}")
             return EXIT_UNREACHABLE
-        self.cams = cam.CameraSet(rb, cam.untied_specs(graph))
+        self.clock = cam.ClockRef(dialect=graph.dialect)   # the robot's clock, for each frame's age (console spec §2.3)
+        self.cams = cam.CameraSet(rb, cam.untied_specs(graph), clock=self.clock)
         try:
             self.target = select_target(graph, self.profile, self.namespace)
         except ProfileError as exc:
@@ -163,7 +164,7 @@ class TeleopApp:
             return EXIT_REFUSED
         if self.target is not None:
             self.cams.close()
-            self.cams = cam.CameraSet(rb, cam.target_specs(self.target), present=graph.topics)
+            self.cams = cam.CameraSet(rb, cam.target_specs(self.target), present=graph.topics, clock=self.clock)
             self.core = TeleopCore(self.target, Sender(rb), log=self.say)
             for topic, typ in self.core.command_topics():
                 rb.advertise(topic, typ)
@@ -210,6 +211,10 @@ class TeleopApp:
             for ev in events:
                 if ev.type == pg.QUIT:
                     quit_now, end_reason = True, "window closed"
+                elif ev.type == pg.KEYDOWN and ev.key == pg.K_c:
+                    if self.cams and self.cams.paused:      # the operator resumes cameras paused on congestion
+                        self.cams.resume()
+                        self.say("cameras resumed")
                 elif ev.type == pg.KEYDOWN:
                     k = _key_name(pg, ev.key)
                     if k == "esc":
@@ -265,7 +270,10 @@ class TeleopApp:
     # ------------------------------------------------------------ drawing
     def _pump_display(self) -> None:
         if self.cams:
+            was = self.cams.paused
             self.cams.poll()
+            if self.cams.paused and not was:
+                self.say(f"CAMERAS PAUSED: the link is congested ({self.cams.paused}); press C to resume")
         self._draw()
 
     def _draw(self) -> None:
@@ -288,7 +296,7 @@ class TeleopApp:
             for i, s in enumerate(streams):
                 x, y = (i % cols) * tw, (i // cols) * th
                 st = s.state(now)
-                if s.frame is not None and st == cam.LIVE:
+                if s.frame is not None and st in (cam.LIVE, cam.LAGGING, cam.UNKNOWN):   # drawn, labelled when not live
                     surf = pg.surfarray.make_surface(s.frame.swapaxes(0, 1))
                     fh, fw = s.frame.shape[:2]
                     scale = min((tw - 8) / fw, (th - 30) / fh)
@@ -320,6 +328,10 @@ class TeleopApp:
             head = f"NO VALIDATED TARGET - commands refused: {self.reason}"
         scr.blit(self.big.render(head[:140], True, (255, 255, 255)), (10, y))
         y += 26
+        if self.cams and self.cams.paused:          # a warning, never a neutral state
+            scr.blit(self.big.render(f"CAMERAS PAUSED - link congested: {self.cams.paused}"[:140] + "  (C resumes)",
+                                     True, (255, 140, 60)), (10, y))
+            y += 26
         help_line = HELP + ("   " + HEAD_HELP if self.target is not None and self.target.profile.head else "")
         scr.blit(self.font.render(help_line, True, (170, 170, 190)), (10, y))
         y += 22

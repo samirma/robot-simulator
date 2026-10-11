@@ -68,6 +68,9 @@ class Conn:
         self.pending_samples: dict[int, int] = {}
         self.plock = threading.Lock()
         self.subs: dict[int, dict] = {}
+        # render pools of ended camera streams, kept for this connection's next camera
+        # stream: a pool's GL contexts hold the whole scene, which takes long to build
+        self.idle_pools: list = []
         self.closed = threading.Event()
         self.writer = threading.Thread(target=self._write, daemon=True, name=f"conn{self.id}-w")
         self.writer.start()
@@ -279,6 +282,8 @@ class Simulation:
         for sub in list(conn.subs.values()):
             if "pool" in sub:
                 sub["pool"].close()
+        for pool in conn.idle_pools:
+            pool.close()
         inst = conn.instance
         if inst is not None and not self.shutdown_event.is_set():
             # The spawn that owned this robot is gone (ended, failed or killed):
@@ -663,15 +668,34 @@ class Simulation:
             if mujoco.mj_name2id(self.world.model, mujoco.mjtObj.mjOBJ_CAMERA, cam) < 0:
                 raise KeyError(f"no camera {h['camera']!r} on {inst.id}")
             # Each camera stream renders on its own pair of threads with a buffer of its
-            # own size, so one stream never waits behind another or a scene render.
-            sub["pool"] = sensors.RenderPool(self.world, threads=2,
-                                             max_size=(int(h["width"]), int(h["height"])))
+            # own size, so one stream never waits behind another or a scene render; the
+            # connection's idle pool of that size, an ended stream's, is taken again.
+            size = (int(h["width"]), int(h["height"]))
+            with self.clock:
+                idle = next((x for x in conn.idle_pools if tuple(x.max_size) == size), None)
+                if idle is not None:
+                    conn.idle_pools.remove(idle)
+            sub["pool"] = idle or sensors.RenderPool(self.world, threads=2, max_size=size)
         elif kind not in ("state", "lidar"):
             raise ValueError(f"unknown stream {kind!r}")
         sid = next(self.sub_ids)
         with self.clock:
             conn.subs[sid] = sub
         return {"sub": sid}
+
+    def op_unsubscribe(self, conn, h, p):
+        """Ends one of this connection's streams (`sub`, as `subscribe` answered it): a
+        driver that streams only while its own subscribers listen (the Astra's lazy
+        pipeline) stops the rendering with it. A sample already in flight may still
+        arrive. A camera stream's render pool stays with the connection for its next
+        camera stream of the same size."""
+        with self.clock:
+            sub = conn.subs.pop(int(h["sub"]), None)
+            if sub is not None and "pool" in sub:
+                conn.idle_pools.append(sub["pool"])
+        if sub is None:
+            raise KeyError(f"no stream {h['sub']!r} on this connection")
+        return {}
 
     def _sampler(self):
         """Fires every due subscription at its rate, by elapsed wall time."""

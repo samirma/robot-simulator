@@ -68,9 +68,9 @@ Seeed publishes and documents this ROS 2 interface itself, so `ros2.yml` describ
 interface: the pinned `rebotarm_bringup` real-hardware boot with the `rs` model, its controller node
 (arm trajectory and Cartesian goals, gripper commands, per-motor raw commands, state and status
 topics), `robot_state_publisher` and the transforms it publishes. The arm boot starts no camera, lidar or
-IMU. The camera boot is an approved community camera boot, not manufacturer-provided, and the camera
-streams it publishes (colour, and depth aligned to colour, with their camera infos and the camera's
-transforms) are required; the mount on `gripper_end` is the community package's hand-eye result for one
+IMU. The camera boot is an approved community camera boot, not manufacturer-provided, recorded as
+`camera_boot` in `ros2.yml`; its rows (colour, and depth aligned to colour, with their camera infos and
+the camera's transforms) are marked `camera_boot: true` and are served; the mount on `gripper_end` is the community package's hand-eye result for one
 unit and the intrinsics are an estimate, recorded as such in `ros2.yml` and `import.md`. Arm joints are commanded and reported in the motors' own frame, which is the URDF joint frame; the
 gripper is commanded as one motor angle and reported on the URDF's two finger joints. The wire's names,
 frames, joint conventions and `robot_description` follow the pinned boot; `import.md` records how they

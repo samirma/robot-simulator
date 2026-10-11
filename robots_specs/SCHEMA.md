@@ -27,6 +27,10 @@ Conventions:
   camera) that exists only when an optional plugin is installed or when a launch other
   than the authoritative boot runs. The simulator does not serve optional rows. Absent
   means `false`.
+* **`camera_boot: true`** marks a row (node, topic, service, action, parameter, tf, camera)
+  of the declared `camera_boot` (below). Which of them are served is the robot
+  specification's camera-boot rule (`high_level_spec.md` §1): an optional one carries both
+  `camera_boot: true` and `optional: true`.
 * ROS infrastructure (rosbridge, rosapi, `/rosout`, `/rosout_agg`, `/parameter_events`,
   master parameters, client-library logger/parameter/type-description services, the
   client-library parameters every ROS 2 node declares (`use_sim_time`,
@@ -43,9 +47,9 @@ Conventions:
 | `dialect` | `ros1` \| `ros2` | must match the filename (`ros.yml` = `ros1`, `ros2.yml` = `ros2`) |
 | `ros_distribution` | str | e.g. `noetic`, `melodic`, `humble`, `jazzy` |
 | `interface_authority` | `manufacturer` \| `approved_community` | who defines the interface |
-| `camera_boot_authority` | `approved_community` | optional: the camera rows come from an approved community camera boot while the rest is `interface_authority` (myAGV: usb_cam; reBot B601-RS: the RealSense D405 of Seeed's grasping guide) |
 | `sources` | list | pinned sources (below) |
 | `boot` | map | the authoritative boot (below) |
+| `camera_boot` | map | optional: the one camera boot, the launch serving a camera that `boot` does not start, run beside it, with its own authority (below); its rows carry `camera_boot: true` |
 | `model` | map | URDF / MJCF files and `robot_description` (below) |
 | `nodes` | list | every node of the boot |
 | `topics` | list | every topic |
@@ -72,6 +76,23 @@ may cite; `revision` is a commit hash, a release tag, or for a download the file
 `launch_files`/`data_files` are `{source, path, role?}` rows (no other keys) at the pinned revision
 (`source` is a `sources[].id`); `hardware` is prose: computer, OS image, serial devices,
 camera and lidar devices, controller firmware.
+
+### `camera_boot`
+
+`{authority, summary, commands[], files[]}` — the only form of a camera boot (the robot
+specification's, `high_level_spec.md` §1):
+
+* `authority`: `manufacturer` (the vendor's own launch and documentation start the camera:
+  ROSMASTER X3 PLUS, its arm camera) or `approved_community` (myAGV: usb_cam; reBot
+  B601-RS: the RealSense D405 of Seeed's grasping guide), while the rest of the record is
+  `interface_authority`;
+* `commands`: run beside `boot.commands`, which never holds them;
+* `files`: `{source, path, role?}` rows of every file the camera boot is established from
+  (launch files, a tutorial page, a node's source), none repeated in `boot`;
+* `summary`: how the camera boot runs beside the boot and what the sources leave open (for
+  example the device the camera opens).
+
+At least one `sensors.cameras` row is the camera boot's.
 
 ### `model`
 
@@ -192,7 +213,12 @@ groups are in no pinned source: the file of estimated groups and the playable ex
   was established), `range_m` with `range_basis` (a depth stream's working range, m),
   `notes` in `intrinsics` and `mount`.
 * `lidars[]`: `{id, topic, frame_id, model, angle_min, angle_max, samples, range_min,
-  range_max, scan_rate, mount{...}, basis, source}` (angles in rad).
+  range_max, scan_rate, mount{...}, basis, source}` (angles in rad). Optional:
+  `invalid_range` (`inf` or `0`, what `ranges` holds where there is no return) and
+  `intensity` `{valid, invalid, basis, source, notes?}`: `intensities` as many as `ranges`,
+  the value at a return and where there is none. Required where ydlidar_ros_driver
+  publishes the scan (it always sizes `intensities` like `ranges`); without it a scan
+  carries no intensities.
 * `imus[]`: `{id, topic, frame_id, rate, mount{...}, source, filtered_topic?}`
   (`filtered_topic`: the boot's filtered IMU output, when it has one).
 

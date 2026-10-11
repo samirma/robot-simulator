@@ -236,7 +236,7 @@ grasping guide fits an Intel RealSense D405 on the gripper and runs it with real
 arm boot (`ros2 launch realsense2_camera rs_launch.py align_depth.enable:=true
 depth_module.depth_profile:=640x360x30 depth_module.color_profile:=640x360x30`,
 [guide L886-L898](https://github.com/Seeed-Studio/wiki-documents/blob/2d9c3d1225f1ab98b79e1382b72ca9e2148bb23a/sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_Grasping_Demo.md#L886-L898)),
-so the camera is served by an approved community camera boot (`camera_boot_authority` in `ros2.yml`).
+so the camera is served by an approved community camera boot (`camera_boot` in `ros2.yml`).
 The model gets one `<camera>` on `gripper_end`, named after the colour optical frame, see "Wrist
 camera" below. It adds no body, no geom and no mass; the camera is a sensor only.
 

@@ -9,9 +9,8 @@ name: myAGV
 dialect: ros1
 ros_distribution: noetic
 interface_authority: manufacturer
-# The camera rows come from the approved community camera boot (usb_cam 0.3.7, see boot and the
-# usb_cam source): approved, not manufacturer-provided, and required (not optional).
-camera_boot_authority: approved_community
+# The camera rows come from the approved community camera boot (usb_cam 0.3.7, see camera_boot and
+# the usb_cam source): approved, not manufacturer-provided, and served (not optional).
 
 sources:
   - id: myagv_ros
@@ -82,19 +81,13 @@ boot:
     robot_pose_ekf fusing /odom and /imu, and the YDLIDAR driver via X2.launch. Keyboard/joystick
     teleop, gmapping and navigation are separate launches (clients or optional rows). No vendor
     launch starts a ROS camera driver (the vendor reads the CSI camera through OpenCV on
-    /dev/video0 in simple_navigation_goals/scripts/aruco_detector.py), so the camera is served by
-    the approved community camera boot: the pinned usb_cam 0.3.7 node run beside the vendor launch
-    as `rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link`, every other setting at the
-    driver's defaults (video_device /dev/video0, 640x480, pixel_format mjpeg, framerate 30,
-    io_method mmap, camera_info_url empty). This camera boot is approved, not manufacturer-
-    provided, and its camera streams are required.
+    /dev/video0 in simple_navigation_goals/scripts/aruco_detector.py); the camera is served by
+    the camera boot (camera_boot).
   commands:
     - cd ~/myagv_ros/src/myagv_odometry/scripts && ./start_ydlidar.sh   # sets GPIO20 high: lidar power
     - roslaunch myagv_odometry myagv_active.launch
-    - rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link   # approved community camera boot (usb_cam 0.3.7)
   launch_files:
     - {source: myagv_ros, path: myagv_odometry/launch/myagv_active.launch}
-    - {source: usb_cam, path: nodes/usb_cam_node.cpp, role: approved community camera boot (rosrun with _camera_frame_id:=camera_link; no launch file)}
     - {source: myagv_ros, path: ydlidar_ros_driver/launch/X2.launch, role: included by myagv_active.launch (L25)}
     - {source: myagv_ros, path: myagv_odometry/scripts/start_ydlidar.sh, role: "lidar power script (calls start_ydlidar.py, GPIO20)"}
     - {source: myagv_docs, path: MYAGV_PI_2023_EN/6-SDKDevelopment/6.2-ApplicationBaseROS1/6.2.4-Basic_Control_Based_on_ROS.md, role: "documentation of the bring-up (L7-19)"}
@@ -108,6 +101,21 @@ boot:
     on /dev/ttyAMA0 at 115200, powered through GPIO20. CSI camera, 5 MP, 65 deg viewing angle
     (/dev/video0; no ROS driver in the boot). Weight 4.16 kg, max speed 0.9 m/s (docs 2.1).
     Base MCU firmware source is not published.
+
+camera_boot:
+  authority: approved_community
+  summary: >-
+    No vendor launch starts a ROS camera driver, so the camera is served by the approved
+    community camera boot: the pinned usb_cam 0.3.7 node run beside the vendor launch as
+    `rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link` (frame from the boot's
+    base2camera_link transform), every other setting at the driver's defaults (video_device
+    /dev/video0, 640x480, pixel_format mjpeg, framerate 30, io_method mmap, camera_info_url
+    empty). It is approved, not manufacturer-provided; its rows carry camera_boot: true and are
+    served.
+  commands:
+    - rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link   # approved community camera boot (usb_cam 0.3.7)
+  files:
+    - {source: usb_cam, path: nodes/usb_cam_node.cpp, role: approved community camera boot (rosrun with _camera_frame_id:=camera_link; no launch file)}
 
 model:
   urdf: myAGV.urdf
@@ -165,6 +173,7 @@ nodes:
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L2
   # --- camera driver: approved community camera boot (usb_cam 0.3.7) ---
   - name: /usb_cam
+    camera_boot: true
     package: usb_cam
     executable: usb_cam_node
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp
@@ -342,6 +351,7 @@ topics:
 
   # --- camera (approved community camera boot, required) ---
   - name: /usb_cam/image_raw
+    camera_boot: true
     type: sensor_msgs/Image
     direction: out
     nodes: [/usb_cam]
@@ -353,6 +363,7 @@ topics:
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L89
     notes: 640x480, rgb8 (driver defaults, pixel_format mjpeg decoded). The image_transport plugin topics exist only when those plugins are installed (optional rows below).
   - name: /usb_cam/camera_info
+    camera_boot: true
     type: sensor_msgs/CameraInfo
     direction: out
     nodes: [/usb_cam]
@@ -780,6 +791,7 @@ topics:
     optional: true
     source: https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L266
   - name: /usb_cam/image_raw/compressed/parameter_descriptions
+    camera_boot: true
     type: dynamic_reconfigure/ConfigDescription
     direction: out
     nodes: [/usb_cam]
@@ -788,6 +800,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69
   - name: /usb_cam/image_raw/compressed/parameter_updates
+    camera_boot: true
     type: dynamic_reconfigure/Config
     direction: out
     nodes: [/usb_cam]
@@ -796,6 +809,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69
   - name: /usb_cam/image_raw/compressedDepth/parameter_descriptions
+    camera_boot: true
     type: dynamic_reconfigure/ConfigDescription
     direction: out
     nodes: [/usb_cam]
@@ -804,6 +818,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64
   - name: /usb_cam/image_raw/compressedDepth/parameter_updates
+    camera_boot: true
     type: dynamic_reconfigure/Config
     direction: out
     nodes: [/usb_cam]
@@ -812,6 +827,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64
   - name: /usb_cam/image_raw/theora/parameter_descriptions
+    camera_boot: true
     type: dynamic_reconfigure/ConfigDescription
     direction: out
     nodes: [/usb_cam]
@@ -820,6 +836,7 @@ topics:
     optional: true
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86
   - name: /usb_cam/image_raw/theora/parameter_updates
+    camera_boot: true
     type: dynamic_reconfigure/Config
     direction: out
     nodes: [/usb_cam]
@@ -829,6 +846,7 @@ topics:
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86
   # usb_cam image_transport plugins (only when image_transport_plugins is installed)
   - name: /usb_cam/image_raw/compressed
+    camera_boot: true
     type: sensor_msgs/CompressedImage
     direction: out
     nodes: [/usb_cam]
@@ -839,6 +857,7 @@ topics:
     frame_id: camera_link
     source: https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L60-L66
   - name: /usb_cam/image_raw/compressedDepth
+    camera_boot: true
     type: sensor_msgs/CompressedImage
     direction: out
     nodes: [/usb_cam]
@@ -848,6 +867,7 @@ topics:
     frame_id: camera_link
     notes: "encodes only depth encodings, so it publishes nothing for this rgb8 stream; it would carry the raw image header (codec.cpp#L215)"
   - name: /usb_cam/image_raw/theora
+    camera_boot: true
     type: theora_image_transport/Packet
     direction: out
     nodes: [/usb_cam]
@@ -871,14 +891,17 @@ services:
     source: https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/robot_pose_ekf/src/odom_estimation_node.cpp#L143
     notes: "robot_pose_ekf/srv/GetStatus.srv: request empty, response string status."
   - name: /usb_cam/start_capture
+    camera_boot: true
     type: std_srvs/Empty
     node: /usb_cam
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L124
   - name: /usb_cam/stop_capture
+    camera_boot: true
     type: std_srvs/Empty
     node: /usb_cam
     source: https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L125
   - name: /usb_cam/set_camera_info
+    camera_boot: true
     type: sensor_msgs/SetCameraInfo
     node: /usb_cam
     source: https://github.com/ros-perception/image_common/blob/5559cc5ff15c4e94bef7912eabe5e330de62475c/camera_info_manager/src/camera_info_manager.cpp#L94
@@ -929,9 +952,9 @@ services:
   - {name: /move_base/local_costmap/inflation_layer/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/costmap_2d/plugins/inflation_layer.cpp#L95"}
   - {name: /move_base/GlobalPlanner/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L151"}
   - {name: /move_base/TrajectoryPlannerROS/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/base_local_planner/src/trajectory_planner_ros.cpp#L266"}
-  - {name: /usb_cam/image_raw/compressed/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69"}
-  - {name: /usb_cam/image_raw/compressedDepth/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64"}
-  - {name: /usb_cam/image_raw/theora/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/src/compressed_publisher.cpp#L69"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressedDepth/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/src/compressed_depth_publisher.cpp#L64"}
+  - {camera_boot: true, name: /usb_cam/image_raw/theora/set_parameters, type: dynamic_reconfigure/Reconfigure, node: /usb_cam, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/src/theora_publisher.cpp#L86"}
   - {name: /move_base/GlobalPlanner/make_plan, type: nav_msgs/GetPlan, node: /move_base, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/global_planner/src/planner_core.cpp#L149"}
   - {name: /change_map, type: nav_msgs/LoadMap, node: /map_server_for_test, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/map_server/src/main.cpp#L78"}
 
@@ -974,7 +997,7 @@ parameters:
   - {name: /ydlidar_lidar_publisher/range_min, node: /ydlidar_lidar_publisher, value: 0.1, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L32"}
   - {name: /ydlidar_lidar_publisher/range_max, node: /ydlidar_lidar_publisher, value: 12.0, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L33"}
   - {name: /ydlidar_lidar_publisher/frequency, node: /ydlidar_lidar_publisher, value: 10.0, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L35", notes: "has no effect on the X2L (L34 comment)"}
-  - {name: /usb_cam/camera_frame_id, node: /usb_cam, value: camera_link, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L118", notes: "set by the rosrun private argument; the driver's other settings are defaults and not on the parameter server"}
+  - {camera_boot: true, name: /usb_cam/camera_frame_id, node: /usb_cam, value: camera_link, source: "https://github.com/ros-drivers/usb_cam/blob/addab4a65fdf65c460fec2cc3eee8fab94699370/nodes/usb_cam_node.cpp#L118", notes: "set by the rosrun private argument; the driver's other settings are defaults and not on the parameter server"}
   # --- optional: mapping (gmapping.launch L5-L40, private parameters of /gmapping) ---
   - {name: /gmapping/base_frame, node: /gmapping, value: base_footprint, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L6"}
   - {name: /gmapping/odom_frame, node: /gmapping, value: odom, optional: true, source: "https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/myagv_navigation/launch/gmapping.launch#L7"}
@@ -1159,20 +1182,20 @@ parameters:
   - {name: /move_base/conservative_reset/reset_distance, node: /move_base, value: 3.0, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L1110", notes: "conservative_reset_dist unset, default 3.0 (L113)"}
   - {name: /move_base/aggressive_reset/reset_distance, node: /move_base, value: 1.84, optional: true, source: "https://github.com/ros-planning/navigation/blob/f13af47ee2bca6c3bf99db2965e46e55303f6e66/move_base/src/move_base.cpp#L1111", notes: "4 x local_costmap/circumscribed_radius, unset, default 0.46 (L111)"}
   # --- optional: usb_cam image_transport plugins (dynamic_reconfigure config of each plugin publisher) ---
-  - {name: /usb_cam/image_raw/compressed/format, node: /usb_cam, value: jpeg, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressed/jpeg_quality, node: /usb_cam, value: 80, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressed/jpeg_progressive, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressed/jpeg_optimize, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressed/jpeg_restart_interval, node: /usb_cam, value: 0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressed/png_level, node: /usb_cam, value: 9, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L17", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressedDepth/format, node: /usb_cam, value: png, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressedDepth/depth_max, node: /usb_cam, value: 10.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressedDepth/depth_quantization, node: /usb_cam, value: 100.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/compressedDepth/png_level, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/theora/optimize_for, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/theora/target_bitrate, node: /usb_cam, value: 800000, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/theora/quality, node: /usb_cam, value: 31, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
-  - {name: /usb_cam/image_raw/theora/keyframe_frequency, node: /usb_cam, value: 64, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/format, node: /usb_cam, value: jpeg, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/jpeg_quality, node: /usb_cam, value: 80, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/jpeg_progressive, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/jpeg_optimize, node: /usb_cam, value: false, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/jpeg_restart_interval, node: /usb_cam, value: 0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressed/png_level, node: /usb_cam, value: 9, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_image_transport/cfg/CompressedPublisher.cfg#L17", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressedDepth/format, node: /usb_cam, value: png, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L13", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressedDepth/depth_max, node: /usb_cam, value: 10.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressedDepth/depth_quantization, node: /usb_cam, value: 100.0, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/compressedDepth/png_level, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/compressed_depth_image_transport/cfg/CompressedDepthPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/theora/optimize_for, node: /usb_cam, value: 1, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L12", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/theora/target_bitrate, node: /usb_cam, value: 800000, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L14", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/theora/quality, node: /usb_cam, value: 31, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L15", notes: "dynamic_reconfigure default written by the plugin's server at start"}
+  - {camera_boot: true, name: /usb_cam/image_raw/theora/keyframe_frequency, node: /usb_cam, value: 64, optional: true, source: "https://github.com/ros-perception/image_transport_plugins/blob/7825def310eaab518da912bc491266e76eda8742/theora_image_transport/cfg/TheoraPublisher.cfg#L16", notes: "dynamic_reconfigure default written by the plugin's server at start"}
   # Beyond the values above, these optional nodes write parameters at run time that no launch
   # or yaml file sets: every dynamic_reconfigure server (/amcl, /move_base, both costmaps and
   # their layers, /move_base/GlobalPlanner, /move_base/TrajectoryPlannerROS) writes its whole
@@ -1324,6 +1347,7 @@ motions:
 sensors:
   cameras:
     - id: front_camera
+      camera_boot: true
       image_topic: /usb_cam/image_raw
       info_topic: /usb_cam/camera_info
       frame_id: camera_link
@@ -1369,6 +1393,34 @@ sensors:
       range_max: 12.0
       scan_rate: 10
       basis: manufacturer
+      intensity:
+        valid: 0.0
+        invalid: 0.0
+        basis: estimate
+        source:
+          - https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L206
+          - https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L216-L221
+          - https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L232
+          - https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L12
+          - https://github.com/elephantrobotics/myagv_ros/blob/c71f3cc574e5ed1973a925238eabe88662cfa701/ydlidar_ros_driver/launch/X2.launch#L24
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/CYdLidar.cpp#L76
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/CYdLidar.cpp#L1675-L1677
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/core/common/DriverInterface.h#L98
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/YDlidarDriver.cpp#L1507-L1520
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/YDlidarDriver.cpp#L1588-L1591
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/YDlidarDriver.cpp#L1621
+          - https://github.com/YDLIDAR/YDLidar-SDK/blob/42a82ed10d2304094c111fc63dee8e4a229b79b7/src/CYdLidar.cpp#L690
+        notes: >-
+          The driver sizes intensities like ranges (L206) and writes each point's intensity
+          where it writes a range (L216-L221) and into the /point_cloud channel (L232). The
+          point's intensity is the SDK's: with the recorded SDK revision (the upstream head;
+          the vendor pins none, the robot image carries its own build) the X2L's 2-byte points
+          settle the auto-detected intensity width at 0 bits (CYdLidar starts it at 10,
+          DriverInterface enables auto detection, two checksum errors step it 10 -> 16 -> 8 ->
+          0), so every point's intensity is 0 and intensities is all 0.0, as many as ranges.
+          ESTIMATE: an SDK of the vendor's driver era (YDLidar-SDK 1.0.6, a copy shipped in
+          ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/YDLidar-SDK-master/src/ydlidar_driver.cpp#L1244-L1252) would report (0xfc | distance & 3) << 2, 1008-1020, for a triangle lidar
+          with intensity false; which SDK the myAGV image runs is in no source.
       mount:
         parent: base_footprint
         xyz: [0.065, 0.0, 0.08]

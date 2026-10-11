@@ -132,7 +132,12 @@ class UsbCam:
 class YdLidar:
     """ydlidar_ros_driver: /scan and /point_cloud from the simulation's planar ray
     cast at the lidar site, with the driver's recorded geometry and conventions
-    (ignore_array sectors and invalid returns reported as recorded)."""
+    (ignore_array sectors and invalid returns reported as recorded).
+
+    Intensities as the record's lidar row states them (`intensity`: the value at a return
+    and where there is none): `intensities` as many as `ranges`, the valid value where a
+    range within range_min..range_max is reported, and each /point_cloud point's
+    `intensities` channel entry the valid value; a record that states none gets none."""
 
     def __init__(self, node):
         self.node = node
@@ -146,6 +151,7 @@ class YdLidar:
         self.ignore = [(math.radians(vals[i]), math.radians(vals[i + 1]))
                        for i in range(0, len(vals) - 1, 2)]
         self.scanning = True
+        self.intensity = self.row.get("intensity")
 
     def start(self):
         r = self.row
@@ -175,14 +181,25 @@ class YdLidar:
         msg.time_increment = period / self.n
         msg.range_min, msg.range_max = float(r["range_min"]), float(r["range_max"])
         msg.ranges = out.astype(np.float32).tolist()
-        msg.intensities = []
+        if self.intensity is None:
+            msg.intensities = []
+        else:
+            ok = self._returns(out)
+            msg.intensities = np.where(ok, float(self.intensity["valid"]),
+                                       float(self.intensity["invalid"])).astype(np.float32).tolist()
         self.node.publish(r["topic"], msg)
         if "/point_cloud" in self.node.pub:
             self._cloud(h, ang, out)
 
+    def _returns(self, ranges):
+        """The indices where the scan reports a range (within range_min..range_max)."""
+        r = self.row
+        return np.isfinite(ranges) & (ranges >= float(r["range_min"])) & \
+            (ranges <= float(r["range_max"]))
+
     def _cloud(self, h, ang, ranges):
         r = self.row
-        ok = np.isfinite(ranges) & (ranges >= float(r["range_min"])) & (ranges <= float(r["range_max"]))
+        ok = self._returns(ranges)
         pc = self.node.new("/point_cloud", stamp=h["stamp"])
         pc.header.frame_id = r["frame_id"]
         from geometry_msgs.msg import Point32
@@ -192,7 +209,8 @@ class YdLidar:
         pc.points = [Point32(float(x), float(y), 0.0) for x, y in zip(xs, ys)]
         period = 1.0 / float(r["scan_rate"])
         idx = np.nonzero(ok)[0]
-        pc.channels = [ChannelFloat32("intensities", [0.0] * len(idx)),
+        level = float(self.intensity["valid"]) if self.intensity is not None else 0.0
+        pc.channels = [ChannelFloat32("intensities", [level] * len(idx)),
                        ChannelFloat32("stamps", [float(i * period / self.n) for i in idx])]
         self.node.publish("/point_cloud", pc)
 

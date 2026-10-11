@@ -45,24 +45,64 @@ INFRA = {
 }
 
 
-def depth_mm(i: int, n: int) -> int:
+def depth_mm(i: int, n: int, near: int = 70, far: int = 500) -> int:
     """The depth sample of pixel ``i`` of ``n`` in a 16UC1 frame (millimetres): pixel 0 has no depth (0),
-    the others rise from 70 mm (pixel 1) to 500 mm (the last), the D405's recorded range."""
-    return 0 if i == 0 else 70 + round((i - 1) * 430 / (n - 2))
+    the others rise from ``near`` (pixel 1) to ``far`` (the last): by default 70 to 500 mm, the D405's recorded
+    range; a camera row's ``depth_mm`` gives its own (its profile range)."""
+    return 0 if i == 0 else near + round((i - 1) * (far - near) / (n - 2))
 
 
-def image_msg(dialect: str, encoding: str = "rgb8", w: int = 8, h: int = 6, seq: int = 0) -> dict:
+def image_msg(dialect: str, encoding: str = "rgb8", w: int = 8, h: int = 6, seq: int = 0,
+              depth_range: tuple = (70, 500), stamp: Optional[float] = None) -> dict:
+    """A small frame (``w`` x ``h``); a test can ask for full size (``FakeRosbridge.frame_size``). ``stamp``:
+    the header stamp in seconds (default ``seq`` seconds); 16UC1 values span ``depth_range`` millimetres."""
+    near, far = depth_range
     ch = {"rgb8": 3, "bgr8": 3, "mono8": 1, "rgba8": 4, "bgra8": 4, "mono16": 2, "16UC1": 2, "yuv422": 2,
           "yuv422_yuy2": 2}.get(encoding, 3)
     step = w * ch
-    if encoding == "16UC1":     # little-endian millimetres, as realsense2_camera publishes the aligned depth
-        data = b"".join(depth_mm(i, w * h).to_bytes(2, "little") for i in range(w * h))
+    if w * h > 4096:            # a full-size frame: the same patterns, computed with numpy
+        import numpy as np
+        if encoding == "16UC1":
+            i = np.arange(w * h)
+            v = np.where(i == 0, 0, near + np.round((i - 1) * (far - near) / (w * h - 2)))
+            data = v.astype("<u2").tobytes()
+        else:
+            data = (((np.arange(step * h) + seq * 13) * 7) % 256).astype(np.uint8).tobytes()
+    elif encoding == "16UC1":     # little-endian millimetres, as realsense2_camera publishes the aligned depth
+        data = b"".join(depth_mm(i, w * h, near, far).to_bytes(2, "little") for i in range(w * h))
     else:
         data = bytes(((i + seq * 13) * 7) % 256 for i in range(step * h))
-    stamp = {"sec": seq, "nanosec": 0} if dialect == "ros2" else {"secs": seq, "nsecs": 0}
+    t = float(seq) if stamp is None else stamp
+    sec, ns = int(t), int(round((t - int(t)) * 1e9)) % 1_000_000_000
+    stamp = {"sec": sec, "nanosec": ns} if dialect == "ros2" else {"secs": sec, "nsecs": ns}
     return {"header": {"stamp": stamp, "frame_id": "camera"}, "height": h, "width": w,
             "encoding": encoding, "is_bigendian": 0, "step": step,
             "data": base64.b64encode(data).decode()}
+
+
+_JPEG: Dict[tuple, bytes] = {}
+
+
+def jpeg_bytes(w: int = 8, h: int = 6) -> bytes:
+    """A small JPEG (a left-to-right red ramp), encoded with pygame once per size."""
+    if (w, h) not in _JPEG:
+        import io
+        import numpy as np
+        import pygame
+        img = np.zeros((w, h, 3), np.uint8)
+        img[:, :, 0] = np.linspace(0, 255, w, dtype=np.uint8)[:, None]
+        buf = io.BytesIO()
+        pygame.image.save(pygame.surfarray.make_surface(img), buf, "frame.jpg")
+        _JPEG[(w, h)] = buf.getvalue()
+    return _JPEG[(w, h)]
+
+
+def compressed_msg(dialect: str, w: int = 8, h: int = 6, stamp: float = 0.0, fmt: str = "rgb8; jpeg compressed bgr8") -> dict:
+    """A sensor_msgs/CompressedImage as usb_cam's image_transport compressed plugin publishes it."""
+    sec, ns = int(stamp), int((stamp - int(stamp)) * 1e9)
+    st = {"sec": sec, "nanosec": ns} if dialect == "ros2" else {"secs": sec, "nsecs": ns}
+    return {"header": {"stamp": st, "frame_id": "usb_cam"}, "format": fmt,
+            "data": base64.b64encode(jpeg_bytes(w, h)).decode()}
 
 
 class Client:
@@ -70,6 +110,8 @@ class Client:
         self.conn = conn
         self.server = server
         self.subs: Dict[str, str] = {}          # sid -> topic
+        self.throttle: Dict[str, float] = {}    # sid -> throttle_rate (s): rosbridge sends no faster
+        self.sent_at: Dict[str, float] = {}     # sid -> when the last message went out
         self.lock = threading.Lock()
         self.closed = False
 
@@ -99,11 +141,25 @@ class FakeRosbridge:
         self.reply_delay: Dict[str, float] = {}
         self.paused: set = set()
         # topic -> message a sensor topic publishes (a spec row's ``sample``): periodically at the
-        # row's ``rate_hz``, or, for a row marked ``latched``, once to each new subscriber and again
-        # whenever a test changes it with ``set_sample`` (a transient-local publisher)
+        # row's ``rate_hz``; for a row marked ``latched``, once to each new subscriber and again
+        # whenever a test changes it with ``set_sample`` (a transient-local publisher); for a row marked
+        # ``event``, only when a test calls ``emit`` (an ordinary publisher of events)
         self.samples: Dict[str, dict] = {r["name"]: copy.deepcopy(r["sample"])
                                          for r in spec["topics"] if r.get("sample") is not None}
         self.frame_encoding: Dict[str, str] = {}
+        self.frame_size: Dict[str, tuple] = {}     # topic -> (w, h) of its frames (default 8 x 6)
+        # topic -> seconds by which its frames' header stamps fall behind the wall clock (a backing-up link);
+        # frames are stamped with the wall clock as a driver stamps them
+        self.stamp_lag: Dict[str, float] = {}
+        self.delivered: Dict[str, int] = {}        # topic -> messages sent to clients (after throttling)
+        # The robot's clock: wall time + clock_skew (a test steps it by changing clock_skew). It answers
+        # /rosapi/get_time (unless time_service is False, as a wire without rosapi's time) and stamps frames.
+        self.clock_skew = 0.0
+        self.time_service = True
+        self.time_reply_delay = 0.0               # seconds the get_time answer waits (a slow link)
+        self.params: Dict[str, Any] = {}          # rosapi get_param: name -> value
+        self.param_failures = 0                   # rosapi get_param fails this many times first
+        self.param_reply_delay = 0.0              # seconds the get_param answer waits (a slow link)
         # ros2 goal id -> {client, action, t_sent, t_end, done, t_done} (client None: another client's)
         self.goals: Dict[str, dict] = {}
         self.rejected: List[dict] = []            # goals a rejecting ros2 server refused: {id, action, t}
@@ -142,6 +198,12 @@ class FakeRosbridge:
         self.samples[topic] = copy.deepcopy(msg)
         if self._row(topic).get("latched"):
             self._broadcast(topic, self.samples[topic])
+
+    def emit(self, topic: str, msg: Optional[dict] = None) -> None:
+        """An event-only topic publishes once (its sample, or ``msg``): only current subscribers receive it."""
+        if msg is not None:
+            self.samples[topic] = copy.deepcopy(msg)
+        self._broadcast(topic, self.samples[topic])
 
     def _row(self, topic: str) -> dict:
         return next(r for r in self.spec["topics"] if r["name"] == topic)
@@ -210,7 +272,9 @@ class FakeRosbridge:
         s = dict(INFRA[self.dialect]["services"])
         for r in self.spec["services"]:
             s[r["name"]] = r["type"]
-        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type"]
+        rosapi = ["topics", "services", "service_type", "nodes", "get_param_names", "topic_type", "get_param"]
+        if self.time_service:
+            rosapi.append("get_time")
         if self.dialect == "ros2":
             rosapi += ["action_servers", "get_ros_version"]
         for n in rosapi:
@@ -233,7 +297,20 @@ class FakeRosbridge:
             return {"action_servers": [a["name"] for a in self.spec["actions"]]}
         if name == "/rosapi/get_ros_version" and self.dialect == "ros2":
             return {"version": 2, "distro": "fake"}
+        if name == "/rosapi/get_time" and self.time_service:
+            t = self.robot_time()
+            sec, ns = int(t), int((t - int(t)) * 1e9)
+            return {"time": {"sec": sec, "nanosec": ns} if self.dialect == "ros2" else {"secs": sec, "nsecs": ns}}
+        if name == "/rosapi/get_param":
+            if self.param_failures > 0:
+                self.param_failures -= 1
+                return None
+            v = self.params.get(args.get("name"))
+            return {"value": json.dumps(v) if v is not None else args.get("default", "")}
         return None
+
+    def robot_time(self) -> float:
+        return time.time() + self.clock_skew
 
     # ------------------------------------------------------------ protocol
     def _record(self, msg: dict) -> None:
@@ -256,11 +333,15 @@ class FakeRosbridge:
     def _dispatch(self, c: Client, msg: dict) -> None:
         op = msg.get("op")
         if op == "subscribe":
-            c.subs[msg.get("id") or msg["topic"]] = msg["topic"]
+            sid = msg.get("id") or msg["topic"]
+            c.subs[sid] = msg["topic"]
+            c.throttle[sid] = float(msg.get("throttle_rate") or 0) / 1000.0
             if msg["topic"] in self.samples and self._row(msg["topic"]).get("latched") and msg["topic"] not in self.paused:
                 c.send({"op": "publish", "topic": msg["topic"], "msg": self.samples[msg["topic"]]})
         elif op == "unsubscribe":
-            c.subs.pop(msg.get("id") or msg["topic"], None)
+            sid = msg.get("id") or msg["topic"]
+            c.subs.pop(sid, None)
+            c.throttle.pop(sid, None)
         elif op == "call_service":
             threading.Thread(target=self._call, args=(c, msg), daemon=True).start()
         elif op == "send_action_goal" and self.dialect == "ros2":
@@ -313,9 +394,21 @@ class FakeRosbridge:
             c.send(msg)
 
     def _broadcast(self, topic: str, msg: dict) -> None:
+        """Send to each client subscribed to ``topic``, as rosbridge does: once per client, and not
+        sooner after the last message than the shortest throttle_rate of its subscriptions there."""
+        now = time.monotonic()
         for c in list(self.clients):
-            if topic in c.subs.values():
-                c.send({"op": "publish", "topic": topic, "msg": msg})
+            sids = [sid for sid, t in list(c.subs.items()) if t == topic]
+            if not sids:
+                continue
+            gap = min(c.throttle.get(sid, 0.0) for sid in sids)
+            last = max(c.sent_at.get(sid, -1e9) for sid in sids)
+            if now - last < gap:
+                continue
+            for sid in sids:
+                c.sent_at[sid] = now
+            self.delivered[topic] = self.delivered.get(topic, 0) + 1
+            c.send({"op": "publish", "topic": topic, "msg": msg})
 
     def _call(self, c: Client, msg: dict) -> None:
         name = msg["service"]
@@ -323,6 +416,10 @@ class FakeRosbridge:
         resp = {"op": "service_response", "id": msg.get("id"), "service": name}
         if name.startswith("/rosapi/"):
             vals = self._rosapi(name, args)
+            if name == "/rosapi/get_time" and self.time_reply_delay:
+                time.sleep(self.time_reply_delay)     # the answer waits on the way back (a backed-up link)
+            if name == "/rosapi/get_param" and self.param_reply_delay:
+                time.sleep(self.param_reply_delay)
             if vals is None:
                 c.send(dict(resp, values=f"Service {name} does not exist", result=False))
             else:
@@ -377,10 +474,18 @@ class FakeRosbridge:
                     next_at[r["name"]] = now + 1.0 / float(r.get("rate_hz") or 10)
                     seq += 1
                     enc = self.frame_encoding.get(r["name"], r.get("encoding", "rgb8"))
-                    self._broadcast(r["name"], image_msg(self.dialect, enc, seq=seq))
+                    w, h = self.frame_size.get(r["name"], (8, 6))
+                    if r["type"].endswith("CompressedImage"):
+                        self._broadcast(r["name"], compressed_msg(
+                            self.dialect, w, h, self.robot_time() - self.stamp_lag.get(r["name"], 0.0),
+                            fmt=self.frame_encoding.get(r["name"], "rgb8; jpeg compressed bgr8")))
+                        continue
+                    self._broadcast(r["name"], image_msg(self.dialect, enc, w=w, h=h, seq=seq,
+                                                         depth_range=tuple(r.get("depth_mm") or (70, 500)),
+                                                         stamp=self.robot_time() - self.stamp_lag.get(r["name"], 0.0)))
             for r in sensors:
                 n = r["name"]
-                if n in self.paused or r.get("latched") or now < next_at.get(n, 0):
+                if n in self.paused or r.get("latched") or r.get("event") or now < next_at.get(n, 0):
                     continue
                 next_at[n] = now + 1.0 / float(r.get("rate_hz") or 5)
                 self._broadcast(n, self.samples[n])

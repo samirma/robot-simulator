@@ -86,9 +86,11 @@ def validate(path: str | Path) -> list[str]:
            f"{p}: ros_distribution missing")
     e.need(doc.get("interface_authority") in ("manufacturer", "approved_community"),
            f"{p}: interface_authority must be manufacturer or approved_community")
-    if "camera_boot_authority" in doc:
-        e.need(doc["camera_boot_authority"] == "approved_community",
-               f"{p}: camera_boot_authority must be approved_community")
+    # a camera boot is the `camera_boot` map (below); a camera_boot_authority key is refused
+    e.need("camera_boot_authority" not in doc,
+           f"{p}: camera_boot_authority is not part of the schema: declare the camera boot as "
+           "camera_boot {authority, summary, commands, files}"
+           + (" (and not both)" if "camera_boot" in doc else ""))
 
     # sources
     src_ids = set()
@@ -116,6 +118,52 @@ def validate(path: str | Path) -> list[str]:
                        f"{p}: boot.{k}[{i}] has keys {sorted(set(row) - BOOT_ROW_KEYS)} beyond "
                        f"{{source, path, role}} (an unquoted comma in a flow map?)")
     e.need(isinstance(boot.get("hardware"), str) and boot["hardware"], f"{p}: boot.hardware missing")
+
+    # camera boot: a declared launch beside the boot; its rows carry camera_boot: true
+    cb = doc.get("camera_boot")
+    if cb is not None and e.need(isinstance(cb, dict), f"{p}: camera_boot must be a map"):
+        e.need(cb.get("authority") in ("manufacturer", "approved_community"),
+               f"{p}: camera_boot.authority must be manufacturer or approved_community")
+        e.need(isinstance(cb.get("summary"), str) and cb["summary"], f"{p}: camera_boot.summary missing")
+        e.need(isinstance(cb.get("commands"), list) and cb["commands"], f"{p}: camera_boot.commands missing")
+        e.need("launch_files" not in cb, f"{p}: camera_boot lists its files as camera_boot.files")
+        e.need(isinstance(cb.get("files"), list) and cb["files"], f"{p}: camera_boot.files missing")
+        for i, row in enumerate(cb.get("files") or []):
+            e.need(isinstance(row, dict) and row.get("source") in src_ids and row.get("path")
+                   and set(row) <= BOOT_ROW_KEYS,
+                   f"{p}: camera_boot.files[{i}] needs a known source id and a path, nothing else")
+    marked = [r for k in ("nodes", "topics", "services", "actions", "parameters", "tf")
+              for r in doc.get(k) or [] if isinstance(r, dict) and "camera_boot" in r]
+    marked += [c for c in ((doc.get("sensors") or {}).get("cameras") or [])
+               if isinstance(c, dict) and "camera_boot" in c]
+    for r in marked:
+        e.need(r["camera_boot"] is True, f"{p}: {r.get('name') or r.get('id') or r.get('child')}: "
+               "camera_boot must be true when present")
+    e.need(not marked or isinstance(cb, dict),
+           f"{p}: rows marked camera_boot but no camera_boot is declared")
+    if isinstance(cb, dict):
+        cams = [c for c in ((doc.get("sensors") or {}).get("cameras") or []) if isinstance(c, dict)]
+        e.need(any(c.get("camera_boot") is True for c in cams),
+               f"{p}: camera_boot declared but no sensors.cameras row is marked camera_boot")
+        # the camera launch belongs to camera_boot, not to boot: refuse a boot command or
+        # launch file the camera boot also lists, and a boot command naming the package of
+        # a node the camera boot runs
+        cb_cmds = {str(c).split("#")[0].strip() for c in cb.get("commands") or []}
+        cb_files = {(r.get("source"), r.get("path")) for r in cb.get("files") or []
+                    if isinstance(r, dict)}
+        cam_pkgs = {n.get("package") for n in doc.get("nodes") or []
+                    if isinstance(n, dict) and n.get("camera_boot") is True and n.get("package")}
+        for c in boot.get("commands") or []:
+            cmd = str(c).split("#")[0].strip()
+            words = set(re.split(r"[\s/]+", cmd))
+            e.need(cmd not in cb_cmds and not (words & cam_pkgs),
+                   f"{p}: boot.commands holds the camera boot's launch {cmd!r}: it belongs in "
+                   "camera_boot.commands")
+        for r in boot.get("launch_files") or []:
+            if isinstance(r, dict):
+                e.need((r.get("source"), r.get("path")) not in cb_files,
+                       f"{p}: boot.launch_files lists the camera boot's {r.get('path')}: it "
+                       "belongs in camera_boot.files")
 
     # model
     model = doc.get("model") or {}
@@ -305,6 +353,18 @@ def validate(path: str | Path) -> list[str]:
             for k in ("angle_min", "angle_max", "range_min", "range_max", "scan_rate"):
                 e.need(_is_num(l.get(k)), f"{w}.{k} missing")
             e.need(l.get("basis") in BASES, f"{w}.basis missing")
+            # ydlidar_ros_driver always sizes intensities like ranges: its rows say with what
+            pubs = next((t.get("nodes") or [] for t in doc.get("topics") or []
+                         if isinstance(t, dict) and t.get("name") == l.get("topic")), [])
+            pkgs = {n.get("package") for n in doc.get("nodes") or []
+                    if isinstance(n, dict) and n.get("name") in pubs}
+            e.need("intensity" in l or "ydlidar_ros_driver" not in pkgs,
+                   f"{w}: a ydlidar_ros_driver lidar records its intensity (valid, invalid)")
+            if "intensity" in l:
+                it = l["intensity"] or {}
+                e.need(_is_num(it.get("valid")) and _is_num(it.get("invalid"))
+                       and it.get("basis") in BASES and it.get("source"),
+                       f"{w}.intensity needs valid, invalid (numbers), basis and source")
         for i, imu in enumerate(sensors.get("imus") or []):
             w = f"{p}: sensors.imus[{i}]"
             e.need(isinstance(imu.get("id"), str) and imu["id"], f"{w}.id missing")
