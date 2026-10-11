@@ -151,17 +151,18 @@ def test_x3_driver_topics_follow_one_rule():
 
 def test_x3_camera_streams():
     """The Astra's colour (live, at most 10 frames/s), depth (16UC1 millimetres over the maker's 0.6-8 m) and infrared
-    (mono16) and the arm's USB colour camera, each with its CameraInfo topic; depth, infrared and USB are on demand at
-    most 5 frames/s; the infrared camera explains a silent stream; the USB row declares its own optional topics (one
+    (mono16) and the arm's USB colour camera (raw and JPEG), each with its CameraInfo topic; every one starts on
+    validation at its cap; the infrared camera explains a silent stream; the USB row declares its own optional topics (one
     more camera is one more row) and says which launch starts it when it is absent."""
     p = load("rosmaster_x3_plus")
     rgb, depth, ir, usb, usb_jpeg = p.cameras
-    assert (rgb.kind, rgb.camera_info, rgb.optional, rgb.on_demand, rgb.max_rate_hz, rgb.encodings) == (
-        "color", "/camera/rgb/camera_info", False, False, 2, ("rgb8",))
+    assert (rgb.kind, rgb.camera_info, rgb.optional, rgb.max_rate_hz, rgb.encodings) == (
+        "color", "/camera/rgb/camera_info", False, 2, ("rgb8",))
     # registered to colour in hardware; its camera_info is the SDK's camera parameters after D2C (Pipeline.hpp#L129)
     assert "registered to the colour image" in depth.caption.lower() and "after that registration (D2C)" in depth.caption
     assert "Pipeline.hpp#L129" in next(c for c in p.raw["cameras"] if c.get("kind") == "depth")["policy"]
-    assert p.link_budget_mbps == 40 and "web_video_server" in p.raw["link_budget_policy"]
+    # every stream on by the user's choice: no link budget, said as console policy
+    assert p.link_budget_mbps is None and "user chose" in p.raw["link_policy"] and "web_video_server" in p.raw["link_policy"]
     assert (depth.kind, depth.encodings, depth.unit_m, depth.range_m, depth.camera_info, depth.optional) == (
         "depth", ("16UC1",), 0.001, (0.6, 8.0), "/camera/depth/camera_info", False)
     assert (ir.kind, ir.encodings, ir.camera_info, ir.range_m, ir.unit_m, ir.optional) == (
@@ -169,16 +170,13 @@ def test_x3_camera_streams():
     assert "restarted without it" in ir.silent_note and all(not c.silent_note for c in (rgb, depth, usb))
     assert (usb.kind, usb.encodings, usb.rate_hz, usb.optional, usb.camera_info) == (
         "color", ("rgb8",), 30, True, "/usb_cam/camera_info")
-    assert [(c.on_demand, c.throttle_ms()) for c in p.cameras] == [(False, 500), (True, 500), (True, 500), (True, 500), (True, 200)]
-    # the USB camera's JPEG through image_transport: optional, on demand, a tenth of the raw stream's load
+    assert [c.throttle_ms() for c in p.cameras] == [500, 500, 500, 500, 200]
+    # the USB camera's JPEG through image_transport: optional, a tenth of the raw stream's load
     assert (usb_jpeg.type, usb_jpeg.encodings, usb_jpeg.compressed, usb_jpeg.optional) == (
         "sensor_msgs/CompressedImage", ("jpeg",), True, True)
     assert usb_jpeg.nominal_mbps() < usb.nominal_mbps() / 3
     assert (p.endpoint("/usb_cam/image_raw/compressed").type, p.endpoint("/usb_cam/image_raw/compressed").optional) == (
         "sensor_msgs/CompressedImage", True)
-    # the streams that start by themselves fit the link budget, and every stream alone does
-    assert sum(c.nominal_mbps() for c in p.cameras if not c.on_demand) <= p.link_budget_mbps
-    assert all(c.nominal_mbps() <= p.link_budget_mbps for c in p.cameras)
     assert "not established" in p.raw["stamps_note"] and "Frame.hpp#L105" in p.raw["stamps_note"]
     assert "not aligned" in ir.caption.lower() and "after D2C" in ir.caption
     assert "laser_usb_bringup.launch" in usb.missing_note and all(not c.missing_note for c in (rgb, depth, ir))
@@ -232,8 +230,8 @@ X3_SENSORS = {   # the ROSMASTER's vendor state topics, written out from the pin
     "joint_states": ("/joint_states", "sensor_msgs/JointState", 1.0),
     "arm_angle_update": ("/ArmAngleUpdate", "yahboomcar_msgs/ArmJoint", None),
     "edition": ("/edition", "std_msgs/Float32", 1.0), "joy_state": ("/JoyState", "std_msgs/Bool", None),
-    "depth_points": ("/camera/depth/points", "sensor_msgs/PointCloud2", None),
-    "registered_points": ("/camera/depth_registered/points", "sensor_msgs/PointCloud2", None),
+    "depth_points": ("/camera/depth/points", "sensor_msgs/PointCloud2", 15.0),
+    "registered_points": ("/camera/depth_registered/points", "sensor_msgs/PointCloud2", 15.0),
 }
 
 
@@ -277,12 +275,11 @@ def test_x3_sensors_show_their_messages_with_units():
     # /odom_raw's velocities are /vel_raw's scaled by base_node (1.1 and 0.95): labelled so
     assert [f.label for f in by["odom_raw"].fields if f.group == "twist"] == ["vx (×1.1)", "vy (×0.95)", "wz"]
     assert "1.1" in by["odom_raw"].caption and "0.95" in by["odom_raw"].caption
-    # the clouds are computed only while subscribed: sampled on demand, never subscribed on their own
-    assert {s.id for s in p.sensors if s.on_demand} == {"depth_points", "registered_points"}
+    # the clouds are subscribed on validation like every sensor, at one message per 5 s
     for sid in ("depth_points", "registered_points"):
-        assert by[sid].throttle_s is None and [f.path for f in by[sid].fields][:2] == ["width", "height"]
+        assert by[sid].throttle_s == 5.0 and [f.path for f in by[sid].fields][:2] == ["width", "height"]
     assert by["lidar_points"].throttle_s == 1.0 and ("points", "count", "") in kinds("lidar_points")
-    assert all(s.throttle_s is None for s in p.sensors if s.id != "lidar_points")
+    assert {s.id for s in p.sensors if s.throttle_s is not None} == {"lidar_points", "depth_points", "registered_points"}
 
 
 def test_rebot_sensor_fields_are_the_messages_fields():
@@ -366,14 +363,17 @@ def test_profile_loader_refuses_inconsistent_ir_cameras_and_camera_info():
             (0, lambda c: c.update(max_rate_hz=0.9), "the live bound"),
             (4, lambda c: c.update(encodings=["theora"]), "a compressed camera"),
             (4, lambda c: c.update(kind="depth", unit_m=0.001, range_m=[0.1, 1.0], encodings=["16UC1"]), "a compressed camera"),
-            (0, lambda c: c.update(max_rate_hz=10), "start by themselves take about"),
-            (1, lambda c: c.update(max_rate_hz=10), "alone, over link_budget_mbps"),
+            (1, lambda c: c.update(on_demand=True), "no on_demand: every camera is subscribed"),
             (0, lambda c: (c.pop("max_rate_hz"), c.update(stale_after_s=0.15)), "or the default 10 Hz")):
         bad = copy.deepcopy(raw)
         change(bad["cameras"][idx])
         with pytest.raises(ValueError, match=error):
             parse_profile(bad)
     assert parse_profile(raw).cameras == load("rosmaster_x3_plus").cameras
+    # a budget must hold every camera, since all start on validation (the X3's five take about 70 Mbit/s)
+    with pytest.raises(ValueError, match="all started on validation, take about 7"):
+        parse_profile(dict(copy.deepcopy(raw), link_budget_mbps=40))
+    assert parse_profile(dict(copy.deepcopy(raw), link_budget_mbps=80)).link_budget_mbps == 80
 
 
 def test_profile_loader_refuses_inconsistent_x3_sensor_keys():
@@ -384,7 +384,8 @@ def test_profile_loader_refuses_inconsistent_x3_sensor_keys():
             ("battery", lambda s: s.update(plot="scan"), "draws a sensor_msgs/LaserScan"),
             ("lidar_points", lambda s: s.update(throttle_s=0), "throttle_s is positive"),
             ("lidar_points", lambda s: s.update(throttle_s=20.0), "shorter than stale_after_s"),
-            ("depth_points", lambda s: s.update(stale_after_s=5.0), "one-message sample"),
+            ("depth_points", lambda s: s.update(stale_after_s=5.0), "shorter than stale_after_s"),
+            ("depth_points", lambda s: s.update(on_demand=True), "no on_demand: every sensor is subscribed"),
             ("joy_state", lambda s: s.update(stale_after_s=5.0), "event_only sensor has no stale_after_s"),
             ("imu", lambda s: s["fields"][2].update(mount_rpy=[0, 0, 0]), "mount_rpy is"),
             ("imu", lambda s: s["fields"][1].update(mount_rpy=[0, 0]), "mount_rpy is"),

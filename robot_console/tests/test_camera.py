@@ -137,9 +137,9 @@ def test_target_specs_mark_an_infrared_camera():
         wire = staticmethod(lambda n: n)
     specs = {s.topic: s for s in cam.target_specs(T)}
     assert [(t, s.ir, s.depth is not None, s.optional, s.on_demand, s.throttle_ms) for t, s in specs.items()] == [
-        ("/camera/rgb/image_raw", False, False, False, False, 500), ("/camera/depth/image_raw", False, True, False, True, 500),
-        ("/camera/ir/image_raw", True, False, True, True, 500), ("/usb_cam/image_raw", False, False, True, True, 500),
-        ("/usb_cam/image_raw/compressed", False, False, True, True, 200)]
+        ("/camera/rgb/image_raw", False, False, False, False, 500), ("/camera/depth/image_raw", False, True, False, False, 500),
+        ("/camera/ir/image_raw", True, False, True, False, 500), ("/usb_cam/image_raw", False, False, True, False, 500),
+        ("/usb_cam/image_raw/compressed", False, False, True, False, 200)]     # every profile camera starts by itself
     assert specs["/camera/depth/image_raw"].depth == (0.001, (0.6, 8.0))
     assert "laser_usb_bringup" in specs["/usb_cam/image_raw"].missing_note
     assert "restarted without it" in specs["/camera/ir/image_raw"].silent_note
@@ -157,9 +157,9 @@ class FakeRb:
         self.unsubs.append(sid)
 
 
-def test_camera_set_caps_each_stream_and_leaves_on_demand_streams_off():
-    """Every stream is subscribed at its rate cap; an on-demand one only for the wire check's sample (it is
-    otherwise off, a neutral state); a stream advertised but never delivering is explained when it has a note."""
+def test_camera_set_caps_each_stream_and_leaves_untied_previews_off():
+    """Every stream is subscribed at its rate cap; an untied preview (on_demand) stays off, a neutral state; a stream
+    advertised but never delivering is explained when it has a note; any stream can be stopped."""
     specs = [cam.StreamSpec("/a", "sensor_msgs/Image", 2.0, throttle_ms=100),
              cam.StreamSpec("/b", "sensor_msgs/Image", 2.0, throttle_ms=200, on_demand=True),
              cam.StreamSpec("/c", "sensor_msgs/Image", 0.5, silent_note="the driver may run without it.")]
@@ -169,11 +169,8 @@ def test_camera_set_caps_each_stream_and_leaves_on_demand_streams_off():
     assert cs.streams["/b"].state() == cam.OFF and "on request" in cs.streams["/b"].status_text()
     s = cs.streams["/c"]
     assert s.state(s.started + 1.0) == cam.SILENT and "may run without it" in s.status_text(s.started + 1.0)
-    rb = FakeRb()
-    cs = cam.CameraSet(rb, specs, on_demand=True)
-    assert ("/b", 200) in rb.subs
-    cs.stop("/b")
-    assert rb.unsubs == ["sub:/b"] and cs.streams["/b"].sid is None
+    cs.stop("/a")
+    assert rb.unsubs == ["sub:/a"] and cs.streams["/a"].sid is None
     assert [s.throttle_ms for s in cam.untied_specs(type("G", (), {"cameras": lambda self: {"/x": "sensor_msgs/Image"}})())] == [500]
 
 
@@ -700,27 +697,6 @@ def test_teleop_pauses_on_a_late_time_answer():
     c, rb, cs, s = congestion_set()
     rb.late = 1.5
     for _ in range(20):
-        c.t += 0.5
-        rb.settle()
-        s.offer(rgb_frame(c.t + 5000 - 0.1))
-        cs.poll()
-        if cs.paused:
-            break
-    assert cs.paused and "took 1.5 s" in cs.paused
-
-
-def test_a_grace_window_hides_only_what_it_covers():
-    """A question sent inside a grace window (a sample the operator asked for) is not counted; one sent after it is."""
-    c, rb, cs, s = congestion_set()
-    rb.late = 1.5
-    cs.clock.grace = (c.t, c.t + 2.2)
-    for _ in range(4):
-        c.t += 0.5
-        rb.settle()
-        s.offer(rgb_frame(c.t + 5000 - 0.1))
-        cs.poll()
-    assert not cs.paused
-    for _ in range(12):
         c.t += 0.5
         rb.settle()
         s.offer(rgb_frame(c.t + 5000 - 0.1))

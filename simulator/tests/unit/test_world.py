@@ -434,3 +434,20 @@ def test_every_registry_robot_loads_as_one_body(rid):
     for j in range(m.njnt):
         if m.jnt_type[j] in (mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE):
             assert rm.home[m.joint(j).name] == d.qpos[m.jnt_qposadr[j]], m.joint(j).name
+
+
+def test_shadows_are_sized_by_the_scene_not_by_parked_objects():
+    import sensors
+
+    w, _ = make_world()
+    bare = w.scene_extent
+    assert bare == pytest.approx(w.model.stat.extent)
+    # an object parked SUNK_DEPTH under the floor inflates the composed world's extent
+    w.spec.worldbody.add_body(name="parked", pos=[0, 0, -worktop_objects.SUNK_DEPTH]).add_geom(
+        type=mujoco.mjtGeom.mjGEOM_SPHERE, size=[0.05, 0, 0])
+    inflated = w.spec.compile()
+    assert inflated.stat.extent > 2 * bare
+    clip = sensors.shadow_clip(inflated, w.scene_extent)
+    assert clip == pytest.approx(bare * inflated.vis.map.shadowclip)
+    assert sensors.shadow_clip(inflated, None) == pytest.approx(
+        inflated.stat.extent * inflated.vis.map.shadowclip)

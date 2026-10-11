@@ -271,3 +271,23 @@ def test_a_point_cloud_is_built_only_while_subscribed(astra):
     cam._frame(hd, payload)
     assert len(node.sent["/camera/depth_registered/points"]) == 1
     assert len(node.sent["/camera/rgb/image_raw"]) == 2
+
+
+def test_point_clouds_have_the_drivers_padded_layout(astra):
+    """setPointCloud2FieldsByString(1, "xyz") pads xyz to 16 bytes, and the coloured cloud
+    adds rgb after the padding (the clouds' notes in ros.yml)."""
+    node, cam = astra
+    hd, payload = frame(cam, 1.0)
+    cam._frame(hd, payload)
+    for topic, step, names in (("/camera/depth/points", 16, ["x", "y", "z"]),
+                               ("/camera/depth_registered/points", 20, ["x", "y", "z", "rgb"])):
+        pc = node.sent[topic][-1]
+        assert pc.point_step == step and pc.row_step == step * pc.width, topic
+        assert [f.name for f in pc.fields] == names
+        assert [f.offset for f in pc.fields] == [0, 4, 8, 16][:len(names)]
+        pts = np.frombuffer(pc.data, np.uint8).reshape(pc.width, step)
+        assert not pts[:, 12:16].any()                     # the padding stays zero
+        assert np.allclose(pts[:, 8:12].copy().view(np.float32), 1.0)   # z
+    pts = np.frombuffer(node.sent["/camera/depth_registered/points"][-1].data,
+                        np.uint8).reshape(-1, 20)
+    assert (pts[:, 16:20] == [128, 128, 128, 0]).all()     # b, g, r, 0

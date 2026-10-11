@@ -174,10 +174,9 @@ def test_cameras_show_live_then_stale_in_the_window(fake):
     assert seen[89][0] == "stale" and seen[89][1].startswith("stale: last frame"), seen
 
 
-def test_x3_teleop_streams_only_its_live_camera_at_its_rate_cap(fake):
-    """teleop.sh on the ROSMASTER: once the target is validated only the colour camera is subscribed, at its profile
-    cap (2 frames/s) with queue_length 1; the on-demand depth, infrared and USB streams are shown off (only the view
-    page's user starts them)."""
+def test_x3_teleop_streams_every_camera_at_its_rate_cap(fake):
+    """teleop.sh on the ROSMASTER: once the target is validated every profile camera is subscribed and live, each at
+    its profile cap (2 frames/s, the USB JPEG 5) with queue_length 1."""
     p = load("rosmaster_x3_plus")
     srv = fake(wire_spec(p, include_optional=True))
     seen, subs = {}, {}
@@ -189,12 +188,11 @@ def test_x3_teleop_streams_only_its_live_camera_at_its_rate_cap(fake):
         subs.update({sid: t for c in srv.clients if not c.closed for sid, t in c.subs.items()})
     script.hooks = {35: look}
     assert app.run() == 0
-    assert seen["/camera/rgb/image_raw"][0] == "live"
-    for t in ("/camera/depth/image_raw", "/camera/ir/image_raw", "/usb_cam/image_raw"):
-        assert seen[t][0] == "off" and "on request" in seen[t][1], seen
-    assert set(subs.values()) & {c.topic for c in p.cameras} == {"/camera/rgb/image_raw"}
-    tied = [o for o in srv.ops_of("subscribe") if o["id"] in subs]
-    assert [(o["topic"], o["throttle_rate"], o["queue_length"]) for o in tied] == [("/camera/rgb/image_raw", 500, 1)]
+    assert {t: v[0] for t, v in seen.items() if t in {c.topic for c in p.cameras}} == {c.topic: "live" for c in p.cameras}, seen
+    assert set(subs.values()) & {c.topic for c in p.cameras} == {c.topic for c in p.cameras}
+    tied = [o for o in srv.ops_of("subscribe") if o["id"] in subs and o["topic"] in {c.topic for c in p.cameras}]
+    assert sorted((o["topic"], o["throttle_rate"], o["queue_length"]) for o in tied) == sorted(
+        (c.topic, c.throttle_ms(), 1) for c in p.cameras)
 
 
 def test_input_loss_stops_and_exits_nonzero(fake):

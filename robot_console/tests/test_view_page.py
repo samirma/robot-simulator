@@ -244,9 +244,6 @@ def test_every_profile_camera_is_shown_live_then_stale(view, pid):
     srv, page = view(wire_spec(p, include_optional=True))     # an optional camera is on the wire only with this
     cams = page.locator('[data-testid="camera"]')
     assert sorted(cams.evaluate_all("els => els.map(e => e.dataset.topic)")) == sorted(c.topic for c in p.cameras)
-    for c in p.cameras:                                       # an on-demand stream is live once its user starts it
-        if c.on_demand:
-            page.locator(f'[data-testid="camera"][data-topic="{c.topic}"] [data-testid="camera-toggle"]').click()
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')",
                            timeout=8000)
     srv.paused.add(p.cameras[0].topic)
@@ -376,7 +373,6 @@ def test_depth_camera_frames_in_another_encoding_are_unsupported(view):
 X3 = "rosmaster_x3_plus"
 X3_CAMS = ["/camera/rgb/image_raw", "/camera/depth/image_raw", "/camera/ir/image_raw", "/usb_cam/image_raw",
            "/usb_cam/image_raw/compressed"]
-X3_ON_DEMAND = X3_CAMS[1:]
 
 
 def cam_card(page, topic):
@@ -388,8 +384,18 @@ def cam_states(page):
 
 
 def start_streams(page, topics):
+    """Start each stream that is off (its toggle offers to start it)."""
     for t in topics:
-        cam_card(page, t).locator('[data-testid="camera-toggle"]').click()
+        b = cam_card(page, t).locator('[data-testid="camera-toggle"]')
+        if not b.inner_text().startswith("Stop"):
+            b.click()
+
+
+def stop_streams(page, topics):
+    for t in topics:
+        b = cam_card(page, t).locator('[data-testid="camera-toggle"]')
+        assert b.inner_text().startswith("Stop"), t
+        b.click()
 
 
 def camera_subs(srv, topic):
@@ -398,9 +404,9 @@ def camera_subs(srv, topic):
 
 def test_x3_shows_astra_colour_depth_infrared_and_arm_camera(view):
     """ROSMASTER X3 PLUS: the Astra Pro Plus' colour, depth and infrared streams and the arm's USB camera (raw and as
-    JPEG) are five cards. The colour camera is live at once, capped at 2 frames/s; the others are off (a neutral
-    state, no subscription) until the user starts them, then live at their caps, and off again when stopped.
-    Every subscription asks rosbridge for queue_length 1, so no backlog of frames builds up on the server.
+    JPEG) are five cards, all subscribed and live once the target is validated, with no click, each at its cap (2
+    frames/s, the JPEG 5). Every subscription asks rosbridge for queue_length 1, so no backlog of frames builds up on
+    the server. Each card can stop its stream (OFF, saying so, no current age) and start it again.
     The depth card is a false-colour map over 0.6-8 m, the infrared one grey with its note; each card names its
     CameraInfo topic. Showing them sends nothing but the start-up stop."""
     srv, page = view(wire_spec(load(X3), include_optional=True))
@@ -408,21 +414,12 @@ def test_x3_shows_astra_colour_depth_infrared_and_arm_camera(view):
     cams = page.locator('[data-testid="camera"]')
     assert cams.evaluate_all("els => els.map(e => [e.dataset.topic, e.dataset.kind])") == [
         [X3_CAMS[0], "color"], [X3_CAMS[1], "depth"], [X3_CAMS[2], "ir"], [X3_CAMS[3], "color"], [X3_CAMS[4], "color"]]
-    page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[0]}\"]').dataset.state === 'live'", timeout=8000)
-    page.wait_for_timeout(500)
-    assert cam_states(page) == ["live", "off", "off", "off", "off"]
-    assert [camera_subs(srv, t) for t in X3_ON_DEMAND] == [[], [], [], []]       # nothing is sent for an off stream
-    assert [(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, X3_CAMS[0])] == [(500, 1)]
-    off = cam_card(page, X3_CAMS[1])
-    assert "OFF" in off.locator('[data-testid="camera-state"]').inner_text()
-    assert "only while you have it started" in off.locator(".ov-detail").inner_text()
-    assert "dim" in off.locator('[data-testid="camera-state"]').get_attribute("class")      # not an alarm
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=8000)
+    assert [[(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, t)] for t in X3_CAMS] == [[(500, 1)]] * 4 + [[(200, 1)]]
+    assert {o["queue_length"] for o in srv.ops_of("subscribe")} == {1}                 # sensors too
     assert [cam_card(page, t).locator('[data-testid="camera-rate"]').inner_text() for t in X3_CAMS] == [
         "≤ 2 fps", "≤ 2 fps", "≤ 2 fps", "≤ 2 fps", "≤ 5 fps"]
-    start_streams(page, X3_ON_DEMAND)
-    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=8000)
-    assert [[(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, t)] for t in X3_ON_DEMAND] == [[(500, 1)]] * 3 + [[(200, 1)]]
-    assert {o["queue_length"] for o in srv.ops_of("subscribe")} == {1}                 # sensors too
+    assert [cam_card(page, t).locator('[data-testid="camera-toggle"]').inner_text() for t in X3_CAMS] == ["Stop stream"] * 5
     depth = cam_card(page, X3_CAMS[1]).locator('[data-testid="depth-legend"]')
     assert (depth.locator('[data-testid="depth-near"]').inner_text(), depth.locator('[data-testid="depth-far"]').inner_text()) == ("0.60 m", "8.00 m")
     ir = cam_card(page, X3_CAMS[2])
@@ -430,15 +427,21 @@ def test_x3_shows_astra_colour_depth_infrared_and_arm_camera(view):
     assert [cam_card(page, t).locator('[data-testid="camera-info"]').inner_text() for t in X3_CAMS[:4]] == [
         "info /camera/rgb/camera_info", "info /camera/depth/camera_info", "info /camera/ir/camera_info", "info /usb_cam/camera_info"]
     assert "mono16" in ir.locator(".cam-meta").inner_text()
-    # the fake honours throttle_rate as rosbridge does: an on-demand stream arrives at most twice a second
+    # the fake honours throttle_rate as rosbridge does: a stream arrives at most twice a second
     n0 = page.evaluate(f"RC.state.streams.find(s => s.topic === '{X3_CAMS[1]}').frames")
     page.wait_for_timeout(2000)
     assert page.evaluate(f"RC.state.streams.find(s => s.topic === '{X3_CAMS[1]}').frames") - n0 <= 5
-    cam_card(page, X3_CAMS[1]).locator('[data-testid="camera-toggle"]').click()
+    stop_streams(page, [X3_CAMS[1]])
     page.wait_for_function(f"document.querySelector('[data-topic=\"{X3_CAMS[1]}\"]').dataset.state === 'off'", timeout=3000)
     sid = camera_subs(srv, X3_CAMS[1])[0]["id"]
     assert sid in {o["id"] for o in srv.ops_of("unsubscribe")}
+    off = cam_card(page, X3_CAMS[1])
+    assert "you stopped this stream" in off.locator(".ov-detail").inner_text()
+    assert "dim" in off.locator('[data-testid="camera-state"]').get_attribute("class")      # not an alarm
     assert cam_card(page, X3_CAMS[0]).get_attribute("data-state") == "live"
+    start_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    assert len(camera_subs(srv, X3_CAMS[1])) == 2
     only_startup(srv, page, X3)
 
 
@@ -588,10 +591,9 @@ def test_a_steady_lag_below_the_limit_never_flickers_on_the_page(view, lag):
 
 def test_a_stopped_stream_shows_no_current_age(view):
     srv, page = view(wire_spec(load(X3)))
-    start_streams(page, [X3_CAMS[1]])
     page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
     assert "age " in cam_card(page, X3_CAMS[1]).locator(".cam-meta").inner_text()
-    start_streams(page, [X3_CAMS[1]])                       # stop it
+    stop_streams(page, [X3_CAMS[1]])
     page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
     page.wait_for_timeout(300)
     meta = cam_card(page, X3_CAMS[1]).locator(".cam-meta").inner_text()
@@ -628,25 +630,6 @@ def test_a_congested_link_pauses_the_cameras_until_resumed(view):
     only_startup(srv, page, X3)
 
 
-def test_an_operator_sample_does_not_pause_the_cameras(view):
-    """A point-cloud sample's own burst delays the time answers: questions sent while the sample is expected on the
-    link (a bounded grace window) are not counted, so the operator's click does not pause the cameras; a slow link
-    after that window still does."""
-    srv, page = view(wire_spec(load(X3)))
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
-    srv.time_reply_delay = 1.4                              # the sample's burst holds the time answers back
-    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
-    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'sampled'", timeout=8000)
-    grace = page.evaluate("RC.clock().grace")
-    assert 1.0 <= grace[1] - grace[0] <= 5.0
-    page.wait_for_function(f"(performance.timeOrigin + performance.now()) / 1000 > {grace[1]}", timeout=8000)
-    srv.time_reply_delay = 0.0
-    page.wait_for_timeout(2500)
-    assert page.locator('[data-testid="congestion"]').is_hidden()
-    srv.time_reply_delay = 1.4                              # a slow link after the window: congestion
-    assert "took 1.4 s" in congested(page)
-
-
 def test_time_unanswered_while_frames_arrive_is_congestion(view):
     """The worst backlog: the time answer never comes within 3 s while frames keep arriving. That is congestion (a
     warning and a pause), never a neutral LAG UNKNOWN."""
@@ -659,10 +642,12 @@ def test_time_unanswered_while_frames_arrive_is_congestion(view):
 
 
 def test_a_backlog_present_before_a_stream_starts_is_never_live(view):
-    """No baseline is learnt from the frames: an on-demand stream started while its frames are already 2.5 s late
+    """No baseline is learnt from the frames: a stream (re)started while its frames are already 2.5 s late
     (with the link backed up) is never live; the cameras are paused."""
     srv, page = view(wire_spec(load(X3)))
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    stop_streams(page, [X3_CAMS[1]])
+    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
     srv.stamp_lag[X3_CAMS[1]] = 2.5
     srv.time_reply_delay = 1.3
     start_streams(page, [X3_CAMS[1]])
@@ -713,14 +698,11 @@ def test_without_a_clock_reference_lag_is_unknown_never_zero(view, fake, why):
 
 
 def test_the_stop_never_waits_behind_full_size_frames(view, monkeypatch):
-    """With every X3 stream sending full-size 640x480 frames (the link budget lifted for this stress), releasing the
-    motion key delivers the stop at once: frames are only stored when they arrive and decoded later, so input is
-    handled between them."""
-    serve_variants(monkeypatch, dataclasses.replace(load(X3), link_budget_mbps=None))
+    """With every X3 stream (all on by default) sending full-size 640x480 frames, releasing the motion key delivers
+    the stop at once: frames are only stored when they arrive and decoded later, so input is handled between them."""
     srv, page = view(wire_spec(load(X3), include_optional=True, camera_rate=30))
     for t in X3_CAMS:
         srv.frame_size[t] = (640, 480)
-    start_streams(page, X3_ON_DEMAND)
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=15000)
     started(page)
     p = load(X3)
@@ -738,42 +720,41 @@ def test_the_stop_never_waits_behind_full_size_frames(view, monkeypatch):
     assert worst < 0.25, worst
 
 
-def test_x3_link_budget_refuses_a_stream_beyond_it(view, fake):
-    """The X3's camera streams may take 40 Mbit/s together: with colour (about 20 Mbit/s at 640x480, 2 frames/s) and
-    depth (about 13) running, starting infrared (about 13) is refused with the numbers and nothing is subscribed;
-    after depth is stopped, infrared starts. The page shows the link's measured load and the cameras' share."""
+def test_a_link_budget_refuses_restarting_a_stream_beyond_it(view, fake):
+    """Where a profile sets a link budget (the X3 sets none; here 45 Mbit/s for the test), restarting a stopped stream
+    that would take the cameras over it is refused with the numbers and nothing is subscribed; with other streams
+    stopped it starts. The page shows the link's measured load and the cameras' share."""
     srv = fake(wire_spec(load(X3), include_optional=True))
     for t in X3_CAMS:
         srv.frame_size[t] = (640, 480)
     srv, page = view(srv=srv)
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
-    start_streams(page, [X3_CAMS[1]])
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=10000)
+    page.evaluate("RC.state.target.profile.link_budget_mbps = 45")
+    stop_streams(page, [X3_CAMS[2]])
+    page.wait_for_function(cam_state_is(X3_CAMS[2], "off"), timeout=3000)
     start_streams(page, [X3_CAMS[2]])
     page.wait_for_timeout(400)
     ir = cam_card(page, X3_CAMS[2])
-    assert ir.get_attribute("data-state") == "off" and camera_subs(srv, X3_CAMS[2]) == []
+    assert ir.get_attribute("data-state") == "off" and len(camera_subs(srv, X3_CAMS[2])) == 1
     detail = ir.locator(".ov-detail").inner_text()
-    assert "link budget of 40 Mbit/s" in detail and "Stop another stream first" in detail, detail
+    assert "link budget of 45 Mbit/s" in detail and "Stop another stream first" in detail, detail
     rate = page.locator('[data-testid="link-rate"]')
     page.wait_for_function("parseFloat(document.querySelector('[data-testid=link-rate]').dataset.mbps) > 10", timeout=6000)
-    assert "of 40 Mbit/s budget" in rate.inner_text()
-    start_streams(page, [X3_CAMS[1]])                     # stop depth
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
+    assert "of 45 Mbit/s budget" in rate.inner_text()
+    stop_streams(page, [X3_CAMS[1], X3_CAMS[3]])          # depth and the raw USB stream
+    page.wait_for_function(cam_state_is(X3_CAMS[3], "off"), timeout=3000)
     start_streams(page, [X3_CAMS[2]])
     page.wait_for_function(cam_state_is(X3_CAMS[2], "live"), timeout=8000)
-    assert len(camera_subs(srv, X3_CAMS[2])) == 1
+    assert len(camera_subs(srv, X3_CAMS[2])) == 2
 
 
 def test_camera_cards_do_not_overflow_or_overlap(view, fake):
-    """At 1500 px with all X3 streams started (budget lifted), no text of a camera card overflows the card, and the
+    """At 1500 px with all X3 streams on (as by default), no text of a camera card overflows the card, and the
     meta line overlaps neither the caption nor the legend."""
     srv = fake(wire_spec(load(X3), include_optional=True))
     for t in X3_CAMS:
         srv.frame_size[t] = (640, 480)
     srv, page = view(srv=srv, viewport=(1500, 1000))
-    page.evaluate("RC.state.target.profile.link_budget_mbps = null")
-    start_streams(page, X3_ON_DEMAND)
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => ['live','lagging','unknown'].includes(e.dataset.state))", timeout=15000)
     page.wait_for_timeout(600)
     bad = page.evaluate("""() => { const out = [];
@@ -790,23 +771,13 @@ def test_camera_cards_do_not_overflow_or_overlap(view, fake):
     assert bad == [], bad
 
 
-def test_x3_usb_camera_as_jpeg_is_decoded_and_cheap_on_the_budget(view, fake):
-    """The arm's USB camera through image_transport's compressed plugin (sensor_msgs/CompressedImage, JPEG): the
-    browser decodes it, and it counts for a tenth of the raw stream against the link budget, so it starts beside
-    colour and depth where the raw USB stream would not; a frame in another format is unsupported."""
+def test_x3_usb_camera_as_jpeg_is_decoded(view, fake):
+    """The arm's USB camera through image_transport's compressed plugin (sensor_msgs/CompressedImage, JPEG), on by
+    default at its 5 frames/s cap: the browser decodes it; a frame in another format is unsupported."""
     srv = fake(wire_spec(load(X3), include_optional=True))
-    for t in X3_CAMS[:4]:
-        srv.frame_size[t] = (640, 480)
     srv, page = view(srv=srv)
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
-    start_streams(page, [X3_CAMS[1]])
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
-    start_streams(page, [X3_CAMS[3]])                       # raw USB: over the budget
-    page.wait_for_timeout(300)
-    assert cam_card(page, X3_CAMS[3]).get_attribute("data-state") == "off" and camera_subs(srv, X3_CAMS[3]) == []
     jpeg = cam_card(page, X3_CAMS[4])
     assert jpeg.get_attribute("data-compressed") == "true" and "COMPRESSED" in jpeg.inner_text().upper()
-    start_streams(page, [X3_CAMS[4]])
     page.wait_for_function(cam_state_is(X3_CAMS[4], "live"), timeout=8000)
     sub = camera_subs(srv, X3_CAMS[4])[0]
     assert (sub["type"], sub["throttle_rate"], sub["queue_length"]) == ("sensor_msgs/CompressedImage", 200, 1)
@@ -815,28 +786,6 @@ def test_x3_usb_camera_as_jpeg_is_decoded_and_cheap_on_the_budget(view, fake):
     assert "jpeg" in jpeg.locator(".cam-meta").inner_text()
     srv.frame_encoding[X3_CAMS[4]] = "rgb8; theora"
     page.wait_for_function(cam_state_is(X3_CAMS[4], "unsupported"), timeout=8000)
-
-
-def test_a_point_cloud_sample_counts_against_the_link_budget(view, fake):
-    """A cloud is megabytes in one burst: with colour and depth taking about 33 of the X3's 40 Mbit/s it is refused,
-    saying why; with only colour (about 20, half the budget) it is sampled. The budget line warns near the budget."""
-    srv = fake(wire_spec(load(X3)))
-    for t in X3_CAMS[:2]:
-        srv.frame_size[t] = (640, 480)
-    srv, page = view(srv=srv)
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
-    start_streams(page, [X3_CAMS[1]])
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
-    page.wait_for_function("document.querySelector('[data-testid=link-rate]').dataset.level === 'near'", timeout=6000)
-    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
-    page.wait_for_timeout(300)
-    assert [o for o in srv.ops_of("subscribe") if o["topic"] == "/camera/depth/points"] == []
-    meta = sensor(page, "depth_points").locator('[data-testid="sensor-meta"]').inner_text()
-    assert "Not sampled" in meta and "MB in one burst" in meta and "Stop the depth" in meta
-    start_streams(page, [X3_CAMS[1]])                       # stop depth
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "off"), timeout=3000)
-    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
-    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'sampled'", timeout=8000)
 
 
 def test_use_sim_time_unknown_until_rosapi_answers(view, fake):
@@ -1060,25 +1009,24 @@ def test_x3_sensor_panel_shows_every_vendor_sensor_read_only(view):
     """ROSMASTER X3 PLUS: every vendor sensor topic of the profile in profile order, each periodic one reporting, the
     battery voltage also as the headline above the cameras. The arm echo and gamepad state are ordinary event
     publishers (no latching): they wait in a neutral EVENT-ONLY state, counted apart, and show their last event
-    once one comes. The point clouds, which the Astra driver computes only while they have a subscriber, are never
-    subscribed on load. The page only subscribes, and sends nothing but base motion's start-up stop."""
+    once one comes. The point clouds are subscribed on load like the rest, at one message per 5 s. The page only
+    subscribes, and sends nothing but base motion's start-up stop."""
     srv, page = x3_sensors(view)
     ids = [s.id for s in load(X3).sensors]
     assert page.locator('[data-testid="sensor"]').evaluate_all("els => els.map(e => e.dataset.sensor)") == ids
     clouds = ("depth_points", "registered_points")
     page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every((e) => "
-                           "['live','event','off'].includes(e.dataset.state))", timeout=15000)
+                           "['live','event'].includes(e.dataset.state))", timeout=15000)
     assert sensor_state(page, "arm_angle_update") == "event" and sensor_state(page, "joy_state") == "event"
     assert "EVENT-ONLY" in sensor(page, "joy_state").locator('[data-testid="sensor-state"]').inner_text()
     assert "(normal)" in sensor(page, "joy_state").locator('[data-testid="sensor-meta"]').inner_text()
-    assert [sensor_state(page, c) for c in clouds] == ["off", "off"]
-    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "11 of 11 reporting · 2 event-only (0 seen) · 2 on demand"
+    assert [sensor_state(page, c) for c in clouds] == ["live", "live"]
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "13 of 13 reporting · 2 event-only (0 seen)"
     srv.emit("/JoyState")
     page.wait_for_function("document.querySelector('[data-sensor=joy_state]').dataset.state === 'lastevent'", timeout=5000)
     assert "LAST EVENT" in sensor(page, "joy_state").locator('[data-testid="sensor-state"]').inner_text()
     assert sval(page, "joy_state", "active") == "true"
-    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "11 of 11 reporting · 2 event-only (1 seen) · 2 on demand"
-    assert "NOT SAMPLED" in sensor(page, clouds[0]).locator('[data-testid="sensor-state"]').inner_text()
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == "13 of 13 reporting · 2 event-only (1 seen)"
     head = page.locator('[data-testid="headline"]')
     assert head.count() == 1 and head.get_attribute("data-sensor") == "battery"
     assert head.locator('[data-testid="headline-value"]').inner_text() == "12.3" and "V" in head.inner_text()
@@ -1087,48 +1035,63 @@ def test_x3_sensor_panel_shows_every_vendor_sensor_read_only(view):
                          "document.querySelector('[data-testid=cameras]')) & Node.DOCUMENT_POSITION_FOLLOWING")
     page.wait_for_timeout(500)
     subs = {o["topic"]: o for o in srv.ops_of("subscribe")}
-    assert {s.topic for s in load(X3).sensors if not s.on_demand} <= set(subs)
-    assert not set(X3_CLOUDS) & set(subs)                                   # never on load
+    assert {s.topic for s in load(X3).sensors} <= set(subs)
+    assert [subs[t]["throttle_rate"] for t in X3_CLOUDS] == [5000, 5000]
     assert subs["/point_cloud"]["throttle_rate"] == 1000 and subs["/voltage"]["throttle_rate"] == 100
     only_startup(srv, page, X3)
 
 
-def test_x3_point_clouds_are_sampled_once_on_request(view):
-    """'Sample once' subscribes to a cloud, keeps its first message and unsubscribes at once, so the robot computes
-    it only for that moment; the card then shows a snapshot (SAMPLED, never live or stale) of the cloud's size as
-    the driver publishes it (height 1, width = the valid points, dense)."""
+def test_x3_point_clouds_report_live_and_can_be_stopped(view):
+    """Both clouds are subscribed on validation, with no click, at one message per 5 s with queue_length 1, and show
+    the cloud's size as the driver publishes it (height 1, width = the valid points, dense). Each card can stop its
+    cloud (STOPPED, unsubscribed) and start it again; a congestion pause stops them with the cameras and the resume
+    starts them again."""
     srv, page = x3_sensors(view)
     for sid, topic, frame, step in (("depth_points", X3_CLOUDS[0], "camera_depth_optical_frame", "16"),
                                     ("registered_points", X3_CLOUDS[1], "camera_color_optical_frame", "20")):
-        sensor(page, sid).locator('[data-testid="sensor-sample"]').click()
-        page.wait_for_function(f"document.querySelector('[data-sensor={sid}]').dataset.state === 'sampled'", timeout=8000)
+        page.wait_for_function(f"document.querySelector('[data-sensor={sid}]').dataset.state === 'live'", timeout=8000)
         subs = [o for o in srv.ops_of("subscribe") if o["topic"] == topic]
-        # one message only: rosbridge may send no second one before the unsubscribe (a cloud is megabytes)
-        assert len(subs) == 1 and (subs[0]["throttle_rate"], subs[0]["queue_length"]) == (3_600_000, 1)
-        assert srv.wait_for(lambda: subs[0]["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+        assert len(subs) == 1 and (subs[0]["throttle_rate"], subs[0]["queue_length"]) == (5000, 1)
         assert [sval(page, sid, f) for f in ("height", "is_dense", "point_step", "frame_id")] == ["1", "true", step, frame]
         assert int(sval(page, sid, "width")) > 200_000
-        assert "SAMPLED" in sensor(page, sid).locator('[data-testid="sensor-state"]').inner_text()
-        assert "not live" in sensor(page, sid).locator('[data-testid="sensor-meta"]').inner_text()
+        assert "at most one per 5 s" in sensor(page, sid).locator('[data-testid="sensor-meta"]').inner_text()
+    page.wait_for_timeout(2000)
+    assert all(1 <= srv.delivered.get(t, 0) <= 2 for t in X3_CLOUDS)      # the throttle holds: one per 5 s
+    toggle = sensor(page, "depth_points").locator('[data-testid="sensor-toggle"]')
+    assert toggle.inner_text() == "Stop"
+    toggle.click()
+    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'off'", timeout=3000)
+    sub = next(o for o in srv.ops_of("subscribe") if o["topic"] == X3_CLOUDS[0])
+    assert srv.wait_for(lambda: sub["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
+    assert "STOPPED" in sensor(page, "depth_points").locator('[data-testid="sensor-state"]').inner_text()
+    toggle.click()
+    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'live'", timeout=8000)
+    srv.time_reply_delay = 1.3                              # the link backs up: cameras and clouds pause
+    congested(page)
+    page.wait_for_function("['depth_points', 'registered_points'].every(i => "
+                           "document.querySelector(`[data-sensor=${i}]`).dataset.state === 'paused')", timeout=3000)
+    srv.time_reply_delay = 0.0
     page.wait_for_timeout(1500)
-    assert [len([o for o in srv.ops_of("subscribe") if o["topic"] == t]) for t in X3_CLOUDS] == [1, 1]   # nothing re-subscribed
-    # the clouds publish continuously (10 Hz on this wire, 30 on the robot) while subscribed: exactly one reached the page
-    assert [srv.delivered.get(t, 0) for t in X3_CLOUDS] == [1, 1]
-    assert page.evaluate("RC.state.sensors.filter(s => s.def.on_demand).map(s => s.count)") == [1, 1]
-    assert sensor_state(page, "depth_points") == "sampled"
+    page.locator('[data-testid="resume-cameras"]').click()
+    page.wait_for_function("['depth_points', 'registered_points'].every(i => "
+                           "document.querySelector(`[data-sensor=${i}]`).dataset.state === 'live')", timeout=8000)
+    assert [len([o for o in srv.ops_of("subscribe") if o["topic"] == t]) for t in X3_CLOUDS] == [3, 2]
     only_startup(srv, page, X3)
 
 
-def test_x3_cloud_sample_without_a_message_unsubscribes_and_says_so(view, fake, monkeypatch):
-    srv = fake(wire_spec(load(X3)))
-    srv.paused.add(X3_CLOUDS[0])
-    srv, page = view(srv=srv)
-    page.evaluate("RC.sampleTimeoutMs = 1500")
-    sensor(page, "depth_points").locator('[data-testid="sensor-sample"]').click()
-    page.wait_for_function("document.querySelector('[data-sensor=depth_points]').dataset.state === 'nomessage'", timeout=8000)
-    sub = next(o for o in srv.ops_of("subscribe") if o["topic"] == X3_CLOUDS[0])
-    assert srv.wait_for(lambda: sub["id"] in {o["id"] for o in srv.ops_of("unsubscribe")}, 3.0)
-    assert "unsubscribed" in sensor(page, "depth_points").locator('[data-testid="sensor-meta"]').inner_text()
+def test_x3_every_camera_and_sensor_is_on_without_a_click(view):
+    """The user's default: on a validated X3 page all five cameras read LIVE and every sensor reports (both point
+    clouds included), with nothing clicked."""
+    srv, page = view(wire_spec(load(X3), include_optional=True))
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')", timeout=10000)
+    assert cam_states(page) == ["live"] * 5
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every(e => "
+                           "['live', 'event'].includes(e.dataset.state))", timeout=10000)
+    assert [sensor_state(page, c) for c in ("depth_points", "registered_points")] == ["live", "live"]
+    assert page.locator('[data-testid="sensor-summary"]').inner_text().startswith("13 of 13 reporting")
+    assert {o["topic"] for o in srv.ops_of("subscribe")} >= set(X3_CAMS) | set(X3_CLOUDS)
+    assert page.locator('[data-testid="sensor-sample"]').count() == 0
+    only_startup(srv, page, X3)
 
 
 def test_x3_sensor_values_are_formatted_honestly(view):
@@ -3229,9 +3192,10 @@ def test_a_refusal_is_cleared_when_the_cameras_pause(view, fake):
     for t in X3_CAMS:
         srv.frame_size[t] = (640, 480)
     srv, page = view(srv=srv)
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
-    start_streams(page, [X3_CAMS[1]])
-    page.wait_for_function(cam_state_is(X3_CAMS[1], "live"), timeout=8000)
+    page.wait_for_function(cam_state_is(X3_CAMS[2], "live"), timeout=8000)
+    page.evaluate("RC.state.target.profile.link_budget_mbps = 45")         # a budget the running streams fill
+    stop_streams(page, [X3_CAMS[2]])
+    page.wait_for_function(cam_state_is(X3_CAMS[2], "off"), timeout=3000)
     start_streams(page, [X3_CAMS[2]])
     page.wait_for_timeout(400)
     ir = cam_card(page, X3_CAMS[2])

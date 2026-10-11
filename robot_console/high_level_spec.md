@@ -108,8 +108,7 @@ teleop.sh [--robot <id>] [--namespace <name>] [--url ws://…]
   The input facility must detect held/released keys; key repeat alone is not evidence
   that a key remains held. Head input stops changing its target on release.
 * **Surface.** `teleop.sh` opens a local window that owns keyboard focus and shows the
-  camera streams (§2.3); a camera the profile marks on demand is shown off there (only the
-  view page's user starts it). Cameras paused on congestion (§2.3) are resumed with `C`. Focus loss is that window losing keyboard focus, input loss is the
+  camera streams (§2.3), every profile camera subscribed once the target is validated. Cameras paused on congestion (§2.3) are resumed with `C`. Focus loss is that window losing keyboard focus, input loss is the
   key-event source ending or failing, and closing the window is an ordinary exit.
 * **Speed.** A held motion key commands its profile's recorded teleoperation speed for
   that axis, never above documented limits.
@@ -141,8 +140,7 @@ view.sh [--url ws://…] [--robot <id>] [--namespace <name>]
   (§2.3), only the bounded controls its profile's catalog lists (§1.1), such as a head
   position, an arm trajectory, a gripper position or a listed bounded action, the profile's
   read-only sensors (§2.5) and, for a teleoperable profile, the base motion below. It
-  subscribes to nothing but the target's cameras and its profile's sensors (an on-demand
-  camera or sensor only on its user's request), and it offers no generic topic publication or
+  subscribes to nothing but the target's cameras and its profile's sensors, and it offers no generic topic publication or
   subscription. A subscription is not a command: it is never a "send" in the sense below.
 * Robot selection, and namespace selection where supported, follows §1.1. Without a
   validated target the page shows the reason and a robot selector, and offers no controls.
@@ -227,7 +225,10 @@ encodings are the codecs it documents, jpeg or png; the browser decodes them, te
 pygame), without substituting a simulated image source. Each stream shows live images and a visible unavailable, unsupported,
 stale or failed state when applicable. Profiles define a finite stale-image threshold
 from documented rates or an explicitly identified console policy. Never present a frozen
-frame as live. Having no cameras is a visible state, not a connection failure for
+frame as live. Every camera in the profile is subscribed once the target is validated, with
+nothing waiting behind a click: the user chose seeing every stream over link economy (on the
+ROSMASTER X3 PLUS too, whose profile therefore sets no link budget). Each card can stop its
+stream and start it again. Having no cameras is a visible state, not a connection failure for
 independent controls. A camera the profile marks optional that is not on the wire is shown
 as unavailable and does not fail validation. A profile lists only the streams the page
 shows. A depth camera's depth stream (a raw single-channel 16-bit image, `16UC1`) is a
@@ -282,11 +283,10 @@ stops them when the link backs up:
 * A profile may set a link budget (`link_budget_mbps`, console policy) for its camera streams
   together. A stream's load is its message size (measured, or before its first frame a 640x480
   frame of its first encoding as base64 JSON, a compressed one taken as a tenth of rgb8) times
-  its rate cap. The streams that start by themselves must fit the budget together, and each
-  stream alone (checked when the profile loads). Starting an on-demand stream that would take
-  the cameras over the budget is refused, with the numbers; so is one while a point-cloud
-  sample is being received, and a sample is refused while the cameras take more than half the
-  budget (§2.5). A refusal stays on its card until the stream is started, or the cameras are
+  its rate cap. All its cameras, which start on validation, must fit the budget together
+  (checked when the profile loads), so nothing on by default is ever refused. Starting a
+  stopped stream that would take the cameras over the budget is refused, with the numbers. A
+  profile without a budget says why (the ROSMASTER X3 PLUS: the user's choice above). A refusal stays on its card until the stream is started, or the cameras are
   paused or resumed (it then no longer describes the link). The page shows the link's measured incoming load and, where there is a budget,
   the cameras' share of it, in warning colours from 80 % of it.
 * Congestion, judged the same way by the page and teleop.sh: R1 a camera is LAGGING while the
@@ -294,10 +294,8 @@ stops them when the link backs up:
   link: they share it), once its frames span over 2.4 s and show no steady offset (below); R2 a time answer took more than 1 s (answered within the last 5 s; an
   answer later than 3 s still counts); R3 a time question went unanswered for 3 s, now or given up
   within the last 3 s, while frames arrived within the last second (shown yet or not). The
-  warning names the rule that fired, with its numbers. A question sent, or a frame
-  that arrived, while a point-cloud sample the operator asked for is expected on the link (its
-  size at the budget, or at 20 Mbit/s, plus 1 s, never more than 5 s) is not counted. On
-  congestion every camera stream is unsubscribed and the page says so prominently, as a warning
+  warning names the rule that fired, with its numbers. On congestion every camera stream (and
+  every throttled sensor, such as a point cloud, §2.5) is unsubscribed and the page says so prominently, as a warning
   (never a neutral state), at the top of the cameras and where the operator drives, until the
   operator resumes them; teleop.sh does the same, resumed with C.
 * A frame is only stored when it arrives and is decoded in a later task, the newest only, so
@@ -359,8 +357,7 @@ python -m robot_console.fleet [--url ws://…] [--expect <id>]
   this to one robot id, which must present its whole typed interface. Every ambiguous
   case fails, naming the candidates found.
 * Report each profile camera as live, stale, silent or missing (§2.3). The streams are checked
-  one at a time, so the check never takes more of the link than one stream: each, an on-demand
-  one too, is subscribed at its rate cap only until it has delivered the two frames that show it
+  one at a time, so the check never takes more of the link than one stream: each is subscribed at its rate cap only until it has delivered the two frames that show it
   live (or the check's window ends), then unsubscribed before the next. The check publishes nothing
   and ends with a non-zero status when validation fails, an expected camera is not live, no
   supported robot is discovered, or the wire is unreachable. A missing or not live optional
@@ -389,18 +386,15 @@ fixed mount, labelled with that frame) or the number of elements of an array.
 * A sensor may record, as a console policy, a minimum period between the messages the page
   asks rosbridge for (`throttle_s`, shorter than its stale threshold); the sensor says so.
   Otherwise the page asks for at most ten messages per second. rosbridge still receives every
-  message from ROS, so this bounds only the websocket.
-* A sensor whose publisher does work only while it has a subscriber (a point cloud computed on
-  demand, say) is marked `on_demand`: the page never subscribes to it by itself. Its card
-  offers "Sample once", which subscribes with a one-hour `throttle_rate` and `queue_length` 1
-  (so rosbridge sends one message and no other before the unsubscribe), keeps that message, and
-  unsubscribes at once (or after 10 s without a message, which it says). The sample is shown as
-  a snapshot with its age, never as live or stale; it has no stale threshold.
+  message from ROS, so this bounds only the websocket. A throttled sensor (a large message,
+  such as a point cloud subscribed at one message per 5 s) has a Stop/Start button on its card,
+  is shown stopped while the user has stopped it, and pauses and resumes with the cameras on
+  congestion (§2.3).
 * A sensor whose publisher sends only on an event (an ordinary, not latched, publisher, such
   as a command echo or a mode toggle) is marked `event_only`: until an event comes it shows a
   neutral "event-only, none yet" state, then its last event, never stale. The panel's summary
   counts the periodic and latched sensors as "N of M reporting", and states the event-only
-  (how many seen) and on-demand sensors apart, so waiting for them never reads as a failure.
+  ones (how many seen) apart, so waiting for them never reads as a failure.
 * A `sensor_msgs/LaserScan` sensor may be drawn as a top-down plot of its returns (forward
   up, rings for scale), with only the returns within its range limits drawn and the nearest
   one named with its bearing. Its radius follows the bulk of the returns (their 90th
@@ -411,18 +405,17 @@ fixed mount, labelled with that frame) or the number of elements of an array.
   Python's json writes them) are read as no value, not as an unreadable message; string
   contents are never changed.
 
-* The panel is read-only: the page subscribes to the profile's sensor topics (apart from
-  on-demand ones) once the target is validated and never publishes, calls or cancels anything
+* The panel is read-only: the page subscribes to every sensor topic of the profile once the
+  target is validated, with nothing waiting behind a click, and never publishes, calls or cancels anything
   for them. The page offers in-page links to its cameras, sensors, model and controls, so the
   sensors are reachable on a narrow screen. A profile without
   sensors shows no panel.
 * Each sensor shows its resolved topic, its current field values, its message count and
   recent message rate (as delivered to the page), the age of its last message and a state:
   no message yet, live, stale (the last message is older than the threshold; the values are
-  marked frozen), last value (a latched topic that has delivered, never stale), not sampled,
-  sampling, sampled or no message (an on-demand sensor), missing from the wire, or
-  disconnected. Values are never presented as current once the state is not live, last value
-  or sampled (a sampled value is labelled a snapshot). A status word shows each documented bit
+  marked frozen), last value (a latched topic that has delivered, never stale), stopped (by the
+  user) or paused (on congestion), missing from the wire, or disconnected. Values are never
+  presented as current once the state is not live or last value. A status word shows each documented bit
   as set or clear. Undocumented fields are not shown.
 * Sensors share the page's single connection and are unsubscribed on a target change.
 
@@ -441,12 +434,12 @@ interface that discovery selects the correct target or refuses ambiguity; explic
 selection cannot bypass type checks; unsupported controls remain unavailable; and camera
 discovery displays all supported streams with visible failure/staleness states (depth as its
 false-colour map, infrared stretched in grey, an absent optional camera with its note, a
-silent one with its note), each subscription at its rate cap, on-demand cameras off until
-started and stopped again on request, and full-size (640x480) frames decoded; and a
+silent one with its note), each subscription at its rate cap, every camera on without a click and
+stopped and started again on request, and full-size (640x480) frames decoded; and a
 profile's sensors show current values in their units, each bit of a status word, a headline
 value and a value below its documented level marked low, a documented no-reading value shown
-as such, a scan plot of a LaserScan, on-demand sensors subscribed only for a requested sample
-and unsubscribed after it, and visible no-message/stale/last-value states. Verify
+as such, a scan plot of a LaserScan, every sensor (point clouds too) reporting without a click,
+and visible no-message/stale/last-value states. Verify
 namespace behaviour only where the documented hardware interface supports it, including
 refusal of overrides for other profiles. The installed console must run without sibling
 source trees and use the same profile against matching physical and simulated wires.

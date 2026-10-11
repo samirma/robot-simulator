@@ -203,8 +203,6 @@ CLOCK_ANSWER_S = 3.0
 #:   R2 a time answer took more than CONGESTED_RTT_S (answered within the last CONGESTED_WINDOW_S);
 #:   R3 a time question unanswered for more than CLOCK_ANSWER_S, now or given up within the last CLOCK_ANSWER_S,
 #:      while frames arrived within the last second.
-#: A question sent inside a grace window (a large message the operator asked for, such as a point-cloud sample) is
-#: not counted by R2 or R3, nor a frame that arrived inside it by R1.
 CONGESTED_RTT_S = 1.0
 CONGESTED_WINDOW_S = 5.0
 #: A steady lag (within CLOCK_DOMAIN_SPREAD_S over CLOCK_DOMAIN_SPAN_S, at least 5 frames, beyond CLOCK_DOMAIN_MIN_S,
@@ -264,10 +262,7 @@ class ClockRef:
         self.last_t0 = float("-inf")      # when the newest sample's question was sent
         self.last_rtt: Optional[float] = None
         self.last_rtt_at: Optional[float] = None   # when that answer came
-        self.last_rtt_t0: Optional[float] = None   # when its question was sent
         self.last_timeout: Optional[float] = None  # when a question was last given up unanswered
-        self.last_timeout_t0: Optional[float] = None
-        self.grace: Tuple[float, float] = (float("-inf"), float("-inf"))   # see CONGESTED_* (a sample in flight)
         self.steps = 0
         self.resets = 0
         self.answers: list = []           # every answer of the last CLOCK_WINDOW_S, resets or not: (t1, lo, hi, T)
@@ -279,7 +274,7 @@ class ClockRef:
 
     def add(self, t0: float, t1: float, robot: Optional[float]) -> None:
         with self._lock:
-            self.last_rtt, self.last_rtt_at, self.last_rtt_t0 = t1 - t0, t1, t0
+            self.last_rtt, self.last_rtt_at = t1 - t0, t1
             if robot is None:
                 self.reason = "the robot's clock reads 0 (simulated time not started)"
                 return
@@ -345,7 +340,7 @@ class ClockRef:
         now = self._clock()
         if self._inflight and now - self._last_sent > CLOCK_ANSWER_S:
             # never answered in time: remembered (congestion R3), and asked again; a late answer still counts for R2
-            self.last_timeout, self.last_timeout_t0 = now, self._last_sent
+            self.last_timeout = now
             self._inflight = False
             self._last_sent = now - CLOCK_SYNC_S
             self.fail(f"no clock reference: /rosapi/get_time did not answer within {CLOCK_ANSWER_S:g} s")
@@ -369,7 +364,7 @@ class ClockRef:
                     try:
                         f.result()
                         with self._lock:
-                            self.last_rtt, self.last_rtt_at, self.last_rtt_t0 = t1 - t0, t1, t0
+                            self.last_rtt, self.last_rtt_at = t1 - t0, t1
                     except Exception:  # noqa: BLE001
                         pass
                 return
@@ -420,7 +415,7 @@ class StreamSpec:
     ir: bool = False          # an infrared camera: each frame stretched from its own minimum to maximum
     missing_note: str = ""    # said when the camera is not on the wire (e.g. which launch starts it)
     throttle_ms: int = DEFAULT_THROTTLE_MS   # rosbridge throttle_rate: the most frames per second sent
-    on_demand: bool = False   # subscribed only on request (the page's user; the wire check samples it)
+    on_demand: bool = False   # a preview not tied to a target: subscribed only on request (the page's user)
     silent_note: str = ""     # an advertised stream that may never deliver: explained, not alarmed
 
 
@@ -605,9 +600,9 @@ class CameraSet:
     the link and pauses every stream on congestion (rules R1-R3 above; console spec §2.3) until ``resume``."""
 
     def __init__(self, rb, specs: Sequence[StreamSpec], *, present: Optional[Dict[str, str]] = None,
-                 on_demand: bool = False, clock: Optional[ClockRef] = None, start: bool = True) -> None:
-        """Subscribe to every stream on the wire, each at its ``throttle_ms``; an ``on_demand`` stream
-        only when ``on_demand`` (the wire check's sample), else it stays off; none when not ``start``."""
+                 clock: Optional[ClockRef] = None, start: bool = True) -> None:
+        """Subscribe to every stream on the wire, each at its ``throttle_ms``, except an ``on_demand`` preview,
+        which stays off; none when not ``start``."""
         self.rb = rb
         self.streams: Dict[str, CameraStream] = {}
         self.clock = clock
@@ -620,7 +615,7 @@ class CameraSet:
             if present is not None and s.topic not in present:
                 cs.missing = True
                 continue
-            if start and (on_demand or not s.on_demand):
+            if start and not s.on_demand:
                 self.start(s.topic)
 
     def start(self, topic: str) -> None:
@@ -645,11 +640,9 @@ class CameraSet:
         if c is None or self.paused:
             return ""
         now = c._clock() if now is None else now
-        g0, g1 = c.grace
-        graced = lambda t: t is not None and g0 <= t <= g1          # noqa: E731
-        rtt = c.last_rtt if not graced(c.last_rtt_t0) else None
+        rtt = c.last_rtt
         for s in self.streams.values():                               # R1 (a steady offset is not a backlog)
-            if (s.sid and rtt is not None and rtt >= CLOCK_DOMAIN_RTT_S and not graced(s.frame_at)
+            if (s.sid and rtt is not None and rtt >= CLOCK_DOMAIN_RTT_S
                     and s.lag_span() >= CLOCK_DOMAIN_SPAN_S * 0.8 and s.steady_offset() is None
                     and s.state(now) == LAGGING):
                 return (f"frames on {s.spec.topic} arrive late while the robot's time answer took {rtt:.2f} s "
@@ -658,9 +651,8 @@ class CameraSet:
                 and now - c.last_rtt_at <= CONGESTED_WINDOW_S:            # R2
             return f"the robot's time answer took {rtt:.1f} s (the link is backing up)"
         arriving = any(s.sid and s.arrived_at is not None and now - s.arrived_at < 1.0 for s in self.streams.values())
-        unanswered = c.unanswered_for(now) > CLOCK_ANSWER_S and not graced(c._last_sent)
-        gave_up = (c.last_timeout is not None and now - c.last_timeout <= CLOCK_ANSWER_S
-                   and not graced(c.last_timeout_t0))
+        unanswered = c.unanswered_for(now) > CLOCK_ANSWER_S
+        gave_up = c.last_timeout is not None and now - c.last_timeout <= CLOCK_ANSWER_S
         if arriving and (unanswered or gave_up):                      # R3
             return f"the robot's time answer is over {CLOCK_ANSWER_S:g} s late while frames keep arriving"
         return ""
@@ -708,8 +700,7 @@ def target_specs(target) -> list:
     return [StreamSpec(topic=target.wire(c.topic), type=c.type, stale_after_s=c.stale_after_s,
                        encodings=c.encodings or None, tied=True, optional=c.optional,
                        depth=(c.unit_m, c.range_m) if c.kind == "depth" else None, ir=c.kind == "ir",
-                       missing_note=c.missing_note, throttle_ms=c.throttle_ms(), on_demand=c.on_demand,
-                       silent_note=c.silent_note)
+                       missing_note=c.missing_note, throttle_ms=c.throttle_ms(), silent_note=c.silent_note)
             for c in target.profile.cameras]
 
 

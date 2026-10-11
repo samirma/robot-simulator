@@ -126,8 +126,6 @@ def wire_spec(p: Profile, *, namespace: Optional[str] = None, include_optional: 
                 row.update(sample=sensor_sample(e.name, e.type), rate_hz=row.get("rate_hz") or 5.0)
                 if s.event_only:              # an ordinary publisher of events: nothing until the test emits one
                     row["event"] = True
-                elif s.on_demand:             # published continuously while subscribed (as the clouds are)
-                    row["rate_hz"] = 10.0
                 elif s.stale_after_s is None:
                     row["latched"] = True
                 else:

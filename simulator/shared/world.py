@@ -118,6 +118,10 @@ class World:
         self.scene_staging = None
         self.scene_nbody = self.model.nbody
         self.scene_ngeom = self.model.ngeom
+        #: the bare scene's extent: what the renderers size directional-light shadows by.
+        #: The composed world's own stat.extent also spans the objects parked SUNK_DEPTH
+        #: under the floor, which spread one shadow map over five times the room.
+        self.scene_extent = float(self.model.stat.extent)
         self._stop = threading.Event()
         self._thread = None
         self.rtf = 1.0

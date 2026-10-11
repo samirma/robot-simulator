@@ -72,14 +72,13 @@ def test_x3_cameras_are_sampled_briefly_at_their_rate_cap(fake):
     unsub = {o["id"] for o in srv.ops_of("unsubscribe")}
     assert all(o["id"] in unsub for o in subs)
     # one stream at a time: each is unsubscribed before the next is subscribed, so the check never takes more of the
-    # link than one stream (the profile's link budget holds)
+    # link than one stream
     spans = []
     for o in subs:
         off = next(u for u in srv.ops_of("unsubscribe") if u["id"] == o["id"])
         spans.append((o["_t"], off["_t"]))
     spans.sort()
     assert all(a[1] <= b[0] for a, b in zip(spans, spans[1:])), spans
-    assert max(c.nominal_mbps() for c in p.cameras) <= p.link_budget_mbps
     for c in p.cameras:          # held only for its two frames: unsubscribed well within the window
         sub = next(o for o in subs if o["topic"] == c.topic)
         off = next(o for o in srv.ops_of("unsubscribe") if o["id"] == sub["id"])

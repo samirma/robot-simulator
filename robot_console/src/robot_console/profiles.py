@@ -49,9 +49,8 @@ class Camera:
     documented ``sensor_msgs/CameraInfo`` topic, where there is one.
 
     Bandwidth (console spec §2.3): ``max_rate_hz`` caps the frames rosbridge sends for the stream
-    (``throttle_rate``; None: the console default, ``DEFAULT_CAMERA_MAX_HZ``); an ``on_demand`` camera is
-    subscribed only while the page's user has it started (teleop shows it off; the wire check samples it
-    briefly). ``silent_note`` explains a stream that is advertised but may never deliver a frame: shown,
+    (``throttle_rate``; None: the console default, ``DEFAULT_CAMERA_MAX_HZ``). Every camera is subscribed on
+    validation (the page's user may stop and start it). ``silent_note`` explains a stream that is advertised but may never deliver a frame: shown,
     instead of an alarm, while no frame has arrived."""
     topic: str
     type: str
@@ -65,7 +64,6 @@ class Camera:
     camera_info: Optional[str] = None
     missing_note: str = ""    # shown when an optional camera is not on the wire (e.g. which launch starts it)
     max_rate_hz: Optional[float] = None
-    on_demand: bool = False
     silent_note: str = ""
     caption: str = ""         # a short note shown on the card (e.g. how the stream is registered)
 
@@ -156,9 +154,9 @@ class Sensor:
     an ``out`` topic of the profile. ``stale_after_s`` None: a latched or non-periodic topic, shown
     with its last message's age but never as stale. ``throttle_s``: the page asks rosbridge for at
     most one message per this period (None: the page's default, 0.1 s); rosbridge still receives every
-    message from ROS, so this bounds only the websocket. ``on_demand``: the page never subscribes on its
-    own; the user samples one message, after which the page unsubscribes (for a topic whose publisher
-    does work only while it has a subscriber, such as a point cloud). ``plot``: how the whole message is
+    message from ROS, so this bounds only the websocket; a sensor with a ``throttle_s`` can be stopped and
+    started on the page, and pauses with the cameras on congestion. Every sensor is subscribed on
+    validation. ``plot``: how the whole message is
     also drawn (``SENSOR_PLOTS``). ``caption``: a short note shown on the card (e.g. a unit caveat)."""
 
     id: str
@@ -169,7 +167,6 @@ class Sensor:
     fields: Tuple[SensorField, ...]
     throttle_s: Optional[float] = None
     plot: str = ""
-    on_demand: bool = False
     caption: str = ""
     event_only: bool = False   # published only on an event (no latching, no period): waiting is normal
 
@@ -550,15 +547,14 @@ def _sensor(pid: str, r: Mapping[str, Any]) -> Sensor:
         raise ValueError(f"{where}: plot {plot!r} is none of {', '.join(SENSOR_PLOTS)}")
     if plot == "scan" and d.normalize_type(r["type"]) != "sensor_msgs/LaserScan":
         raise ValueError(f"{where}: a scan plot draws a sensor_msgs/LaserScan")
-    on_demand = bool(r.get("on_demand", False))
-    if on_demand and (stale is not None or throttle is not None):
-        raise ValueError(f"{where}: an on_demand sensor is a one-message sample: no stale_after_s or throttle_s")
+    if "on_demand" in r:
+        raise ValueError(f"{where}: no on_demand: every sensor is subscribed on validation (console spec §2.5)")
     event_only = bool(r.get("event_only", False))
-    if event_only and (stale is not None or on_demand):
-        raise ValueError(f"{where}: an event_only sensor has no stale_after_s and is not on_demand")
+    if event_only and stale is not None:
+        raise ValueError(f"{where}: an event_only sensor has no stale_after_s")
     return Sensor(id=r["id"], label=str(r.get("label", r["id"])), topic=r["topic"], type=r["type"],
                   stale_after_s=stale, fields=tuple(fields), throttle_s=throttle, plot=plot,
-                  on_demand=on_demand, caption=" ".join(str(r.get("caption") or "").split()), event_only=event_only)
+                  caption=" ".join(str(r.get("caption") or "").split()), event_only=event_only)
 
 
 def _check_sensors(raw: Mapping[str, Any], sensors: Sequence[Sensor], eps: Sequence[Endpoint]) -> None:
@@ -612,12 +608,14 @@ def _camera(raw: Mapping[str, Any], c: Mapping[str, Any]) -> Camera:
         raise ValueError(f"{where}: the frame period at max_rate_hz (or the default {DEFAULT_CAMERA_MAX_HZ:g} Hz) "
                          f"must be at most half of stale_after_s (one missing frame is not 'no frame') and at most "
                          f"{MAX_PERIOD_S:g} s (the live bound {LAG_LIMIT_S:g} s + {LIVE_PERIODS:g} periods stays short)")
+    if "on_demand" in c:
+        raise ValueError(f"{where}: no on_demand: every camera is subscribed on validation (console spec §2.3)")
     text = lambda k: " ".join(str(c.get(k) or "").split())      # noqa: E731
     return Camera(topic=c["topic"], type=c["type"], encodings=tuple(c.get("encodings") or ()),
                   stale_after_s=stale, rate_hz=c.get("rate_hz"),
                   optional=bool(c.get("optional", False)), kind=kind, range_m=rng, unit_m=unit,
                   camera_info=c.get("camera_info") or None, missing_note=text("missing_note"),
-                  max_rate_hz=mx, on_demand=bool(c.get("on_demand", False)), silent_note=text("silent_note"),
+                  max_rate_hz=mx, silent_note=text("silent_note"),
                   caption=text("caption"))
 
 
@@ -711,21 +709,16 @@ def parse_profile(raw: Mapping[str, Any]) -> Profile:
 
 
 def _budget(raw: Mapping[str, Any], cams: Sequence[Camera] = ()) -> Optional[float]:
-    """The profile's camera link budget; the streams that start by themselves must fit it together, and every
-    stream alone (at its nominal load), or the page could never show it."""
+    """The profile's camera link budget; the cameras, which all start on validation, must fit it together."""
     b = raw.get("link_budget_mbps")
     if b is None:
         return None
     if isinstance(b, bool) or not isinstance(b, (int, float)) or b <= 0:
         raise ValueError(f"{raw['id']}: link_budget_mbps is a positive Mbit/s")
-    auto = sum(c.nominal_mbps() for c in cams if not c.on_demand)
+    auto = sum(c.nominal_mbps() for c in cams)
     if auto > b:
-        raise ValueError(f"{raw['id']}: the cameras that start by themselves take about {auto:.0f} Mbit/s, over "
+        raise ValueError(f"{raw['id']}: the cameras, all started on validation, take about {auto:.0f} Mbit/s, over "
                          f"link_budget_mbps {b:g}")
-    for c in cams:
-        if c.nominal_mbps() > b:
-            raise ValueError(f"{raw['id']}.cameras.{c.topic}: about {c.nominal_mbps():.0f} Mbit/s alone, over "
-                             f"link_budget_mbps {b:g}")
     return float(b)
 
 
@@ -811,7 +804,7 @@ def profile_json(p: Profile) -> dict:
                          optional=c.optional, kind=c.kind, range_m=list(c.range_m) if c.range_m else None,
                          unit_m=c.unit_m, camera_info=c.camera_info, missing_note=c.missing_note,
                          live_bound_s=c.live_bound_s(),
-                         throttle_ms=c.throttle_ms(), on_demand=c.on_demand, silent_note=c.silent_note,
+                         throttle_ms=c.throttle_ms(), silent_note=c.silent_note,
                          caption=c.caption)
                     for c in p.cameras],
         "sensors": [dataclasses.asdict(x) for x in p.sensors],

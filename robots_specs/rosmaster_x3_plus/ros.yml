@@ -694,6 +694,10 @@ topics:
   rate_note: per depth frame while subscribed
   frame_id: camera_depth_optical_frame
   source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L236-L237
+  notes: 'Layout: fields x, y, z FLOAT32 at offsets 0, 4, 8 and point_step 16, the padding sensor_msgs''
+    PointCloud2Modifier::setPointCloud2FieldsByString(1, "xyz") adds (ob_camera_node.cpp#L248-L250;
+    common_msgs noetic-devel sensor_msgs/include/sensor_msgs/impl/point_cloud2_iterator.h#L209-L215); valid
+    points only, height 1, is_dense true (ob_camera_node.cpp#L258-L278).'
 - name: /camera/depth_registered/points
   type: sensor_msgs/PointCloud2
   direction: out
@@ -704,6 +708,11 @@ topics:
   rate_note: per depth+colour frame set while subscribed
   frame_id: camera_color_optical_frame
   source: ROSMASTER-X3Plus_ROS1_code.zip!/software.zip!/software/library_ws/src/orbbec-ros-sdk/src/ros_setup.cpp#L244-L246
+  notes: 'Layout: fields x, y, z FLOAT32 at offsets 0, 4, 8 and rgb FLOAT32 at offset 16, point_step 20: the
+    "xyz" padding of setPointCloud2FieldsByString, then addPointField("rgb") at the padded step
+    (ob_camera_node.cpp#L323-L330; point_cloud2_iterator.h#L209-L215). The colour is written byte-wise through the
+    r, g, b iterators, so the rgb float''s bytes are b, g, r, 0 (ob_camera_node.cpp#L333-L349); valid points only,
+    height 1, is_dense true (#L366-L372).'
 - name: /usb_cam/image_raw
   camera_boot: true
   type: sensor_msgs/Image

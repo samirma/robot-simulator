@@ -46,6 +46,15 @@ def clamp_near(scn, near: float) -> None:
         c.frustum_width *= s
 
 
+def shadow_clip(model, scene_extent: float | None) -> float:
+    """Half-size of the directional-light shadow box: the scene's extent (when known, and
+    never more than the model's own) times the model's vis.map.shadowclip."""
+    extent = float(model.stat.extent)
+    if scene_extent:
+        extent = min(extent, float(scene_extent))
+    return extent * float(model.vis.map.shadowclip)
+
+
 def free_camera(lookat, distance, azimuth, elevation) -> mujoco.MjvCamera:
     cam = mujoco.MjvCamera()
     cam.type = mujoco.mjtCamera.mjCAMERA_FREE
@@ -131,6 +140,10 @@ class RenderThread(threading.Thread):
         if self.con is not None:
             self.con.free()
         self.con = mujoco.MjrContext(sized, mujoco.mjtFontScale.mjFONTSCALE_150.value)
+        # Directional-light shadows cover +-shadowClip, which MuJoCo takes from the composed
+        # world's extent; size them by the scene's own (see World.scene_extent), as the scene
+        # file sets them, so its shadow map is not spread over the parked objects too.
+        self.con.shadowClip = shadow_clip(model, getattr(self.world, "scene_extent", None))
         mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN.value, self.con)
         self.con.readDepthMap = mujoco.mjtDepthMap.mjDEPTH_ZEROFAR
         self.scn = mujoco.MjvScene(model, maxgeom=MAX_GEOM)

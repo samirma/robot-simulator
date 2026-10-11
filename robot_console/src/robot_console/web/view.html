@@ -257,10 +257,9 @@ input::placeholder { color: var(--faint); }
 .jump a:hover, .jump a:focus-visible { border-color: var(--border-strong); }
 #cameras-panel, #sensors-panel, #model-card, #control-panel { scroll-margin-top: calc(var(--topbar-h, 0px) + 16px); }
 .sensors-panel .sensor-caption { margin: 0; font-size: 12px; color: var(--muted); }
-.sensor-sample { align-self: flex-start; }
-.sensor[data-state="sampled"] .sensor-state { color: var(--info); background: var(--info-bg); border-color: var(--info-line); }
-.sensor[data-state="off"] .sensor-state, .sensor[data-state="sampling"] .sensor-state,
-.sensor[data-state="event"] .sensor-state { color: var(--muted); }
+.sensor-toggle { align-self: flex-start; }
+.sensor[data-state="paused"] .sensor-state { color: var(--warn); background: var(--warn-bg); border-color: var(--warn-line); }
+.sensor[data-state="off"] .sensor-state, .sensor[data-state="event"] .sensor-state { color: var(--muted); }
 .sensor[data-state="lastevent"] .sensor-state { color: var(--info); background: var(--info-bg); border-color: var(--info-line); }
 .sensor[data-state="lastevent"] .sf-value { opacity: 1; }
 .scan-side { flex: 1 1 180px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }

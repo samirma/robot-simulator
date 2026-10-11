@@ -77,13 +77,15 @@ namespace_note: >-
   (yahboomcar_ws:src/yahboomcar_multi/launch/library/bringup_multi.launch#L4-L30). That is a different launch,
   so it is not treated as the authoritative interface.
 
-link_budget_mbps: 40
-link_budget_policy: >-
-  Console policy: the camera streams together may take at most 40 Mbit/s of the link: the colour stream at 2 frames/s
-  (about 20 Mbit/s at 640x480) plus one 16-bit stream (about 13 Mbit/s); starting a stream beyond that is refused with
-  the numbers. No Yahboom source states what the robot's Wi-Fi carries; the vendor's own tutorials view the cameras
-  through web_video_server's compressed streams on the robot rather than raw images over rosbridge
-  (11.Depth camera course/01.How to use the Astra camera, section 1.4). The page shows the link's measured load.
+link_policy: >-
+  Console policy: no link budget. The user chose to see every camera and sensor of the robot at once over link
+  economy, so all five camera streams and both point clouds are subscribed on validation: at their caps about
+  70 Mbit/s of JSON at 640x480 for the cameras (colour and the USB camera about 20 each, depth and infrared about 13
+  each, the USB JPEG about 5), plus one cloud of each kind per 5 s. No Yahboom source states what the robot's Wi-Fi
+  carries (the vendor's own tutorials view the cameras through web_video_server's compressed streams on the robot,
+  11.Depth camera course/01.How to use the Astra camera, section 1.4). The safety net is the console's: queue_length 1,
+  the rate caps below, the page's measured link load, and the congestion pause (console spec §2.3), which stops every
+  camera and both clouds when the link backs up; each card can also stop its stream.
 
 optional_rule: >-
   A row is required when the authoritative boot advertises it unconditionally: laser_astrapro_bringup.launch#L4-L6
@@ -457,10 +459,9 @@ cameras:
   # camera_info) has no `topics` row declares that out topic itself (optional as the camera is).
   # Bandwidth: every frame crosses the same rosbridge websocket as /cmd_vel and its single zero-Twist stop, on a base
   # with no watchdog (see `watchdog`), as base64 JSON (a 640x480 rgb8 frame is about 1.2 MB; 16-bit, about 0.8 MB).
-  # So this profile caps every stream at 2 frames/s (below the console default, for that reason), the console always
-  # asks for queue_length 1, only the colour stream starts by itself (depth, infrared and USB are on demand), and the
-  # streams together keep within link_budget_mbps. Any Astra subscription starts the driver's whole pipeline
-  # (software:orbbec-ros-sdk/src/ob_camera_node.cpp#L538-L544), so "on demand" saves link bandwidth, not robot work.
+  # So this profile caps every raw stream at 2 frames/s (below the console default, for that reason) and the console
+  # always asks for queue_length 1. Every stream starts on validation (see link_policy); any Astra subscription starts
+  # the driver's whole pipeline anyway (software:orbbec-ros-sdk/src/ob_camera_node.cpp#L538-L544).
   - topic: /camera/rgb/image_raw
     type: sensor_msgs/Image
     encodings: [rgb8]
@@ -482,7 +483,6 @@ cameras:
     range_m: [0.6, 8.0]
     rate_hz: 30
     max_rate_hz: 2
-    on_demand: true
     stale_after_s: 2.0
     optional: false
     camera_info: /camera/depth/camera_info
@@ -502,15 +502,14 @@ cameras:
       depth intrinsics of camera_params_ (ob_camera_node.cpp#L463-L466), which with depth_registration on come from
       pipeline_->getCameraParam() (#L455-L456); the SDK documents that this returns the camera parameters after D2C when
       D2C is enabled (software:orbbec-ros-sdk/SDK/include/libobsensor/hpp/Pipeline.hpp#L129). range_m 0.6-8 m is the camera maker's figure,
-      not a Yahboom one (orbbec_astra_series), used only to scale the colours. Console policy: on demand, at most 2
-      frames/s (about 1.6 MB/s of JSON), stale_after_s 2.0 s.
+      not a Yahboom one (orbbec_astra_series), used only to scale the colours. Console policy: at most 2 frames/s
+      (about 1.6 MB/s of JSON), stale_after_s 2.0 s.
   - topic: /camera/ir/image_raw
     type: sensor_msgs/Image
     kind: ir
     encodings: [mono16]
     rate_hz: 30
     max_rate_hz: 2
-    on_demand: true
     stale_after_s: 2.0
     optional: true
     camera_info: /camera/ir/camera_info
@@ -528,13 +527,12 @@ cameras:
       after D2C since depth_registration is on, #L455-L456), while the IR image itself is not aligned to colour.
       Optional camera (its frames, not its topic): when the pipeline fails with IR the driver restarts it without IR and
       leaves the topic advertised (software:orbbec-ros-sdk/src/ob_camera_node.cpp#L116-L124), hence silent_note. Stamped
-      camera_color_optical_frame like depth (#L483-L484). Console policy: on demand, at most 2 frames/s, stale_after_s 2.0 s.
+      camera_color_optical_frame like depth (#L483-L484). Console policy: at most 2 frames/s, stale_after_s 2.0 s.
   - topic: /usb_cam/image_raw
     type: sensor_msgs/Image
     encodings: [rgb8]
     rate_hz: 30
     max_rate_hz: 2
-    on_demand: true
     stale_after_s: 2.0
     optional: true
     camera_info: /usb_cam/camera_info
@@ -550,14 +548,13 @@ cameras:
       a 30 Hz loop (usb_cam:nodes/usb_cam_node.cpp#L101, #L258) whether or not anyone subscribes, and an uncalibrated
       camera_info (#L127-L136). The authoritative boot does not start it, so it is optional; its real frame rate is not
       established. The node publishes through image_transport, so its JPEG topic /usb_cam/image_raw/compressed is the next
-      camera row (a tenth of this one's load). Console policy: on demand, at most 2 frames/s, stale_after_s 2.0 s.
+      camera row (a tenth of this one's load). Console policy: at most 2 frames/s, stale_after_s 2.0 s.
   - topic: /usb_cam/image_raw/compressed
     type: sensor_msgs/CompressedImage
     encodings: [jpeg]
     rate_hz: 30
     max_rate_hz: 5
     stale_after_s: 2.0
-    on_demand: true
     optional: true
     missing_note: >-
       The arm's USB camera is started by laser_usb_bringup.launch or the vendor vision launches, not by the boot this
@@ -572,7 +569,7 @@ cameras:
       section 8.2.1), and the vendor's own vision apps read this topic
       (yahboomcar_ws:src/yahboomcar_voice_ctrl/scripts/colorHSV.py#L45, #L54-L57;
       yahboomcar_ws:src/yahboomcar_linefollw/launch/line.launch#L6). Optional like the raw stream (the boot does not start
-      usb_cam). The browser decodes the JPEG. Console policy: on demand, at most 5 frames/s, stale_after_s 2.0 s: the
+      usb_cam). The browser decodes the JPEG. Console policy: at most 5 frames/s, stale_after_s 2.0 s: the
       compressed-stream exception to the wheeled bases' 2 frames/s (console spec §2.3). Its nominal load at 5 frames/s,
       about 4.9 Mbit/s at 640x480, is a quarter of one raw stream's at 2 frames/s (about 19.7 Mbit/s), and a frame
       occupies a 20 Mbit/s link for about 0.05 s instead of 0.5 s, so the stop waits behind less.
@@ -790,14 +787,15 @@ sensors:
     label: "Depth point cloud (/camera/depth/points)"
     topic: /camera/depth/points
     type: sensor_msgs/PointCloud2
-    stale_after_s: null
-    on_demand: true
+    stale_after_s: 15.0
+    throttle_s: 5.0
     source: "software:orbbec-ros-sdk/src/ob_camera_node.cpp#L220-L223"
     policy: >-
-      On demand: the driver computes this cloud only while it has a subscriber (#L220-L223), and a subscriber starts the
-      depth stream (#L591-L594); a cloud is megabytes per message, and rosbridge receives every one from ROS whatever
-      its throttle. So the page subscribes only when the user samples it, keeps the first message and unsubscribes.
-      Shown by size: height 1, width = the valid points (#L275-L277).
+      The driver computes this cloud only while it has a subscriber (#L220-L223), and a subscriber starts the depth
+      stream (#L591-L594); a cloud is megabytes per message, and rosbridge receives every one from ROS whatever its
+      throttle. Console policy (link_policy): subscribed on validation at one message per 5 s (queue_length 1),
+      stale_after 15 s (three periods); the card can stop it, and it pauses with the cameras on congestion. Shown by
+      size: height 1, width = the valid points (#L275-L277).
     fields:
       - {name: width, label: "Points", path: width, kind: number, decimals: 0}
       - {name: height, label: "Rows", path: height, kind: number, decimals: 0}
@@ -808,12 +806,13 @@ sensors:
     label: "Registered point cloud (/camera/depth_registered/points)"
     topic: /camera/depth_registered/points
     type: sensor_msgs/PointCloud2
-    stale_after_s: null
-    on_demand: true
+    stale_after_s: 15.0
+    throttle_s: 5.0
     source: "software:orbbec-ros-sdk/src/ob_camera_node.cpp#L295-L298"
     policy: >-
-      On demand, as /camera/depth/points: computed only while subscribed (#L295-L298), a subscriber starts depth and
-      colour (#L604-L608). Shown by size: height 1, width = the valid points (#L371-L373).
+      As /camera/depth/points: computed only while subscribed (#L295-L298), a subscriber starts depth and colour
+      (#L604-L608); one message per 5 s, stale after 15 s. Shown by size: height 1, width = the valid points
+      (#L371-L373).
     fields:
       - {name: width, label: "Points", path: width, kind: number, decimals: 0}
       - {name: height, label: "Rows", path: height, kind: number, decimals: 0}

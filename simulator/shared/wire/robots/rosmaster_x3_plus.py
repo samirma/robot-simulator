@@ -511,18 +511,18 @@ class AstraProPlus:
         pc = self.node.new(topic, stamp=stamp)
         pc.header.frame_id = frame
         pc.height, pc.width = 1, int(xyz.shape[0])
+        # The driver's layout (the topic rows' notes in ros.yml): setPointCloud2FieldsByString
+        # pads "xyz" to 16 bytes, and the coloured cloud adds "rgb" after that padding.
         fields = [PointField("x", 0, PointField.FLOAT32, 1), PointField("y", 4, PointField.FLOAT32, 1),
                   PointField("z", 8, PointField.FLOAT32, 1)]
+        arr = np.zeros((xyz.shape[0], 5 if rgb is not None else 4), np.float32)
+        arr[:, :3] = xyz
         if rgb is not None:
-            fields.append(PointField("rgb", 12, PointField.FLOAT32, 1))
-            arr = np.empty((xyz.shape[0], 4), np.float32)
-            arr[:, :3] = xyz
-            arr[:, 3] = rgb
-        else:
-            arr = xyz
+            fields.append(PointField("rgb", 16, PointField.FLOAT32, 1))
+            arr[:, 4] = rgb
         pc.fields = fields
         pc.is_bigendian = False
-        pc.point_step = 16 if rgb is not None else 12
+        pc.point_step = arr.shape[1] * 4
         pc.row_step = pc.point_step * pc.width
         pc.is_dense = True
         pc.data = arr.tobytes()

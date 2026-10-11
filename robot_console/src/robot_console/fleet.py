@@ -50,7 +50,7 @@ def check_cameras(rb: Rosbridge, targets: List[Target], graph, out) -> bool:
         for t in targets:
             print(f"  cameras: none in profile '{t.profile.id}'", file=out)
         return True
-    # One stream at a time (an on-demand one too), so the check never takes more of the link than one stream: each is
+    # One stream at a time, so the check never takes more of the link than one stream: each is
     # sampled at its own rate cap until it has shown the two frames that make it live, then unsubscribed.
     cams = cam.CameraSet(rb, specs, present=graph.topics, start=False)
     window = max(s.stale_after_s for s in specs) * 2 + 0.5
