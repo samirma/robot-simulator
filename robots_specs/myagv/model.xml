@@ -17,7 +17,7 @@
         <geom group="3" contype="1" conaffinity="0" condim="3" friction="0.8 0.005 0.0001" density="0"/>
       </default>
       <default class="roller">
-        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3" friction="1.0 0.005 0.0001"/>
+        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3" friction="1.0 0.005 0.0001" rgba="0.08 0.08 0.08 1"/>
         <joint type="hinge" damping="1e-5" armature="1e-6" frictionloss="0"/>
       </default>
       <default class="wheel">
@@ -29,9 +29,9 @@
 
   <asset>
     <mesh name="myagv_base_m0" file="derived_meshes/urdf/myagv_base.dae.m0.obj"/>
-    <material name="myagv_base_m0" rgba="0.980392 0.980392 0.980392 1"/>
+    <material name="myagv_base_m0" rgba="0.980392 0.980392 0.980392 1" emission="0.35"/>
     <mesh name="myagv_up_m0" file="derived_meshes/urdf/myagv_up.dae.m0.obj"/>
-    <material name="myagv_up_m0" rgba="0.980392 0.980392 0.980392 1"/>
+    <material name="myagv_up_m0" rgba="0.980392 0.980392 0.980392 1" emission="0.35"/>
   </asset>
 
   <worldbody>
@@ -43,7 +43,7 @@
       <site name="laser_frame" pos="0.065 0 0.08" euler="0 0 3.14159265" size="0.01" group="4"/>
       <site name="imu_link" pos="0 0 0" euler="3.14159 3.14159 0" size="0.01" group="4"/>
       <body name="camera_link" pos="0.13 0 0.131">
-        <camera name="camera_link" xyaxes="0 -1 0 0 0 1" fovy="41.83" resolution="640 480"/>
+        <camera name="camera_link" pos="0.04 0 0" xyaxes="0 -1 0 0 0 1" fovy="41.83" resolution="640 480"/>
       </body>
       <body name="base_up">
         <joint name="base_up" type="hinge" axis="0 0 1"/>

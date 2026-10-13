@@ -48,7 +48,7 @@ def sensor_sample(topic: str, type_: str) -> dict:
     if type_.endswith("Bool"):
         return {"data": True}
     if type_.endswith("/Imu"):
-        return {"header": hdr, "orientation": dict(SAMPLE_QUAT_YAW90 if topic == "/imu/data" else ZERO_QUAT),
+        return {"header": hdr, "orientation": dict(SAMPLE_QUAT_YAW90 if topic in ("/imu/data", "/imu") else ZERO_QUAT),
                 "angular_velocity": {"x": 0.01, "y": -0.02, "z": 0.03},
                 "linear_acceleration": dict(SAMPLE_ACCEL)}
     if type_.endswith("MagneticField"):

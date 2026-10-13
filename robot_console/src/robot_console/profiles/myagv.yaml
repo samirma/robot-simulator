@@ -377,6 +377,7 @@ cameras:
     encodings: [rgb8]
     rate_hz: 30
     max_rate_hz: 2
+    camera_info: /usb_cam/camera_info
     stale_after_s: 1.0
     optional: false
     source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
@@ -386,12 +387,71 @@ cameras:
       watchdog (myagv_ros:myagv_odometry/src/myAGVSub.cpp#L4-L14 stores it, the 100 Hz loop at #L29-L33 sends it to
       the base again every iteration) and its only stop shares this link.
     note: "encoding rgb8 for the boot's default pixel_format mjpeg (usb_cam:src/usb_cam.cpp#L1252-L1255); frame_id camera_link from the boot's _camera_frame_id (#L118)."
+  - topic: /usb_cam/image_raw/compressed
+    type: sensor_msgs/CompressedImage
+    encodings: [jpeg]
+    rate_hz: 30
+    max_rate_hz: 5
+    camera_info: /usb_cam/camera_info
+    stale_after_s: 2.0
+    optional: true
+    source: "usb_cam:nodes/usb_cam_node.cpp#L88-L89"
+    policy: >-
+      The same frames through image_transport's compressed transport (the stock image_transport_plugins, optional on the
+      robot; the browser decodes the JPEG). Console policy: at most 5 frames/s, the compressed-stream exception of the
+      wheeled bases (console spec §2.3): about a quarter of one raw stream's load at 2 frames/s. The compressedDepth
+      transport is not a stream of this colour camera (it carries depth images only), so it is not shown.
 cameras_note: >-
   myagv_active.launch starts no camera driver (it only publishes the static tf
   base_footprint->camera_link, myagv_ros:myagv_odometry/launch/myagv_active.launch#L9);
   the approved community camera boot is usb_cam 0.3.7 (tag 0.3.7, commit addab4a6) run
   beside it with `rosrun usb_cam usb_cam_node _camera_frame_id:=camera_link`, whose raw
   image stream is required.
+
+sensors:
+  # Read-only vendor data the view page shows (console spec §2.5). Each topic is an out topic above.
+  - id: imu
+    label: "IMU (/imu)"
+    topic: /imu
+    type: sensor_msgs/Imu
+    stale_after_s: 2.0
+    caption: "Yaw only: the message holds roll and pitch as zero."
+    source: "myagv_ros:myagv_odometry/src/myAGV.cpp#L55"
+    note: >-
+      Frame imu_link, inside the base MCU; the record's /imu row says its orientation is yaw only (roll = pitch = 0), the MCU yaw converted from deg to rad. Published together with /odom (myAGV.cpp#L347); its rate follows the MCU's serial reports, which the
+      source does not fix, so the stale threshold is 2 s.
+    fields:
+      - {name: orientation, label: "Orientation (yaw)", path: orientation, kind: rpy, decimals: 1}
+  - id: scan
+    label: "Lidar (/scan)"
+    topic: /scan
+    type: sensor_msgs/LaserScan
+    stale_after_s: 2.0
+    plot: scan
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L55"
+    note: >-
+      YDLIDAR X2L (X2.launch#L5, #L30-L33): frame laser_frame, range 0.1-12 m, -180..180 deg. The launch's frequency is
+      marked invalid (X2.launch#L34-L35) and the scan rate is not established from source, so the stale threshold is 2 s.
+    fields:
+      - {name: frame_id, label: "Frame", path: header.frame_id, kind: text}
+      - {name: returns, label: "Ranges", path: ranges, kind: count}
+      - {name: angle_min, label: "Angle min", path: angle_min, kind: number, unit: "rad", decimals: 3}
+      - {name: angle_max, label: "Angle max", path: angle_max, kind: number, unit: "rad", decimals: 3}
+      - {name: range_min, label: "Range min", path: range_min, kind: number, unit: "m", decimals: 2}
+      - {name: range_max, label: "Range max", path: range_max, kind: number, unit: "m", decimals: 2}
+  - id: lidar_points
+    label: "Lidar points (/point_cloud)"
+    topic: /point_cloud
+    type: sensor_msgs/PointCloud
+    stale_after_s: 3.0
+    throttle_s: 1.0
+    source: "myagv_ros:ydlidar_ros_driver/src/ydlidar_ros_driver.cpp#L56-L57"
+    policy: >-
+      The lidar's points, frame laser_frame, published alongside every /scan (ydlidar_ros_driver.cpp#L241-L242).
+      Console policy: at most one message a second over the websocket, shown by its point count; stale after 3 s.
+    fields:
+      - {name: frame_id, label: "Frame", path: header.frame_id, kind: text}
+      - {name: points, label: "Points", path: points, kind: count}
 
 stop:
   - op: publish

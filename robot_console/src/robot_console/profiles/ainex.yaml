@@ -417,6 +417,7 @@ cameras:
       Console policy: at most 2 frames/s (about 20 Mbit/s at 640x480), below the console default because the gait runs
       until a /walking/command stop call on this same link and nothing stops it on its own
       (ainex:src/ainex_driver/ainex_kinematics/scripts/ainex_controller.py#L234-L242).
+    camera_info: /camera/camera_info
     stale_after_s: 1.0
     optional: false
     source: "ainex:src/ainex_peripherals/launch/usb_cam.launch#L8-L15"
@@ -425,6 +426,75 @@ cameras:
       (ainex:src/ainex_example/scripts/color_detection/color_detection_node.py#L164-L166) and publish results as rgb8
       (ainex:src/ainex_driver/ainex_sdk/src/ainex_sdk/common.py#L26-L33). 30 fps = usb_cam default (framerate not set
       in the launch) - not pinned in this repo. stale_after_s = max(1.0, 5/30).
+  - topic: /camera/image_rect_color
+    type: sensor_msgs/Image
+    encodings: [rgb8]
+    rate_hz: 30
+    max_rate_hz: 1
+    camera_info: /camera/camera_info
+    stale_after_s: 2.0
+    optional: false
+    source: "ainex:src/ainex_peripherals/launch/image_calib.launch#L11-L17"
+    caption: "Publishes nothing while the camera is uncalibrated (camera_info K[0] = 0, rectify.cpp#L115-L141), and no pinned source holds the calibration file: on such a robot this card stays empty and reads STALE."
+    note: >-
+      The rectified copy of /camera/image_raw from image_proc/rectify (image_calib.launch#L11-L17, manager
+      /camera/manager, #L8). Rectification keeps the encoding of its input, so the frame is rgb8 as the raw stream.
+      The nodelet publishes only while something subscribes (image_calib.launch), and this page subscribes to it
+      once the target is validated. Its calibration is the raw stream's /camera/camera_info. Console policy: at most
+      1 frame/s, below the raw stream's 2 frames/s, because a 640x480 rgb8 frame as base64 JSON is about 1.2 MB: the
+      raw stream at 2 frames/s is about 20 Mbit/s, and both at 2 frames/s would take almost all of this robot's
+      40 Mbit/s link budget, which the gait's stop shares. The two together are about 30 Mbit/s. At 1 frame/s a
+      frame period is 1 s, so stale_after_s is 2.0 s (the loader requires a period of at most half the threshold).
+
+sensors:
+  # Read-only board and filter data the view page shows (console spec §2.5). Each topic is an out topic above.
+  - id: imu_raw
+    label: "IMU raw (/ros_robot_controller/imu_raw)"
+    topic: /ros_robot_controller/imu_raw
+    type: sensor_msgs/Imu
+    stale_after_s: 1.0
+    caption: "Raw board readings: acceleration in m/s² (g × 9.80665), angular velocity in rad/s, as the driver publishes them."
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L33"
+    note: >-
+      Published only when the board delivered an IMU frame (ros_robot_controller_node.py#L256-L300), at the node's
+      100 Hz loop (ros_robot_controller_node.launch#L3). Its linear acceleration and angular velocity are the standard
+      Imu fields of the board's frame; the message carries no orientation.
+    fields:
+      - {name: linear_acceleration, label: "Acceleration", path: linear_acceleration, kind: vector3, unit: "m/s²", decimals: 3}
+      - {name: angular_velocity, label: "Angular velocity", path: angular_velocity, kind: vector3, unit: "rad/s", decimals: 3}
+  - id: imu_corrected
+    label: "IMU corrected (/imu_corrected)"
+    topic: /imu_corrected
+    type: sensor_msgs/Imu
+    stale_after_s: 1.0
+    caption: "The raw readings with the imu_calib correction applied: no unit is shown."
+    source: "ainex:src/ainex_peripherals/launch/imu.launch#L24-L28"
+    note: "imu_calib apply_calib 'corrected' (ainex:src/third_party/imu_calib/src/apply_calib.cpp#L72); follows imu_raw."
+    fields:
+      - {name: linear_acceleration, label: "Acceleration", path: linear_acceleration, kind: vector3, decimals: 3}
+      - {name: angular_velocity, label: "Angular velocity", path: angular_velocity, kind: vector3, decimals: 3}
+  - id: imu
+    label: "IMU filtered (/imu)"
+    topic: /imu
+    type: sensor_msgs/Imu
+    stale_after_s: 1.0
+    caption: "Orientation is the complementary filter's, in the world frame (ENU); its header frame is imu_link. Its rates and acceleration are the corrected IMU's (no unit shown)."
+    source: "ainex:src/ainex_peripherals/launch/imu.launch#L30-L40"
+    note: "imu_complementary_filter output (imu/data -> imu, use_mag true); follows imu_corrected."
+    fields:
+      - {name: orientation, label: "Orientation (world frame, ENU)", path: orientation, kind: rpy, decimals: 1}
+      - {name: angular_velocity, label: "Angular velocity", path: angular_velocity, kind: vector3, decimals: 3}
+      - {name: linear_acceleration, label: "Acceleration", path: linear_acceleration, kind: vector3, decimals: 3}
+  - id: mag
+    label: "Magnetometer (/ros_robot_controller/mag)"
+    topic: /ros_robot_controller/mag
+    type: sensor_msgs/MagneticField
+    stale_after_s: 1.0
+    caption: "Calibrated with the board's mag_calib.yaml; no unit is shown, as the profile records none."
+    source: "ainex:src/ainex_driver/ros_robot_controller/scripts/ros_robot_controller_node.py#L291-L299"
+    note: "Only when the board's IMU frame carries nine values (ros_robot_controller_node.py#L285-L290); the raw /ros_robot_controller/mag_raw is not shown (its message type, sensor_msgs_ext/magnetometer, has no layout in the cited sources)."
+    fields:
+      - {name: magnetic_field, label: "Field", path: magnetic_field, kind: vector3, decimals: 3}
 
 stop:
   - op: call

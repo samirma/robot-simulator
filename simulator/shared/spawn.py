@@ -40,7 +40,7 @@ DOCKER_DIR = HERE / "wire" / "docker"
 #: supervisor waits up to 150 s) and the first samples of the periodic outputs
 READY_TIMEOUT = 300.0
 READY_MARK = "RSIM-WIRE-READY"
-#: a wire whose rosapi stays silent this long has stopped serving
+#: a wire whose rosapi stays silent or failing this long has stopped serving
 WIRE_SILENCE = 30.0
 
 EXIT_REFUSED = 2
@@ -416,13 +416,17 @@ class Spawn:
                     w.rb = Rosbridge("127.0.0.1", w.port, timeout=3.0)
                 missing = self._missing_nodes(w)
                 unanswered_since = None
-            except TimeoutError:
-                # rosapi answers one request at a time and a client may keep it busy;
-                # only a silence of WIRE_SILENCE s is a failure
+            except (TimeoutError, RuntimeError) as exc:
+                # rosapi answers one request at a time and a client may keep it busy, and
+                # rosbridge answers "Service ... does not exist" when the client it makes for
+                # a call does not find the server within 1 s (rosbridge_library
+                # internal/services.py call_service), as it may on the real robot under load;
+                # only WIRE_SILENCE s of either is a failure
                 now = time.monotonic()
                 unanswered_since = unanswered_since or now
                 if now - unanswered_since >= WIRE_SILENCE:
-                    self.finish(EXIT_FAILED, "the wire stopped serving (rosapi silent for "
+                    how = "silent" if isinstance(exc, TimeoutError) else f"failing ({exc})"
+                    self.finish(EXIT_FAILED, f"the wire stopped serving (rosapi {how} for "
                                              f"{WIRE_SILENCE:.0f} s)")
                     return
                 continue

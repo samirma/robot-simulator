@@ -141,7 +141,9 @@ scene but never with each other (no roller–roller or roller–chassis contact)
 * **Camera** `camera_link`: pose from the boot's `base2camera_link` static transform
   (`xyz 0.13 0 0.131`, rpy 0; myagv_active.launch L9) — the frame the image carries
   (`_camera_frame_id:=camera_link`). The camera looks along +x of `camera_link` (MuJoCo
-  `xyaxes="0 -1 0 0 0 1"`). The vendor launch starts no camera driver; the camera streams come
+  `xyaxes="0 -1 0 0 0 1"`). Its lens is offset `pos="0.04 0 0"` within that body (an estimate):
+  at the frame origin the lens sits inside the top plate mesh (x up to 0.162, z 0.091–0.132),
+  so the plate filled the view; the offset puts it ahead of the plate, the body pose unchanged. The vendor launch starts no camera driver; the camera streams come
   from the approved community camera boot, the pinned usb_cam 0.3.7 (commit `addab4a6…`) run
   beside it — approved, not manufacturer-provided, and served (`camera_boot` in `ros.yml`,
   its rows marked `camera_boot: true`). `resolution="640 480"` follows that boot's driver defaults

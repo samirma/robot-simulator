@@ -203,6 +203,8 @@ def ns_camera_arm(model_feedback=True):
         del raw["model"]["feedback"]
     raw.update(id="ns_camera_arm", name="Synthetic namespaced arm with a ROS 2 camera (tests only)")
     raw["namespace"]["joint_prefix"] = "{ns}/"
+    # the reBot's D405 rows are served (required), so they would be on this arm's wire: its one camera is the test's own
+    raw["topics"] = [t for t in raw["topics"] if not t["name"].startswith("/camera/camera/")]
     raw["topics"].append({"name": "/camera/image_raw", "type": "sensor_msgs/msg/Image", "direction": "out",
                           "rate_hz": 10, "optional": False, "source": "test"})
     raw["cameras"] = [{"topic": "/camera/image_raw", "type": "sensor_msgs/msg/Image", "encodings": ["rgb8"],

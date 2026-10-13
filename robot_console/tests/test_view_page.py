@@ -97,11 +97,11 @@ def serve_variants(monkeypatch, *variants):
     monkeypatch.setattr(discovery_mod, "load_all", profiles)
 
 
-def rebot_spec(exec_s=20.0, namespace=None, profile=None, include_optional=False):
+def rebot_spec(exec_s=20.0, namespace=None, profile=None):
     """The reBot's wire: its arm server rejects a goal while one runs, its gripper's runs goals
     side by side (the profile's `busy`), each goal running `exec_s`; its sensors publish samples,
-    and its optional D405 topics are on the wire only with ``include_optional``."""
-    spec = wire_spec(profile or load("rebot_b601_rs"), namespace=namespace, include_optional=include_optional)
+    and its D405 wrist camera's topics (served by the record, so required) are on it."""
+    spec = wire_spec(profile or load("rebot_b601_rs"), namespace=namespace)
     for a in spec["actions"]:
         a["exec_s"] = exec_s                 # goals outlive the test unless preempted
     return spec
@@ -221,7 +221,7 @@ def test_cameras_live_and_only_profile_controls(view):
     srv, page = view(wire_spec(load("ainex")))
     assert page.locator('[data-testid="target"]').inner_text() == "ainex"
     cam = page.locator('[data-testid="camera"]')
-    assert cam.count() == 1 and cam.get_attribute("data-topic") == "/camera/image_raw"
+    assert cam.count() == 2 and cam.first.get_attribute("data-topic") == "/camera/image_raw"      # + the rectified copy
     page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'live'")
     ids = page.eval_on_selector_all('[data-testid="control"]', "els => els.map(e => e.dataset.control)")
     assert ids == [c.id for c in load("ainex").controls]
@@ -254,7 +254,8 @@ def test_every_profile_camera_is_shown_live_then_stale(view, pid):
 
 
 def cam_state(page):
-    return page.locator('[data-testid="camera"]').get_attribute("data-state")
+    """The first camera card's state (the profile's first stream)."""
+    return page.locator('[data-testid="camera"]').first.get_attribute("data-state")
 
 
 def test_unsupported_and_malformed_frames_are_visible_states(view):
@@ -265,7 +266,7 @@ def test_unsupported_and_malformed_frames_are_visible_states(view):
     page.wait_for_function(live % "live")
     srv.frame_encoding["/camera/image_raw"] = "bgr8"                     # the profile documents rgb8
     page.wait_for_function(live % "unsupported", timeout=5000)
-    assert "UNSUPPORTED" in page.locator('[data-testid="camera-state"]').inner_text()
+    assert "UNSUPPORTED" in page.locator('[data-testid="camera-state"]').first.inner_text()
     del srv.frame_encoding["/camera/image_raw"]
     page.wait_for_function(live % "live", timeout=5000)
     send = srv._broadcast
@@ -276,7 +277,7 @@ def test_unsupported_and_malformed_frames_are_visible_states(view):
         send(topic, msg)
     srv._broadcast = short_rows
     page.wait_for_function(live % "failed", timeout=5000)
-    assert "row step" in page.locator('[data-testid="camera"] .ov-detail').inner_text()
+    assert "row step" in page.locator('[data-testid="camera"] .ov-detail').first.inner_text()
     page.wait_for_timeout(400)
     assert cam_state(page) == "failed"
     only_startup(srv, page, "ainex")
@@ -298,22 +299,73 @@ def test_missing_profile_camera_is_a_visible_state(view, monkeypatch):
     srv, page = view(drop(wire_spec(load("ainex")), "/camera/image_raw"))
     assert page.locator('[data-testid="target"]').inner_text() == "ainex"
     page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'missing'")
-    assert "MISSING" in page.locator('[data-testid="camera-state"]').inner_text()
+    assert "MISSING" in page.locator('[data-testid="camera-state"]').first.inner_text()
 
 
-def test_optional_wrist_camera_missing_is_visible_and_live_when_present(view):
-    """The reBot's boot starts no camera: its D405 colour and depth streams are optional profile cameras.
-    On a wire without them the target still validates and both cameras show MISSING (console spec
-    §2.3); on a wire with them the page shows both live, at their global names."""
+RECT = "/camera/image_rect_color"
+JPEG = "/usb_cam/image_raw/compressed"
+
+
+def test_rectified_ainex_card_states_and_its_one_frame_a_second_cap(view, fake):
+    """The AiNex rectified copy publishes nothing while its camera is uncalibrated (the rectify node's K[0] = 0), so its
+    card reads WAITING and then STALE with the caption that says why; once frames come it is live at its 1 frame/s cap
+    (throttle 1000 ms, queue_length 1); an encoding the profile does not document is UNSUPPORTED and a short row FAILED,
+    and neither is drawn as live."""
+    srv = fake(wire_spec(load("ainex")))
+    srv.paused.add(RECT)
+    srv, page = view(srv=srv)
+    page.wait_for_function(cam_state_is(RECT, "waiting"), timeout=8000)
+    assert "uncalibrated" in cam_card(page, RECT).locator('[data-testid="camera-caption"]').inner_text()
+    page.wait_for_function(cam_state_is(RECT, "stale"), timeout=8000)
+    assert "STALE" in cam_card(page, RECT).locator('[data-testid="camera-state"]').inner_text()
+    srv.paused.discard(RECT)
+    page.wait_for_function(cam_state_is(RECT, "live"), timeout=8000)
+    assert [(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, RECT)] == [(1000, 1)]
+    srv.frame_encoding[RECT] = "bgr8"                                   # the profile documents rgb8
+    page.wait_for_function(cam_state_is(RECT, "unsupported"), timeout=8000)
+    assert "UNSUPPORTED" in cam_card(page, RECT).locator('[data-testid="camera-state"]').inner_text()
+    del srv.frame_encoding[RECT]
+    page.wait_for_function(cam_state_is(RECT, "live"), timeout=8000)
+    send = srv._broadcast
+
+    def short_rows(topic, msg):
+        if topic == RECT and "step" in msg:
+            msg = dict(msg, step=msg["width"] * 3 - 3)
+        send(topic, msg)
+    srv._broadcast = short_rows
+    page.wait_for_function(cam_state_is(RECT, "failed"), timeout=8000)
+    assert "row step" in cam_card(page, RECT).locator(".ov-detail").inner_text()
+    page.wait_for_timeout(400)
+    assert cam_card(page, RECT).get_attribute("data-state") == "failed"
+    only_startup(srv, page, "ainex")
+
+
+def test_myagv_jpeg_card_states_and_its_five_frames_a_second_cap(view, fake):
+    """The myagv's JPEG copy (optional, 5 frames/s cap: throttle 200 ms, queue_length 1): MISSING on a wire without it,
+    live and decoded with it, UNSUPPORTED for another format, and STALE once its frames stop."""
+    p = load("myagv")
+    srv, page = view(wire_spec(p))
+    page.wait_for_function(cam_state_is(JPEG, "missing"), timeout=8000)
+    assert "MISSING" in cam_card(page, JPEG).locator('[data-testid="camera-state"]').inner_text()
+    srv, page = view(wire_spec(p, include_optional=True))
+    page.wait_for_function(cam_state_is(JPEG, "live"), timeout=8000)
+    assert [(o["throttle_rate"], o["queue_length"]) for o in camera_subs(srv, JPEG)] == [(200, 1)]
+    srv.frame_encoding[JPEG] = "rgb8; theora"
+    page.wait_for_function(cam_state_is(JPEG, "unsupported"), timeout=8000)
+    assert "UNSUPPORTED" in cam_card(page, JPEG).locator('[data-testid="camera-state"]').inner_text()
+    del srv.frame_encoding[JPEG]
+    page.wait_for_function(cam_state_is(JPEG, "live"), timeout=8000)
+    srv.paused.add(JPEG)
+    page.wait_for_function(cam_state_is(JPEG, "stale"), timeout=8000)
+    assert "STALE" in cam_card(page, JPEG).locator('[data-testid="camera-state"]').inner_text()
+    only_startup(srv, page, "myagv")
+
+
+def test_wrist_cameras_are_live_at_their_global_names(view):
+    """The reBot's D405 colour and aligned depth streams are served by the record (not optional), at their global
+    names under /camera/camera: the page shows both live."""
     both = ["/camera/camera/color/image_raw", "/camera/camera/aligned_depth_to_color/image_raw"]
     srv, page = view(rebot_spec())
-    assert page.locator('[data-testid="target"]').inner_text() == REBOT
-    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'missing')")
-    cams = page.locator('[data-testid="camera"]')
-    assert cams.evaluate_all("els => els.map(e => e.dataset.topic)") == both
-    assert all("optional camera" in t for t in page.locator('[data-testid="camera"] .ov-detail').all_inner_texts())
-    assert not disabled(page, "arm_trajectory")
-    srv, page = view(rebot_spec(include_optional=True))
     assert page.locator('[data-testid="target"]').inner_text() == REBOT
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')")
     assert page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.topic)") == both
@@ -321,8 +373,18 @@ def test_optional_wrist_camera_missing_is_visible_and_live_when_present(view):
     assert unprompted(srv, "rebot_b601_rs") == []
 
 
+def test_wrist_camera_missing_refuses_the_rebot_target(view):
+    """The record serves the D405's colour stream (not optional), so a wire without it is not the reBot: the page
+    names no target and gives the missing topic as the reason."""
+    srv, page = view(drop(rebot_spec(), "/camera/camera/color/image_raw"))
+    assert page.locator('[data-testid="target"]').inner_text() == "none"
+    assert "/camera/camera/color/image_raw" in page.locator('[data-testid="reason"]').inner_text()
+    assert srv.command_ops() == []
+
+
 def depth_card(page):
-    return page.locator('[data-testid="camera"][data-kind="depth"]')
+    """The first depth card: the reBot's aligned depth (its only depth camera)."""
+    return page.locator('[data-testid="camera"][data-kind="depth"]').first
 
 
 def card_pixels(page, points):
@@ -336,7 +398,7 @@ def test_depth_camera_card_is_a_false_colour_map_over_the_cameras_range(view):
     false-colour map scaled to the profile's 0.07-0.5 m, 0 black, with a legend that names the range."""
     from fake_rosbridge import depth_mm
     from robot_console.camera import depth_lut
-    srv, page = view(rebot_spec(include_optional=True))
+    srv, page = view(rebot_spec())
     page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')")
     assert page.locator('[data-testid="camera"][data-kind="color"]').count() == 1
     card = depth_card(page)
@@ -364,7 +426,7 @@ def test_depth_camera_card_is_a_false_colour_map_over_the_cameras_range(view):
 
 def test_depth_camera_frames_in_another_encoding_are_unsupported(view):
     """The depth camera documents 16UC1 only: any other encoding shows UNSUPPORTED, never a colour map."""
-    srv, page = view(rebot_spec(include_optional=True))
+    srv, page = view(rebot_spec())
     srv.frame_encoding["/camera/camera/aligned_depth_to_color/image_raw"] = "mono8"
     page.wait_for_function("document.querySelector('[data-kind=depth]').dataset.state === 'unsupported'", timeout=8000)
     assert "UNSUPPORTED" in depth_card(page).locator('[data-testid="camera-state"]').inner_text()
@@ -533,27 +595,37 @@ def watch_states(page, topic, seconds):
           if (performance.now() < end) setTimeout(f, 50); else done(seen); }; f(); })""", [topic, int(seconds * 1000)])
 
 
-def test_lag_comes_from_the_robot_clock_through_rosapi(view):
+def test_lag_comes_from_the_robot_clock_through_rosapi(view, fake):
     """Link health (console spec §2.3): the page asks /rosapi/get_time (read-only, never a command) and judges the shown
     image's age in robot time. A robot clock far off the console's is no lag; frames stamped 2.5 s before they arrive
     are LAGGING, not live (the link answering quickly, so no pause); kept at that steady offset they stay LAGGING,
     noted as a real delay or stamps on another clock; current again, live again."""
-    srv, page = view(wire_spec(load(X3)))
-    srv.clock_skew = 500.0                                  # the robot's clock runs 500 s ahead of the console's
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    srv = fake(wire_spec(load(X3)))
+    srv.clock_skew = 500.0          # the robot's clock runs 500 s ahead of the console's, from before the page's first question
+    srv, page = view(srv=srv)
+    # The offset is measured before the frames are judged: the page's first answer has set its bounds. The wait is
+    # on that state, not on time. The bound is long because a loaded host delays the page's time answers (each is
+    # given up after 3 s and asked again every 2 s) and the frames that wait on them; a real failure still shows.
+    page.wait_for_function("RC.clock() && RC.clock().lastOk != null && RC.clock().lo != null", timeout=CLOCK_WAIT_MS)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=CLOCK_WAIT_MS)
     assert re.search(r"age 0\.\d\d ± 0\.\d\d s · live to 1\.75 s", cam_card(page, X3_CAMS[0]).locator(".cam-meta").inner_text())
     assert any(o.get("service") == "/rosapi/get_time" for o in srv.ops_of("call_service"))
     srv.stamp_lag[X3_CAMS[0]] = 2.5                         # frames now arrive 2.5 s after they were taken
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "lagging"), timeout=8000)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "lagging"), timeout=CLOCK_WAIT_MS)
     card = cam_card(page, X3_CAMS[0])
     assert "LAGGING" in card.locator('[data-testid="camera-state"]').inner_text() and "not current" in card.locator(".ov-detail").inner_text()
     assert page.locator('[data-testid="congestion"]').is_hidden()
-    page.wait_for_function("document.querySelector('[data-topic=\"/camera/rgb/image_raw\"] .ov-detail').textContent.includes('steady offset')", timeout=8000)
+    page.wait_for_function("document.querySelector('[data-topic=\"/camera/rgb/image_raw\"] .ov-detail').textContent.includes('steady offset')", timeout=CLOCK_WAIT_MS)
     assert card.get_attribute("data-state") == "lagging" and "+2.5 s" in card.locator(".ov-detail").inner_text()
     assert "another clock" in card.locator(".ov-detail").inner_text() and page.locator('[data-testid="congestion"]').is_hidden()
     srv.stamp_lag[X3_CAMS[0]] = 0.0
-    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=8000)
+    page.wait_for_function(cam_state_is(X3_CAMS[0], "live"), timeout=CLOCK_WAIT_MS)
     only_startup(srv, page, X3)
+
+
+#: ms to wait for a page state that depends on the robot's clock answers (see the lag test): generous, so a loaded host
+#: does not fail it, and still a bound that a stuck page exceeds.
+CLOCK_WAIT_MS = 30000
 
 
 def watch_ages(page, topic, seconds):
@@ -989,11 +1061,38 @@ def test_sensors_show_disconnected_after_connection_loss(view):
     assert "DISCONNECTED" in sensor(page, "joint1_state").locator('[data-testid="sensor-state"]').inner_text()
 
 
-def test_profiles_without_sensors_show_no_sensor_panel(view):
-    srv, page = view(wire_spec(load("myagv")))
+def test_profiles_without_sensors_show_no_sensor_panel(view, monkeypatch):
+    """A profile without sensors shows no sensor panel: every packaged profile now has some, so the myagv is handed
+    to the page without its sensors."""
+    bare = dataclasses.replace(load("myagv"), sensors=())
+    serve_variants(monkeypatch, bare)
+    srv, page = view(wire_spec(bare))
     assert page.locator('[data-testid="target"]').inner_text() == "myagv"
     assert page.locator('[data-testid="sensors"]').count() == 1 and not page.locator('[data-testid="sensors"]').is_visible()
     assert page.locator('[data-testid="sensor"]').count() == 0
+
+
+@pytest.mark.parametrize("robot", ["ainex", "myagv"])
+def test_recorded_cameras_and_sensors_are_on_without_a_click(view, robot):
+    """The AiNex and myagv pages, as the X3's and the reBot's: every camera of the profile reads LIVE, its CameraInfo
+    topic is named, and every sensor reports, with nothing clicked and nothing sent (read-only sensors)."""
+    p = load(robot)
+    srv, page = view(wire_spec(p, include_optional=True))
+    assert page.locator('[data-testid="target"]').inner_text() == robot
+    assert page.locator('[data-testid="sensors"]').is_visible()          # the packaged profile has sensors, so its panel shows
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=camera]')].every(e => e.dataset.state === 'live')",
+                           timeout=10000)
+    assert sorted(page.locator('[data-testid="camera"]').evaluate_all("els => els.map(e => e.dataset.topic)")) == \
+        sorted(c.topic for c in p.cameras)
+    assert page.locator('[data-testid="camera-info"]').count() == sum(1 for c in p.cameras if c.camera_info)
+    page.wait_for_function("[...document.querySelectorAll('[data-testid=sensor]')].every(e => "
+                           "['live', 'event'].includes(e.dataset.state))", timeout=10000)
+    assert page.locator('[data-testid="sensor"]').evaluate_all("els => els.map(e => e.dataset.sensor)") == \
+        [s.id for s in p.sensors]
+    assert page.locator('[data-testid="sensor-summary"]').inner_text() == f"{len(p.sensors)} of {len(p.sensors)} reporting"
+    assert {o["topic"] for o in srv.ops_of("subscribe")} >= {s.topic for s in p.sensors}
+    assert not [o for o in srv.ops_of("publish") if o.get("topic") in {s.topic for s in p.sensors}]
+    only_startup(srv, page, robot)
 
 
 def x3_sensors(view, **kw):
@@ -1242,7 +1341,7 @@ def test_mobile_base_page_has_camera_base_motion_and_no_bounded_controls(view):
     srv, page = view(wire_spec(load("myagv")))
     assert page.locator('[data-testid="target"]').inner_text() == "myagv"
     page.wait_for_function("document.querySelector('[data-testid=camera]').dataset.state === 'live'")
-    assert page.locator('[data-testid="camera"]').get_attribute("data-topic") == "/usb_cam/image_raw"
+    assert page.locator('[data-testid="camera"]').first.get_attribute("data-topic") == "/usb_cam/image_raw"
     assert page.locator('[data-testid="no-controls"]').count() == 1
     assert "No bounded controls" in page.locator('[data-testid="live-card"]').inner_text()
     assert page.locator('[data-testid="motion"]').is_visible()
@@ -1906,6 +2005,23 @@ def test_ainex_model_click_highlights_and_reveals_the_joints_control(view, fake)
     only_startup(srv, page, "ainex")
 
 
+def test_a_card_growing_above_the_model_moves_the_model_not_the_page(view, fake):
+    """A sensor card above the model whose state line grows (stale, paused, lost) must not scroll the window:
+    the workspace does not scroll-anchor, so the model moves down the screen while the page stays where it is."""
+    for viewport in ((1400, 1000), (390, 844)):
+        srv = fake(wire_spec(load("ainex")))
+        serve_servos(srv, STANDING)
+        srv, page = view(srv=srv, viewport=viewport)
+        page.wait_for_function("RC.state.model.sources.r_knee === 'measured'", timeout=3000)
+        started(page)
+        page.evaluate("document.getElementById('model-card').scrollIntoView()")
+        page.evaluate("window.scrollBy(0, 40)")
+        scroll = page.evaluate("window.scrollY")
+        page.evaluate("document.querySelectorAll('.sensor-meta').forEach(e => e.style.minHeight = '7lh')")
+        page.wait_for_timeout(300)
+        assert abs(page.evaluate("window.scrollY") - scroll) <= 2, viewport
+
+
 def test_model_is_large_beside_the_controls_and_marks_the_front(view, fake):
     """1440x900: the model sits in the left column under the camera, at least 560 px wide, the
     robot drawn over at least 60 % of its height. On a phone the page does not scroll sideways."""
@@ -1914,7 +2030,7 @@ def test_model_is_large_beside_the_controls_and_marks_the_front(view, fake):
     srv, page = view(srv=srv, viewport=(1440, 900))
     page.wait_for_function("RC.state.model.sources.r_knee === 'measured'", timeout=3000)
     cv = page.locator('[data-testid="model-canvas"]').bounding_box()
-    cam = page.locator('[data-testid="camera"]').bounding_box()
+    cam = page.locator('[data-testid="camera"]').first.bounding_box()
     panel = page.locator("#control-panel").bounding_box()
     assert cv["width"] >= 560 and cv["height"] >= 450, cv
     assert cv["x"] + cv["width"] <= panel["x"] and cv["y"] >= cam["y"] + cam["height"]
@@ -2187,8 +2303,14 @@ def test_ros1_target_change_revalidates_and_sends_only_to_the_new_target(view):
     after = srv.ops[n_all:]
     (stop,) = srv.command_ops()[n_ops:]                                 # only base motion's stop...
     assert is_stop(p, stop)
-    first_rosapi = next(i for i, o in enumerate(after) if o.get("service", "").startswith("/rosapi/"))
-    assert after.index(stop) < first_rosapi                             # ...before the new validation
+    # the old target's clock reads (console spec §2.3: /rosapi/get_time, /rosapi/get_param) are not validation and may
+    # fall before the stop; every other rosapi call is the new validation's, so the first of those must be its first
+    # question (/rosapi/topics), and it must come after the stop
+    clock_reads = ("/rosapi/get_time", "/rosapi/get_param")
+    validation = [i for i, o in enumerate(after)
+                  if o.get("service", "").startswith("/rosapi/") and o["service"] not in clock_reads]
+    assert validation and after[validation[0]]["service"] == "/rosapi/topics", [after[i] for i in validation[:3]]
+    assert after.index(stop) < validation[0]                            # ...before the new validation
     assert page.locator('[data-testid="banner"]').is_hidden()           # it did not fail
     page.select_option('[data-testid="robot"]', "ainex")
     page.click('[data-testid="select"]')
@@ -2271,7 +2393,9 @@ def model(page):
 def model_point(page, joint):
     """Page coordinates of a commanded joint drawn on the model canvas."""
     cv = page.locator('[data-testid="model-canvas"]')
-    cv.scroll_into_view_if_needed()
+    # centred, so the canvas is whole in the viewport: a click on a half-visible canvas focuses it, and the
+    # browser scrolls the page to show it, which would move the points just computed
+    cv.evaluate("e => e.scrollIntoView({block: 'center', behavior: 'instant'})")
     page.wait_for_timeout(100)
     box = cv.bounding_box()
     x, y = page.evaluate("j => RC.state.model.points[j]", joint)
@@ -2556,6 +2680,7 @@ CASES = {
                                 wire_spec(load("rebot_b601_rs"), namespace="arm2")),
     "ambiguous": lambda: merge(wire_spec(load("myagv")), wire_spec(load("rosmaster_x3_plus"))),
     "missing": lambda: drop(wire_spec(load("ainex")), "/walking/command"),
+    "rebot-without-wrist-colour": lambda: drop(wire_spec(load("rebot_b601_rs")), "/camera/camera/color/image_raw"),
 }
 
 
@@ -3076,7 +3201,7 @@ def test_page_motion_pad_layout_has_legend_and_state(view):
     the AiNex head buttons, the key legend with the recorded speeds and limits, and a state readout."""
     srv, page, p = mobile(view, "ainex", viewport=(1440, 900))
     card = page.locator('[data-testid="motion"]')
-    cam = page.locator('[data-testid="camera"]').bounding_box()
+    cam = page.locator('[data-testid="camera"]').first.bounding_box()
     mdl = page.locator('[data-testid="model"]').bounding_box()
     box = card.bounding_box()
     assert cam["y"] + cam["height"] <= box["y"] and box["y"] + box["height"] <= mdl["y"]

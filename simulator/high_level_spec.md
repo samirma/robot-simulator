@@ -19,10 +19,9 @@ parameters the client library declares on every ROS 2 node (`use_sim_time`,
 but never alters or replaces a vendor-owned name or behaviour. The **reference project**
 is the prior version of this workspace, github.com/samirma/robot-simulator at revision
 `34547ae`. A **worktop robot** is a robot of `kind` `arm` (the reBot Arm B601-RS); its
-**worktop objects** are the six objects of the reference project's apple-on-plate scene —
-an apple, a plate, a bowl, a mug, a banana and a lemon (YCB scans) — that are part of
-every scene with a worktop, staged on it when the simulation starts and independent of any
-robot (§2.2, §2.3). The **reference survey's spots** are the worktop spots the reference
+**worktop objects** are six objects — an apple, a plate, a bowl, a mug, a tomato and an
+egg, loaded from the selected engine (§2.3) — that are part of every scene with a worktop, staged
+on it when the simulation starts and independent of any robot (§2.2, §2.3). The **reference survey's spots** are the worktop spots the reference
 project's worktop survey ranks (§2.3 *Placement*) for the reference's own arm mount,
 whatever robot later stands there: working reach 0.15-0.35 m, radius 0.20 m, height 0.45
 m, base footprint 0.14 m, forward workspace 0.45 m. An **evidence case** is one robot
@@ -66,8 +65,9 @@ and venv. `assets` fetches every asset source the engine knows, or
 only the named `<source>`, so later runs need no network. `setup` also fetches the robot
 meshes the robot specification's folders require but the repository does not commit,
 from each robot's pinned sources into `robots_specs/<id>/`, verifies them against
-`robots_specs/meshes.sha256` and refuses on a mismatch, leaving no unverified file behind;
-it fetches the worktop objects' meshes the same way (§4).
+`robots_specs/meshes.sha256` and refuses on a mismatch, leaving no unverified file behind.
+`setup` also installs the engine's own models of the six worktop objects (§2.3), so a
+bare `setup` suffices for them.
 
 * **MolmoSpaces** (the default engine) — MuJoCo with iTHOR and ProcTHOR houses: scene
   sources `ithor` and `procthor`, default scene `ithor:1`. Scenes install on demand, so a
@@ -236,12 +236,19 @@ spawn.sh <id> [--placement worktop|floor] [--sim-port <p>] [--port <p>]
 * **Worktop objects.** The scene is more than what its loader builds: its six worktop
   objects are the scene's own, staged at `start` and independent of robots — a robot's
   spawn never brings, removes or counts them.
-  They are staged on both engines exactly as the reference project staged them: at the
-  reference's poses in its arm's base frame, that frame at the staging spot (§2.2) with
-  its heading, 4 mm above the top face, with the reference's physics (the apple a
-  20 mm sphere with its contact tuning, the plate a fixed cylinder with a 24-box rim, the
-  bowl, mug, banana and lemon colliding on their own meshes) and its visuals (the YCB
-  scans). Every loose scene object (a body with a free joint, not a robot's) any part of
+  The six objects are:
+
+  * apple
+  * plate
+  * bowl
+  * mug
+  * tomato
+  * egg
+
+  They are loaded from the selected engine's own objects.
+  They are staged at the reference's poses in its arm's base frame, that frame at the
+  staging spot (§2.2) with its heading, each object resting on the top face. Every loose scene
+  object (a body with a free joint, not a robot's) any part of
   which lies within 0.55 m of that frame's origin, horizontally, and between 0.15 m below
   and 0.45 m above it is cleared at start: it is held still 50 m under the scene. No
   camera, reset, solver setting or anything else of the reference's task comes with them,
@@ -362,12 +369,9 @@ This section defines the ROS interfaces produced by the simulator.
 * Shared logic exists once: one wire-serving implementation per robot, one spawn path for both engines,
   and one function that stands a robot on the floor or the worktop. Two copies are two
   chances to drift.
-* Curated object assets — the worktop objects' meshes and textures — live under
-  `simulator/shared/objects/`, never in an engine's generated `assets/` and never committed:
-  each engine's `run.sh setup` fetches them from their pinned source (elpis-lab/YCB_Dataset
-  at the commit whose files are byte-identical to the reference project's), verifies them
-  against `simulator/shared/objects/ycb.sha256`, refuses on a mismatch and leaves no
-  unverified file behind. Their licences are in `simulator/shared/objects/LICENSES.md`.
+* The worktop objects' models are the engines' own (§2.3), installed by each engine's
+  `run.sh setup` into its generated `assets/` with the engine's other objects; none is
+  curated or committed here.
 
 ## 5. Verification
 
@@ -427,13 +431,13 @@ in this document means these.
 * **Reference parity** — on each engine's default scene the staging spot is where the
   reference project's own code stands its arm, run from a checkout of it: xy and surface
   height within 1 µm, heading within 1e-9 rad; the six worktop objects at the reference's
-  poses within 1 µm; the same scene objects cleared, by name. The
-  MolmoSpaces scene as `start` loads it, with no robot, equals the reference's default
-  scene with its robot left out (its apple-on-plate staging included): the same bodies,
-  geoms and meshes, the same six objects at the same poses, and pixel-identical renders.
-  A RoboCasa scene is the reference's kitchen (the same fixtures, every one where the
-  reference has it but those RoboCasa's own fixture placement sets on a counter (§2.1),
-  the same six objects at the same poses) plus RoboCasa's own kitchen
+  poses (§2.3) within 1 µm horizontally and in heading; the same scene objects cleared, by
+  name. The MolmoSpaces scene as `start` loads it, with no robot, equals the reference's
+  default scene with its robot and its six objects left out on both sides: the same
+  bodies, geoms and meshes, and pixel-identical renders. A RoboCasa scene is the
+  reference's kitchen (the same fixtures, every one where the reference has it but those
+  RoboCasa's own fixture placement sets on a counter (§2.1), its six objects at the
+  reference's poses) plus RoboCasa's own kitchen
   objects (§2.1), which the reference did not load; verify they stand on the counters, are the same on every start, and that every
   RoboCasa object lies on a counter top and, from the first second on, stays where it is.
 * **Evidence** — every robot id has a passing evidence case (see **Terms**) on each engine.

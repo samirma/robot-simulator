@@ -37,19 +37,27 @@ def test_passes_on_matching_wire(fake, pid):
     assert srv.command_ops() == [], "the check publishes nothing"
 
 
-def test_optional_wrist_camera_is_live_when_present(fake):
-    """The reBot's D405 colour and depth streams (global names, optional): live when the wire has them
-    (the 16UC1 depth frames decode with the profile's scale), and its sensors' topics are plain profile
+def test_wrist_camera_is_live_when_present(fake):
+    """The reBot's D405 colour and depth streams (global names, served by the record, so required): live when the
+    wire has them (the 16UC1 depth frames decode with the profile's scale), and its sensors' topics are plain profile
     rows that the check validates and never subscribes to."""
     p = load("rebot_b601_rs")
-    srv = fake(wire_spec(p, include_optional=True))
+    srv = fake(wire_spec(p))
     code, out = fleet("--url", srv.url, "--expect", "rebot_b601_rs")
     assert code == 0, out
-    assert "camera /camera/camera/color/image_raw (optional): LIVE" in out and out.rstrip().endswith("PASS"), out
-    assert "camera /camera/camera/aligned_depth_to_color/image_raw (optional): LIVE" in out, out
+    assert "camera /camera/camera/color/image_raw: LIVE" in out and out.rstrip().endswith("PASS"), out
+    assert "camera /camera/camera/aligned_depth_to_color/image_raw: LIVE" in out, out
     assert srv.command_ops() == []
     subscribed = {o["topic"] for o in srv.ops_of("subscribe")}
     assert subscribed == {"/camera/camera/color/image_raw", "/camera/camera/aligned_depth_to_color/image_raw"}, subscribed
+
+
+def test_missing_wrist_camera_fails(fake):
+    """The record serves the D405's colour stream (not optional), so a wire without it fails validation."""
+    p = load("rebot_b601_rs")
+    srv = fake(drop(wire_spec(p), "/camera/camera/color/image_raw"))
+    code, out = fleet("--url", srv.url, "--expect", "rebot_b601_rs")
+    assert code != 0 and "camera /camera/camera/color/image_raw: MISSING" in out, out
 
 
 def test_x3_cameras_are_sampled_briefly_at_their_rate_cap(fake):
@@ -96,11 +104,11 @@ def test_x3_cameras_are_sampled_briefly_at_their_rate_cap(fake):
 def test_depth_camera_frame_of_another_encoding_fails(fake):
     """A depth camera documents 16UC1 only: a depth frame in another encoding is reported unsupported."""
     p = load("rebot_b601_rs")
-    srv = fake(wire_spec(p, include_optional=True))
+    srv = fake(wire_spec(p))
     srv.frame_encoding["/camera/camera/aligned_depth_to_color/image_raw"] = "mono8"
     code, out = fleet("--url", srv.url, "--expect", "rebot_b601_rs")
-    assert "camera /camera/camera/aligned_depth_to_color/image_raw (optional): UNSUPPORTED" in out, out
-    assert "camera /camera/camera/color/image_raw (optional): LIVE" in out, out
+    assert "camera /camera/camera/aligned_depth_to_color/image_raw: UNSUPPORTED" in out, out
+    assert "camera /camera/camera/color/image_raw: LIVE" in out, out
 
 
 @pytest.mark.parametrize("pid", SUPPORTED_IDS)

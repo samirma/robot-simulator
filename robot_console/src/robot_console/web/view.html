@@ -195,7 +195,10 @@ input::placeholder { color: var(--faint); }
 .validation[data-state="bad"] #reason { color: var(--text); }
 .validation[data-state="pending"] .v-icon { background: var(--info); }
 
-.workspace { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; }
+/* no scroll anchoring inside the workspace: a card above the model whose text changes height (a sensor's state line, a
+   stale or paused note) would otherwise make the browser scroll the page to keep some control in place, moving the model
+   under the pointer. Without it the model moves on screen instead; the page's own scroll position does not change. */
+.workspace { display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); align-items: start; overflow-anchor: none; }
 /* left: what the robot sees and its pose (cameras, model); right: the controls */
 .view-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 @media (min-width: 1100px) {
@@ -249,7 +252,9 @@ input::placeholder { color: var(--faint); }
   background: var(--surface); text-transform: lowercase; white-space: nowrap;
 }
 .sf-bit[data-set="true"] { color: var(--bad); background: var(--bad-bg); border-color: var(--bad-line); font-weight: 700; }
-.sensor-meta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); }
+/* two lines are reserved so that the usual count-and-age text does not resize every card; longer states (stale, paused,
+   lost) may still grow the card, which is why the workspace does not scroll-anchor (see .workspace) */
+.sensor-meta { color: var(--muted); font-size: 11.5px; font-family: var(--mono); min-height: 2lh; }
 /* in-page jumps to each section (the sensors are far down on a phone) */
 .jump { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 0; }
 .jump a { font-size: 13px; font-weight: 600; color: var(--text); text-decoration: none; border: 1px solid var(--border);

@@ -72,7 +72,8 @@ w('      <default class="collision">')
 w('        <geom group="3" contype="1" conaffinity="0" condim="3" friction="0.8 0.005 0.0001" density="0"/>')
 w('      </default>')
 w('      <default class="roller">')
-w('        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3" friction="1.0 0.005 0.0001"/>')
+# the rollers are the wheels' only visible surface: dark, as the real mecanum wheels are
+w('        <geom type="capsule" group="3" contype="1" conaffinity="0" condim="3" friction="1.0 0.005 0.0001" rgba="0.08 0.08 0.08 1"/>')
 w('        <joint type="hinge" damping="1e-5" armature="1e-6" frictionloss="0"/>')
 w('      </default>')
 w('      <default class="wheel">')
@@ -89,7 +90,9 @@ w('  <asset>')
 for name, parts in VIS.items():
     for p in parts:
         w('    <mesh name="%s_m%d" file="%s"/>' % (name, p["k"], p["obj"]))
-        w('    <material name="%s_m%d" rgba="%s"/>' % (name, p["k"], f(*p["rgba"])))
+# the official mesh colour is white (0.98) on every part; the scene's lighting shades it gray,
+# so the body material also emits a little light to read as the real robot's white
+        w('    <material name="%s_m%d" rgba="%s" emission="0.35"/>' % (name, p["k"], f(*p["rgba"])))
 w('  </asset>')
 w('')
 w('  <worldbody>')
@@ -104,7 +107,9 @@ w('      <site name="laser_frame" pos="0.065 0 0.08" euler="0 0 3.14159265" size
 # static_transform_publisher args "0 0 0 0 3.14159 3.14159" = yaw 0, pitch 3.14159, roll 3.14159
 w('      <site name="imu_link" pos="0 0 0" euler="3.14159 3.14159 0" size="0.01" group="4"/>')
 w('      <body name="camera_link" pos="0.13 0 0.131">')
-w('        <camera name="camera_link" xyaxes="0 -1 0 0 0 1" fovy="41.83" resolution="640 480"/>')
+# The lens sits 4 cm ahead of the vendor's camera_link origin, beyond the front edge of the top
+# plate mesh (x 0.162): the body keeps the boot's base2camera_link pose, the lens clears the plate.
+w('        <camera name="camera_link" pos="0.04 0 0" xyaxes="0 -1 0 0 0 1" fovy="41.83" resolution="640 480"/>')
 w('      </body>')
 w('      <body name="base_up">')
 w('        <joint name="base_up" type="hinge" axis="0 0 1"/>')

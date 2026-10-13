@@ -107,22 +107,55 @@ def test_mobile_speeds_within_documented_limits_and_stop(pid):
 
 def test_camera_sets():
     """Every mobile profile has a required raw camera stream; the arm's boot starts no camera, so
-    its D405 wrist camera's colour and depth streams are optional ones (an arm without a D405 validates).
+    its D405 wrist camera's colour and aligned depth streams are required: the record serves them, so an arm whose
+    D405 is not on the wire fails validation.
     The ROSMASTER's Astra Pro Plus adds its depth and infrared streams, optional (their driver is not pinned), and its
     arm's USB camera is optional (the authoritative boot does not start it)."""
     cams = {p.id: [(c.topic, c.optional) for c in p.cameras] for p in load_all()}
     assert cams == {
-        "myagv": [("/usb_cam/image_raw", False)],
-        "ainex": [("/camera/image_raw", False)],
+        "myagv": [("/usb_cam/image_raw", False), ("/usb_cam/image_raw/compressed", True)],
+        "ainex": [("/camera/image_raw", False), ("/camera/image_rect_color", False)],
         "rosmaster_x3_plus": [("/camera/rgb/image_raw", False), ("/camera/depth/image_raw", False),
                               ("/camera/ir/image_raw", True), ("/usb_cam/image_raw", True),
                               ("/usb_cam/image_raw/compressed", True)],
-        "rebot_b601_rs": [("/camera/camera/color/image_raw", True),
-                          ("/camera/camera/aligned_depth_to_color/image_raw", True)],
+        "rebot_b601_rs": [("/camera/camera/color/image_raw", False),
+                          ("/camera/camera/aligned_depth_to_color/image_raw", False)],
     }
     assert {c.topic: c.kind for p in load_all() for c in p.cameras if c.kind != "color"} == {
-        "/camera/camera/aligned_depth_to_color/image_raw": "depth", "/camera/depth/image_raw": "depth",
-        "/camera/ir/image_raw": "ir"}
+        "/camera/camera/aligned_depth_to_color/image_raw": "depth",
+        "/camera/depth/image_raw": "depth", "/camera/ir/image_raw": "ir"}
+
+
+def test_recorded_streams_of_the_ainex_myagv_and_rebot_are_declared():
+    """The recorded interfaces' sensor and camera streams that the page shows, each with its CameraInfo topic: the
+    AiNex head camera and its rectified copy, its board and filtered IMUs and magnetometer; the myagv's CSI camera
+    (raw and JPEG), its IMU, lidar scan and point cloud; the reBot's D405 aligned depth stream."""
+    ain = load("ainex")
+    assert [(c.topic, c.camera_info) for c in ain.cameras] == [
+        ("/camera/image_raw", "/camera/camera_info"), ("/camera/image_rect_color", "/camera/camera_info")]
+    assert {s.id: (s.topic, s.type, s.stale_after_s) for s in ain.sensors} == {
+        "imu_raw": ("/ros_robot_controller/imu_raw", "sensor_msgs/Imu", 1.0),
+        "imu_corrected": ("/imu_corrected", "sensor_msgs/Imu", 1.0),
+        "imu": ("/imu", "sensor_msgs/Imu", 1.0),
+        "mag": ("/ros_robot_controller/mag", "sensor_msgs/MagneticField", 1.0)}
+    by = {s.id: s for s in ain.sensors}
+    assert [f.name for f in by["imu"].fields] == ["orientation", "angular_velocity", "linear_acceleration"]
+    assert by["imu"].fields[0].kind == "rpy" and by["mag"].fields[0].kind == "vector3"
+    my = load("myagv")
+    assert [(c.topic, c.encodings, c.optional, c.camera_info) for c in my.cameras] == [
+        ("/usb_cam/image_raw", ("rgb8",), False, "/usb_cam/camera_info"),
+        ("/usb_cam/image_raw/compressed", ("jpeg",), True, "/usb_cam/camera_info")]
+    assert {s.id: (s.topic, s.type, s.stale_after_s) for s in my.sensors} == {
+        "imu": ("/imu", "sensor_msgs/Imu", 2.0), "scan": ("/scan", "sensor_msgs/LaserScan", 2.0),
+        "lidar_points": ("/point_cloud", "sensor_msgs/PointCloud", 3.0)}
+    assert [s.id for s in my.sensors if s.plot] == ["scan"]
+    assert {s.id: s.throttle_s for s in my.sensors if s.throttle_s is not None} == {"lidar_points": 1.0}
+    rb = load("rebot_b601_rs")
+    d405 = rb.cameras[1]
+    assert (d405.topic, d405.kind, d405.encodings, d405.unit_m, d405.range_m, d405.camera_info, d405.optional) == (
+        "/camera/camera/aligned_depth_to_color/image_raw", "depth", ("16UC1",), 0.001, (0.07, 0.5),
+        "/camera/camera/aligned_depth_to_color/camera_info", False)
+    assert not rb.endpoint("/camera/camera/aligned_depth_to_color/camera_info").optional
 
 
 # The ROSMASTER's driver topics of its authoritative boot: required, because the boot's lidar and Astra drivers
@@ -188,7 +221,7 @@ def test_x3_camera_streams():
     assert "orbbec_astra_series" in next(c for c in p.raw["cameras"] if c.get("kind") == "depth")["policy"]
 
 
-D405_TOPICS = {  # the realsense2_camera topics of the D405 wrist camera, all optional rows
+D405_TOPICS = {  # the realsense2_camera topics of the D405 wrist camera, all served (required) rows
     "/camera/camera/color/image_raw": "sensor_msgs/msg/Image",
     "/camera/camera/color/camera_info": "sensor_msgs/msg/CameraInfo",
     "/camera/camera/aligned_depth_to_color/image_raw": "sensor_msgs/msg/Image",
@@ -196,20 +229,24 @@ D405_TOPICS = {  # the realsense2_camera topics of the D405 wrist camera, all op
 }
 
 
-def test_rebot_d405_is_optional_and_global():
-    """The D405's four topics are optional rows, outside the arm namespace (realsense2_camera is not the
-    controller), and the page's colour camera is rgb8 at the documented 30 Hz."""
+def test_rebot_d405_is_required_and_global():
+    """The D405's four served topics are required rows (the record serves them, not optional), outside the arm namespace (realsense2_camera is not the
+    controller), and the page's colour camera is rgb8 at the documented 30 Hz. The rectified depth stream
+    (/camera/camera/depth/image_rect_raw) is not declared: the recorded interface marks it optional and not
+    served, because the guide uses the aligned depth."""
     p = load("rebot_b601_rs")
     for name, typ in D405_TOPICS.items():
         e = p.endpoint(name)
-        assert e is not None and (e.kind, e.type, e.direction, e.optional) == ("topic", typ, "out", True), name
+        assert e is not None and (e.kind, e.type, e.direction, e.optional) == ("topic", typ, "out", False), name
         assert p.resolve(name, "right_arm") == name == p.resolve(name, "rebotarm")
-    assert not {e.name for e in p.required()} & set(D405_TOPICS)
+    assert p.endpoint("/camera/camera/depth/image_rect_raw") is None
+    assert p.endpoint("/camera/camera/depth/camera_info") is None
+    assert set(D405_TOPICS) <= {e.name for e in p.required()}
     color, depth = p.cameras
-    assert (color.kind, color.encodings, color.rate_hz, color.optional) == ("color", ("rgb8",), 30, True)
+    assert (color.kind, color.encodings, color.rate_hz, color.optional) == ("color", ("rgb8",), 30, False)
     assert color.range_m is None and color.unit_m is None
     assert (depth.topic, depth.kind, depth.encodings, depth.rate_hz, depth.optional) == (
-        "/camera/camera/aligned_depth_to_color/image_raw", "depth", ("16UC1",), 30, True)
+        "/camera/camera/aligned_depth_to_color/image_raw", "depth", ("16UC1",), 30, False)
     assert (depth.unit_m, depth.range_m) == (0.001, (0.07, 0.5))     # millimetres; the D405's recorded range
     assert p.resolve("/joint_states", "right_arm") == "/right_arm/joint_states"
 
@@ -237,7 +274,9 @@ X3_SENSORS = {   # the ROSMASTER's vendor state topics, written out from the pin
 
 def test_sensor_sets_are_the_manufacturer_topics():
     assert {p.id: [s.topic for s in p.sensors] for p in load_all()} == {
-        "myagv": [], "ainex": [], "rosmaster_x3_plus": [t for t, _, _ in X3_SENSORS.values()],
+        "myagv": ["/imu", "/scan", "/point_cloud"],
+        "ainex": ["/ros_robot_controller/imu_raw", "/imu_corrected", "/imu", "/ros_robot_controller/mag"],
+        "rosmaster_x3_plus": [t for t, _, _ in X3_SENSORS.values()],
         "rebot_b601_rs": ["/joint_states"] + MOTOR_TOPICS + ["/arm_status"]}
 
 
@@ -314,10 +353,11 @@ def test_sensors_reach_the_page_and_are_read_only():
     j = profile_json(p)
     assert [s["topic"] for s in j["sensors"]] == [s.topic for s in p.sensors]
     assert j["sensors"][1]["fields"][4]["bits"][0] == {"bit": 0, "label": "undervoltage"}
-    assert j["cameras"][0]["optional"] is True
+    assert j["cameras"][0]["optional"] is False
     assert [(c["kind"], c["range_m"], c["unit_m"]) for c in j["cameras"]] == [("color", None, None),
                                                                               ("depth", [0.07, 0.5], 0.001)]
-    assert all(profile_json(q)["sensors"] == [] for q in load_all() if q.id not in (p.id, "rosmaster_x3_plus"))
+    assert [s["topic"] for s in profile_json(load("myagv"))["sensors"]] == ["/imu", "/scan", "/point_cloud"]
+    assert [s["topic"] for s in profile_json(load("ainex"))["sensors"]][-1] == "/ros_robot_controller/mag"
     x3 = profile_json(load("rosmaster_x3_plus"))
     assert x3["sensors"][0]["fields"][0]["headline"] is True and x3["sensors"][0]["fields"][0]["warn_below"] == 9.6
     assert [(c["kind"], c["camera_info"]) for c in x3["cameras"]] == [

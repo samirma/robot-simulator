@@ -38,7 +38,7 @@ boot_note: >-
   gripper [gripper], gripper position limits open 5.0 / close 0.0 (motor rad), arm control mode mit. The node
   connects and enables the motors at start (hardware_manager.py#L185-L195) and, on exit, moves to safe home and
   disables them (rebotarm_controller.py#L79-L82, hardware_manager.py#L207-L224). No camera, lidar or IMU driver is
-  started (an optional D405 wrist camera is run beside it, see cameras_note); driver.launch.py (controller only) and the MoveIt launches are not this profile's boot.
+  started (the D405 wrist camera of the camera boot is run beside it, see cameras_note); driver.launch.py (controller only) and the MoveIt launches are not this profile's boot.
 namespace:
   default: rebotarm
   compose: "/{ns}{name}"
@@ -61,7 +61,7 @@ namespace:
     arm_namespace:=right_arm turns /rebotarm/joint_states into /right_arm/joint_states
     (wiki_documents:sites/en/docs/Robotics/Robot_Kits/reBot_Arm/B601_RS/reBot_Arm_B601_RS_ROS2_Integration.md#L285-L307).
     robot_state_publisher runs un-namespaced (#L118-L125): /robot_description, /tf and /tf_static are global. So are the
-    optional D405 wrist camera's topics: realsense2_camera is not part of the controller and names them
+    D405 wrist camera's topics: realsense2_camera is not part of the controller and names them
     /camera/camera/... whatever the arm namespace.
     Joint names are not prefixed: the controller reports and expects the SDK's joint names whatever the namespace
     (ros_publishers.py#L87, ros_actions.py#L146-L152), so there is no joint prefix.
@@ -257,31 +257,31 @@ topics:
     rate_hz: null
     optional: false
     source: "rebotarm_ros2:src/rebotarmcontroller/rebotarmcontroller/motor_passthrough.py#L72-L79"
-  # ---- optional Intel RealSense D405 wrist camera (realsense2_camera, global names) --------------
+  # ---- Intel RealSense D405 wrist camera (camera boot, realsense2_camera, global names; served, not optional) --------------
   - name: /camera/camera/color/image_raw
     type: sensor_msgs/msg/Image
     direction: out
     rate_hz: 30
-    optional: true
-    policy: "Console policy: the D405 colour stream, rgb8 640x360 at 30 Hz (Seeed B601-RS grasping guide with realsense2_camera, default camera_name \"camera\" in namespace \"camera\"); optional because the bringup does not start it and a real arm may have no D405."
+    optional: false
+    policy: "Console policy: the D405 colour stream, rgb8 640x360 at 30 Hz (Seeed B601-RS grasping guide with realsense2_camera, default camera_name \"camera\" in namespace \"camera\"); served by the camera boot (record camera_boot rows, not optional); the arm bringup does not start it."
   - name: /camera/camera/color/camera_info
     type: sensor_msgs/msg/CameraInfo
     direction: out
     rate_hz: 30
-    optional: true
-    policy: "Console policy: calibration of the D405 colour stream (same optional add-on)."
+    optional: false
+    policy: "Console policy: calibration of the D405 colour stream (same camera boot)."
   - name: /camera/camera/aligned_depth_to_color/image_raw
     type: sensor_msgs/msg/Image
     direction: out
     rate_hz: 30
-    optional: true
+    optional: false
     policy: "Console policy: the D405 depth stream aligned to colour (16UC1, millimetres); the page shows it as the second (depth) camera, see cameras."
   - name: /camera/camera/aligned_depth_to_color/camera_info
     type: sensor_msgs/msg/CameraInfo
     direction: out
     rate_hz: 30
-    optional: true
-    policy: "Console policy: calibration of the aligned depth stream (same optional add-on)."
+    optional: false
+    policy: "Console policy: calibration of the aligned depth stream (same camera boot)."
 services:
   - name: /enable
     type: std_srvs/srv/Trigger
@@ -351,8 +351,9 @@ cameras:
     type: sensor_msgs/msg/Image
     encodings: [rgb8]
     rate_hz: 30
+    camera_info: /camera/camera/color/camera_info
     stale_after_s: 2.0
-    optional: true
+    optional: false
     policy: "Console policy: the Seeed-supported Intel RealSense D405 wrist camera (realsense2_camera at its default camera_name/camera_namespace \"camera\") publishes its colour stream here at 640x360, 30 Hz, rgb8, frame camera_color_optical_frame; stale_after_s = 2.0 s."
   - topic: /camera/camera/aligned_depth_to_color/image_raw
     type: sensor_msgs/msg/Image
@@ -361,18 +362,27 @@ cameras:
     unit_m: 0.001
     range_m: [0.07, 0.5]
     rate_hz: 30
+    camera_info: /camera/camera/aligned_depth_to_color/camera_info
     stale_after_s: 2.0
-    optional: true
+    optional: false
     policy: "Console policy: the same D405's depth stream aligned to colour (align_depth.enable), 640x360, 30 Hz, 16UC1 in millimetres (the driver rescales the sensor's depth units to mm, ROS_DEPTH_SCALE 0.001, so unit_m = 0.001), 0 where there is no depth, frame camera_color_optical_frame; stale_after_s = 2.0 s. range_m is Intel's published ideal range for the D405 depth, 7 to 50 cm; the page maps it to colours and shows 0 black."
 link_policy: >-
-  No camera cap or link budget beyond the console defaults (10 frames/s, queue_length 1, pause on congestion): this
-  arm has no base motion, and the page never stops or cancels a bounded control (console spec §2.2), so no stop of
-  this robot waits on the link behind images. Its D405 streams are optional and start only with the page.
+  The two D405 streams the page shows, at the console's default cap of 10 frames/s each (queue_length 1), as base64
+  JSON, costed as profiles.Camera.nominal_mbps does: bytes per frame = raw x 4/3 + 300, Mbit/s = bytes x 8 x 10 / 1e6.
+  Measured at the record's 640x360 size: colour rgb8 640 x 360 x 3 = 691,200 B raw, so 921,900 B per frame, 73.75
+  Mbit/s; aligned depth 16UC1 640 x 360 x 2 = 460,800 B raw, so 614,700 B per frame, 49.18 Mbit/s. Together 122.9
+  Mbit/s (about 15.4 MB/s); uncapped at their 30 Hz they would be 369 Mbit/s. No link_budget_mbps is declared. Both
+  streams are added on validation like every profile camera (they are required rows, so one absent from the wire fails
+  validation), and profiles._budget refuses any budget below the cameras' nominal sum: Camera.nominal_mbps
+  assumes a 640x480 frame before the first frame is measured, so that sum is 163.9 Mbit/s here, above the 122.9 measured.
+  The lowest budget the check accepts would therefore only restate a figure above what the streams take. The cap and the
+  pause on congestion are the bounds (console spec §2.3). The arm has no base motion, and the page sends no arm stop on this link (console spec §2.2; the page never
+  stops or cancels a bounded control), so no arm stop waits behind images.
 cameras_note: >-
-  The authoritative boot starts no camera driver (bringup.launch.py#L95-L133); the D405 is an optional add-on that
-  Seeed's grasping guide runs beside the bringup (realsense2_camera, global names under /camera/camera, not the arm
-  namespace). Its topics are optional rows, so an arm without a D405 still validates and its page shows the colour
-  and depth cameras as missing.
+  The authoritative boot starts no camera driver (bringup.launch.py#L95-L133); the D405 is the wrist camera of the
+  approved camera boot that Seeed's grasping guide runs beside the bringup (realsense2_camera, global names under
+  /camera/camera, not the arm namespace). The record serves its colour and aligned-depth streams (not optional), so
+  their rows are required: an arm whose D405 is not on the wire fails validation.
 sensors:
   # Read-only manufacturer sensor data the view page shows (console spec §2.4). Each topic is an out topic above.
   - id: joint_states
